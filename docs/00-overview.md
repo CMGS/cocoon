@@ -140,7 +140,7 @@ Cocoon's architecture integrates several components to provide seamless OCI-to-V
 
 ### Component Flow
 
-1. **User Request**: `cocoon create --image ubuntu:22.04 --name myvm`
+1. **User Request**: `cocoon create ubuntu-22.04-cloudimg --name myvm`
 2. **Image Pull**: Buildah downloads OCI image from registry (if not cached)
 3. **Image Conversion**: qemu-img converts OCI rootfs to qcow2 base image with checksum-based filename
 4. **Storage Creation**: qcow2 COW overlay created from base image (instant, ~200KB initial size)
@@ -192,7 +192,7 @@ VM overlays:    vm-001-overlay.qcow2 (200KB, writable)
 
 **Rationale**:
 - **Content-addressable**: Same image content = same cached qcow2, regardless of tag
-- **Version tracking**: `ubuntu:22.04` updated upstream? New checksum = new cache entry
+- **Version tracking**: `myorg/ubuntu-bootable:22.04` updated upstream? New checksum = new cache entry
 - **Automatic deduplication**: Multiple pulls of same content reuse cache
 - **Space efficiency**: No duplicate conversions for identical images
 

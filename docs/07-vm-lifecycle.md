@@ -675,7 +675,7 @@ type ErrorInfo struct {
   "state": "RUNNING",
 
   "image": {
-    "ref": "ubuntu:22.04",
+    "ref": "myorg/ubuntu-bootable:22.04",
     "digest": "sha256:abcd1234...",
     "base_checksum": "sha256:ef015678...",
     "size": 419430400,
@@ -684,17 +684,16 @@ type ErrorInfo struct {
 
   "storage": {
     "overlay_path": "/var/lib/cocoon/vms/vm-abc123/overlay.qcow2",
-    "base_path": "/var/lib/cocoon/images/sha256:ef015678.qcow2",
-    "cloud_init_path": "/var/lib/cocoon/vms/vm-abc123/cloud-init.iso",
+    "base_path": "/var/lib/cocoon/cache/images/sha256:ef015678.qcow2",
     "size": "10G",
     "used_bytes": 2147483648,
     "filesystem": "ext4"
   },
 
   "hypervisor": {
-    "ch_socket": "/run/cocoon/vms/vm-abc123/ch.sock",
+    "ch_socket": "/run/cocoon/vms/vm-abc123/api.sock",
     "ch_pid": 12345,
-    "serial_log": "/run/cocoon/vms/vm-abc123/serial.log",
+    "serial_log": "/var/log/cocoon/vm-abc123-serial.log",
     "version": "v38.0",
     "api_version": "v1"
   },
@@ -702,8 +701,8 @@ type ErrorInfo struct {
   "boot_config": {
     "cpus": 2,
     "memory": 1073741824,
-    "boot_mode": "uefi",
-    "uefi_firmware": "/usr/share/OVMF/OVMF_CODE.fd"
+    "boot_mode": "pvh",
+    "firmware": "/var/lib/cocoon/firmware/hypervisor-fw"
   },
 
   "timestamps": {
@@ -724,7 +723,7 @@ type ErrorInfo struct {
       "from": "",
       "to": "CREATING",
       "timestamp": "2026-02-11T20:00:00Z",
-      "reason": "cocoon create ubuntu:22.04"
+      "reason": "cocoon create myorg/ubuntu-bootable:22.04"
     },
     {
       "from": "CREATING",
@@ -759,15 +758,14 @@ type ErrorInfo struct {
 ```
 /var/lib/cocoon/vms/{vm-id}/
 ├── metadata.json          # Primary metadata
-├── metadata.json.lock     # File lock for atomic updates
+├── metadata.lock          # File lock for atomic updates
 ├── overlay.qcow2          # VM overlay disk
-├── cloud-init.iso         # cloud-init configuration
-└── logs/
-    └── serial.log         # Serial console log
 
 /run/cocoon/vms/{vm-id}/
-├── ch.sock                # Cloud Hypervisor API socket
-└── ch.pid                 # Cloud Hypervisor process ID
+└── api.sock               # Cloud Hypervisor API socket
+
+/var/log/cocoon/
+└── vm-{id}-serial.log     # Serial console output
 ```
 
 ### 5.2 Atomic Updates
@@ -789,7 +787,7 @@ func SaveMetadata(meta *VMMetadata) error {
     // 1. Construct paths
     vmDir := filepath.Join("/var/lib/cocoon/vms", meta.VMID)
     metadataPath := filepath.Join(vmDir, "metadata.json")
-    lockPath := metadataPath + ".lock"
+    lockPath := filepath.Join(vmDir, "metadata.lock")
     tempPath := metadataPath + ".tmp"
 
     // 2. Acquire file lock
@@ -900,7 +898,7 @@ func Create(name, image string) error {
 **Workaround**:
 ```bash
 cocoon delete myvm || true
-cocoon create myvm ubuntu:22.04
+cocoon create ubuntu-22.04-cloudimg --name myvm
 ```
 
 #### start
@@ -1545,7 +1543,7 @@ Scanning VMs in /var/lib/cocoon/vms/...
   Details:  Process PID 1234 not found (likely crashed)
 
 [WARNING] vm-def456: zombie_socket
-  Details:  Socket /run/cocoon/vms/vm-def456/ch.sock exists but process 5678 not running
+  Details:  Socket /run/cocoon/vms/vm-def456/api.sock exists but process 5678 not running
 
 [INFO] vm-ghi789: clean
   State: RUNNING (PID 9012, socket responsive)
@@ -1822,7 +1820,7 @@ func detectOrphanedCHProcesses(knownVMs []string) []int {
 
 ```bash
 # CREATING → CREATED
-cocoon create ubuntu:22.04
+cocoon create ubuntu-22.04-cloudimg --name myvm
 
 # CREATED → STARTING → RUNNING
 cocoon start vm-abc123

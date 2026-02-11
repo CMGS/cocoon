@@ -365,7 +365,7 @@ func RunCommand() *cli.Command {
             },
             &cli.StringFlag{
                 Name:  "firmware",
-                Usage: "Path to firmware (hypervisor-fw or OVMF)",
+                Usage: "Path to PVH firmware (hypervisor-fw); for UEFI use --boot-mode uefi",
                 Value: "/var/lib/cocoon/firmware/hypervisor-fw",
             },
         },
@@ -711,9 +711,9 @@ cocoon list --filter running
 **Output Example**:
 
 ```
-VM ID          NAME     IMAGE           STATE     CPU  MEMORY  UPTIME
-vm-abc-123     myvm1    ubuntu:22.04    running   2    2G      5m30s
-vm-def-456     myvm2    python:3.11     stopped   4    4G      -
+VM ID          NAME     IMAGE                        STATE     CPU  MEMORY  UPTIME
+vm-abc-123     myvm1    ubuntu-22.04-cloudimg        running   2    2G      5m30s
+vm-def-456     myvm2    myorg/ubuntu-bootable:22.04  stopped   4    4G      -
 ```
 
 ### 3.9 cocoon inspect (VM Details)
@@ -757,17 +757,17 @@ cocoon inspect myvm --format yaml
   "id": "vm-abc-123",
   "name": "myvm",
   "state": "running",
-  "image": "ubuntu:22.04",
+  "image": "ubuntu-22.04-cloudimg",
   "boot": {
-    "mode": "uefi",
-    "firmware_path": "/usr/share/OVMF/OVMF_CODE.fd"
+    "mode": "pvh",
+    "firmware_path": "/var/lib/cocoon/firmware/hypervisor-fw"
   },
   "resources": {
     "cpus": 2,
     "memory_mb": 2048
   },
   "disk": {
-    "root_disk_path": "/var/lib/cocoon/images/vm-abc-123.qcow2",
+    "root_disk_path": "/var/lib/cocoon/vms/vm-abc-123/overlay.qcow2",
     "size": "10G",
     "base_image": "/var/lib/cocoon/cache/images/ubuntu-22.04-abc123.qcow2"
   },
@@ -1204,7 +1204,8 @@ $ cocoon firmware list
 FIRMWARE TYPE   VERSION   PATH                                            SIZE    CHECKSUM
 pvh             0.4.2     /var/lib/cocoon/firmware/hypervisor-fw         89.2KB  3d7ae8c1...
 pvh (backup)    0.4.1     /var/lib/cocoon/firmware/hypervisor-fw-0.4.1   88.9KB  f1c3d8a2...
-uefi (x86_64)   -         /usr/share/OVMF/OVMF_CODE.fd                   1.9MB   (system)
+uefi (x86_64)   v38.0     /var/lib/cocoon/firmware/CLOUDHV.fd             2.1MB   a8b2c4d6...
+uefi (fallback)  -         /usr/share/OVMF/OVMF_CODE.fd                   1.9MB   (system, deprecated)
 ```
 
 #### 3.14.2 cocoon firmware install
@@ -1220,6 +1221,9 @@ cocoon firmware install pvh --version 0.4.2
 
 # Install from custom source
 cocoon firmware install pvh --source /path/to/hypervisor-fw
+
+# Install UEFI firmware (CLOUDHV.fd)
+cocoon firmware install uefi
 
 # Install all firmware types
 cocoon firmware install
@@ -1286,7 +1290,7 @@ cocoon firmware remove pvh --confirm
 
 **Firmware Types**:
 - `pvh`: rust-hypervisor-firmware (PVH boot, required)
-- `uefi`: OVMF/AAVMF (UEFI fallback, optional)
+- `uefi`: CLOUDHV.fd (UEFI boot, optional; deprecated fallback: system OVMF)
 - `all`: All firmware types
 
 **Firmware Storage**:
@@ -1295,6 +1299,7 @@ cocoon firmware remove pvh --confirm
 ├── hypervisor-fw           # Current PVH firmware (x86_64)
 ├── hypervisor-fw-0.4.2     # Versioned backup
 ├── hypervisor-fw-0.4.1     # Older backup
+├── CLOUDHV.fd              # UEFI firmware (Cloud Hypervisor edk2)
 └── checksums.txt           # SHA256 verification
 ```
 
@@ -1428,8 +1433,8 @@ type BootConfig struct {
     // PVH firmware path
     PVHFirmware string `yaml:"pvh_firmware" default:"/var/lib/cocoon/firmware/hypervisor-fw"`
 
-    // UEFI firmware path (fallback)
-    UEFIFirmware string `yaml:"uefi_firmware" default:"/usr/share/OVMF/OVMF_CODE.fd"`
+    // UEFI firmware path (CLOUDHV.fd managed by cocoon firmware install)
+    UEFIFirmware string `yaml:"uefi_firmware" default:"/var/lib/cocoon/firmware/CLOUDHV.fd"`
 
     // Boot timeout
     BootTimeout time.Duration `yaml:"boot_timeout" default:"60s"`
@@ -1477,7 +1482,7 @@ image:
 boot:
   default_mode: pvh
   pvh_firmware: /var/lib/cocoon/firmware/hypervisor-fw
-  uefi_firmware: /usr/share/OVMF/OVMF_CODE.fd
+  uefi_firmware: /var/lib/cocoon/firmware/CLOUDHV.fd
   boot_timeout: 60s
 
 global_timeout: 300s
@@ -1512,10 +1517,8 @@ log:
    config := &types.VMConfig{
        ID: vmID,
        Boot: types.BootConfig{
-           Mode: "uefi",
-           UEFI: &types.UEFIConfig{
-               FirmwarePath: "/usr/share/OVMF/OVMF_CODE.fd",
-           },
+           Mode: "pvh",
+           Firmware: "/var/lib/cocoon/firmware/hypervisor-fw",
        },
        Disk: types.DiskConfig{
            RootDiskPath: overlayPath,
@@ -1537,7 +1540,7 @@ log:
     ```bash
     cloud-hypervisor \
       --firmware /var/lib/cocoon/firmware/hypervisor-fw \
-      --api-socket /run/cocoon/vm-123.sock \
+      --api-socket /run/cocoon/vms/vm-123/api.sock \
       --disk path=/var/lib/cocoon/vms/vm-123/overlay.qcow2 \
       --cpus boot=2 \
       --memory size=2G \
@@ -1570,7 +1573,7 @@ log:
    - Move overlay to trash: `mv overlay.qcow2 /var/lib/cocoon/trash/`
    - Delete serial log: `rm /var/log/cocoon/vm-123-serial.log`
    - Stop metadata server for this VM
-   - Delete API socket: `rm /run/cocoon/vm-123.sock`
+   - Delete API socket: `rm /run/cocoon/vms/vm-123/api.sock`
    - Delete VM directory: `rm -rf /var/lib/cocoon/vms/vm-123/`
 6. **Mark as deleted** → Update VM state to `deleted`
 7. **Trigger GC** (optional) → If base image unreferenced, mark for collection
@@ -1624,23 +1627,23 @@ cocoon delete myvm --force
 ### 6.3 Image Management
 
 ```bash
-# Pull image
-cocoon image pull ubuntu:22.04
+# Pull bootable OCI image
+cocoon image pull myorg/ubuntu-bootable:22.04
 
 # Verify bootability
-cocoon image verify ubuntu:22.04
+cocoon image verify myorg/ubuntu-bootable:22.04
 
 # List cached images
 cocoon image list
 
 # Inspect image details
-cocoon image inspect ubuntu:22.04
+cocoon image inspect myorg/ubuntu-bootable:22.04
 
 # Remove image (fails if VMs using it)
-cocoon image rm ubuntu:22.04
+cocoon image rm myorg/ubuntu-bootable:22.04
 
 # Force remove image
-cocoon image rm ubuntu:22.04 --force
+cocoon image rm myorg/ubuntu-bootable:22.04 --force
 ```
 
 ### 6.4 Monitoring and Cleanup
@@ -1667,7 +1670,7 @@ cocoon gc --dry-run
 ```bash
 # Create 100 VMs from same base image (uses COW)
 for i in {1..100}; do
-  cocoon run ubuntu:22.04 \
+  cocoon run ubuntu-22.04-cloudimg \
     --name "vm-$(printf %03d $i)" \
     --cpus 2 \
     --memory 2G \
@@ -1805,7 +1808,7 @@ This CLI design implements the Boot Contract specification:
     "memory_mb": 2048
   },
   "runtime": {
-    "api_socket": "/run/cocoon/vm-abc-123.sock",
+    "api_socket": "/run/cocoon/vms/vm-abc-123/api.sock",
     "work_dir": "/var/lib/cocoon/vms/vm-abc-123",
     "state": "running",
     "process_id": 12345

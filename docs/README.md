@@ -111,4 +111,4 @@ For major architectural changes or feature proposals, use the RFC process:
 - Use [rfc/TEMPLATE.md](./rfc/TEMPLATE.md) to create new RFCs
 - RFCs are numbered sequentially (001, 002, etc.)
 
-Currently, there are no active RFCs. The initial Cocoon design is documented in the main docs (00-overview.md through 10-implementation-roadmap.md).
+Currently, there are no active RFCs. The initial Cocoon architecture was captured directly in the main docs (00-overview.md through 10-implementation-roadmap.md) rather than as a formal RFC.

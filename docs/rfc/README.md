@@ -60,11 +60,9 @@ cp docs/rfc/TEMPLATE.md docs/rfc/NNN-your-feature-name.md
 
 ## RFC Numbering
 
-RFCs are numbered sequentially:
+RFCs are numbered sequentially starting from 001 (e.g., `001-feature-name.md`).
 
-- `001-vibe-cli-architecture.md` - CLI architecture decisions
-- `002-network-policy-engine.md` - Network isolation design (future)
-- `003-multi-tenant-quotas.md` - Tenant quota system (future)
+> **Note:** The initial Cocoon CLI architecture was captured directly in the main documentation (docs 00-10) rather than as a formal RFC. The first RFC number (001) is available for future proposals.
 
 ## RFC Status
 
@@ -85,7 +83,7 @@ Future RFCs will be listed here as they are created.
 
 ## Historical RFCs
 
-None yet - this is the initial documentation structure.
+No formal RFCs have been created. The initial architecture was captured directly in the main documentation (00-overview.md through 10-implementation-roadmap.md) rather than through the RFC process.
 
 ## Questions?
 

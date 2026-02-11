@@ -46,7 +46,7 @@ cloud-hypervisor \
   --disk path=/var/lib/cocoon/vms/vm-123/overlay.qcow2 \
   --cpus boot=2 \
   --memory size=2G \
-  --serial file=/var/log/cocoon/vm-123.log \
+  --serial file=/var/log/cocoon/vm-123-serial.log \
   --console off
 ```
 
@@ -101,19 +101,19 @@ cocoon firmware verify    # Verify integrity
 **UEFI boot command**:
 ```bash
 cloud-hypervisor \
-  --kernel /usr/share/edk2/ovmf/CLOUDHV.fd \
+  --kernel /var/lib/cocoon/firmware/CLOUDHV.fd \
   --disk path=/var/lib/cocoon/vms/vm-123/overlay.qcow2 \
   --cpus boot=2 \
   --memory size=2G \
-  --serial file=/var/log/cocoon/vm-123.log \
+  --serial file=/var/log/cocoon/vm-123-serial.log \
   --console off
 ```
 
 **Firmware Requirements**:
 - **x86_64**: Use Cloud Hypervisor's edk2 UEFI firmware (`CLOUDHV.fd`)
-  - Ubuntu/Debian: Package `edk2-cloud-hypervisor` or download from CH releases
-  - Fedora: Package `edk2-ovmf` (includes CLOUDHV.fd variant)
-  - Alternatively: `/usr/share/OVMF/OVMF_CODE.fd` from `ovmf` package (standard OVMF)
+  - Install via `cocoon firmware install uefi` or download from CH releases
+  - Installed to: `/var/lib/cocoon/firmware/CLOUDHV.fd`
+  - Deprecated fallback: `/usr/share/OVMF/OVMF_CODE.fd` from `ovmf` package (only used if CLOUDHV.fd missing)
 - **aarch64**: `/usr/share/AAVMF/AAVMF_CODE.fd` (from `edk2-aarch64` package)
 
 **How UEFI fallback works**:
@@ -374,7 +374,7 @@ func analyzeBootFailure(err error) BootFailure {
 
 // readSerialLog reads the serial log file for the first N seconds of boot
 func readSerialLog(vmID string, duration time.Duration) string {
-    logPath := fmt.Sprintf("/var/log/cocoon/%s.log", vmID)
+    logPath := fmt.Sprintf("/var/log/cocoon/%s-serial.log", vmID)
 
     // Wait up to duration for log to appear
     deadline := time.Now().Add(duration)
@@ -496,7 +496,7 @@ func BootVM(vmID string, mode BootMode) error {
 sudo rm /var/lib/cocoon/firmware/hypervisor-fw
 
 # Attempt boot - should fallback to UEFI
-cocoon vm create --image ubuntu:22.04 test-vm
+cocoon create ubuntu-22.04-cloudimg --name test-vm
 
 # Expected log:
 # WARN: PVH boot failed with recoverable error: Failed to load firmware (reason: FirmwareNotFound)
@@ -507,7 +507,7 @@ cocoon vm create --image ubuntu:22.04 test-vm
 **Test Case 2: Non-PVH Image**
 ```bash
 # Use image without PVH support (e.g., Windows or old Linux)
-cocoon vm create --image custom-image:latest test-vm
+cocoon create custom-image:latest --name test-vm
 
 # Expected: Automatic fallback to UEFI
 ```
@@ -518,7 +518,7 @@ cocoon vm create --image custom-image:latest test-vm
 sudo deluser $USER kvm
 
 # Attempt boot - should fail immediately (no fallback)
-cocoon vm create --image ubuntu:22.04 test-vm
+cocoon create ubuntu-22.04-cloudimg --name test-vm
 
 # Expected log:
 # ERROR: PVH boot failed with non-recoverable error: Failed to open /dev/kvm: Permission denied (reason: KVMAccess)
@@ -679,7 +679,7 @@ GET http://169.254.169.254/user-data
 **Configuration**:
 ```bash
 cloud-hypervisor \
-  --serial file=/var/log/cocoon/vm-123.log \
+  --serial file=/var/log/cocoon/vm-123-serial.log \
   --console off
 ```
 
@@ -763,7 +763,7 @@ type BootCompletionState struct {
 
 // WaitForBootCompletion waits for VM boot to complete with robust pattern detection
 func WaitForBootCompletion(vmID string, config BootDetectionConfig) error {
-    logPath := fmt.Sprintf("/var/log/cocoon/%s.log", vmID)
+    logPath := fmt.Sprintf("/var/log/cocoon/%s-serial.log", vmID)
 
     ctx, cancel := context.WithTimeout(context.Background(), config.Timeout)
     defer cancel()
@@ -935,7 +935,7 @@ func DefaultBootDetectionConfig() BootDetectionConfig {
 }
 
 func WaitForBootCompletion(vmID string, config BootDetectionConfig) error {
-    logPath := fmt.Sprintf("/var/log/cocoon/%s.log", vmID)
+    logPath := fmt.Sprintf("/var/log/cocoon/%s-serial.log", vmID)
 
     ctx, cancel := context.WithTimeout(context.Background(), config.Timeout)
     defer cancel()
@@ -1008,7 +1008,7 @@ Cloud Hypervisor's ACPI support in PVH mode:
 ```bash
 # Send ACPI power button event via API
 curl -X PUT http://localhost/api/v1/vm.power-button \
-  --unix-socket /run/cocoon/vms/vm-123/ch.sock
+  --unix-socket /run/cocoon/vms/vm-123/api.sock
 ```
 
 systemd receives ACPI event → triggers `systemd poweroff`
@@ -1078,13 +1078,12 @@ type VMConfig struct {
     Memory      int64 `json:"memory"`         // In bytes
 
     // Runtime
-    VMSocket    string `json:"vm_socket"`     // /run/cocoon/vms/{vm-id}/ch.sock
-    SerialLog   string `json:"serial_log"`    // /var/log/cocoon/{vm-id}.log
+    VMSocket    string `json:"vm_socket"`     // /run/cocoon/vms/{vm-id}/api.sock
+    SerialLog   string `json:"serial_log"`    // /var/log/cocoon/vm-{id}-serial.log
     PIDFile     string `json:"pid_file"`      // /run/cocoon/vms/{vm-id}/ch.pid
 
     // Initialization
     MetadataServer string `json:"metadata_server"` // http://169.254.169.254
-    CloudInitISO   string `json:"cloud_init_iso"`  // cloud-init ISO path (Phase 2)
 
     // Timeouts
     BootTimeout time.Duration `json:"boot_timeout"` // Default: 60s
@@ -1103,11 +1102,10 @@ type VMConfig struct {
   "disk_size": "10G",
   "cpus": 2,
   "memory": 2147483648,
-  "vm_socket": "/run/cocoon/vms/vm-abc-123/ch.sock",
-  "serial_log": "/var/log/cocoon/vm-abc-123.log",
+  "vm_socket": "/run/cocoon/vms/vm-abc-123/api.sock",
+  "serial_log": "/var/log/cocoon/vm-abc-123-serial.log",
   "pid_file": "/run/cocoon/vms/vm-abc-123/ch.pid",
   "metadata_server": "http://169.254.169.254",
-  "cloud_init_iso": "",
   "boot_timeout": 60000000000,
   "stop_timeout": 30000000000
 }
@@ -1229,7 +1227,7 @@ virt-customize -a image.qcow2 \
 
 **Firmware**:
 - PVH: `rust-hypervisor-firmware` (x86_64 build)
-- UEFI: OVMF from `/usr/share/OVMF/OVMF_CODE.fd`
+- UEFI: CLOUDHV.fd from `/var/lib/cocoon/firmware/CLOUDHV.fd` (deprecated fallback: `/usr/share/OVMF/OVMF_CODE.fd`)
 
 **Bootloader**:
 - ESP location: `/boot/efi/EFI/BOOT/BOOTX64.EFI`

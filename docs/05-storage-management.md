@@ -152,10 +152,10 @@ class COWImageManager:
 The COW strategy dramatically reduces disk space requirements:
 
 ```python
-# Scenario: 100 VMs from the same ubuntu:22.04 image
+# Scenario: 100 VMs from the same bootable OCI image
 
 # 1. Prepare base image (cached, done once)
-base_image = await image_manager.prepare_base_image("ubuntu:22.04")
+base_image = await image_manager.prepare_base_image("myorg/ubuntu-bootable:22.04")
 # Result: /var/lib/cocoon/cache/images/abc123...qcow2 (5GB)
 
 # 2. Create overlay for VM-1

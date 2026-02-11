@@ -135,25 +135,25 @@ sudo mv /tmp/CLOUDHV.fd /var/lib/cocoon/firmware/CLOUDHV.fd
 sudo chmod 644 /var/lib/cocoon/firmware/CLOUDHV.fd
 ```
 
-**Option 2: From distribution packages**:
+**Option 2: From distribution packages (deprecated fallback)**:
 ```bash
-# Ubuntu/Debian - Install standard OVMF (fallback)
+# Ubuntu/Debian - Install standard OVMF (deprecated fallback, only used if CLOUDHV.fd missing)
 sudo apt-get install -y ovmf
 # Firmware location: /usr/share/OVMF/OVMF_CODE.fd
 
-# Fedora - Install edk2-ovmf
+# Fedora - Install edk2-ovmf (deprecated fallback, only used if CLOUDHV.fd missing)
 sudo dnf install -y edk2-ovmf
 # Firmware location: /usr/share/edk2/ovmf/OVMF_CODE.fd
 ```
 
 **Verification**:
 ```bash
-# Verify CLOUDHV.fd exists
+# Verify CLOUDHV.fd exists (primary UEFI firmware)
 ls -lh /var/lib/cocoon/firmware/CLOUDHV.fd
 
-# Or verify system OVMF
-ls -l /usr/share/OVMF/OVMF_CODE.fd      # Ubuntu/Debian
-ls -l /usr/share/edk2/ovmf/OVMF_CODE.fd  # Fedora
+# Or verify system OVMF (deprecated fallback)
+ls -l /usr/share/OVMF/OVMF_CODE.fd      # Ubuntu/Debian (deprecated fallback)
+ls -l /usr/share/edk2/ovmf/OVMF_CODE.fd  # Fedora (deprecated fallback)
 ```
 
 ### 4. Buildah
@@ -280,7 +280,7 @@ virt-copy-in --version
 
 **⚠️ Note**: This section is deprecated. Prefer using CLOUDHV.fd from Cloud Hypervisor releases (see section 3 above).
 
-**Purpose**: Provides standard OVMF UEFI firmware as a fallback option when CLOUDHV.fd is unavailable.
+**Purpose**: Provides standard OVMF UEFI firmware as a deprecated fallback option when CLOUDHV.fd (`/var/lib/cocoon/firmware/CLOUDHV.fd`) is unavailable.
 
 **Rootless Support**: N/A (system files)
 
@@ -552,7 +552,7 @@ func checkFirmwareFiles() []DependencyStatus {
         results = append(results, status)
     }
 
-    // Also check for fallback OVMF locations
+    // Also check for deprecated fallback OVMF locations
     ovmfPaths := []string{
         "/usr/share/OVMF/OVMF_CODE.fd",
         "/usr/share/edk2/ovmf/OVMF_CODE.fd",
@@ -562,7 +562,7 @@ func checkFirmwareFiles() []DependencyStatus {
     for _, path := range ovmfPaths {
         if _, err := os.Stat(path); err == nil {
             results = append(results, DependencyStatus{
-                Name:    "OVMF (fallback)",
+                Name:    "OVMF (deprecated fallback)",
                 Found:   true,
                 Path:    path,
                 Version: "available",
@@ -635,7 +635,7 @@ Firmware Files:
 ✅ hypervisor-fw (0.4.2) found at /var/lib/cocoon/firmware/hypervisor-fw
    → Checksum verified: 8d2de5e4c5f8bdc08d37e6f3c01c785f5b4cf75e4e9c24e7e4a1c3d6b5e4f3a2
 ✅ CLOUDHV.fd found at /var/lib/cocoon/firmware/CLOUDHV.fd (2145728 bytes)
-✅ OVMF (fallback) available at /usr/share/OVMF/OVMF_CODE.fd
+✅ OVMF (deprecated fallback) available at /usr/share/OVMF/OVMF_CODE.fd
 
 Summary: 7/9 required dependencies found
 Warning: 2 optional dependencies missing (libguestfs tools)
@@ -724,7 +724,7 @@ cocoon doctor
 sudo apt-get install -y cloud-hypervisor buildah skopeo qemu-utils libguestfs-tools ovmf
 
 # Run cocoon as root
-sudo cocoon create --image ubuntu:22.04 myvm
+sudo cocoon create ubuntu-22.04-cloudimg --name myvm
 ```
 
 **Not Recommended**: Use Option C (Hybrid) instead.
@@ -1126,13 +1126,13 @@ sudo mv /tmp/CLOUDHV.fd /var/lib/cocoon/firmware/CLOUDHV.fd
 sudo chmod 644 /var/lib/cocoon/firmware/CLOUDHV.fd
 ```
 
-**Solution (Option 2 - System OVMF fallback)**:
+**Solution (Option 2 - System OVMF deprecated fallback)**:
 ```bash
-# Ubuntu
+# Ubuntu (deprecated fallback, only used if CLOUDHV.fd missing)
 sudo apt-get install -y ovmf
 ls -l /usr/share/OVMF/OVMF_CODE.fd
 
-# Fedora
+# Fedora (deprecated fallback, only used if CLOUDHV.fd missing)
 sudo dnf install -y edk2-ovmf
 ls -l /usr/share/edk2/ovmf/OVMF_CODE.fd
 ```

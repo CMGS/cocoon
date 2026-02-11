@@ -250,10 +250,10 @@ go test ./pkg/storage -run TestGarbageCollect -v
 **Validation**:
 ```bash
 # Test buildah pull
-buildah pull ubuntu:22.04
+buildah pull myorg/ubuntu-bootable:22.04
 
 # Test conversion
-go run ./cmd/convert-test/main.go ubuntu:22.04
+go run ./cmd/convert-test/main.go myorg/ubuntu-bootable:22.04
 
 # Test bootability
 cloud-hypervisor --disk path=converted.qcow2 --cpus boot=1 --memory size=1024M
@@ -427,15 +427,15 @@ go test -race ./pkg/storage -run TestReferenceConcurrency
 ```bash
 # End-to-end workflow
 cocoon doctor                             # Check dependencies
-cocoon image pull ubuntu:22.04            # Pull OCI image
-cocoon create --image ubuntu:22.04 myvm  # Create VM
+cocoon image pull myorg/ubuntu-bootable:22.04   # Pull bootable OCI image
+cocoon create myorg/ubuntu-bootable:22.04 --name myvm  # Create VM
 cocoon start myvm                         # Start VM
 cocoon logs myvm                          # View serial output
 cocoon inspect myvm                       # View metadata
 cocoon stop myvm                          # Stop VM
 cocoon delete myvm                        # Delete VM
 cocoon image list                         # View cached images
-cocoon image rm ubuntu:22.04              # Remove image
+cocoon image rm myorg/ubuntu-bootable:22.04   # Remove image
 ```
 
 **Exit Criteria**:
@@ -667,8 +667,8 @@ func SetupVMDirectory(vmID string) error {
 **Day 1-2: Buildah Integration**
 ```bash
 # Test buildah operations
-buildah pull ubuntu:22.04
-buildah from ubuntu:22.04
+buildah pull myorg/ubuntu-bootable:22.04
+buildah from myorg/ubuntu-bootable:22.04
 buildah mount ubuntu-working-container
 ```
 
@@ -687,7 +687,7 @@ buildah mount ubuntu-working-container
 - Handle errors and cleanup
 - Performance optimization
 
-**Milestone**: Pull ubuntu:22.04, convert to qcow2, boot successfully
+**Milestone**: Pull bootable OCI image, convert to qcow2, boot successfully
 
 ---
 
@@ -781,10 +781,10 @@ app := &cli.App{
 ```go
 func TestCompleteWorkflow(t *testing.T) {
     // Pull image
-    RunCommand("cocoon", "image", "pull", "ubuntu:22.04")
+    RunCommand("cocoon", "image", "pull", "myorg/ubuntu-bootable:22.04")
 
     // Create VM
-    RunCommand("cocoon", "create", "--image", "ubuntu:22.04", "test-vm")
+    RunCommand("cocoon", "create", "myorg/ubuntu-bootable:22.04", "--name", "test-vm")
 
     // Start VM
     RunCommand("cocoon", "start", "test-vm")
@@ -909,7 +909,7 @@ cd test/e2e
 
 **Targets**:
 - VM creation (with cached image): <1 second
-- Image conversion (ubuntu:22.04): <30 seconds
+- Image conversion (bootable OCI): <30 seconds
 - Concurrent VM creation (10 VMs): <5 seconds
 - Startup reconciliation (100 VMs): <2 seconds
 
@@ -950,7 +950,8 @@ cocoon doctor
 # ✓ qemu-img 8.0 found
 # ✓ libguestfs tools found
 # ✓ /dev/kvm accessible
-# ✓ UEFI firmware found at /usr/share/OVMF/OVMF_CODE.fd
+# ✓ PVH firmware found at /var/lib/cocoon/firmware/hypervisor-fw
+# ✓ UEFI firmware found at /var/lib/cocoon/firmware/CLOUDHV.fd
 #
 # All dependencies satisfied!
 ```
@@ -992,7 +993,7 @@ go run ./cmd/test-hypervisor/main.go
 ```bash
 # Create 100 VMs from same base
 for i in {1..100}; do
-    cocoon create --image ubuntu:22.04 vm-$i
+    cocoon create ubuntu-22.04-cloudimg --name vm-$i
 done
 
 # Check disk usage
@@ -1025,16 +1026,16 @@ ls /var/lib/cocoon/cache/images/*.qcow2
 
 **Validation**:
 ```bash
-# Pull and convert ubuntu:22.04
-time cocoon image pull ubuntu:22.04
+# Pull and convert bootable OCI image
+time cocoon image pull myorg/ubuntu-bootable:22.04
 # First run: ~30 seconds (conversion)
 
 # Pull again (should be instant)
-time cocoon image pull ubuntu:22.04
+time cocoon image pull myorg/ubuntu-bootable:22.04
 # Second run: <1 second (cache hit)
 
 # Test bootability
-cocoon create --image ubuntu:22.04 test-boot
+cocoon create myorg/ubuntu-bootable:22.04 --name test-boot
 cocoon start test-boot
 cocoon logs test-boot
 # Output should show systemd boot messages
@@ -1052,7 +1053,7 @@ cocoon logs test-boot
 **Validation**:
 ```bash
 # Create and start VM
-cocoon create --image ubuntu:22.04 myvm
+cocoon create myorg/ubuntu-bootable:22.04 --name myvm
 cocoon start myvm
 cocoon inspect myvm | jq .state
 # Output: "RUNNING"
@@ -1086,8 +1087,8 @@ cocoon help | grep "COMMANDS:"
 
 # End-to-end workflow
 cocoon doctor
-cocoon image pull ubuntu:22.04
-cocoon create --image ubuntu:22.04 --cpus 2 --memory 2048 demo
+cocoon image pull myorg/ubuntu-bootable:22.04
+cocoon create myorg/ubuntu-bootable:22.04 --name demo --cpus 2 --memory 2048
 cocoon start demo
 cocoon logs demo --follow &
 sleep 5
@@ -1157,10 +1158,11 @@ cocoon version
 - Images without systemd
 - Images without bootloader
 
-**Recommended Images**:
-- `ubuntu:22.04` ✅
-- `debian:12` ✅
-- `fedora:39` ✅
+**Recommended Images** (cloud images or bootable OCI):
+- `ubuntu-22.04-cloudimg` (cloud image, qcow2) ✅
+- `myorg/ubuntu-bootable:22.04` (bootable OCI) ✅
+- `myorg/debian-bootable:12` (bootable OCI) ✅
+- `myorg/fedora-bootable:39` (bootable OCI) ✅
 
 ---
 
@@ -1176,7 +1178,7 @@ cocoon version
 
 **Performance Budget**:
 - VM creation (cached): <1s (target met with COW)
-- Image conversion: <30s for ubuntu:22.04
+- Image conversion: <30s for bootable OCI image
 - Startup reconciliation: <2s for 100 VMs
 
 ---

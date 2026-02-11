@@ -46,13 +46,13 @@ When multiple `cocoon create` commands run concurrently with the same OCI image:
 
 ```bash
 # Terminal 1
-$ cocoon create ubuntu:22.04 --name vm-001
+$ cocoon create myorg/ubuntu-bootable:22.04 --name vm-001
 
 # Terminal 2 (at the same time)
-$ cocoon create ubuntu:22.04 --name vm-002
+$ cocoon create myorg/ubuntu-bootable:22.04 --name vm-002
 
 # Terminal 3 (at the same time)
-$ cocoon create ubuntu:22.04 --name vm-003
+$ cocoon create myorg/ubuntu-bootable:22.04 --name vm-003
 ```
 
 Without locking, all three would:
@@ -422,13 +422,13 @@ The file lock is held for the entire read-modify-write cycle:
 **Command**:
 ```bash
 # Run 50 times in parallel
-parallel -j 50 cocoon create ubuntu:22.04 --name vm-{} ::: {001..050}
+parallel -j 50 cocoon create myorg/ubuntu-bootable:22.04 --name vm-{} ::: {001..050}
 ```
 
 **Expected Behavior**:
 
 1. **Image Conversion** (Level 2 Lock):
-   - Process 1: Acquires image lock, pulls and converts ubuntu:22.04
+   - Process 1: Acquires image lock, pulls and converts myorg/ubuntu-bootable:22.04
    - Processes 2-50: Wait on image lock
    - Process 1: Completes conversion, releases lock
    - Processes 2-50: Acquire lock in sequence, see cached image, immediately return
@@ -540,31 +540,31 @@ func (gc *GarbageCollector) CollectImage(baseImage string) error {
 
 **Command**:
 ```bash
-# Terminal 1: Create VM with ubuntu:22.04
-$ cocoon create ubuntu:22.04 --name vm-new
+# Terminal 1: Create VM with bootable OCI image
+$ cocoon create myorg/ubuntu-bootable:22.04 --name vm-new
 
-# Terminal 2: Update ubuntu:22.04 (new version released)
-$ cocoon pull ubuntu:22.04 --force-update
+# Terminal 2: Update myorg/ubuntu-bootable:22.04 (new version released)
+$ cocoon pull myorg/ubuntu-bootable:22.04 --force-update
 ```
 
 **Expected Behavior**:
 
 1. **Existing VMs Using Old Base**:
    ```
-   /cache/images/abc123.qcow2  (old ubuntu:22.04)
+   /cache/images/abc123.qcow2  (old myorg/ubuntu-bootable:22.04)
      ├── vm-001/overlay.qcow2
      └── vm-002/overlay.qcow2
    ```
 
 2. **Force Update** (Terminal 2):
-   - Pulls new version of ubuntu:22.04
+   - Pulls new version of myorg/ubuntu-bootable:22.04
    - Calculates new checksum: `def456`
    - Converts and stores: `/cache/images/def456.qcow2`
-   - Updates manifest cache to point ubuntu:22.04 → def456
+   - Updates manifest cache to point myorg/ubuntu-bootable:22.04 → def456
    - Old base `abc123.qcow2` still exists (vm-001, vm-002 reference it)
 
 3. **Create New VM** (Terminal 1):
-   - Checks cache for ubuntu:22.04
+   - Checks cache for myorg/ubuntu-bootable:22.04
    - Manifest now points to `def456.qcow2`
    - Uses new base image
    - Creates overlay: `vm-new/overlay.qcow2` → `def456.qcow2`
@@ -1227,7 +1227,7 @@ All file locks are automatically released on process crash:
 
 ```bash
 # Stress test: 20 concurrent creates (multi-process)
-parallel -j 20 cocoon create ubuntu:22.04 --name vm-{} ::: {001..020}
+parallel -j 20 cocoon create myorg/ubuntu-bootable:22.04 --name vm-{} ::: {001..020}
 
 # Verify only 1 conversion happened
 ls -lh /var/lib/cocoon/cache/images/
@@ -1236,16 +1236,16 @@ ls -lh /var/lib/cocoon/cache/images/
 cat /var/lib/cocoon/cache/references.json | jq '.references | length'
 
 # Crash test: Kill process mid-create
-cocoon create ubuntu:22.04 --name vm-test &
+cocoon create myorg/ubuntu-bootable:22.04 --name vm-test &
 PID=$!
 sleep 5
 kill -9 $PID
 
 # Verify no stale locks (next create should succeed)
-cocoon create ubuntu:22.04 --name vm-test2
+cocoon create myorg/ubuntu-bootable:22.04 --name vm-test2
 
 # Race condition test: Create + Delete + GC
-cocoon create ubuntu:22.04 --name vm-race &
+cocoon create myorg/ubuntu-bootable:22.04 --name vm-race &
 sleep 2
 cocoon delete vm-race &
 cocoon gc --aggressive &
@@ -1255,7 +1255,7 @@ wait
 cocoon reconcile --check
 
 # Lock contention test: Many processes same image
-time parallel -j 100 cocoon create ubuntu:22.04 --name vm-{} ::: {001..100}
+time parallel -j 100 cocoon create myorg/ubuntu-bootable:22.04 --name vm-{} ::: {001..100}
 # Should take ~30s (1 conversion) not ~50min (100 conversions)
 ```
 

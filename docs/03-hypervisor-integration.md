@@ -76,19 +76,17 @@ All VM-related files are organized under `/run/cocoon/vms/{vm-id}/`:
 
 ```
 /run/cocoon/
-├── vms/
-│   ├── vm-abc-123/
-│   │   ├── ch.sock           # Cloud Hypervisor API socket
-│   │   ├── ch.pid            # Cloud Hypervisor process PID
-│   │   ├── serial.log        # Serial console output
-│   │   └── metadata.json     # Runtime metadata
-│   ├── vm-def-456/
-│   │   ├── ch.sock
-│   │   ├── ch.pid
-│   │   ├── serial.log
-│   │   └── metadata.json
-│   └── ...
-└── lock                       # Global lock for concurrent operations
+└── vms/
+    ├── vm-abc-123/
+    │   └── api.sock           # Cloud Hypervisor API socket
+    ├── vm-def-456/
+    │   └── api.sock
+    └── ...
+
+/var/log/cocoon/
+├── vm-abc-123-serial.log      # Serial console output
+├── vm-def-456-serial.log
+└── ...
 ```
 
 **Why this structure?**
@@ -102,12 +100,12 @@ All VM-related files are organized under `/run/cocoon/vms/{vm-id}/`:
 ```go
 // Socket path generation
 func GetVMSocketPath(vmID string) string {
-    return filepath.Join("/run/cocoon/vms", vmID, "ch.sock")
+    return filepath.Join("/run/cocoon/vms", vmID, "api.sock")
 }
 
 // Example:
 // VM ID: "vm-abc-123"
-// Socket: "/run/cocoon/vms/vm-abc-123/ch.sock"
+// Socket: "/run/cocoon/vms/vm-abc-123/api.sock"
 ```
 
 ### 2.3 PID File Management
@@ -139,7 +137,7 @@ func ReadPID(vmID string) (int, error) {
 
 ```go
 func GetVMSerialLogPath(vmID string) string {
-    return filepath.Join("/run/cocoon/vms", vmID, "serial.log")
+    return fmt.Sprintf("/var/log/cocoon/%s-serial.log", vmID)
 }
 ```
 
@@ -185,10 +183,7 @@ func LaunchCloudHypervisor(vmID string, config *VMConfig) (*exec.Cmd, error) {
         "--console", "off",
     }
 
-    // Add cloud-init ISO if present
-    if config.CloudInitISO != "" {
-        args = append(args, "--disk", fmt.Sprintf("path=%s,readonly=on", config.CloudInitISO))
-    }
+    // Cloud-init is served via metadata server (169.254.169.254), no ISO needed
 
     cmd := exec.Command("cloud-hypervisor", args...)
     return cmd, nil
@@ -984,7 +979,7 @@ func main() {
         DiskPath:     "/var/lib/cocoon/images/vm-example-001.qcow2",
         CPUs:         2,
         MemoryMB:     2048,
-        CloudInitISO: "/var/lib/cocoon/cloud-init/vm-example-001.iso",
+        // Cloud-init data served via metadata server at 169.254.169.254
     }
 
     cmd, err := LaunchCloudHypervisor(vmID, config)
@@ -1084,7 +1079,7 @@ Test individual components:
 ```go
 func TestSocketPathGeneration(t *testing.T) {
     vmID := "vm-test-123"
-    expected := "/run/cocoon/vms/vm-test-123/ch.sock"
+    expected := "/run/cocoon/vms/vm-test-123/api.sock"
 
     actual := GetVMSocketPath(vmID)
 

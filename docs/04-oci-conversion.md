@@ -1586,7 +1586,7 @@ func main() {
     cache := NewImageCache("/var/lib/cocoon/cache/images")
 
     // 2. Prepare base image (with caching)
-    image := "ubuntu:22.04"
+    image := "myorg/ubuntu-bootable:22.04"
     basePath, err := PrepareBaseImage(image, cache)
     if err != nil {
         log.Fatalf("Failed to prepare image: %v", err)

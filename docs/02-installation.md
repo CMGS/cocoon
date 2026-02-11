@@ -192,18 +192,30 @@ cloud-hypervisor \
 2. PVH boot fails (automatic retry)
 3. User specifies `--boot-mode uefi` flag
 
-**Installation:**
+**Installation (recommended -- via `cocoon firmware install`):**
 
 ```bash
-# Ubuntu/Debian - Install OVMF
+# Install CLOUDHV.fd (Cloud Hypervisor's edk2 UEFI firmware)
+cocoon firmware install uefi
+
+# Or manually download from CH releases:
+CH_VERSION="v38.0"
+curl -L https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/${CH_VERSION}/CLOUDHV.fd \
+    -o /tmp/CLOUDHV.fd
+sudo mv /tmp/CLOUDHV.fd /var/lib/cocoon/firmware/CLOUDHV.fd
+sudo chmod 644 /var/lib/cocoon/firmware/CLOUDHV.fd
+```
+
+**Deprecated fallback (system OVMF -- only used if CLOUDHV.fd missing):**
+
+```bash
+# Ubuntu/Debian - Install OVMF (deprecated fallback)
 sudo apt-get install -y ovmf
+# Firmware at: /usr/share/OVMF/OVMF_CODE.fd
 
-# Fedora/RHEL - Install edk2-ovmf
+# Fedora/RHEL - Install edk2-ovmf (deprecated fallback)
 sudo dnf install -y edk2-ovmf
-
-# Firmware will be installed at:
-# - Ubuntu/Debian: /usr/share/OVMF/OVMF_CODE.fd
-# - Fedora: /usr/share/edk2/ovmf/OVMF_CODE.fd
+# Firmware at: /usr/share/edk2/ovmf/OVMF_CODE.fd
 ```
 
 **VM Launch with UEFI:**
@@ -211,7 +223,7 @@ sudo dnf install -y edk2-ovmf
 ```bash
 # UEFI boot requires explicit firmware path via --kernel parameter
 cloud-hypervisor \
-    --kernel /usr/share/edk2/ovmf/CLOUDHV.fd \
+    --kernel /var/lib/cocoon/firmware/CLOUDHV.fd \
     --disk path=/var/lib/cocoon/vms/vm-123/overlay.qcow2 \
     --cpus boot=2 \
     --memory size=2G \
@@ -221,10 +233,10 @@ cloud-hypervisor \
 
 **UEFI Boot Behavior**:
 - UEFI boot requires passing the UEFI firmware file to `--kernel` parameter
-- Recommended: Use Cloud Hypervisor's edk2 firmware (`CLOUDHV.fd`)
+- Recommended: Use Cloud Hypervisor's edk2 firmware (`CLOUDHV.fd`) at `/var/lib/cocoon/firmware/CLOUDHV.fd`
   - Optimized for Cloud Hypervisor
-  - Available in CH releases or distribution packages
-- Alternative: Standard OVMF firmware (`OVMF_CODE.fd`)
+  - Installed via `cocoon firmware install uefi` or downloaded from CH releases
+- Deprecated fallback: Standard OVMF firmware (`OVMF_CODE.fd`) -- only used if CLOUDHV.fd is missing
   - Ubuntu/Debian: `/usr/share/OVMF/OVMF_CODE.fd` (from `ovmf` package)
   - Fedora: `/usr/share/edk2/ovmf/OVMF_CODE.fd` (from `edk2-ovmf` package)
 - **Important**: Cloud Hypervisor does NOT auto-detect UEFI firmware. You must explicitly specify the firmware path.
@@ -234,7 +246,7 @@ cloud-hypervisor \
 | Boot Method | Firmware | Boot Time | OS Support | Phase |
 |-------------|----------|-----------|------------|-------|
 | **PVH (Primary)** | rust-hypervisor-firmware | <100ms | Ubuntu Cloud, Fedora Cloud, Debian Cloud | Phase 1 ✅ |
-| **UEFI (Fallback)** | OVMF / edk2-ovmf | ~500ms | All Linux distributions | Phase 1 ✅ |
+| **UEFI (Fallback)** | CLOUDHV.fd (deprecated fallback: OVMF) | ~500ms | All Linux distributions | Phase 1 ✅ |
 
 **Cocoon Default Strategy** (per Boot Contract v2.0):
 1. Try PVH boot first (faster, cloud-native)
