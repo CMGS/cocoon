@@ -389,7 +389,7 @@ func TransitionState(vmID string, to VMState) error {
 **Preconditions**:
 - VM in CREATED or STOPPED state
 - Cloud Hypervisor binary available
-- OVMF firmware available
+- Firmware available (PVH: hypervisor-fw; UEFI: CLOUDHV.fd)
 - Sufficient system resources
 
 **State Changes**:
@@ -596,8 +596,11 @@ type BootConfig struct {
     // Boot mode: "pvh" or "uefi"
     BootMode string `json:"boot_mode"`
 
-    // Firmware path (for PVH: hypervisor-fw; for UEFI: omit for auto-detect)
-    FirmwarePath string `json:"firmware_path,omitempty"`
+    // Firmware path (required for both modes)
+    // PVH: /var/lib/cocoon/firmware/hypervisor-fw (passed via --firmware)
+    // UEFI: /var/lib/cocoon/firmware/CLOUDHV.fd (passed via --kernel)
+    // Note: Cloud Hypervisor does NOT auto-detect firmware; explicit path required
+    FirmwarePath string `json:"firmware_path"`
 
     // Kernel path (if boot_mode == "direct-kernel")
     KernelPath string `json:"kernel_path,omitempty"`
@@ -702,7 +705,7 @@ type ErrorInfo struct {
     "cpus": 2,
     "memory": 1073741824,
     "boot_mode": "pvh",
-    "firmware": "/var/lib/cocoon/firmware/hypervisor-fw"
+    "firmware_path": "/var/lib/cocoon/firmware/hypervisor-fw"
   },
 
   "timestamps": {

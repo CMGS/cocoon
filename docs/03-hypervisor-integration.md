@@ -64,7 +64,7 @@ This document specifies how Cocoon integrates with Cloud Hypervisor to manage VM
 | Fault Tolerance | Excellent | Single point of failure |
 | Scalability | High (100s of VMs) | Very High (1000s of VMs) |
 
-**Recommendation**: For AI Agent sandboxes and typical Cocoon use cases, the one-process-per-VM model is optimal. If scaling to 1000+ concurrent VMs becomes necessary, a shared daemon can be considered in a future version.
+**Recommendation**: For typical Cocoon use cases, the one-process-per-VM model is optimal. If scaling to 1000+ concurrent VMs becomes necessary, a shared daemon can be considered in a future version.
 
 ---
 
@@ -72,28 +72,49 @@ This document specifies how Cocoon integrates with Cloud Hypervisor to manage VM
 
 ### 2.1 Directory Structure
 
-All VM-related files are organized under `/run/cocoon/vms/{vm-id}/`:
+VM data is split across two locations by data lifetime:
 
+**Persistent state** (`/var/lib/cocoon/`) — survives reboot, used by reconcile/GC:
 ```
-/run/cocoon/
-└── vms/
-    ├── vm-abc-123/
-    │   └── api.sock           # Cloud Hypervisor API socket
-    ├── vm-def-456/
-    │   └── api.sock
-    └── ...
+/var/lib/cocoon/vms/
+├── vm-abc-123/
+│   ├── overlay.qcow2          # VM's COW overlay disk
+│   ├── config.json            # VM configuration
+│   ├── metadata.json          # Runtime metadata (authoritative)
+│   └── metadata.lock          # File lock for atomic updates
+├── vm-def-456/
+│   ├── overlay.qcow2
+│   ├── config.json
+│   ├── metadata.json
+│   └── metadata.lock
+└── ...
+```
 
+**Runtime/ephemeral** (`/run/cocoon/`) — cleared on reboot, rebuilt by reconcile:
+```
+/run/cocoon/vms/
+├── vm-abc-123/
+│   ├── api.sock               # Cloud Hypervisor API socket
+│   └── ch.pid                 # CH process PID file
+├── vm-def-456/
+│   ├── api.sock
+│   └── ch.pid
+└── ...
+```
+
+**Logs** (`/var/log/cocoon/`) — persisted across reboots:
+```
 /var/log/cocoon/
 ├── vm-abc-123-serial.log      # Serial console output
 ├── vm-def-456-serial.log
 └── ...
 ```
 
-**Why this structure?**
-- **Isolation**: Each VM has its own directory
-- **Cleanup**: Delete entire directory to remove all VM files
-- **Discovery**: List `/run/cocoon/vms/` to find all active VMs
-- **Debugging**: All VM files in one place
+**Why this separation?**
+- **Crash recovery**: Metadata in `/var/lib` survives power loss; `/run` is tmpfs and cleared on reboot
+- **Reconcile correctness**: `cocoon doctor` scans `/var/lib/cocoon/vms/` for authoritative state, then checks `/run` for runtime liveness
+- **Isolation**: Each VM has its own directory in both locations
+- **Discovery**: List `/var/lib/cocoon/vms/` for all VMs (including stopped); list `/run/cocoon/vms/` for runtime sockets only
 
 ### 2.2 Socket Naming Convention
 
@@ -143,7 +164,7 @@ func GetVMSerialLogPath(vmID string) string {
 
 ### 2.5 Metadata File
 
-Runtime metadata stored per VM:
+Runtime metadata stored per VM in persistent storage (`/var/lib`):
 
 ```go
 type VMMetadata struct {
@@ -156,8 +177,9 @@ type VMMetadata struct {
     UpdatedAt   time.Time `json:"updated_at"`
 }
 
+// Metadata is persisted in /var/lib (survives reboot, used by reconcile)
 func GetVMMetadataPath(vmID string) string {
-    return filepath.Join("/run/cocoon/vms", vmID, "metadata.json")
+    return filepath.Join("/var/lib/cocoon/vms", vmID, "metadata.json")
 }
 ```
 
@@ -192,10 +214,14 @@ func LaunchCloudHypervisor(vmID string, config *VMConfig) (*exec.Cmd, error) {
 
 **Launch Sequence**:
 
-1. **Create VM directory**:
+1. **Create VM directories** (persistent + runtime):
    ```go
-   vmDir := filepath.Join("/run/cocoon/vms", vmID)
-   os.MkdirAll(vmDir, 0755)
+   // Persistent state (overlay, config, metadata)
+   persistDir := filepath.Join("/var/lib/cocoon/vms", vmID)
+   os.MkdirAll(persistDir, 0755)
+   // Runtime ephemeral (api.sock, ch.pid)
+   runtimeDir := filepath.Join("/run/cocoon/vms", vmID)
+   os.MkdirAll(runtimeDir, 0755)
    ```
 
 2. **Start CH process**:
@@ -368,9 +394,13 @@ func DeleteVM(vmID string, force bool) error {
         client.DeleteVM() // Ignore errors, we're deleting anyway
     }
 
-    // Step 3: Remove VM directory
-    vmDir := filepath.Join("/run/cocoon/vms", vmID)
-    err = os.RemoveAll(vmDir)
+    // Step 3: Remove runtime directory (socket, PID)
+    runtimeDir := filepath.Join("/run/cocoon/vms", vmID)
+    os.RemoveAll(runtimeDir) // Best-effort, may already be gone
+
+    // Step 4: Remove persistent directory (overlay, config, metadata)
+    persistDir := filepath.Join("/var/lib/cocoon/vms", vmID)
+    err = os.RemoveAll(persistDir)
     if err != nil {
         return fmt.Errorf("failed to remove VM directory: %w", err)
     }
@@ -813,8 +843,8 @@ When Cocoon starts, it must reconcile the expected state (metadata) with the act
 
 ```go
 func ReconcileOnStartup() error {
-    // Step 1: Scan /run/cocoon/vms/ for VM directories
-    vmDirs, err := os.ReadDir("/run/cocoon/vms")
+    // Step 1: Scan /var/lib/cocoon/vms/ for VM directories (authoritative source)
+    vmDirs, err := os.ReadDir("/var/lib/cocoon/vms")
     if err != nil {
         return err
     }
@@ -1108,8 +1138,9 @@ func TestPIDFileOperations(t *testing.T) {
         t.Errorf("Expected PID %d, got %d", testPID, readPID)
     }
 
-    // Cleanup
+    // Cleanup (both runtime and persistent dirs)
     os.RemoveAll(filepath.Join("/run/cocoon/vms", vmID))
+    os.RemoveAll(filepath.Join("/var/lib/cocoon/vms", vmID))
 }
 ```
 
@@ -1185,7 +1216,7 @@ func TestCrashRecovery(t *testing.T) {
 This document provides a comprehensive guide to integrating Cloud Hypervisor with Cocoon:
 
 1. **Process Model**: One CH process per VM for strong isolation
-2. **Socket Organization**: `/run/cocoon/vms/{vm-id}/` structure
+2. **Filesystem Contract**: Persistent state in `/var/lib/cocoon/vms/{vm-id}/`, runtime in `/run/cocoon/vms/{vm-id}/`, logs in `/var/log/cocoon/`
 3. **Lifecycle Management**: Launch, monitor, shutdown, delete
 4. **HTTP Client**: HTTP over Unix socket implementation
 5. **API Mapping**: Complete REST API integration

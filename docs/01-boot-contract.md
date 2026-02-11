@@ -1268,8 +1268,8 @@ virt-customize -a image.qcow2 \
   - [ ] Test with Ubuntu Cloud, Fedora Cloud
 
 - [ ] **UEFI Fallback**:
-  - [ ] Detect OVMF firmware path at system locations
-  - [ ] Launch CH without `--firmware` and `--kernel` parameters (CH auto-detects)
+  - [ ] Locate UEFI firmware: primary `/var/lib/cocoon/firmware/CLOUDHV.fd`, deprecated fallback `/usr/share/OVMF/OVMF_CODE.fd`
+  - [ ] Launch CH with `--kernel /var/lib/cocoon/firmware/CLOUDHV.fd` (CH does NOT auto-detect firmware)
   - [ ] Automatic fallback on PVH failure
 
 - [ ] **Metadata Server (Stub Implementation)**:
