@@ -130,10 +130,12 @@ CREATING -----> CREATED -----> STARTING -----> RUNNING -----> STOPPING -----> ST
 
 **Activities**:
 - Cloud Hypervisor process running
-- UEFI firmware loading
+- Firmware loading (boot mode dependent):
+  - PVH mode: `hypervisor-fw` discovers disk, parses GPT/ESP, loads kernel
+  - UEFI mode: `CLOUDHV.fd` provides full UEFI environment, loads GRUB from ESP
 - Kernel and initrd loading
 - systemd initialization
-- cloud-init executing
+- cloud-init executing (if enabled)
 
 **Duration**: 5-60 seconds (configurable timeout)
 

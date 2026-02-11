@@ -64,7 +64,8 @@ cocoon/
 │   ├── lifecycle.go          # Start/stop/delete operations
 │   └── list.go               # List and inspect operations
 ├── image/
-│   ├── image.go              # ImageManager interface
+│   ├── image.go              # ImageManager interface (multi-source)
+│   ├── resolve.go            # Image source auto-detection (qcow2/URL/OCI)
 │   ├── buildah.go            # Buildah implementation for OCI image handling
 │   └── convert.go            # OCI to qcow2 conversion logic
 ├── storage/
@@ -143,6 +144,12 @@ type API interface {
 
 ### 2.2 ImageManager Interface
 
+The ImageManager handles **multi-source image references**, not just OCI images.
+Cocoon accepts three image source types:
+1. **Local qcow2 file**: `/path/to/ubuntu-22.04-cloudimg.qcow2`
+2. **Cloud image URL**: `https://cloud-images.ubuntu.com/.../ubuntu-22.04.img`
+3. **OCI registry reference**: `myorg/ubuntu-bootable:22.04` (converted to qcow2 with bootability validation)
+
 ```go
 package image
 
@@ -153,27 +160,38 @@ import (
     "github.com/CMGS/cocoon/types"
 )
 
-// Manager defines the image management interface
-type Manager interface {
-    // Pull downloads an OCI image from registry
-    Pull(ctx context.Context, ref string) error
+// SourceType identifies how an image reference should be resolved
+type SourceType string
 
-    // List returns available OCI images
+const (
+    SourceQcow2 SourceType = "qcow2" // Local qcow2 file path
+    SourceURL   SourceType = "url"   // Remote cloud image URL (downloaded + cached)
+    SourceOCI   SourceType = "oci"   // OCI registry reference (pulled + converted + validated)
+)
+
+// Manager defines the image management interface (multi-source)
+type Manager interface {
+    // Resolve detects the source type of an image reference
+    Resolve(ctx context.Context, ref string) (SourceType, error)
+
+    // Pull fetches an image from any supported source and returns a cached qcow2 path
+    // - qcow2 file: validates and returns path directly
+    // - URL: downloads, caches, returns local path
+    // - OCI ref: pulls via Buildah, converts to qcow2, validates bootability, caches
+    Pull(ctx context.Context, ref string) (string, error)
+
+    // List returns all cached images (qcow2 base images in cache)
     List(ctx context.Context, filter string) ([]*types.ImageInfo, error)
 
     // Inspect returns detailed image information
     Inspect(ctx context.Context, ref string) (*types.ImageInfo, error)
 
-    // Remove deletes an OCI image
+    // Remove deletes a cached image
     Remove(ctx context.Context, ref string, force bool) error
 
-    // ConvertToQcow2 converts OCI image to qcow2 format
-    ConvertToQcow2(ctx context.Context, ref string, output string) (*types.Qcow2Info, error)
-
-    // ExtractRootfs extracts the rootfs from OCI image
-    ExtractRootfs(ctx context.Context, ref string) (io.ReadCloser, error)
-
     // VerifyBootable checks if image meets boot contract requirements
+    // For qcow2: inspects partitions via guestfish
+    // For OCI: validates rootfs components before conversion
     VerifyBootable(ctx context.Context, ref string) error
 }
 ```
@@ -277,7 +295,7 @@ func main() {
 
     app := cli.NewApp()
     app.Name = version.NAME
-    app.Usage = "Lightweight VM management with OCI images"
+    app.Usage = "Lightweight VM management built on Cloud Hypervisor"
     app.Version = version.VERSION
     app.Flags = []cli.Flag{
         &cli.StringFlag{
@@ -827,24 +845,30 @@ cocoon logs myvm --tail 50 --timestamps
 
 **Command**: `cocoon image SUBCOMMAND [FLAGS]`
 
-**Purpose**: Manage OCI images
+**Purpose**: Manage VM images (multi-source: qcow2 files, cloud image URLs, OCI references)
 
 ```go
 func ImageCommand() *cli.Command {
     return &cli.Command{
         Name:  "image",
-        Usage: "Manage OCI images",
+        Usage: "Manage VM images (qcow2, cloud image URLs, OCI references)",
         Subcommands: []*cli.Command{
             {
                 Name:      "pull",
-                Usage:     "Pull an OCI image from registry",
+                Usage:     "Fetch and cache a VM image from any supported source",
                 ArgsUsage: "<image-ref>",
-                Action:    imagePullAction,
+                Flags: []cli.Flag{
+                    &cli.StringFlag{
+                        Name:  "type",
+                        Usage: "Force source type: qcow2, url, oci (auto-detected if omitted)",
+                    },
+                },
+                Action: imagePullAction,
             },
             {
                 Name:    "list",
                 Aliases: []string{"ls"},
-                Usage:   "List available OCI images",
+                Usage:   "List cached base images",
                 Flags: []cli.Flag{
                     &cli.StringFlag{
                         Name:  "format",
@@ -863,7 +887,7 @@ func ImageCommand() *cli.Command {
             {
                 Name:      "remove",
                 Aliases:   []string{"rm"},
-                Usage:     "Remove an OCI image",
+                Usage:     "Remove a cached image",
                 ArgsUsage: "<image-ref>",
                 Flags: []cli.Flag{
                     &cli.BoolFlag{
@@ -885,16 +909,30 @@ func ImageCommand() *cli.Command {
 }
 ```
 
+**Image Source Detection** (`imagePullAction` auto-detects source type):
+
+| Pattern | Detected Type | Action |
+|---------|---------------|--------|
+| `/path/to/*.qcow2` or `/path/to/*.img` | `qcow2` | Validate file, copy/link to cache |
+| `https://...` or `http://...` | `url` | Download, validate, cache |
+| `registry/repo:tag` or `repo:tag` | `oci` | Pull via Buildah, convert to qcow2, validate bootability, cache |
+
 **Example Usage**:
 
 ```bash
-# Pull cloud image (recommended)
+# Pull cloud image from URL (recommended)
 cocoon image pull https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img
 
-# Pull bootable OCI image (custom-built)
+# Import local qcow2 file into cache
+cocoon image pull /tmp/ubuntu-22.04-cloudimg.qcow2
+
+# Pull bootable OCI image (custom-built, requires root for conversion)
 cocoon image pull myorg/ubuntu-bootable:22.04
 
-# List images
+# Force source type (override auto-detection)
+cocoon image pull --type oci myorg/ubuntu-bootable:22.04
+
+# List cached images
 cocoon image list
 
 # Inspect image
@@ -1507,9 +1545,10 @@ log:
    - Create `ImageManager` with Buildah
    - Create `StorageManager` for qcow2 operations
    - Create `ReferenceCounter` for tracking
-4. **Check/pull image** → `ImageManager.Pull(image)` if not cached
+4. **Resolve and fetch image** → `ImageManager.Resolve(image)` detects source type, then `ImageManager.Pull(image)` fetches/converts/caches to local qcow2
 5. **Verify bootability** → `ImageManager.VerifyBootable(image)` (Boot Contract §6)
-6. **Convert to qcow2** → `ImageManager.ConvertToQcow2(image, baseImagePath)`
+   - qcow2 files: inspect partitions via guestfish
+   - OCI images: validate rootfs components before conversion
 7. **Create COW overlay** → `StorageManager.CreateOverlay(baseImage, vmID)`
 8. **Start metadata server** → Start HTTP server on 169.254.169.254 for cloud-init (Boot Contract §2.2)
 9. **Configure VM**:
@@ -1749,8 +1788,9 @@ This CLI design implements the Boot Contract specification:
   - [ ] `cocoon inspect` with detailed VM info
   - [ ] `cocoon logs` with follow/tail options
 
-- [ ] **Image Management**:
-  - [ ] `cocoon image pull` via Buildah
+- [ ] **Image Management** (multi-source):
+  - [ ] Image source auto-detection (qcow2 file / URL / OCI ref)
+  - [ ] `cocoon image pull` from any source (qcow2, URL, OCI)
   - [ ] `cocoon image list` from cache
   - [ ] `cocoon image inspect` with metadata
   - [ ] `cocoon image verify` for boot contract

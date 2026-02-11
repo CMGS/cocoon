@@ -145,7 +145,7 @@ Instead, Cocoon **fails fast** with clear error messages when components are mis
 | **Image Puller** | Download OCI images from registries | Buildah |
 | **Rootfs Extractor** | Mount and extract container filesystem | Buildah mount |
 | **qcow2 Converter** | Create disk image with partitions | qemu-img, libguestfs |
-| **Bootloader Installer** | Make image bootable | virt-customize, guestfish |
+| **Bootloader Validator** | Validate bootloader exists, update grub.cfg | virt-customize, guestfish |
 | **Cache Manager** | Deduplicate and cache base images | Custom Go code |
 | **Checksum Calculator** | Generate stable image checksums | skopeo, Go crypto |
 
@@ -693,7 +693,7 @@ Mounted Rootfs
 4. Copy rootfs to root partition
     │
     ▼
-5. Install/verify UEFI bootloader
+5. Validate UEFI bootloader (fail if missing)
     │
     ▼
 6. Verify boot contract compliance
@@ -854,40 +854,69 @@ func CopyRootfsFromTar(imagePath, tarPath string) error {
 }
 ```
 
-### 5.6 Step 5: Make Bootable
+### 5.6 Step 5: Validate Bootloader (Fail-Fast)
 
-**Strategy**: Most OCI images with bootloaders already have them installed. We just need to verify.
+**Strategy**: Cocoon does NOT install missing bootloaders or packages (see [Responsibility Boundaries](#responsibility-boundaries)). It validates that the required components exist and fails fast with a clear error if they don't.
+
+For images that already have GRUB installed, Cocoon may **update** `grub.cfg` to ensure correct boot parameters (e.g., serial console, root device), but never installs GRUB from scratch.
 
 ```go
-func VerifyAndFixBootloader(imagePath string) error {
-    // Check if GRUB is already installed
-    hasGRUB, err := hasGRUBInstalled(imagePath)
+func ValidateBootloader(imagePath string) error {
+    // Detect architecture
+    arch, err := DetectImageArchitecture(imagePath)
+    if err != nil {
+        return fmt.Errorf("failed to detect architecture: %w", err)
+    }
+
+    // Check architecture-specific UEFI bootloader
+    var bootloaderPath string
+    switch arch {
+    case "x86_64":
+        bootloaderPath = "/boot/efi/EFI/BOOT/BOOTX64.EFI"
+    case "aarch64":
+        bootloaderPath = "/boot/efi/EFI/BOOT/BOOTAA64.EFI"
+    default:
+        return fmt.Errorf("unsupported architecture: %s", arch)
+    }
+
+    hasBootloader, err := guestfishExists(imagePath, bootloaderPath)
     if err != nil {
         return err
     }
-
-    if hasGRUB {
-        // Bootloader exists, just update grub.cfg
-        return updateGRUBConfig(imagePath)
+    if !hasBootloader {
+        return &BootloaderMissingError{
+            Arch:         arch,
+            ExpectedPath: bootloaderPath,
+            Hint:         "Image must include a pre-installed UEFI bootloader (GRUB or systemd-boot). " +
+                          "Cocoon does NOT install bootloaders. Build a bootable OCI image with GRUB included.",
+        }
     }
 
-    // No bootloader found - install it
-    return installGRUB(imagePath)
+    // Check GRUB config exists
+    hasGRUBConfig, err := guestfishExists(imagePath, "/boot/grub/grub.cfg")
+    if err != nil {
+        return err
+    }
+    if !hasGRUBConfig {
+        return fmt.Errorf("bootloader found but /boot/grub/grub.cfg missing; image may not boot correctly")
+    }
+
+    // Bootloader exists — optionally regenerate grub.cfg for correct serial/root params
+    return updateGRUBConfig(imagePath)
 }
 
-func hasGRUBInstalled(imagePath string) (bool, error) {
-    script := `
+// guestfishExists checks if a path exists inside a qcow2 image
+func guestfishExists(imagePath, guestPath string) (bool, error) {
+    script := fmt.Sprintf(`
     add %s
     run
     mount /dev/sda2 /
     mount /dev/sda1 /boot/efi
+    exists %s
+    `, imagePath, guestPath)
 
-    # Check for UEFI bootloader
-    exists /boot/efi/EFI/BOOT/BOOTX64.EFI
-    `
-
-    cmd := exec.Command("guestfish", "-a", imagePath)
-    cmd.Stdin = strings.NewReader(fmt.Sprintf(script, imagePath))
+    cmd := exec.Command("guestfish")
+    cmd.Stdin = strings.NewReader(script)
 
     output, err := cmd.Output()
     if err != nil {
@@ -897,26 +926,41 @@ func hasGRUBInstalled(imagePath string) (bool, error) {
     return strings.TrimSpace(string(output)) == "true", nil
 }
 
-func installGRUB(imagePath string) error {
-    // Use virt-customize to install and configure GRUB
-    cmd := exec.Command("virt-customize",
-        "-a", imagePath,
-        "--run-command", "grub-install --target=x86_64-efi --efi-directory=/boot/efi --boot-directory=/boot --removable",
-        "--run-command", "update-grub")
-
-    return cmd.Run()
-}
-
+// updateGRUBConfig regenerates grub.cfg for correct serial console and root device
+// (does NOT install GRUB — only updates config for an already-installed bootloader)
 func updateGRUBConfig(imagePath string) error {
-    // Regenerate grub.cfg to ensure correct boot parameters
     cmd := exec.Command("virt-customize",
         "-a", imagePath,
-        "--run-command", "update-grub",
         "--run-command", "grub-mkconfig -o /boot/grub/grub.cfg")
 
     return cmd.Run()
 }
+
+// BootloaderMissingError provides actionable guidance when bootloader is not found
+type BootloaderMissingError struct {
+    Arch         string
+    ExpectedPath string
+    Hint         string
+}
+
+func (e *BootloaderMissingError) Error() string {
+    return fmt.Sprintf(
+        "bootloader not found for %s at %s\n%s",
+        e.Arch, e.ExpectedPath, e.Hint,
+    )
+}
 ```
+
+**Bootloader Validation Cross-Reference**: This validation is consistent with [Boot Contract § 6](./01-boot-contract.md) and the `ValidateBootability()` rootfs checks in [§ 4.3](#43-rootfs-validation). The key principle: **Cocoon validates, it does not install.**
+
+**Compatibility Scope** (what passes validation):
+| Image Type | Bootloader | Passes? | Notes |
+|------------|-----------|---------|-------|
+| Ubuntu Cloud Image (qcow2) | GRUB pre-installed | Yes | Recommended path |
+| Custom OCI with GRUB | GRUB in ESP | Yes | Must be built with bootloader |
+| Custom OCI without GRUB | Missing | **No** | Fails with `BootloaderMissingError` |
+| Fedora Cloud Image | GRUB pre-installed | Yes | Uses initramfs (supported) |
+| Minimal OCI (alpine) | Missing | **No** | Application container, not VM image |
 
 ### 5.7 Step 6: Verify Boot Contract
 
@@ -1028,9 +1072,9 @@ func ConvertOCIToQcow2(
         return fmt.Errorf("failed to copy rootfs: %w", err)
     }
 
-    // 4. Make bootable
-    if err := VerifyAndFixBootloader(outputPath); err != nil {
-        return fmt.Errorf("failed to install bootloader: %w", err)
+    // 4. Validate bootloader (fail-fast if missing; update grub.cfg if present)
+    if err := ValidateBootloader(outputPath); err != nil {
+        return fmt.Errorf("bootloader validation failed: %w", err)
     }
 
     // 5. Verify boot contract
@@ -1479,7 +1523,7 @@ func (c *Converter) checkRootlessSupport() error {
   - [ ] Create GPT partition table (ESP + root)
   - [ ] Format partitions (FAT32 ESP, ext4 root)
   - [ ] Copy rootfs to qcow2 image
-  - [ ] Verify/install UEFI bootloader
+  - [ ] Validate UEFI bootloader (fail-fast if missing)
   - [ ] Verify boot contract compliance
 
 - [ ] **Caching**:
