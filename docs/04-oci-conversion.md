@@ -505,7 +505,7 @@ func (m *MountedContainer) ValidateBootability() error {
         message string
     }{
         {"/boot/vmlinuz", false, "kernel not found (no /boot/vmlinuz*)"},
-        {"/boot/initrd", false, "initrd not found (no /boot/initrd*)"},
+        {"/boot/initrd", false, "initrd/initramfs not found (no /boot/initrd* or /boot/initramfs*)"},
         {"/sbin/init", true, "init system not found (/sbin/init missing)"},
         {"/usr/bin/cloud-init", true, "cloud-init not installed (required for initialization)"},
         {"/boot/efi/EFI", false, "EFI bootloader not found (no ESP partition)"},
@@ -516,10 +516,17 @@ func (m *MountedContainer) ValidateBootability() error {
     for _, req := range required {
         fullPath := filepath.Join(m.mountPoint, req.path)
 
-        // Check if path exists (glob for kernel/initrd)
-        if strings.Contains(req.path, "vmlinuz") || strings.Contains(req.path, "initrd") {
+        // Check if path exists (glob for kernel/initrd/initramfs)
+        if strings.Contains(req.path, "vmlinuz") {
             matches, _ := filepath.Glob(fullPath + "*")
             if len(matches) == 0 {
+                return fmt.Errorf("bootability check failed: %s", req.message)
+            }
+        } else if strings.Contains(req.path, "initrd") {
+            // Support both initrd* and initramfs* (Fedora, RHEL use initramfs)
+            matches1, _ := filepath.Glob(filepath.Join(m.mountPoint, "/boot/initrd*"))
+            matches2, _ := filepath.Glob(filepath.Join(m.mountPoint, "/boot/initramfs*"))
+            if len(matches1) == 0 && len(matches2) == 0 {
                 return fmt.Errorf("bootability check failed: %s", req.message)
             }
         } else {
@@ -539,6 +546,37 @@ func (m *MountedContainer) ValidateBootability() error {
     }
     // If init is not a symlink, check if it's systemd binary directly
     // (some distros have systemd as /sbin/init directly)
+
+    // Architecture-aware bootloader validation
+    if err := m.ValidateBootloaderForArch(); err != nil {
+        return fmt.Errorf("bootability check failed: %w", err)
+    }
+
+    return nil
+}
+
+// ValidateBootloaderForArch validates the bootloader exists for the detected architecture
+func (m *MountedContainer) ValidateBootloaderForArch() error {
+    // Detect architecture
+    arch, err := DetectArchitecture(m.mountPoint)
+    if err != nil {
+        return fmt.Errorf("failed to detect architecture: %w", err)
+    }
+
+    // Check architecture-specific bootloader
+    var bootloaderPath string
+    switch arch {
+    case "x86_64":
+        bootloaderPath = filepath.Join(m.mountPoint, "/boot/efi/EFI/BOOT/BOOTX64.EFI")
+    case "aarch64":
+        bootloaderPath = filepath.Join(m.mountPoint, "/boot/efi/EFI/BOOT/BOOTAA64.EFI")
+    default:
+        return fmt.Errorf("unsupported architecture: %s", arch)
+    }
+
+    if _, err := os.Stat(bootloaderPath); os.IsNotExist(err) {
+        return fmt.Errorf("bootloader not found for %s: %s", arch, bootloaderPath)
+    }
 
     return nil
 }
@@ -859,15 +897,34 @@ Before caching, verify the image meets the [Boot Contract](01-boot-contract.md):
 
 ```go
 func VerifyBootContract(imagePath string) error {
+    // Detect architecture from image
+    arch, err := DetectImageArchitecture(imagePath)
+    if err != nil {
+        return fmt.Errorf("failed to detect architecture: %w", err)
+    }
+
+    // Architecture-specific bootloader path
+    var bootloaderPath string
+    switch arch {
+    case "x86_64":
+        bootloaderPath = "/boot/efi/EFI/BOOT/BOOTX64.EFI"
+    case "aarch64":
+        bootloaderPath = "/boot/efi/EFI/BOOT/BOOTAA64.EFI"
+    default:
+        return fmt.Errorf("unsupported architecture: %s", arch)
+    }
+
     checks := []struct {
         name string
         cmd  string
     }{
         {"kernel", "test -f /boot/vmlinuz-*"},
-        {"initrd", "test -f /boot/initrd.img-*"},
+        // Check for either initrd or initramfs (Fedora uses initramfs-*)
+        {"initrd", "sh -c 'test -f /boot/initrd* || test -f /boot/initramfs*'"},
         {"init", "test -x /sbin/init"},
+        {"cloud-init", "test -x /usr/bin/cloud-init"},
         {"grub-config", "test -f /boot/grub/grub.cfg"},
-        {"uefi-bootloader", "test -f /boot/efi/EFI/BOOT/BOOTX64.EFI"},
+        {"uefi-bootloader", fmt.Sprintf("test -f %s", bootloaderPath)},
     }
 
     for _, check := range checks {
@@ -877,7 +934,36 @@ func VerifyBootContract(imagePath string) error {
         }
     }
 
+    // Verify init is systemd (not sysvinit)
+    cmd := exec.Command("guestfish", "-a", imagePath, "-i",
+        "sh", "readlink /sbin/init | grep -q systemd")
+    if err := cmd.Run(); err != nil {
+        return fmt.Errorf("boot contract violation: init system must be systemd")
+    }
+
     return nil
+}
+
+// DetectImageArchitecture detects the architecture of a qcow2 image
+func DetectImageArchitecture(imagePath string) (string, error) {
+    // Method: Check kernel binary architecture via guestfish
+    cmd := exec.Command("guestfish", "-a", imagePath, "-i",
+        "sh", "file /boot/vmlinuz-* | head -1")
+
+    output, err := cmd.Output()
+    if err != nil {
+        return "", fmt.Errorf("failed to detect architecture: %w", err)
+    }
+
+    outputStr := string(output)
+    if strings.Contains(outputStr, "x86-64") || strings.Contains(outputStr, "x86_64") {
+        return "x86_64", nil
+    }
+    if strings.Contains(outputStr, "ARM aarch64") || strings.Contains(outputStr, "arm64") {
+        return "aarch64", nil
+    }
+
+    return "", fmt.Errorf("unknown architecture from kernel: %s", outputStr)
 }
 ```
 

@@ -128,104 +128,141 @@ cloud-hypervisor --version
 
 ### Firmware Requirements
 
-Cloud Hypervisor requires firmware to boot virtual machines. Two firmware types are supported:
+Cloud Hypervisor requires firmware to boot virtual machines. Cocoon supports two boot modes per [Boot Contract v2.0](./01-boot-contract.md):
 
-#### UEFI Firmware (Recommended)
+#### PVH Firmware (Recommended - Phase 1 Primary)
 
-**What is UEFI firmware?**
-- UEFI (Unified Extensible Firmware Interface) provides a modern boot environment
-- Supports secure boot, GPT partitions, and larger disk sizes
-- Required for booting standard Linux distributions (Ubuntu, Fedora, etc.)
+**What is PVH?**
+- PVH (Paravirtualized Hardware) is a lightweight boot protocol designed for Cloud Hypervisor
+- **Fast boot**: Sub-100ms boot time (vs ~500ms for UEFI)
+- **Standard cloud images**: Works with Ubuntu Cloud, Fedora Cloud, Debian Cloud images out of the box
+- **Disk-based boot**: Loads kernel from GPT+ESP partition like standard VMs
 
-**Download OVMF (Open Virtual Machine Firmware):**
+**rust-hypervisor-firmware** is the PVH firmware implementation:
+- Boots via PVH entry point (Xen PVH protocol)
+- Discovers virtio-blk disks and parses GPT
+- Mounts ESP partition and loads GRUB/kernel
+- Minimal footprint (~100KB vs 2MB OVMF)
 
-```bash
-# Ubuntu/Debian (install via package manager)
-sudo apt-get install -y ovmf
-
-# Firmware files will be located at:
-# - /usr/share/OVMF/OVMF_CODE.fd
-# - /usr/share/OVMF/OVMF_VARS.fd
-```
-
-**Manual download (for other distributions):**
+**Installation:**
 
 ```bash
 # Create firmware directory
-sudo mkdir -p /etc/cocoon/firmware
+sudo mkdir -p /var/lib/cocoon/firmware
 
-# Download OVMF firmware from upstream
-curl -L https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.4.2/hypervisor-fw -o /tmp/hypervisor-fw
-sudo mv /tmp/hypervisor-fw /etc/cocoon/firmware/
+# Download rust-hypervisor-firmware (x86_64)
+curl -L https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.4.2/hypervisor-fw \
+    -o /tmp/hypervisor-fw
 
-# Make executable
-sudo chmod +x /etc/cocoon/firmware/hypervisor-fw
+# Install
+sudo mv /tmp/hypervisor-fw /var/lib/cocoon/firmware/hypervisor-fw
+sudo chmod +x /var/lib/cocoon/firmware/hypervisor-fw
+
+# Verify download (optional but recommended)
+sha256sum /var/lib/cocoon/firmware/hypervisor-fw
+# Expected: (check GitHub releases page)
 ```
 
-#### PVH Firmware (Alternative)
-
-**What is PVH?**
-- PVH (Paravirtualized Hardware) is a lighter-weight boot protocol
-- Faster boot times compared to UEFI
-- Limited OS support (requires kernel built with PVH support)
-
-**Download rust-hypervisor-firmware:**
+**VM Launch with PVH:**
 
 ```bash
-# Download latest PVH firmware
-curl -L https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.4.2/hypervisor-fw -o /tmp/hypervisor-fw
-
-# Install to firmware directory
-sudo mkdir -p /etc/cocoon/firmware
-sudo mv /tmp/hypervisor-fw /etc/cocoon/firmware/
-sudo chmod +x /etc/cocoon/firmware/hypervisor-fw
+cloud-hypervisor \
+    --kernel /var/lib/cocoon/firmware/hypervisor-fw \
+    --disk path=/var/lib/cocoon/vms/vm-123/overlay.qcow2 \
+    --cpus boot=2 \
+    --memory size=2G \
+    --serial file=/var/log/cocoon/vm-123.log \
+    --console off
 ```
+
+**Note**: `--kernel` parameter accepts PVH firmware path. The firmware then loads the actual kernel from the disk's ESP partition.
+
+#### UEFI Firmware (Fallback)
+
+**What is UEFI?**
+- UEFI (Unified Extensible Firmware Interface) provides traditional firmware environment
+- Supports secure boot, older distributions, and specialized UEFI-only features
+- Slower boot (~500ms) but broader compatibility
+
+**When to use UEFI fallback:**
+1. Image explicitly requires UEFI (metadata flag)
+2. PVH boot fails (automatic retry)
+3. User specifies `--boot-mode uefi` flag
+
+**Installation:**
+
+```bash
+# Ubuntu/Debian - Install OVMF
+sudo apt-get install -y ovmf
+
+# Fedora/RHEL - Install edk2-ovmf
+sudo dnf install -y edk2-ovmf
+
+# Firmware will be installed at:
+# - Ubuntu/Debian: /usr/share/OVMF/OVMF_CODE.fd
+# - Fedora: /usr/share/edk2/ovmf/OVMF_CODE.fd
+```
+
+**VM Launch with UEFI:**
+
+```bash
+# Cloud Hypervisor automatically uses UEFI when --kernel is omitted
+cloud-hypervisor \
+    --disk path=/var/lib/cocoon/vms/vm-123/overlay.qcow2 \
+    --cpus boot=2 \
+    --memory size=2G \
+    --serial file=/var/log/cocoon/vm-123.log \
+    --console off
+
+# Cloud Hypervisor will search for OVMF firmware at standard system paths
+```
+
+**Note**: When `--kernel` is NOT specified, Cloud Hypervisor automatically enters UEFI boot mode and searches for OVMF firmware at standard system locations.
 
 ### Firmware Selection Guide
 
-| Boot Method | Firmware Type | Use Case | Boot Time | OS Support |
-|-------------|--------------|----------|-----------|------------|
-| UEFI | OVMF | Standard Linux distributions | ~500ms | Excellent |
-| PVH | rust-hypervisor-firmware | Custom minimal kernels | <100ms | Limited |
+| Boot Method | Firmware | Boot Time | OS Support | Phase |
+|-------------|----------|-----------|------------|-------|
+| **PVH (Primary)** | rust-hypervisor-firmware | <100ms | Ubuntu Cloud, Fedora Cloud, Debian Cloud | Phase 1 ✅ |
+| **UEFI (Fallback)** | OVMF / edk2-ovmf | ~500ms | All Linux distributions | Phase 1 ✅ |
 
-**Recommendation:** Use UEFI firmware (OVMF) unless you have specific requirements for ultra-fast boot times and are using a PVH-capable kernel.
-
-### Firmware Configuration
-
-**For UEFI boot, specify firmware in VM launch:**
-
-```bash
-cloud-hypervisor \
-    --kernel /etc/cocoon/firmware/OVMF_CODE.fd \
-    --disk path=/srv/cocoon/images/ubuntu.qcow2
-```
-
-**For PVH boot with custom kernel:**
-
-```bash
-cloud-hypervisor \
-    --kernel /srv/cocoon/kernels/vmlinux \
-    --disk path=/srv/cocoon/images/rootfs.ext4
-```
+**Cocoon Default Strategy** (per Boot Contract v2.0):
+1. Try PVH boot first (faster, cloud-native)
+2. Automatic fallback to UEFI on failure
+3. User can force UEFI with `--boot-mode uefi`
 
 ### Firmware Updates
 
-Firmware should be updated periodically for security patches and bug fixes:
+**Update rust-hypervisor-firmware:**
 
 ```bash
-# Update OVMF via package manager (Ubuntu/Debian)
+# Check current version
+ls -lh /var/lib/cocoon/firmware/
+
+# Download latest release
+LATEST_VERSION="0.4.2"  # Check GitHub for latest
+curl -L https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/${LATEST_VERSION}/hypervisor-fw \
+    -o /tmp/hypervisor-fw-${LATEST_VERSION}
+
+# Backup current firmware
+sudo cp /var/lib/cocoon/firmware/hypervisor-fw /var/lib/cocoon/firmware/hypervisor-fw.backup
+
+# Install new version
+sudo mv /tmp/hypervisor-fw-${LATEST_VERSION} /var/lib/cocoon/firmware/hypervisor-fw
+sudo chmod +x /var/lib/cocoon/firmware/hypervisor-fw
+
+# Verify
+sha256sum /var/lib/cocoon/firmware/hypervisor-fw
+```
+
+**Update OVMF (UEFI firmware):**
+
+```bash
+# Ubuntu/Debian
 sudo apt-get update && sudo apt-get upgrade ovmf
 
-# Manual update of rust-hypervisor-firmware
-curl -L https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/latest/download/hypervisor-fw \
-    -o /etc/cocoon/firmware/hypervisor-fw.new
-
-# Backup old firmware
-cp /etc/cocoon/firmware/hypervisor-fw /etc/cocoon/firmware/hypervisor-fw.backup
-
-# Replace with new firmware
-mv /etc/cocoon/firmware/hypervisor-fw.new /etc/cocoon/firmware/hypervisor-fw
-chmod +x /etc/cocoon/firmware/hypervisor-fw
+# Fedora
+sudo dnf upgrade edk2-ovmf
 ```
 
 ## Directory Structure
@@ -235,40 +272,58 @@ chmod +x /etc/cocoon/firmware/hypervisor-fw
 Recommended directory structure for Cocoon deployment:
 
 ```
-/etc/cocoon/                      # Configuration directory
+/var/lib/cocoon/                   # Cocoon root directory (per Boot Contract v2.0)
 ├── firmware/
-│   ├── hypervisor-fw              # PVH firmware
-│   ├── OVMF_CODE.fd              # UEFI firmware (code)
-│   └── OVMF_VARS.fd              # UEFI firmware (variables)
-└── config.toml                    # Cocoon configuration
+│   ├── hypervisor-fw              # PVH firmware (primary)
+│   ├── hypervisor-fw-0.4.2        # Versioned backup
+│   └── checksums.txt              # SHA256 verification
+├── cache/
+│   └── images/                    # Base image cache (qcow2)
+│       ├── ubuntu-22.04-abc123.qcow2
+│       └── fedora-38-def456.qcow2
+├── vms/                           # VM instances
+│   ├── vm-abc-123/
+│   │   ├── overlay.qcow2          # COW overlay disk
+│   │   ├── config.json            # VM configuration
+│   │   └── metadata.json          # VM metadata
+│   └── vm-def-456/
+└── temp/                          # Temporary conversion files
 
-/srv/cocoon/                       # Runtime directory
-├── images/
-│   ├── base-images/              # Read-only base images
-│   │   ├── ubuntu-22.04.qcow2
-│   │   └── python-3.11.qcow2
-│   └── active/                   # Currently running VM images
-├── kernels/
-│   └── vmlinux-5.15              # Custom VM kernels
-└── logs/
-    ├── vm-logs/                  # Individual VM logs
-    └── hypervisor-logs/          # Cloud Hypervisor logs
+/var/log/cocoon/                   # Logs
+├── vm-abc-123.log                 # Serial console logs (per-VM)
+└── vm-def-456.log
+
+/run/cocoon/                       # Runtime sockets
+└── vms/
+    ├── vm-abc-123/
+    │   ├── ch.sock                # Cloud Hypervisor API socket
+    │   └── ch.pid                 # Process ID file
+    └── vm-def-456/
+
+/etc/cocoon/                       # Configuration (optional)
+└── config.yaml                    # Global Cocoon config
 ```
 
 **Setup commands:**
 
 ```bash
-# Create configuration directory
-sudo mkdir -p /etc/cocoon/firmware
+# Create Cocoon directories
+sudo mkdir -p /var/lib/cocoon/firmware
+sudo mkdir -p /var/lib/cocoon/cache/images
+sudo mkdir -p /var/lib/cocoon/vms
+sudo mkdir -p /var/lib/cocoon/temp
 
-# Create runtime directories
-sudo mkdir -p /srv/cocoon/images/{base-images,active}
-sudo mkdir -p /srv/cocoon/kernels
-sudo mkdir -p /srv/cocoon/logs/{vm-logs,hypervisor-logs}
+sudo mkdir -p /var/log/cocoon
+sudo mkdir -p /run/cocoon/vms
 
 # Set appropriate permissions
-sudo chown -R $USER:$USER /srv/cocoon
-sudo chmod -R 755 /srv/cocoon
+sudo chown -R $USER:$USER /var/lib/cocoon
+sudo chown -R $USER:$USER /var/log/cocoon
+sudo chown -R $USER:$USER /run/cocoon
+
+sudo chmod -R 755 /var/lib/cocoon
+sudo chmod -R 755 /var/log/cocoon
+sudo chmod -R 755 /run/cocoon
 ```
 
 ## Verification
@@ -320,10 +375,10 @@ mkfs.ext4 /tmp/test-disk.raw
 **2. Launch a test VM (requires a bootable kernel/image):**
 
 ```bash
-# Example: Launch with PVH firmware and minimal kernel
-# Note: This requires a PVH-capable kernel image
+# Example: Launch with PVH firmware
+# Note: This requires a bootable disk with kernel/bootloader
 cloud-hypervisor \
-    --kernel /etc/cocoon/firmware/hypervisor-fw \
+    --kernel /var/lib/cocoon/firmware/hypervisor-fw \
     --disk path=/tmp/test-disk.raw \
     --cpus boot=1 \
     --memory size=512M \
@@ -380,13 +435,16 @@ Set appropriate permissions for sensitive components:
 
 ```bash
 # Firmware (read-only for users)
-sudo chmod 644 /etc/cocoon/firmware/*
+sudo chmod 644 /var/lib/cocoon/firmware/*
 
-# VM images (read-write for owner only)
-chmod 600 /srv/cocoon/images/*.qcow2
+# VM overlays (read-write for owner only)
+chmod 600 /var/lib/cocoon/vms/*/overlay.qcow2
+
+# Base images (read-only after creation)
+chmod 644 /var/lib/cocoon/cache/images/*.qcow2
 
 # Logs (read-only for owner)
-chmod 644 /srv/cocoon/logs/*.log
+chmod 644 /var/log/cocoon/*.log
 ```
 
 ### KVM Device Access
@@ -443,10 +501,16 @@ Error: Failed to load firmware
 
 **Solution:**
 ```bash
-# Ensure firmware is installed
-ls -l /etc/cocoon/firmware/
+# Check PVH firmware installation
+ls -l /var/lib/cocoon/firmware/hypervisor-fw
 
-# Install OVMF if missing
+# If missing, download it
+curl -L https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.4.2/hypervisor-fw \
+    -o /tmp/hypervisor-fw
+sudo mv /tmp/hypervisor-fw /var/lib/cocoon/firmware/
+sudo chmod +x /var/lib/cocoon/firmware/hypervisor-fw
+
+# Or install UEFI firmware (OVMF)
 sudo apt-get install -y ovmf
 ```
 

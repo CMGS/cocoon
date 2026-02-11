@@ -1,0 +1,97 @@
+# Building Bootable OCI Images
+
+**Status**: 📋 Planned - Phase 2
+**Priority**: P1 (Important for user onboarding)
+
+## Overview
+
+This document will provide comprehensive guidance on building custom bootable OCI images that satisfy Cocoon's Boot Contract requirements.
+
+## Coming Soon
+
+**Planned Content** (tracked in [P1-TODO.md](./P1-TODO.md#p1-1-how-to-build-bootable-oci-images)):
+
+1. **Minimum Requirements**
+   - Package lists per distribution (Ubuntu, Fedora, Debian)
+   - Kernel, initrd, systemd, cloud-init, GRUB configuration
+
+2. **Build Process**
+   - Dockerfile multi-stage build examples
+   - Build scripts for automated image creation
+   - GRUB configuration and installation
+
+3. **Example Implementations**
+   - `examples/ubuntu-bootable/` - Complete Ubuntu example
+   - `examples/fedora-bootable/` - Complete Fedora example
+   - Reproducible builds with versioned dependencies
+
+4. **Verification**
+   - How to test bootability locally
+   - Using `cocoon image verify` for validation
+   - Common pitfalls and troubleshooting
+
+5. **Publishing**
+   - Pushing to registries (Docker Hub, GHCR)
+   - Versioning and tagging strategy
+   - Reference images with digest
+
+## Current Workaround
+
+**For Phase 1**, we recommend using **Cloud Hypervisor native cloud images** instead of building custom bootable OCI images:
+
+### Recommended Cloud Images
+
+**Ubuntu Cloud Images**:
+```bash
+# Download Ubuntu 22.04 Cloud Image
+wget https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img
+
+# Convert to qcow2 if needed
+qemu-img convert -O qcow2 ubuntu-22.04-server-cloudimg-amd64.img ubuntu-22.04-cloudimg.qcow2
+
+# Use with Cocoon (Phase 1 manual workflow)
+cocoon create --name myvm --disk ubuntu-22.04-cloudimg.qcow2 --cpus 2 --memory 2G
+```
+
+**Fedora Cloud Images**:
+```bash
+# Download Fedora 39 Cloud Image
+wget https://download.fedoraproject.org/pub/fedora/linux/releases/39/Cloud/x86_64/images/Fedora-Cloud-Base-39-1.5.x86_64.qcow2
+
+# Use with Cocoon
+cocoon create --name fedora-vm --disk Fedora-Cloud-Base-39-1.5.x86_64.qcow2
+```
+
+**Why Cloud Images Work**:
+- ✅ Pre-installed kernel, initrd, systemd
+- ✅ GRUB bootloader configured
+- ✅ cloud-init pre-configured
+- ✅ GPT + ESP partition layout
+- ✅ Optimized for Cloud Hypervisor/KVM
+
+## Why Defer to Phase 2?
+
+Building bootable OCI images is **complex** and requires:
+- Multi-stage Dockerfile with package installation
+- GRUB installation and configuration inside container
+- Partition table and filesystem setup
+- ESP partition creation
+- Thorough testing across distributions
+
+This complexity is **orthogonal to Cocoon's core VM management functionality**. By using native cloud images in Phase 1, we can:
+- Validate Boot Contract requirements
+- Test PVH/UEFI boot modes
+- Develop storage and lifecycle management
+- Ensure Cloud Hypervisor integration works
+
+Once Phase 1 is stable, we can add bootable OCI build tooling as a convenience feature.
+
+## Next Steps
+
+See [P1-TODO.md § P1-1](./P1-TODO.md#p1-1-how-to-build-bootable-oci-images) for detailed action items and implementation plan.
+
+## References
+
+- [Boot Contract Specification](./01-boot-contract.md) - Required components
+- [OCI Conversion Guide](./04-oci-conversion.md) - Validation rules
+- [P1-TODO](./P1-TODO.md) - Tracking document for this feature
