@@ -1110,17 +1110,457 @@ func HandleError(vmID string, errType ErrorType, err error) {
 - Cleanup stale resources
 - Fix metadata inconsistencies
 
-### 8.2 Reconciliation Command
+### 8.2 Crash Recovery and Reconciliation
+
+#### 8.2.1 Sources of Truth (Priority Order)
+
+When reconciling VM state after crashes (kill -9, power loss, partial state), sources of truth are evaluated in this priority order:
+
+**Priority 1: Cloud Hypervisor Process Status**
+- Check if PID from metadata.json is still running
+- Validate process is actually `cloud-hypervisor` (not PID reuse)
+- **Most authoritative**: If process is dead, VM cannot be RUNNING
+
+**Priority 2: API Socket Connectivity**
+- Check if CH API socket exists at `hypervisor.ch_socket`
+- Attempt connection to socket
+- If process is running but socket missing → inconsistent state
+
+**Priority 3: metadata.json State Field**
+- Last known state recorded before crash
+- May be stale if crash occurred during state transition
+- Used to determine expected state vs actual state
+
+**Priority 4: Overlay Disk Existence**
+- Check if `storage.overlay_path` exists
+- If missing, VM cannot be recovered (data loss)
+- If present, VM can potentially be restarted
+
+**Priority 5: PID File Validity**
+- Check if PID file at `/run/cocoon/vms/{vm-id}/ch.pid` exists
+- Cross-reference with metadata.json PID
+- Stale PID files indicate crash or unclean shutdown
+
+#### 8.2.2 Crash Scenarios and Recovery
+
+| Scenario | metadata.json | PID Running? | Socket Exists? | Action | New State |
+|----------|---------------|--------------|----------------|--------|-----------|
+| **Clean state** | RUNNING | Yes | Yes | None | RUNNING |
+| **Crashed VM** | RUNNING | No | No | Mark crashed | ERROR |
+| **Socket lost** | RUNNING | Yes | No | Inconsistent | ERROR |
+| **Zombie process** | STOPPED | Yes | Yes | Kill process | STOPPED |
+| **PID reused** | RUNNING | Yes (wrong proc) | No | Detect reuse | ERROR |
+| **Power loss** | RUNNING | No | No | Mark crashed | ERROR |
+| **Partial start** | STARTING | No | No | Timeout/stuck | ERROR |
+| **Stuck stopping** | STOPPING | Yes | Yes | Force kill | STOPPED |
+| **Orphaned socket** | STOPPED | No | Yes | Clean socket | STOPPED |
+
+#### 8.2.3 Reconciliation Algorithm
+
+**On Startup (cocoon daemon start or cocoon reconcile)**:
+
+```go
+func ReconcileAll() error {
+    // 1. SCAN: Discover all VMs
+    vmDirs, err := os.ReadDir("/var/lib/cocoon/vms/")
+    if err != nil {
+        return fmt.Errorf("failed to scan VM directory: %w", err)
+    }
+
+    var inconsistencies []Inconsistency
+
+    // 2. ANALYZE: Check each VM
+    for _, vmDir := range vmDirs {
+        vmID := vmDir.Name()
+
+        // 2a. Load metadata
+        meta, err := LoadMetadata(vmID)
+        if err != nil {
+            inconsistencies = append(inconsistencies, Inconsistency{
+                VMID:     vmID,
+                Type:     "metadata_corrupted",
+                Severity: "critical",
+                Details:  err.Error(),
+            })
+            continue
+        }
+
+        // 2b. Check PID and process
+        actualState := DetermineActualState(meta)
+
+        // 2c. Compare metadata state vs actual state
+        if meta.State != actualState {
+            inconsistencies = append(inconsistencies, Inconsistency{
+                VMID:           vmID,
+                Type:           "state_mismatch",
+                Severity:       getSeverity(meta.State, actualState),
+                ExpectedState:  meta.State,
+                ActualState:    actualState,
+                Details:        fmt.Sprintf("metadata=%s, actual=%s", meta.State, actualState),
+            })
+        }
+
+        // 2d. Check for zombie resources
+        zombies := DetectZombieResources(vmID, meta)
+        inconsistencies = append(inconsistencies, zombies...)
+    }
+
+    // 3. REPORT: Log all inconsistencies
+    for _, inc := range inconsistencies {
+        log.Warn("VM %s: %s [%s] - %s", inc.VMID, inc.Type, inc.Severity, inc.Details)
+    }
+
+    // 4. FIX: Apply fixes if requested
+    if reconcileFixFlag {
+        for _, inc := range inconsistencies {
+            if err := ApplyFix(inc); err != nil {
+                log.Error("Failed to fix %s for VM %s: %v", inc.Type, inc.VMID, err)
+            } else {
+                log.Info("Fixed %s for VM %s", inc.Type, inc.VMID)
+            }
+        }
+    }
+
+    return nil
+}
+
+func DetermineActualState(meta *VMMetadata) VMState {
+    pid := meta.Hypervisor.CHPID
+    socket := meta.Hypervisor.CHSocket
+
+    // Check process
+    processRunning := isProcessRunning(pid)
+    processValid := false
+    if processRunning {
+        processValid = validateProcess(pid, "cloud-hypervisor")
+    }
+
+    // Check socket
+    socketExists := fileExists(socket)
+    socketConnectable := false
+    if socketExists {
+        socketConnectable = canConnectToSocket(socket)
+    }
+
+    // Determine actual state based on evidence
+    switch meta.State {
+    case VMStateRunning:
+        if processValid && socketConnectable {
+            return VMStateRunning // Genuinely running
+        } else if processValid && !socketConnectable {
+            return VMStateUnknown // Process alive but socket dead
+        } else {
+            return VMStateError // Process dead, was RUNNING → crashed
+        }
+
+    case VMStateStarting:
+        if processValid {
+            // Check how long in STARTING state
+            elapsed := time.Since(meta.Timestamps.UpdatedAt)
+            if elapsed > 5*time.Minute {
+                return VMStateError // Stuck in STARTING
+            }
+            return VMStateStarting // Still starting (give it time)
+        } else {
+            return VMStateError // Process died during start
+        }
+
+    case VMStateStopping:
+        if processValid {
+            elapsed := time.Since(meta.Timestamps.UpdatedAt)
+            if elapsed > 2*time.Minute {
+                return VMStateError // Stuck in STOPPING
+            }
+            return VMStateStopping // Still stopping
+        } else {
+            return VMStateStopped // Process exited
+        }
+
+    case VMStateStopped:
+        if processValid {
+            return VMStateInconsistent // Process shouldn't be running!
+        } else if socketExists {
+            return VMStateInconsistent // Zombie socket
+        } else {
+            return VMStateStopped // Correctly stopped
+        }
+
+    case VMStateCreated:
+        if processValid {
+            return VMStateInconsistent // Process shouldn't exist yet
+        }
+        return VMStateCreated
+
+    case VMStateError:
+        if processValid {
+            return VMStateInconsistent // Should cleanup process in ERROR
+        }
+        return VMStateError
+
+    default:
+        return meta.State
+    }
+}
+
+func DetectZombieResources(vmID string, meta *VMMetadata) []Inconsistency {
+    var zombies []Inconsistency
+
+    // Check for zombie PID file
+    pidFilePath := fmt.Sprintf("/run/cocoon/vms/%s/ch.pid", vmID)
+    if fileExists(pidFilePath) {
+        pidFileContent, _ := os.ReadFile(pidFilePath)
+        pidFromFile, _ := strconv.Atoi(string(pidFileContent))
+
+        if pidFromFile != meta.Hypervisor.CHPID {
+            zombies = append(zombies, Inconsistency{
+                VMID:     vmID,
+                Type:     "stale_pid_file",
+                Severity: "warning",
+                Details:  fmt.Sprintf("PID file has %d, metadata has %d", pidFromFile, meta.Hypervisor.CHPID),
+            })
+        }
+    }
+
+    // Check for zombie socket
+    if fileExists(meta.Hypervisor.CHSocket) {
+        if !isProcessRunning(meta.Hypervisor.CHPID) {
+            zombies = append(zombies, Inconsistency{
+                VMID:     vmID,
+                Type:     "zombie_socket",
+                Severity: "warning",
+                Details:  fmt.Sprintf("Socket exists at %s but process %d not running", meta.Hypervisor.CHSocket, meta.Hypervisor.CHPID),
+            })
+        }
+    }
+
+    return zombies
+}
+
+func ApplyFix(inc Inconsistency) error {
+    meta, err := LoadMetadata(inc.VMID)
+    if err != nil {
+        return err
+    }
+
+    switch inc.Type {
+    case "state_mismatch":
+        // Update metadata to match actual state
+        oldState := meta.State
+        newState := inc.ActualState
+
+        if newState == VMStateError || newState == VMStateInconsistent {
+            // Crashed or inconsistent → ERROR state
+            meta.State = VMStateError
+            meta.Error = &ErrorInfo{
+                Type:      "reconciliation_detected_crash",
+                Message:   fmt.Sprintf("VM was %s but process not running (likely crashed)", oldState),
+                Timestamp: time.Now(),
+            }
+
+            // Cleanup zombie process if any
+            if meta.Hypervisor.CHPID > 0 && isProcessRunning(meta.Hypervisor.CHPID) {
+                syscall.Kill(meta.Hypervisor.CHPID, syscall.SIGKILL)
+            }
+            meta.Hypervisor.CHPID = 0
+
+        } else if newState == VMStateStopped {
+            // Was STOPPING or RUNNING but process exited
+            meta.State = VMStateStopped
+            meta.Hypervisor.CHPID = 0
+            now := time.Now()
+            meta.Timestamps.StoppedAt = &now
+        }
+
+        meta.StateHistory = append(meta.StateHistory, StateTransition{
+            From:      oldState,
+            To:        meta.State,
+            Timestamp: time.Now(),
+            Reason:    fmt.Sprintf("Reconciliation: %s", inc.Details),
+        })
+
+        return SaveMetadata(meta)
+
+    case "zombie_socket":
+        // Remove stale socket
+        return os.Remove(meta.Hypervisor.CHSocket)
+
+    case "stale_pid_file":
+        // Remove stale PID file
+        pidFilePath := fmt.Sprintf("/run/cocoon/vms/%s/ch.pid", inc.VMID)
+        return os.Remove(pidFilePath)
+
+    case "zombie_process":
+        // Kill orphaned process
+        if meta.Hypervisor.CHPID > 0 {
+            syscall.Kill(meta.Hypervisor.CHPID, syscall.SIGKILL)
+            meta.Hypervisor.CHPID = 0
+            return SaveMetadata(meta)
+        }
+
+    default:
+        return fmt.Errorf("unknown inconsistency type: %s", inc.Type)
+    }
+
+    return nil
+}
+
+// Helper: Check if process is running and matches expected name
+func validateProcess(pid int, expectedName string) bool {
+    if pid <= 0 {
+        return false
+    }
+
+    // Check if process exists
+    process, err := os.FindProcess(pid)
+    if err != nil {
+        return false
+    }
+
+    // Send signal 0 to check if process is alive (doesn't actually kill it)
+    err = process.Signal(syscall.Signal(0))
+    if err != nil {
+        return false // Process doesn't exist
+    }
+
+    // Read /proc/{pid}/comm to verify process name
+    commPath := fmt.Sprintf("/proc/%d/comm", pid)
+    commBytes, err := os.ReadFile(commPath)
+    if err != nil {
+        return false
+    }
+
+    actualName := strings.TrimSpace(string(commBytes))
+    return strings.Contains(actualName, expectedName)
+}
+
+func isProcessRunning(pid int) bool {
+    if pid <= 0 {
+        return false
+    }
+    process, err := os.FindProcess(pid)
+    if err != nil {
+        return false
+    }
+    err = process.Signal(syscall.Signal(0))
+    return err == nil
+}
+
+func canConnectToSocket(socketPath string) bool {
+    conn, err := net.DialTimeout("unix", socketPath, 1*time.Second)
+    if err != nil {
+        return false
+    }
+    conn.Close()
+    return true
+}
+```
+
+#### 8.2.4 Crash Scenarios in Detail
+
+**Scenario 1: kill -9 on Cloud Hypervisor**
+```
+Before: metadata.json → RUNNING, PID=1234
+Crash:  kill -9 1234
+After:  metadata.json → RUNNING, PID=1234 (dead)
+
+Reconciliation:
+1. Read metadata.json → state=RUNNING, PID=1234
+2. Check process 1234 → not running
+3. Check socket → missing
+4. Action: Update metadata.json → state=ERROR, error="process killed"
+5. Cleanup: Remove zombie socket/PID file if any
+```
+
+**Scenario 2: Power Loss During Boot**
+```
+Before: metadata.json → STARTING, PID=1234
+Crash:  Power loss
+After:  metadata.json → STARTING, PID=1234 (dead)
+
+Reconciliation:
+1. Read metadata.json → state=STARTING, PID=1234
+2. Check process 1234 → not running
+3. Check elapsed time → 5+ minutes (stuck)
+4. Action: Update metadata.json → state=ERROR, error="boot timeout/power loss"
+5. Cleanup: None needed (already gone)
+```
+
+**Scenario 3: Partial State (Stopped but Process Running)**
+```
+Before: metadata.json → STOPPED
+Crash:  Cloud Hypervisor never cleanly exited
+After:  metadata.json → STOPPED, PID=1234 (still running!)
+
+Reconciliation:
+1. Read metadata.json → state=STOPPED, PID=1234
+2. Check process 1234 → RUNNING
+3. Inconsistency detected: zombie process
+4. Action: Kill process 1234, confirm metadata.json → STOPPED
+5. Cleanup: Remove socket
+```
+
+**Scenario 4: PID Reuse (Process Exists but Wrong)**
+```
+Before: metadata.json → RUNNING, PID=1234
+Crash:  Cloud Hypervisor dies, kernel reuses PID 1234 for bash
+After:  metadata.json → RUNNING, PID=1234 (but it's bash!)
+
+Reconciliation:
+1. Read metadata.json → state=RUNNING, PID=1234
+2. Check process 1234 → running
+3. Validate process name → "bash", not "cloud-hypervisor"
+4. Action: Update metadata.json → state=ERROR, error="process PID reused"
+5. Cleanup: Do NOT kill bash (wrong process)
+```
+
+### 8.3 Reconciliation Command
 
 ```bash
-cocoon reconcile [--fix] [--force]
+# Dry-run: Report inconsistencies only
+cocoon doctor --reconcile
+
+# Fix inconsistencies automatically
+cocoon doctor --reconcile --fix
+
+# Force cleanup of stuck VMs and zombie processes
+cocoon doctor --reconcile --fix --force
 ```
+
+**Aliases**:
+- `cocoon reconcile` → `cocoon doctor --reconcile`
+- `cocoon doctor` → runs reconciliation by default
 
 **Flags**:
 - `--fix`: Automatically fix inconsistencies (default: dry-run)
-- `--force`: Force cleanup of stuck VMs
+- `--force`: Force cleanup of stuck VMs and kill zombie processes
 
-### 8.3 Reconciliation Logic
+**Output**:
+```bash
+$ cocoon doctor --reconcile
+Scanning VMs in /var/lib/cocoon/vms/...
+
+[CRITICAL] vm-abc123: state_mismatch
+  Expected: RUNNING
+  Actual:   ERROR (process not running)
+  Details:  Process PID 1234 not found (likely crashed)
+
+[WARNING] vm-def456: zombie_socket
+  Details:  Socket /run/cocoon/vms/vm-def456/ch.sock exists but process 5678 not running
+
+[INFO] vm-ghi789: clean
+  State: RUNNING (PID 9012, socket responsive)
+
+Summary:
+  Total VMs: 3
+  Clean: 1
+  Issues: 2 (1 critical, 1 warning)
+
+Run 'cocoon doctor --reconcile --fix' to repair inconsistencies.
+```
+
+### 8.5 Legacy Reconciliation Logic (Simple Version)
+
+**Note**: This is a simplified version. See Section 8.2 for the full crash recovery algorithm.
 
 ```go
 func Reconcile(fix, force bool) error {
@@ -1261,7 +1701,7 @@ func detectOrphanedCHProcesses(knownVMs []string) []int {
 }
 ```
 
-### 8.4 Reconciliation Schedule
+### 8.6 Reconciliation Schedule
 
 **When to Run**:
 1. **On daemon startup** (if running as daemon)

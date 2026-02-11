@@ -8,7 +8,7 @@
 
 ✅ **Supported**:
 - Cloud Hypervisor native cloud images (Ubuntu Cloud, Fedora Cloud, qcow2 format) - **Recommended**
-- Bootable OCI images (custom-built with kernel, initrd, systemd, bootloader)
+- Bootable OCI images (custom-built with kernel, initrd, systemd, bootloader, GRUB)
 
 ❌ **NOT Supported**:
 - Regular container images (`ubuntu:latest`, `python:3.11`, `node:20`, etc.)

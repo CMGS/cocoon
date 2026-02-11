@@ -569,7 +569,13 @@ ls -la /sbin/init  # Should be symlink to systemd
 
 **cloud-init Datasource Configuration**:
 
-Images MUST have cloud-init configured to use NoCloud-Net datasource:
+**cloud-init: CONDITIONAL**
+- **REQUIRED**: For Cocoon metadata server integration (SSH/user setup, hostname config)
+- **OPTIONAL**: For standalone VMs with pre-configured credentials
+- **DEFAULT**: Standard cloud images (Ubuntu Cloud, Fedora Cloud) include it by default
+- **FALLBACK**: VMs without cloud-init will boot but cannot use metadata server
+
+Images using Cocoon metadata server MUST have cloud-init configured to use NoCloud-Net datasource:
 
 ```yaml
 # /etc/cloud/cloud.cfg.d/99-cocoon.cfg
@@ -690,28 +696,283 @@ cloud-hypervisor \
 ```
 
 **Boot Completion Detection**:
+
+Cocoon uses multi-pattern detection with fallback sequences to ensure robust boot detection across different Linux distributions and configurations.
+
+**Detection Strategy**:
+1. **Primary patterns**: Systemd target markers (multi-user or graphical)
+2. **Cloud-init patterns**: Verify cloud-init completion (if enabled)
+3. **Fallback patterns**: Login prompts, systemd startup finished messages
+4. **Future enhancement**: cocoon-ready.service injection via user-data
+
+**Implementation**:
 ```go
-func WaitForBootCompletion(vmID string, timeout time.Duration) error {
+// BootDetectionConfig defines patterns for detecting boot completion
+type BootDetectionConfig struct {
+    // Systemd target patterns (any one indicates boot complete)
+    SystemdTargetPatterns []string
+
+    // Cloud-init completion patterns (optional, checked if cloud-init is enabled)
+    CloudInitPatterns []string
+
+    // Fallback patterns (used if primary patterns not found within timeout)
+    FallbackPatterns []string
+
+    // Timeout for boot detection
+    Timeout time.Duration
+
+    // Whether cloud-init is enabled for this VM
+    CloudInitEnabled bool
+}
+
+// DefaultBootDetectionConfig returns the default boot detection configuration
+func DefaultBootDetectionConfig() BootDetectionConfig {
+    return BootDetectionConfig{
+        // Systemd target patterns (ordered by priority)
+        SystemdTargetPatterns: []string{
+            "Reached target Multi-User System",        // Ubuntu, Debian, Fedora
+            "Reached target Graphical Interface",      // Desktop images
+            "multi-user.target: Startup finished",     // Alternative format
+            "graphical.target: Startup finished",      // Desktop alternative
+        },
+
+        // Cloud-init completion patterns
+        CloudInitPatterns: []string{
+            "Cloud-init v.",                           // Generic version message
+            "finished at",                             // cloud-init finish timestamp
+            "cloud-init.target: Succeeded",            // systemd unit succeeded
+        },
+
+        // Fallback patterns (login prompt indicates boot complete)
+        FallbackPatterns: []string{
+            "login:",                                  // Login prompt
+            "Welcome to",                              // Distribution welcome message
+        },
+
+        Timeout:          60 * time.Second,
+        CloudInitEnabled: true,
+    }
+}
+
+// BootCompletionState tracks detection state
+type BootCompletionState struct {
+    SystemdTargetReached bool
+    CloudInitFinished    bool
+    BootCompleteTime     time.Time
+}
+
+// WaitForBootCompletion waits for VM boot to complete with robust pattern detection
+func WaitForBootCompletion(vmID string, config BootDetectionConfig) error {
     logPath := fmt.Sprintf("/var/log/cocoon/%s.log", vmID)
 
-    ctx, cancel := context.WithTimeout(context.Background(), timeout)
+    ctx, cancel := context.WithTimeout(context.Background(), config.Timeout)
     defer cancel()
 
-    // Tail serial log for boot completion marker
+    state := &BootCompletionState{
+        SystemdTargetReached: false,
+        CloudInitFinished:    !config.CloudInitEnabled, // Skip if disabled
+    }
+
+    // Tail serial log for boot completion markers
     for line := range tailFile(ctx, logPath) {
-        // Look for systemd multi-user target (VM is ready)
-        if strings.Contains(line, "Reached target Multi-User System") {
+        // Check systemd target patterns
+        if !state.SystemdTargetReached {
+            for _, pattern := range config.SystemdTargetPatterns {
+                if strings.Contains(line, pattern) {
+                    log.Info("VM %s: Systemd target reached: %s", vmID, pattern)
+                    state.SystemdTargetReached = true
+                    break
+                }
+            }
+        }
+
+        // Check cloud-init completion patterns (if enabled)
+        if config.CloudInitEnabled && !state.CloudInitFinished {
+            for _, pattern := range config.CloudInitPatterns {
+                if strings.Contains(line, pattern) {
+                    log.Info("VM %s: cloud-init finished: %s", vmID, pattern)
+                    state.CloudInitFinished = true
+                    break
+                }
+            }
+        }
+
+        // Boot is complete when both conditions are met
+        if state.SystemdTargetReached && state.CloudInitFinished {
+            state.BootCompleteTime = time.Now()
+            log.Info("VM %s: Boot completed successfully", vmID)
             return nil
         }
+
+        // Fallback: check fallback patterns (only after timeout/2)
+        if time.Since(ctx.Value("startTime").(time.Time)) > config.Timeout/2 {
+            for _, pattern := range config.FallbackPatterns {
+                if strings.Contains(line, pattern) {
+                    log.Warn("VM %s: Boot detected via fallback pattern: %s", vmID, pattern)
+                    state.BootCompleteTime = time.Now()
+                    return nil
+                }
+            }
+        }
+    }
+
+    // Timeout exceeded
+    return fmt.Errorf("boot timeout exceeded: systemd=%v, cloud-init=%v",
+        state.SystemdTargetReached, state.CloudInitFinished)
+}
+
+// tailFile tails a log file and returns lines via channel
+func tailFile(ctx context.Context, path string) <-chan string {
+    ch := make(chan string)
+
+    go func() {
+        defer close(ch)
+
+        // Store start time in context for fallback timing
+        ctx = context.WithValue(ctx, "startTime", time.Now())
+
+        var file *os.File
+        var err error
+
+        // Wait for log file to be created
+        for {
+            file, err = os.Open(path)
+            if err == nil {
+                break
+            }
+
+            select {
+            case <-ctx.Done():
+                return
+            case <-time.After(100 * time.Millisecond):
+                continue
+            }
+        }
+        defer file.Close()
+
+        scanner := bufio.NewScanner(file)
+        for scanner.Scan() {
+            select {
+            case <-ctx.Done():
+                return
+            case ch <- scanner.Text():
+            }
+        }
+    }()
+
+    return ch
+}
+```
+
+---
+
+### 3.2 cocoon-ready.service: Definitive Boot Signal (Phase 2)
+
+**Purpose**: Inject a custom systemd service that provides a definitive "VM is ready" signal, independent of distribution-specific boot messages.
+
+**Architecture**:
+```
+┌─────────────────────────────────────────────────────────┐
+│ Cocoon metadata server (user-data)                     │
+│ ↓                                                       │
+│ cloud-init writes /etc/systemd/system/cocoon-ready.service│
+│ ↓                                                       │
+│ systemd starts cocoon-ready.service                    │
+│   (after cloud-init.target + multi-user.target)       │
+│ ↓                                                       │
+│ Service prints "COCOON_READY" to serial console       │
+└─────────────────────────────────────────────────────────┘
+```
+
+**user-data injection** (via metadata server):
+```yaml
+#cloud-config
+write_files:
+  - path: /etc/systemd/system/cocoon-ready.service
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Cocoon Boot Completion Marker
+      After=multi-user.target cloud-init.target network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/bin/sh -c 'echo "COCOON_READY" > /dev/ttyS0'
+      RemainAfterExit=yes
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - systemctl daemon-reload
+  - systemctl enable cocoon-ready.service
+  - systemctl start cocoon-ready.service
+```
+
+**Enhanced boot detection with cocoon-ready**:
+```go
+// BootDetectionConfig with cocoon-ready support
+type BootDetectionConfig struct {
+    // ... existing patterns ...
+
+    // Cocoon-ready service pattern (highest priority)
+    CocoonReadyPattern string
+
+    // Whether to use cocoon-ready service
+    UseCocoonReady bool
+}
+
+func DefaultBootDetectionConfig() BootDetectionConfig {
+    return BootDetectionConfig{
+        // Cocoon-ready pattern (definitive signal)
+        CocoonReadyPattern: "COCOON_READY",
+        UseCocoonReady:     true, // Enable by default in Phase 2
+
+        // ... existing patterns ...
+    }
+}
+
+func WaitForBootCompletion(vmID string, config BootDetectionConfig) error {
+    logPath := fmt.Sprintf("/var/log/cocoon/%s.log", vmID)
+
+    ctx, cancel := context.WithTimeout(context.Background(), config.Timeout)
+    defer cancel()
+
+    state := &BootCompletionState{}
+
+    for line := range tailFile(ctx, logPath) {
+        // Priority 1: Check for COCOON_READY marker (most reliable)
+        if config.UseCocoonReady && strings.Contains(line, config.CocoonReadyPattern) {
+            log.Info("VM %s: Cocoon-ready service completed", vmID)
+            state.BootCompleteTime = time.Now()
+            return nil
+        }
+
+        // Priority 2: Check systemd + cloud-init patterns (fallback)
+        // ... existing pattern detection logic ...
     }
 
     return fmt.Errorf("boot timeout exceeded")
 }
 ```
 
+**Benefits**:
+- ✅ **Distribution-agnostic**: Works across Ubuntu, Fedora, Debian, etc.
+- ✅ **Reliable**: Explicit signal instead of inferring from log messages
+- ✅ **Deterministic**: Runs after all critical services (cloud-init, network, multi-user)
+- ✅ **No image modification**: Injected via cloud-init user-data at runtime
+- ✅ **Backward compatible**: Falls back to pattern matching if service fails
+
+**Rollout Strategy**:
+- **Phase 1 (MVP)**: Use multi-pattern detection (current implementation)
+- **Phase 2**: Enable cocoon-ready.service by default, keep pattern matching as fallback
+- **Phase 3**: Make cocoon-ready.service mandatory for certified images
+
 ---
 
-### 3.2 Future I/O Mechanisms (Phase 2)
+### 3.3 Future I/O Mechanisms (Phase 3)
 
 **vsock** (VM sockets):
 - Low-latency host-guest communication
@@ -925,7 +1186,9 @@ func ValidateBootability(rootfs string) error {
 
 ### 6.2 cloud-init Configuration Requirements
 
-**MUST have cloud-init datasource config**:
+**cloud-init: CONDITIONAL** (see § 2.2 for details)
+
+**IF using Cocoon metadata server**, images MUST have cloud-init datasource config:
 
 ```yaml
 # /etc/cloud/cloud.cfg.d/99-cocoon.cfg
@@ -1035,9 +1298,22 @@ virt-customize -a image.qcow2 \
 - [ ] **VM Initialization**:
   - [ ] Generate user-data with users/SSH keys
   - [ ] Monitor serial log for boot completion
-  - [ ] Detect systemd multi-user target reached
+  - [ ] Implement multi-pattern boot detection:
+    - [ ] Systemd target patterns (multi-user, graphical)
+    - [ ] Cloud-init completion patterns
+    - [ ] Fallback patterns (login prompt, welcome message)
+  - [ ] Handle cloud-init enabled/disabled scenarios
+  - [ ] Timeout handling with detailed error reporting
 
 ### Phase 2: Advanced Features (P1)
+
+- [ ] **cocoon-ready.service Boot Marker**:
+  - [ ] Add cocoon-ready.service to user-data generation
+  - [ ] Modify metadata server to include systemd unit in user-data
+  - [ ] Update WaitForBootCompletion to check for COCOON_READY pattern
+  - [ ] Add priority-based pattern matching (cocoon-ready → systemd+cloud-init → fallback)
+  - [ ] Test across Ubuntu, Fedora, Debian distributions
+  - [ ] Maintain backward compatibility with pattern-only detection
 
 - [ ] **Direct Kernel Boot**:
   - [ ] Extract kernel/initrd from images

@@ -69,12 +69,14 @@ func ValidateBootability(rootfs string) error {
 ### Responsibility Boundaries
 
 **Cocoon's Role**:
-- ✅ **Validate**: Check if image has required components (kernel, bootloader, cloud-init)
-- ✅ **Configure**: Modify GRUB config, inject cloud-init datasource settings
+- ✅ **Validate**: Check if image has required components (kernel, bootloader)
+- ✅ **Warn**: Alert if cloud-init missing (VM will boot but metadata server disabled)
+- ✅ **Configure**: Modify GRUB config, inject cloud-init datasource settings (if cloud-init present)
 - ❌ **Install**: Does NOT install missing packages (kernel, GRUB, cloud-init)
 
 **User's Role** (Image Provider):
-- Must provide images with kernel, bootloader, and cloud-init **pre-installed**
+- **MUST provide**: kernel, bootloader **pre-installed**
+- **SHOULD provide**: cloud-init **pre-installed** (required for metadata server integration)
 - Cocoon only verifies and configures existing components
 
 **Rationale**: Installing packages during conversion would require:
@@ -564,7 +566,9 @@ func (m *MountedContainer) ValidateBootability() error {
     }
 
     // SHOULD have components (recommended, not mandatory)
-    // cloud-init: Required for Cocoon metadata server integration, but not for basic boot
+    // cloud-init: CONDITIONAL
+    // - REQUIRED: For Cocoon metadata server integration (SSH/user setup)
+    // - OPTIONAL: VM will boot without it (standalone use case)
     cloudInitPath := filepath.Join(m.mountPoint, "/usr/bin/cloud-init")
     if _, err := os.Stat(cloudInitPath); os.IsNotExist(err) {
         log.Warn("cloud-init not found - VM will boot but Cocoon metadata server integration disabled")
@@ -966,7 +970,9 @@ func VerifyBootContract(imagePath string) error {
     }
 
     // SHOULD check (recommended, not mandatory)
-    // cloud-init: Warning if missing, but don't fail
+    // cloud-init: CONDITIONAL (warning if missing, but don't fail)
+    // - REQUIRED: For metadata server integration
+    // - OPTIONAL: VM will boot without it
     cloudInitCmd := exec.Command("guestfish", "-a", imagePath, "-i",
         "sh", "test -x /usr/bin/cloud-init")
     if err := cloudInitCmd.Run(); err != nil {

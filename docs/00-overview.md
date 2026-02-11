@@ -11,7 +11,11 @@ Cocoon requires **bootable VM images** with a complete operating system, not app
 **1. Bootable OCI Images** (Custom-built OS images packaged as OCI):
 - **MUST contain**: kernel (`/boot/vmlinuz*`), initrd/initramfs, init system (`/sbin/init` → systemd)
 - **MUST have**: GRUB bootloader in ESP (EFI System Partition), GPT partition table
-- **SHOULD have**: cloud-init (recommended for VM initialization with Cocoon metadata server)
+- **cloud-init: CONDITIONAL**:
+  - **REQUIRED**: For Cocoon metadata server integration (SSH/user setup, hostname config)
+  - **OPTIONAL**: For standalone VMs with pre-configured credentials
+  - **DEFAULT**: Standard cloud images include it by default
+  - **FALLBACK**: VMs without cloud-init will boot but cannot use metadata server
 - **Reality**: Building bootable OCI images is complex - see [11-bootable-oci-build.md](./11-bootable-oci-build.md)
 
 **2. Cloud Hypervisor Native Cloud Images** (recommended, faster):
@@ -145,15 +149,14 @@ Cocoon's architecture integrates several components to provide seamless OCI-to-V
 
 ## Key Design Decisions
 
-### 1. UEFI Boot for OS Compatibility
+### 1. Dual Boot Strategy: PVH Primary + UEFI Fallback
 
-**Decision**: Use UEFI firmware (OVMF) instead of PVH for VM boot.
+**Decision**: Use PVH boot with rust-hypervisor-firmware as primary boot method, with UEFI (OVMF) as automatic fallback.
 
 **Rationale**:
-- Standard Linux distributions (Ubuntu, Fedora, Debian) require UEFI
-- Supports secure boot, GPT partitions, and larger disk sizes
-- Broader OS compatibility without custom kernel builds
-- Trade-off: ~500ms boot time vs <100ms for PVH (acceptable for most VM workloads)
+- **PVH (Primary)**: Fast boot (<100ms), lightweight firmware, works with standard cloud images
+- **UEFI (Fallback)**: Automatic fallback on PVH failure for maximum compatibility
+- Best of both worlds: Fast boot when possible, compatibility when needed
 
 ### 2. Per-VM Cloud Hypervisor Process for Isolation
 
@@ -233,13 +236,14 @@ VM overlays:    vm-001-overlay.qcow2 (200KB, writable)
 ### Goals
 
 1. **Easy Installation**: Comprehensive Cloud Hypervisor setup with prerequisites, verification, and troubleshooting
-2. **OCI Native**: Pull and use any OCI image (ubuntu:22.04, python:3.11, custom images) as VM root filesystem
-3. **Efficient Storage**: Checksum-based caching eliminates duplicate conversions
-4. **Space Optimization**: qcow2 COW allows hundreds of VMs from single base image
-5. **Automatic Cleanup**: Garbage collection removes unused base images and orphaned overlays
-6. **Firmware Automation**: Download, configure, and manage UEFI/PVH firmware automatically
-7. **Production Architecture**: Follow proven patterns from core project (interfaces, factories, YAML config)
-8. **Intuitive CLI**: Docker-like commands (create, start, stop, delete, inspect, image pull)
+2. **Cloud Images First**: Native support for cloud images (Ubuntu Cloud, Fedora Cloud) as primary path
+3. **Bootable Images Only**: Support OCI images with strict bootability validation (kernel, initrd, bootloader required)
+4. **Efficient Storage**: Checksum-based caching eliminates duplicate conversions
+5. **Space Optimization**: qcow2 COW allows hundreds of VMs from single base image
+6. **Automatic Cleanup**: Garbage collection removes unused base images and orphaned overlays
+7. **Firmware Automation**: Download, configure, and manage PVH/UEFI firmware automatically
+8. **Production Architecture**: Follow proven patterns from core project (interfaces, factories, YAML config)
+9. **Intuitive CLI**: Docker-like commands (run, create, start, stop, delete, doctor, firmware)
 
 ### Non-Goals (Phase 1)
 
@@ -340,18 +344,24 @@ For quick evaluation without dealing with rootless limitations:
    go install github.com/your-org/cocoon@latest
    ```
 
-4. **Create and start a VM** (5 min):
+4. **Run health check and download firmware** (2 min):
    ```bash
-   # Use cloud image directly (no OCI conversion)
-   cocoon create --cloud-img ~/cocoon-images/ubuntu-22.04-server-cloudimg-amd64.img --name test-vm
-   cocoon start test-vm
-   cocoon console test-vm
+   # Verify installation and download PVH firmware
+   cocoon doctor --fix
    ```
 
-5. **Verify it works** (5 min):
+5. **Create and start a VM** (3 min):
    ```bash
-   cocoon ps
+   # Use cloud image directly (no OCI conversion)
+   cocoon create ~/cocoon-images/ubuntu-22.04-server-cloudimg-amd64.img --name test-vm
+   cocoon start test-vm
+   ```
+
+6. **Verify it works** (5 min):
+   ```bash
+   cocoon list
    cocoon inspect test-vm
+   cocoon logs test-vm --follow
    cocoon stop test-vm
    cocoon delete test-vm
    ```

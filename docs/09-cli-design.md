@@ -617,7 +617,7 @@ func DeleteCommand() *cli.Command {
 1. **Check VM State**: If running and no `--force`, error
 2. **Stop VM** (if `--force`): Call stop with 10s timeout
 3. **Remove References**: Update reference counter ([05-storage-management.md](./05-storage-management.md))
-4. **Delete Resources**: Remove overlay, serial log, cloud-init ISO, config files
+4. **Delete Resources**: Remove overlay, serial log, config files
 5. **Mark as Deleted**: Update VM state
 
 **Example Usage**:
@@ -1422,10 +1422,13 @@ type RegistryConfig struct {
 
 // BootConfig defines boot configuration
 type BootConfig struct {
-    // Default boot mode (uefi or direct-kernel)
-    DefaultMode string `yaml:"default_mode" default:"uefi"`
+    // Default boot mode (pvh or uefi)
+    DefaultMode string `yaml:"default_mode" default:"pvh"`
 
-    // UEFI firmware path
+    // PVH firmware path
+    PVHFirmware string `yaml:"pvh_firmware" default:"/var/lib/cocoon/firmware/hypervisor-fw"`
+
+    // UEFI firmware path (fallback)
     UEFIFirmware string `yaml:"uefi_firmware" default:"/usr/share/OVMF/OVMF_CODE.fd"`
 
     // Boot timeout
@@ -1472,7 +1475,8 @@ image:
       password: mytoken
 
 boot:
-  default_mode: uefi
+  default_mode: pvh
+  pvh_firmware: /var/lib/cocoon/firmware/hypervisor-fw
   uefi_firmware: /usr/share/OVMF/OVMF_CODE.fd
   boot_timeout: 60s
 
@@ -1502,7 +1506,7 @@ log:
 5. **Verify bootability** → `ImageManager.VerifyBootable(image)` (Boot Contract §6)
 6. **Convert to qcow2** → `ImageManager.ConvertToQcow2(image, baseImagePath)`
 7. **Create COW overlay** → `StorageManager.CreateOverlay(baseImage, vmID)`
-8. **Generate cloud-init ISO** → Create NoCloud ISO with task command (Boot Contract §2.2.1)
+8. **Start metadata server** → Start HTTP server on 169.254.169.254 for cloud-init (Boot Contract §2.2)
 9. **Configure VM**:
    ```go
    config := &types.VMConfig{
@@ -1532,9 +1536,9 @@ log:
 10. **Start Cloud Hypervisor**:
     ```bash
     cloud-hypervisor \
+      --firmware /var/lib/cocoon/firmware/hypervisor-fw \
       --api-socket /run/cocoon/vm-123.sock \
       --disk path=/var/lib/cocoon/vms/vm-123/overlay.qcow2 \
-      --disk path=/var/lib/cocoon/cloud-init/vm-123.iso,readonly=on \
       --cpus boot=2 \
       --memory size=2G \
       --serial file=/var/log/cocoon/vm-123-serial.log \
@@ -1565,7 +1569,7 @@ log:
 5. **Delete resources**:
    - Move overlay to trash: `mv overlay.qcow2 /var/lib/cocoon/trash/`
    - Delete serial log: `rm /var/log/cocoon/vm-123-serial.log`
-   - Delete cloud-init ISO: `rm /var/lib/cocoon/cloud-init/vm-123.iso`
+   - Stop metadata server for this VM
    - Delete API socket: `rm /run/cocoon/vm-123.sock`
    - Delete VM directory: `rm -rf /var/lib/cocoon/vms/vm-123/`
 6. **Mark as deleted** → Update VM state to `deleted`
@@ -1695,8 +1699,8 @@ This CLI design implements the Boot Contract specification:
 
 | Boot Contract Section | CLI Implementation |
 |----------------------|-------------------|
-| §1 Boot Path Decision | `--boot-mode` flag (default: uefi), `--firmware` flag |
-| §2 Guest Init Model | cloud-init ISO generation in `cocoon run` |
+| §1 Boot Path Decision | `--boot-mode` flag (default: pvh), `--firmware` flag, automatic UEFI fallback |
+| §2 Guest Init Model | Metadata server startup in `cocoon run` |
 | §3 I/O Mechanisms | Serial console via `--serial-log`, `cocoon logs` command |
 | §4 Lifecycle Semantics | `run`, `stop`, `delete`, `kill` commands |
 | §5 VM Configuration Schema | `types.VMConfig` in Go code |
@@ -1807,8 +1811,7 @@ This CLI design implements the Boot Contract specification:
     "process_id": 12345
   },
   "initialization": {
-    "metadata_server": "http://169.254.169.254",
-    "cloud_init_iso": ""
+    "metadata_server": "http://169.254.169.254"
   },
   "io": {
     "serial": {
