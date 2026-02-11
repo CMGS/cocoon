@@ -412,7 +412,7 @@ func CreateCommand() *cli.Command {
             &cli.StringFlag{
                 Name:     "image",
                 Aliases:  []string{"i"},
-                Usage:    "OCI image reference",
+                Usage:    "Cloud image path or URL (Phase 1: qcow2 only; Phase 2: OCI support)",
                 Required: true,
             },
             &cli.IntFlag{
@@ -446,8 +446,15 @@ func CreateCommand() *cli.Command {
 **Example Usage**:
 
 ```bash
-# Create VM (without starting)
-cocoon create --name myvm --image ubuntu:22.04 --cpus 4 --memory 8G
+# Create VM from cloud image (Phase 1 - recommended)
+cocoon create --name myvm \
+  --image /var/lib/cocoon/cache/images/ubuntu-22.04-cloudimg.qcow2 \
+  --cpus 4 --memory 8G
+
+# Or from URL (downloads and caches automatically)
+cocoon create --name myvm \
+  --image https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img \
+  --cpus 4 --memory 8G
 ```
 
 ### 3.4 cocoon start (Boot VM)

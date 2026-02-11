@@ -246,12 +246,28 @@ GET http://169.254.169.254/user-data
         - ssh-rsa AAAAB3...
 ```
 
-**Implementation Phases**:
+**Implementation Strategy**:
 
-| Phase | Injection Method | Status |
-|-------|-----------------|--------|
-| Phase 1 | Metadata server (HTTP) | ✅ Primary |
-| Phase 2 | cloud-init disk (ISO fallback) | 📋 Optional |
+**Phase 1: Stub Metadata Server (MVP)**
+- Lightweight HTTP server listening on 169.254.169.254:80
+- Per-VM metadata isolation (keyed by VM IP or request context)
+- EC2-compatible endpoints:
+  - `/meta-data/instance-id` → VM ID
+  - `/meta-data/hostname` → VM hostname
+  - `/meta-data/public-keys/` → SSH public keys (optional)
+  - `/user-data` → cloud-config for user/SSH setup
+- No authentication required (local host only)
+- Starts automatically when VM starts, stops when VM stops
+
+**NOT Included in Phase 1**:
+- ❌ cloud-init ISO (no disk mounting for cloud-init)
+- ❌ Advanced metadata: network config, block device mapping
+- ❌ IMDSv2 authentication (AWS-style token-based auth)
+
+**Phase 2: Full Metadata Server**
+- Network configuration injection
+- Block device mapping
+- IMDSv2 authentication for security
 
 ---
 
@@ -624,20 +640,29 @@ virt-customize -a image.qcow2 \
   - [ ] Version management and updates
 
 - [ ] **PVH Boot**:
-  - [ ] Launch CH with `--kernel hypervisor-fw`
+  - [ ] Launch CH with `--firmware hypervisor-fw`
   - [ ] Verify firmware can boot standard cloud images
   - [ ] Test with Ubuntu Cloud, Fedora Cloud
 
 - [ ] **UEFI Fallback**:
-  - [ ] Detect OVMF firmware path
-  - [ ] Launch CH without `--kernel` parameter
+  - [ ] Detect OVMF firmware path at system locations
+  - [ ] Launch CH without `--firmware` and `--kernel` parameters (CH auto-detects)
   - [ ] Automatic fallback on PVH failure
 
-- [ ] **Metadata Server**:
-  - [ ] Implement HTTP server (169.254.169.254:80)
-  - [ ] Serve `/meta-data/*` and `/user-data`
-  - [ ] Generate cloud-init user-data for VM initialization
-  - [ ] Per-VM metadata isolation
+- [ ] **Metadata Server (Stub Implementation)**:
+  - [ ] Implement lightweight HTTP server listening on 169.254.169.254:80
+  - [ ] EC2-compatible endpoints:
+    - [ ] `/meta-data/instance-id` → return VM ID
+    - [ ] `/meta-data/hostname` → return VM hostname
+    - [ ] `/meta-data/public-keys/` → return SSH keys (optional)
+    - [ ] `/user-data` → return cloud-config YAML
+  - [ ] Per-VM metadata isolation (keyed by request context or VM IP)
+  - [ ] Start metadata server before launching VM
+  - [ ] Stop metadata server when VM stops
+  - [ ] Generate user-data with:
+    - [ ] Default user creation
+    - [ ] SSH key injection
+    - [ ] Hostname configuration
 
 - [ ] **Image Conversion**:
   - [ ] Validate cloud-init installed

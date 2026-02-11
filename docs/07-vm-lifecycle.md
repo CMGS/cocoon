@@ -116,8 +116,8 @@ CREATING -----> CREATED -----> STARTING -----> RUNNING -----> STOPPING -----> ST
 
 **State**:
 - Overlay disk exists at `/var/lib/cocoon/vms/{vm-id}/overlay.qcow2`
-- cloud-init ISO exists at `/var/lib/cocoon/vms/{vm-id}/cloud-init.iso`
 - Metadata stored in `/var/lib/cocoon/vms/{vm-id}/metadata.json`
+- Metadata server configuration prepared (no separate ISO needed)
 - No Cloud Hypervisor process running
 
 **Allowed Operations**:
@@ -316,19 +316,22 @@ func TransitionState(vmID string, to VMState) error {
         return err
     }
 
-    // 3. Update state
+    // 3. Save old state before updating (CRITICAL: must save before update)
+    oldState := metadata.State
+
+    // 4. Update state
     metadata.State = to
     metadata.UpdatedAt = time.Now()
 
-    // 4. Add transition to history
+    // 5. Add transition to history
     metadata.StateHistory = append(metadata.StateHistory, StateTransition{
-        From:      metadata.State,
+        From:      oldState,  // Use saved old state, not metadata.State
         To:        to,
         Timestamp: time.Now(),
         Reason:    "", // Set by caller
     })
 
-    // 5. Persist atomically
+    // 6. Persist atomically
     return SaveMetadata(metadata)
 }
 ```
@@ -372,7 +375,7 @@ func TransitionState(vmID string, to VMState) error {
 **Postconditions**:
 - VM metadata created
 - Overlay disk created
-- cloud-init ISO generated
+- Metadata server configuration prepared (guest datasource config embedded in image)
 - VM in CREATED state
 
 **Idempotency**:
@@ -494,6 +497,9 @@ type VMMetadata struct {
     // ===== Boot Configuration =====
     BootConfig BootConfig `json:"boot_config"`
 
+    // ===== Cloud-Init Configuration =====
+    CloudInit CloudInitConfig `json:"cloud_init"`
+
     // ===== Timestamps =====
     Timestamps Timestamps `json:"timestamps"`
 
@@ -533,9 +539,6 @@ type StorageInfo struct {
     // Path to base image (shared, read-only)
     BasePath string `json:"base_path"`
 
-    // Path to cloud-init ISO
-    CloudInitPath string `json:"cloud_init_path"`
-
     // Disk size (e.g., "10G")
     Size string `json:"size"`
 
@@ -564,6 +567,24 @@ type HypervisorInfo struct {
     APIVersion string `json:"api_version"`
 }
 
+// CloudInitConfig contains cloud-init metadata server configuration
+type CloudInitConfig struct {
+    // Metadata server address (e.g., "http://169.254.169.254")
+    MetadataServerAddr string `json:"metadata_server_addr"`
+
+    // Instance ID for this VM
+    InstanceID string `json:"instance_id"`
+
+    // Hostname
+    Hostname string `json:"hostname"`
+
+    // Public keys for SSH access
+    PublicKeys []string `json:"public_keys,omitempty"`
+
+    // User-data (cloud-config format)
+    UserData string `json:"user_data,omitempty"`
+}
+
 // BootConfig contains boot configuration
 type BootConfig struct {
     // Number of vCPUs
@@ -572,11 +593,11 @@ type BootConfig struct {
     // Memory in bytes
     Memory int64 `json:"memory"`
 
-    // Boot mode: "uefi" or "direct-kernel"
+    // Boot mode: "pvh" or "uefi"
     BootMode string `json:"boot_mode"`
 
-    // UEFI firmware path (if boot_mode == "uefi")
-    UEFIFirmware string `json:"uefi_firmware,omitempty"`
+    // Firmware path (for PVH: hypervisor-fw; for UEFI: omit for auto-detect)
+    FirmwarePath string `json:"firmware_path,omitempty"`
 
     // Kernel path (if boot_mode == "direct-kernel")
     KernelPath string `json:"kernel_path,omitempty"`
