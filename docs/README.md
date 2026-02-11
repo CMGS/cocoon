@@ -86,12 +86,3 @@ When adding new docs:
 4. Update reading paths if needed
 
 For Phase 2 docs, place in `future/` directory.
-
-## Archive
-
-Old/superseded documents:
-
-- `init.md` - Original monolithic RFC (superseded by split docs)
-- `ch-installation.md` - Merged into 02-installation.md
-- `image-management.md` - Split into 04-oci-conversion.md and 05-storage-management.md
-- `rfc/001-vibe-cli-architecture.md` - Merged into 09-cli-design.md
