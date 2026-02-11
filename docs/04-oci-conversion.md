@@ -448,6 +448,8 @@ func (m *MountedContainer) ValidateBootability() error {
         {"/boot/vmlinuz", false, "kernel not found (no /boot/vmlinuz*)"},
         {"/boot/initrd", false, "initrd not found (no /boot/initrd*)"},
         {"/sbin/init", true, "init system not found (/sbin/init missing)"},
+        {"/usr/bin/cloud-init", true, "cloud-init not installed (required for task injection)"},
+        {"/boot/efi/EFI", false, "EFI bootloader not found (no ESP partition)"},
         {"/etc", false, "incomplete rootfs (missing /etc)"},
         {"/usr", false, "incomplete rootfs (missing /usr)"},
     }
@@ -467,6 +469,17 @@ func (m *MountedContainer) ValidateBootability() error {
             }
         }
     }
+
+    // Verify init is systemd (not sysvinit or other)
+    initPath := filepath.Join(m.mountPoint, "/sbin/init")
+    initTarget, err := os.Readlink(initPath)
+    if err == nil {  // init is a symlink
+        if !strings.Contains(initTarget, "systemd") {
+            return fmt.Errorf("bootability check failed: init must be systemd, got: %s", initTarget)
+        }
+    }
+    // If init is not a symlink, check if it's systemd binary directly
+    // (some distros have systemd as /sbin/init directly)
 
     return nil
 }
