@@ -16,21 +16,29 @@ The storage system uses a well-organized hierarchy that separates cached base im
 │   ├── manifests/              # Image metadata (checksum-based)
 │   │   ├── abc123...json       # Manifest checksum → metadata
 │   │   └── def456...json
-│   └── images/                 # Base qcow2 files (backing files)
-│       ├── abc123...qcow2      # Checksum-based filenames
-│       └── def456...qcow2
+│   ├── images/                 # Base qcow2 files (backing files)
+│   │   ├── abc123...qcow2      # Checksum-based filenames
+│   │   └── def456...qcow2
+│   ├── locks/                  # Image conversion locks (per-checksum)
+│   │   ├── abc123...lock
+│   │   └── def456...lock
+│   ├── references.json         # Reference counter data
+│   └── references.lock         # Reference counter lock file
 ├── vms/
 │   ├── vm-001/
 │   │   ├── overlay.qcow2       # VM's COW overlay
 │   │   ├── config.json         # VM configuration
-│   │   └── metadata.json       # Runtime metadata
+│   │   ├── metadata.json       # Runtime metadata
+│   │   └── metadata.lock       # VM metadata lock file
 │   ├── vm-002/
 │   │   ├── overlay.qcow2
 │   │   ├── config.json
-│   │   └── metadata.json
+│   │   ├── metadata.json
+│   │   └── metadata.lock
 │   └── ...
 ├── temp/                       # Temporary images during creation
-└── trash/                      # Soft-deleted images (for recovery)
+├── trash/                      # Soft-deleted images (for recovery)
+└── gc.lock                     # Global GC lock file
 ```
 
 ### Storage Configuration
@@ -63,6 +71,7 @@ class StorageConfig:
         for path in [
             self.cache_dir / "manifests",
             self.cache_dir / "images",
+            self.cache_dir / "locks",
             self.vm_dir,
             self.temp_dir,
             self.trash_dir
@@ -277,12 +286,13 @@ def delete_vm(vm_id: str):
 
 ### Concurrency Considerations
 
-Reference counting operations must be thread-safe. See [06-concurrency.md](./06-concurrency.md) for details on:
+Reference counting operations must be **cross-process safe**. See [06-concurrency.md](./06-concurrency.md) for details on:
 
-- File locking for `references.json` updates
-- Atomic read-modify-write operations
-- Race condition prevention during simultaneous VM creation/deletion
-- Distributed locking for multi-node setups
+- File-based locking (flock) for `references.json` updates at `/var/lib/cocoon/cache/references.lock`
+- Atomic read-modify-write operations using temp files and fsync
+- Race condition prevention during simultaneous VM creation/deletion across multiple processes
+- Crash recovery (locks auto-released by kernel on process crash)
+- Lock hierarchy to prevent deadlocks (Reference Lock is Level 2)
 
 ## Garbage Collection
 
@@ -406,6 +416,17 @@ class GarbageCollector:
         print("Garbage collection complete")
 ```
 
+### Garbage Collection Locking
+
+GC operations must coordinate with concurrent VM create/delete operations. See [06-concurrency.md](./06-concurrency.md) for details on:
+
+- Global GC lock at `/var/lib/cocoon/gc.lock` (Level 1 in lock hierarchy)
+- Atomic check-and-delete using reference counter lock (Level 2)
+- Lock ordering to prevent deadlocks with VM operations
+- Crash recovery and lock auto-release
+
+**Key guarantee**: GC cannot delete a base image while any VM references it, even under high concurrency or process crashes.
+
 ### Collection Categories
 
 #### 1. Unreferenced Base Images
@@ -414,11 +435,15 @@ Base images with zero VM references are candidates for collection after a grace 
 
 **Why grace period?** A newly downloaded base image might not have references yet if VMs are still being provisioned. The grace period prevents premature deletion.
 
+**Locking**: GC acquires both GC lock (L1) and reference lock (L2) to perform atomic check-and-delete.
+
 #### 2. Orphaned Overlays
 
 Overlay images whose parent VM configuration has been deleted or corrupted. These indicate incomplete cleanup operations.
 
 **Detection:** `overlay.qcow2` exists but `config.json` is missing in the same VM directory.
+
+**Locking**: GC lock (L1) only, as this operates on already-deleted VMs.
 
 #### 3. Temporary Files
 
@@ -426,11 +451,15 @@ Files in the `/var/lib/cocoon/temp/` directory older than a threshold (default: 
 
 **Source:** Failed image conversions, interrupted downloads, or crashed operations.
 
+**Locking**: GC lock (L1) only, as temp files are not referenced.
+
 #### 4. Trash Cleanup
 
 Permanently delete soft-deleted items from trash after a recovery period (default: 7 days).
 
 **Purpose:** Allows recovery from accidental deletions while eventually reclaiming disk space.
+
+**Locking**: GC lock (L1) only, as trash items are already soft-deleted.
 
 ### Grace Periods
 

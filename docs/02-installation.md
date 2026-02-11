@@ -209,23 +209,25 @@ sudo dnf install -y edk2-ovmf
 **VM Launch with UEFI:**
 
 ```bash
-# Cloud Hypervisor automatically uses UEFI when both --firmware and --kernel are omitted
+# UEFI boot requires explicit firmware path via --kernel parameter
 cloud-hypervisor \
+    --kernel /usr/share/edk2/ovmf/CLOUDHV.fd \
     --disk path=/var/lib/cocoon/vms/vm-123/overlay.qcow2 \
     --cpus boot=2 \
     --memory size=2G \
     --serial file=/var/log/cocoon/vm-123.log \
     --console off
-
-# Cloud Hypervisor will search for OVMF firmware at standard system paths
 ```
 
 **UEFI Boot Behavior**:
-- When **both** `--firmware` and `--kernel` are omitted, Cloud Hypervisor enters UEFI boot mode
-- CH automatically searches for OVMF/AAVMF at standard system locations:
-  - Ubuntu/Debian: `/usr/share/OVMF/OVMF_CODE.fd`
-  - Fedora: `/usr/share/edk2/ovmf/OVMF_CODE.fd`
-- No explicit firmware path needed for UEFI fallback
+- UEFI boot requires passing the UEFI firmware file to `--kernel` parameter
+- Recommended: Use Cloud Hypervisor's edk2 firmware (`CLOUDHV.fd`)
+  - Optimized for Cloud Hypervisor
+  - Available in CH releases or distribution packages
+- Alternative: Standard OVMF firmware (`OVMF_CODE.fd`)
+  - Ubuntu/Debian: `/usr/share/OVMF/OVMF_CODE.fd` (from `ovmf` package)
+  - Fedora: `/usr/share/edk2/ovmf/OVMF_CODE.fd` (from `edk2-ovmf` package)
+- **Important**: Cloud Hypervisor does NOT auto-detect UEFI firmware. You must explicitly specify the firmware path.
 
 ### Firmware Selection Guide
 

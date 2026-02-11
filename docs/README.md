@@ -102,3 +102,13 @@ When adding new docs:
 4. Update reading paths if needed
 
 For Phase 2 docs, place in `future/` directory.
+
+## RFC Process
+
+For major architectural changes or feature proposals, use the RFC process:
+
+- See [rfc/README.md](./rfc/README.md) for the RFC process
+- Use [rfc/TEMPLATE.md](./rfc/TEMPLATE.md) to create new RFCs
+- RFCs are numbered sequentially (001, 002, etc.)
+
+Currently, there are no active RFCs. The initial Cocoon design is documented in the main docs (00-overview.md through 10-implementation-roadmap.md).

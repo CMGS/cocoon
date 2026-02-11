@@ -101,7 +101,7 @@ cocoon firmware verify    # Verify integrity
 **UEFI boot command**:
 ```bash
 cloud-hypervisor \
-  # Note: Omit both --firmware and --kernel to trigger UEFI boot
+  --kernel /usr/share/edk2/ovmf/CLOUDHV.fd \
   --disk path=/var/lib/cocoon/vms/vm-123/overlay.qcow2 \
   --cpus boot=2 \
   --memory size=2G \
@@ -110,15 +110,19 @@ cloud-hypervisor \
 ```
 
 **Firmware Requirements**:
-- **x86_64**: `/usr/share/OVMF/OVMF_CODE.fd` (from `ovmf` package)
+- **x86_64**: Use Cloud Hypervisor's edk2 UEFI firmware (`CLOUDHV.fd`)
+  - Ubuntu/Debian: Package `edk2-cloud-hypervisor` or download from CH releases
+  - Fedora: Package `edk2-ovmf` (includes CLOUDHV.fd variant)
+  - Alternatively: `/usr/share/OVMF/OVMF_CODE.fd` from `ovmf` package (standard OVMF)
 - **aarch64**: `/usr/share/AAVMF/AAVMF_CODE.fd` (from `edk2-aarch64` package)
-- Cloud Hypervisor automatically detects system-installed UEFI firmware at standard paths
 
 **How UEFI fallback works**:
-1. Cocoon omits both `--firmware` and `--kernel` parameters
-2. Cloud Hypervisor enters UEFI boot mode
-3. CH searches for OVMF/AAVMF at standard system paths
+1. Cocoon passes `--kernel /path/to/CLOUDHV.fd` (CH's edk2 UEFI firmware)
+2. Cloud Hypervisor loads UEFI firmware from specified path
+3. UEFI firmware discovers virtio-blk disk and parses GPT
 4. UEFI firmware loads GRUB from ESP → boots kernel
+
+**Note**: Cloud Hypervisor does NOT auto-detect OVMF. You must explicitly provide the UEFI firmware path via `--kernel` parameter.
 
 ---
 
@@ -153,14 +157,372 @@ func SelectBootMode(image *Image, userPreference BootMode) BootMode {
 func BootVM(vmID string, mode BootMode) error {
     if mode == BootModePVH {
         err := bootWithPVH(vmID)
-        if err != nil {
+        if shouldFallbackToUEFI(err) {
             log.Warn("PVH boot failed, falling back to UEFI: %v", err)
             return bootWithUEFI(vmID)
         }
-        return nil
+        return err  // Non-recoverable error, don't fallback
     }
     return bootWithUEFI(vmID)
 }
+```
+
+---
+
+### 1.4 PVH/UEFI Fallback Detection Conditions
+
+**Decision**: Cocoon uses **explicit error detection** with automatic fallback. When PVH boot fails due to specific recoverable conditions, Cocoon automatically retries with UEFI. For non-recoverable errors, Cocoon fails immediately without fallback.
+
+#### Recoverable Conditions (Trigger Automatic Fallback)
+
+These conditions indicate that PVH boot is not supported or unsuitable for the image, but UEFI might work:
+
+**1. Firmware Loading Failures**:
+- **CH Exit Code**: 1 (firmware file not found or invalid)
+- **Error Pattern**: `Failed to load firmware` or `firmware: No such file or directory`
+- **Reason**: hypervisor-fw binary missing or corrupted
+- **Fallback**: Try UEFI with CLOUDHV.fd or OVMF
+
+**2. PVH Boot Protocol Failures**:
+- **CH Exit Code**: 1
+- **Error Pattern**: `PVH entry point not found` or `Invalid PVH header`
+- **Serial Log Pattern**: Firmware loads but finds no PVH-compatible bootloader
+- **Reason**: Image doesn't support PVH boot protocol
+- **Fallback**: Try UEFI boot
+
+**3. Disk/ESP Discovery Failures**:
+- **CH Exit Code**: 0 (VM starts but doesn't boot)
+- **Serial Log Pattern** (within 10 seconds):
+  - `No bootable device found`
+  - `Failed to find EFI System Partition`
+  - `virtio-blk: no bootable partitions`
+- **Reason**: Disk format incompatible with hypervisor-fw's GPT parser
+- **Fallback**: Try UEFI (more robust GPT handling)
+
+**4. Bootloader Compatibility Issues**:
+- **CH Exit Code**: 0 (VM starts but doesn't boot)
+- **Serial Log Pattern** (within 10 seconds):
+  - `Failed to load boot loader`
+  - `Unsupported boot loader format`
+- **Reason**: Bootloader requires full UEFI environment (e.g., Secure Boot)
+- **Fallback**: Try UEFI
+
+#### Non-Recoverable Errors (Fail Immediately, No Fallback)
+
+These errors indicate fundamental problems that UEFI fallback won't fix:
+
+**1. KVM Access Failures**:
+- **CH Exit Code**: 1
+- **Error Pattern**: `Failed to open /dev/kvm: Permission denied` or `KVM not available`
+- **Reason**: Missing KVM access, virtualization disabled
+- **Action**: Fail with clear error (user must fix KVM configuration)
+
+**2. Resource Exhaustion**:
+- **CH Exit Code**: 1
+- **Error Pattern**: `Cannot allocate memory` or `Out of memory`
+- **Reason**: Insufficient host resources
+- **Action**: Fail with clear error (user must free resources or reduce VM size)
+
+**3. Disk Access Failures**:
+- **CH Exit Code**: 1
+- **Error Pattern**: `Failed to open disk` or `Permission denied` or `No such file or directory`
+- **Reason**: Disk file missing, corrupted, or permission issues
+- **Action**: Fail with clear error (user must fix disk path/permissions)
+
+**4. API/Socket Failures**:
+- **CH Exit Code**: 1
+- **Error Pattern**: `Failed to bind socket` or `Address already in use`
+- **Reason**: Socket path conflicts or permission issues
+- **Action**: Fail with clear error (user must clean up stale sockets)
+
+**5. Configuration Errors**:
+- **CH Exit Code**: 1
+- **Error Pattern**: `Invalid parameter` or `Failed to parse`
+- **Reason**: Invalid Cloud Hypervisor parameters
+- **Action**: Fail with clear error (fix configuration)
+
+#### Implementation
+
+```go
+type BootFailureReason int
+
+const (
+    BootFailureUnknown BootFailureReason = iota
+    BootFailureFirmwareNotFound
+    BootFailurePVHProtocol
+    BootFailureDiskDiscovery
+    BootFailureBootloaderCompat
+    BootFailureKVMAccess
+    BootFailureResourceExhaustion
+    BootFailureDiskAccess
+    BootFailureSocketConflict
+    BootFailureInvalidConfig
+)
+
+type BootFailure struct {
+    Reason     BootFailureReason
+    Message    string
+    CHExitCode int
+    SerialLog  string
+}
+
+// shouldFallbackToUEFI determines if a PVH boot failure should trigger UEFI fallback
+func shouldFallbackToUEFI(err error) bool {
+    if err == nil {
+        return false
+    }
+
+    failure := analyzeBootFailure(err)
+
+    // Recoverable conditions that warrant UEFI fallback
+    switch failure.Reason {
+    case BootFailureFirmwareNotFound:
+        return true
+    case BootFailurePVHProtocol:
+        return true
+    case BootFailureDiskDiscovery:
+        return true
+    case BootFailureBootloaderCompat:
+        return true
+    default:
+        // Non-recoverable errors: don't fallback
+        return false
+    }
+}
+
+// analyzeBootFailure inspects CH exit code, stderr, and serial log to determine failure reason
+func analyzeBootFailure(err error) BootFailure {
+    failure := BootFailure{
+        Reason:  BootFailureUnknown,
+        Message: err.Error(),
+    }
+
+    // Extract CH exit code
+    if exitErr, ok := err.(*exec.ExitError); ok {
+        failure.CHExitCode = exitErr.ExitCode()
+    }
+
+    // Read serial log for boot-time errors
+    serialLog := readSerialLog(vmID, 10*time.Second) // First 10 seconds
+    failure.SerialLog = serialLog
+
+    // Pattern matching on error message and serial log
+    errorMsg := strings.ToLower(failure.Message)
+    serialLower := strings.ToLower(serialLog)
+
+    // Check for specific error patterns
+    switch {
+    // Firmware issues
+    case strings.Contains(errorMsg, "failed to load firmware"):
+        failure.Reason = BootFailureFirmwareNotFound
+    case strings.Contains(errorMsg, "firmware: no such file"):
+        failure.Reason = BootFailureFirmwareNotFound
+
+    // PVH protocol issues
+    case strings.Contains(errorMsg, "pvh entry point not found"):
+        failure.Reason = BootFailurePVHProtocol
+    case strings.Contains(errorMsg, "invalid pvh header"):
+        failure.Reason = BootFailurePVHProtocol
+
+    // Disk discovery issues (from serial log)
+    case strings.Contains(serialLower, "no bootable device"):
+        failure.Reason = BootFailureDiskDiscovery
+    case strings.Contains(serialLower, "failed to find efi system partition"):
+        failure.Reason = BootFailureDiskDiscovery
+    case strings.Contains(serialLower, "virtio-blk: no bootable partitions"):
+        failure.Reason = BootFailureDiskDiscovery
+
+    // Bootloader compatibility (from serial log)
+    case strings.Contains(serialLower, "failed to load boot loader"):
+        failure.Reason = BootFailureBootloaderCompat
+    case strings.Contains(serialLower, "unsupported boot loader format"):
+        failure.Reason = BootFailureBootloaderCompat
+
+    // Non-recoverable: KVM access
+    case strings.Contains(errorMsg, "failed to open /dev/kvm"):
+        failure.Reason = BootFailureKVMAccess
+    case strings.Contains(errorMsg, "kvm not available"):
+        failure.Reason = BootFailureKVMAccess
+
+    // Non-recoverable: Resource exhaustion
+    case strings.Contains(errorMsg, "cannot allocate memory"):
+        failure.Reason = BootFailureResourceExhaustion
+    case strings.Contains(errorMsg, "out of memory"):
+        failure.Reason = BootFailureResourceExhaustion
+
+    // Non-recoverable: Disk access
+    case strings.Contains(errorMsg, "failed to open disk"):
+        failure.Reason = BootFailureDiskAccess
+    case strings.Contains(errorMsg, "permission denied") && strings.Contains(errorMsg, "disk"):
+        failure.Reason = BootFailureDiskAccess
+
+    // Non-recoverable: Socket conflicts
+    case strings.Contains(errorMsg, "failed to bind socket"):
+        failure.Reason = BootFailureSocketConflict
+    case strings.Contains(errorMsg, "address already in use"):
+        failure.Reason = BootFailureSocketConflict
+
+    // Non-recoverable: Invalid config
+    case strings.Contains(errorMsg, "invalid parameter"):
+        failure.Reason = BootFailureInvalidConfig
+    case strings.Contains(errorMsg, "failed to parse"):
+        failure.Reason = BootFailureInvalidConfig
+    }
+
+    return failure
+}
+
+// readSerialLog reads the serial log file for the first N seconds of boot
+func readSerialLog(vmID string, duration time.Duration) string {
+    logPath := fmt.Sprintf("/var/log/cocoon/%s.log", vmID)
+
+    // Wait up to duration for log to appear
+    deadline := time.Now().Add(duration)
+    for time.Now().Before(deadline) {
+        data, err := os.ReadFile(logPath)
+        if err == nil {
+            return string(data)
+        }
+        time.Sleep(100 * time.Millisecond)
+    }
+
+    return ""
+}
+```
+
+#### Boot Attempt Flow
+
+```
+┌─────────────────────┐
+│  Start VM Boot      │
+│  (mode = PVH)       │
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│ Launch CH with      │
+│ --firmware          │
+│ hypervisor-fw       │
+└──────────┬──────────┘
+           │
+           ▼
+    ┌──────────┐
+    │ Success? │──Yes──▶ VM Running ✅
+    └──────────┘
+           │
+          No
+           │
+           ▼
+┌─────────────────────┐
+│ Analyze Failure     │
+│ (CH exit code +     │
+│  serial log)        │
+└──────────┬──────────┘
+           │
+           ▼
+    ┌──────────────┐
+    │ Recoverable? │──No──▶ Fail with error ❌
+    └──────────────┘        (KVM/disk/config issue)
+           │
+          Yes
+           │
+           ▼
+┌─────────────────────┐
+│ Log fallback reason │
+│ "PVH failed: ..."   │
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│ Launch CH with      │
+│ --kernel CLOUDHV.fd │
+│ (UEFI mode)         │
+└──────────┬──────────┘
+           │
+           ▼
+    ┌──────────┐
+    │ Success? │──Yes──▶ VM Running ✅
+    └──────────┘        (slower boot)
+           │
+          No
+           │
+           ▼
+      Fail ❌
+```
+
+#### Logging and Observability
+
+```go
+func BootVM(vmID string, mode BootMode) error {
+    log.Info("Starting VM %s with boot mode: %s", vmID, mode)
+
+    if mode == BootModePVH {
+        err := bootWithPVH(vmID)
+        if err != nil {
+            failure := analyzeBootFailure(err)
+
+            if shouldFallbackToUEFI(err) {
+                log.Warn("VM %s: PVH boot failed with recoverable error: %s (reason: %v)",
+                    vmID, failure.Message, failure.Reason)
+                log.Info("VM %s: Attempting UEFI fallback", vmID)
+
+                // Emit metric for fallback tracking
+                metrics.IncrementCounter("vm.boot.pvh_fallback", map[string]string{
+                    "reason": failure.Reason.String(),
+                })
+
+                return bootWithUEFI(vmID)
+            }
+
+            // Non-recoverable error
+            log.Error("VM %s: PVH boot failed with non-recoverable error: %s (reason: %v)",
+                vmID, failure.Message, failure.Reason)
+            return fmt.Errorf("boot failed: %w", err)
+        }
+
+        log.Info("VM %s: PVH boot successful", vmID)
+        return nil
+    }
+
+    return bootWithUEFI(vmID)
+}
+```
+
+#### Testing Fallback Detection
+
+**Test Case 1: Firmware Missing**
+```bash
+# Remove hypervisor-fw
+sudo rm /var/lib/cocoon/firmware/hypervisor-fw
+
+# Attempt boot - should fallback to UEFI
+cocoon vm create --image ubuntu:22.04 test-vm
+
+# Expected log:
+# WARN: PVH boot failed with recoverable error: Failed to load firmware (reason: FirmwareNotFound)
+# INFO: Attempting UEFI fallback
+# INFO: VM test-vm: UEFI boot successful
+```
+
+**Test Case 2: Non-PVH Image**
+```bash
+# Use image without PVH support (e.g., Windows or old Linux)
+cocoon vm create --image custom-image:latest test-vm
+
+# Expected: Automatic fallback to UEFI
+```
+
+**Test Case 3: KVM Access Denied**
+```bash
+# Remove user from kvm group
+sudo deluser $USER kvm
+
+# Attempt boot - should fail immediately (no fallback)
+cocoon vm create --image ubuntu:22.04 test-vm
+
+# Expected log:
+# ERROR: PVH boot failed with non-recoverable error: Failed to open /dev/kvm: Permission denied (reason: KVMAccess)
+# Error: boot failed: KVM access denied. Add user to 'kvm' group.
 ```
 
 ---

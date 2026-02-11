@@ -4,6 +4,17 @@
 **Status**: Draft
 **Priority**: P0 - Required for core functionality
 
+## ⚠️ Root Access Requirement
+
+**IMPORTANT**: OCI image conversion requires root privileges due to libguestfs dependency.
+
+**Deployment Strategy**:
+- **Option A (Rootless)**: Conversion is NOT available - use cloud images (qcow2) directly
+- **Option B (Rootful)**: Run cocoon as root - NOT recommended for production
+- **Option C (Hybrid)**: Recommended - cocoon runs as user, privileged helper for conversion only
+
+See [00-overview.md § Deployment Strategy](./00-overview.md#deployment-strategy) and [08-dependencies.md](./08-dependencies.md) for details.
+
 ## Executive Summary
 
 This document specifies the pipeline for converting OCI container images into bootable qcow2 disk images for Cloud Hypervisor VMs. The conversion process must produce images that satisfy the [Boot Contract](01-boot-contract.md) while maintaining efficiency through caching and deduplication.
@@ -14,7 +25,7 @@ This document specifies the pipeline for converting OCI container images into bo
 3. Convert rootfs to qcow2 format with proper partitioning
 4. Make the image bootable (bootloader, kernel, init)
 5. Cache images based on content checksums
-6. Handle rootless and rootful operation modes
+6. Handle rootless and rootful operation modes (conversion requires root)
 7. Provide robust error handling
 
 ---
@@ -1324,23 +1335,34 @@ func isRetryableError(err error) bool {
 
 ## 8. Rootless vs Rootful Considerations
 
-### 8.1 Rootless Mode (Preferred)
+### 8.1 Rootless Mode (Preferred for VM Operations, Not Conversion)
 
-**Goal**: Run entire pipeline without root privileges.
+**Goal**: Run VM operations without root privileges.
 
-**Advantages**:
-- ✅ Better security (no privilege escalation)
-- ✅ Multi-tenant friendly
-- ✅ No sudo required
+**What Works Rootless**:
+- ✅ VM lifecycle management (start/stop/delete)
+- ✅ Cloud Hypervisor operation (with KVM access)
+- ✅ Buildah image pulling and mounting
+- ✅ qcow2 overlay creation (qemu-img)
 
-**Requirements**:
+**What Requires Root**:
+- ❌ **libguestfs operations** (virt-format, virt-copy-in, guestfish)
+  - Partitioning and formatting disk images
+  - Copying files into disk images
+  - Installing bootloaders
+- ❌ **OCI to qcow2 conversion pipeline** (depends on libguestfs)
+
+**Implications for Rootless Deployment**:
+- **OCI image conversion is NOT available** in rootless mode
+- **Workaround 1**: Use cloud images (qcow2 format) directly - recommended
+- **Workaround 2**: Pre-convert OCI images in rootful environment, deploy qcow2 files
+- **Workaround 3**: Use hybrid mode (privileged helper for conversion only)
+
+**Requirements for Rootless VM Operations**:
 - User namespaces enabled (`/proc/sys/kernel/unprivileged_userns_clone = 1`)
+- User in `kvm` group for /dev/kvm access
 - Buildah configured for rootless
 - fuse-overlayfs installed
-
-**Limitations**:
-- Some libguestfs operations require fakeroot or root (workaround: use `--backend=direct`)
-- Cannot access system-wide OCI caches
 
 ### 8.2 Rootful Mode
 

@@ -301,6 +301,8 @@ func main() {
         commands.ImageCommand(),
         commands.LogsCommand(),
         commands.GCCommand(),
+        commands.DoctorCommand(),
+        commands.FirmwareCommand(),
     }
 
     if err := app.Run(os.Args); err != nil {
@@ -984,6 +986,345 @@ cocoon gc --dry-run
 cocoon gc --grace-period 12h
 ```
 
+### 3.13 cocoon doctor (System Health Check)
+
+**Command**: `cocoon doctor [FLAGS]`
+
+**Purpose**: Validate Cocoon installation and dependencies
+
+**Implementation**: Based on [08-dependencies.md § Startup Dependency Detection](./08-dependencies.md#startup-dependency-detection-cocoon-doctor) and [Boot Contract § 1.1](./01-boot-contract.md#11-primary-boot-mode-pvh--hypervisor-fw)
+
+```go
+func DoctorCommand() *cli.Command {
+    return &cli.Command{
+        Name:  "doctor",
+        Usage: "Check system health and dependencies",
+        Flags: []cli.Flag{
+            &cli.BoolFlag{
+                Name:  "verbose",
+                Aliases: []string{"v"},
+                Usage: "Show detailed check results",
+            },
+            &cli.BoolFlag{
+                Name:  "fix",
+                Usage: "Attempt to fix issues (e.g., download missing firmware)",
+            },
+        },
+        Action: doctorAction,
+    }
+}
+
+func doctorAction(c *cli.Context) error {
+    verbose := c.Bool("verbose")
+    autoFix := c.Bool("fix")
+
+    checks := []HealthCheck{
+        // Hypervisor checks
+        {Name: "cloud-hypervisor binary", Check: checkCloudHypervisorBinary},
+        {Name: "cloud-hypervisor version", Check: checkCloudHypervisorVersion},
+
+        // Firmware checks
+        {Name: "PVH firmware (hypervisor-fw)", Check: checkPVHFirmware, AutoFix: downloadPVHFirmware},
+        {Name: "UEFI firmware (OVMF)", Check: checkUEFIFirmware, Optional: true},
+
+        // Storage paths and permissions
+        {Name: "storage paths", Check: checkStoragePaths, AutoFix: createStoragePaths},
+        {Name: "storage permissions", Check: checkStoragePermissions},
+
+        // System dependencies
+        {Name: "qemu-img tool", Check: checkQemuImg},
+        {Name: "guestfish tool", Check: checkGuestfish, Optional: true},
+
+        // Runtime paths
+        {Name: "/run/cocoon directory", Check: checkRuntimeDir, AutoFix: createRuntimeDir},
+        {Name: "/var/log/cocoon directory", Check: checkLogDir, AutoFix: createLogDir},
+    }
+
+    allPassed := true
+    for _, check := range checks {
+        result := check.Check()
+        if !result.Passed {
+            if check.Optional {
+                fmt.Printf("⚠️  %s: %s (optional)\n", check.Name, result.Message)
+            } else {
+                fmt.Printf("❌ %s: %s\n", check.Name, result.Message)
+                allPassed = false
+
+                if autoFix && check.AutoFix != nil {
+                    fmt.Printf("   Attempting to fix...\n")
+                    if err := check.AutoFix(); err == nil {
+                        fmt.Printf("   ✅ Fixed\n")
+                    } else {
+                        fmt.Printf("   ❌ Fix failed: %v\n", err)
+                    }
+                }
+            }
+        } else if verbose {
+            fmt.Printf("✅ %s: %s\n", check.Name, result.Message)
+        }
+    }
+
+    if allPassed {
+        fmt.Println("\n✅ All checks passed - Cocoon is ready to use")
+        return nil
+    }
+
+    fmt.Println("\n❌ Some checks failed - see errors above")
+    fmt.Println("Run 'cocoon doctor --fix' to attempt automatic fixes")
+    return fmt.Errorf("health check failed")
+}
+```
+
+**Check Categories**:
+
+1. **Hypervisor**: Cloud Hypervisor binary and version compatibility
+2. **Firmware**: PVH firmware (required), UEFI firmware (optional)
+3. **Storage**: Directory structure and permissions
+4. **Dependencies**: qemu-img (required), guestfish (optional)
+5. **Runtime**: Socket and log directories
+
+**Exit Codes**:
+- `0`: All required checks passed
+- `1`: One or more required checks failed
+- `2`: Dependency missing (with fix suggestions)
+
+**Example Usage**:
+
+```bash
+# Quick health check (shows only failures)
+cocoon doctor
+
+# Verbose output (shows all checks)
+cocoon doctor --verbose
+
+# Auto-fix issues (download firmware, create directories)
+cocoon doctor --fix
+```
+
+**Example Output**:
+
+```bash
+$ cocoon doctor
+✅ cloud-hypervisor binary: /usr/bin/cloud-hypervisor (v39.0)
+✅ PVH firmware: /var/lib/cocoon/firmware/hypervisor-fw (v0.4.2)
+⚠️  UEFI firmware: Not found (optional - only needed for UEFI fallback)
+✅ storage paths: /var/lib/cocoon/ structure valid
+✅ storage permissions: All directories writable
+✅ qemu-img tool: /usr/bin/qemu-img (v8.2.0)
+⚠️  guestfish tool: Not found (optional - only needed for advanced image inspection)
+✅ /run/cocoon directory: Exists and writable
+✅ /var/log/cocoon directory: Exists and writable
+
+✅ All checks passed - Cocoon is ready to use
+```
+
+**Example Output (with failures)**:
+
+```bash
+$ cocoon doctor
+✅ cloud-hypervisor binary: /usr/bin/cloud-hypervisor (v39.0)
+❌ PVH firmware: Not found at /var/lib/cocoon/firmware/hypervisor-fw
+   Expected: rust-hypervisor-firmware v0.4.2+
+   Fix: Run 'cocoon doctor --fix' or 'cocoon firmware install'
+✅ storage paths: /var/lib/cocoon/ structure valid
+❌ storage permissions: /var/lib/cocoon/vms not writable
+   Fix: sudo chown -R $USER:$USER /var/lib/cocoon
+❌ qemu-img tool: Not found
+   Fix: sudo apt install qemu-utils (Ubuntu/Debian)
+        sudo dnf install qemu-img (Fedora)
+
+❌ Some checks failed - see errors above
+Run 'cocoon doctor --fix' to attempt automatic fixes
+
+Exit code: 1
+```
+
+---
+
+### 3.14 cocoon firmware (Firmware Management)
+
+**Command**: `cocoon firmware <subcommand> [FLAGS]`
+
+**Purpose**: Manage hypervisor firmware files (PVH and UEFI)
+
+**Implementation**: Based on [Boot Contract § 1.1](./01-boot-contract.md#11-primary-boot-mode-pvh--hypervisor-fw)
+
+```go
+func FirmwareCommand() *cli.Command {
+    return &cli.Command{
+        Name:  "firmware",
+        Usage: "Manage hypervisor firmware",
+        Subcommands: []*cli.Command{
+            {
+                Name:  "list",
+                Usage: "List installed firmware files",
+                Action: firmwareListAction,
+            },
+            {
+                Name:      "install",
+                Usage:     "Install or update firmware",
+                ArgsUsage: "[TYPE]",
+                Flags: []cli.Flag{
+                    &cli.StringFlag{
+                        Name:  "version",
+                        Usage: "Specific version to install (default: latest)",
+                    },
+                    &cli.StringFlag{
+                        Name:  "source",
+                        Usage: "Custom source URL or path",
+                    },
+                },
+                Action: firmwareInstallAction,
+            },
+            {
+                Name:      "verify",
+                Usage:     "Verify firmware integrity",
+                ArgsUsage: "[TYPE]",
+                Action: firmwareVerifyAction,
+            },
+            {
+                Name:      "remove",
+                Usage:     "Remove firmware file",
+                ArgsUsage: "TYPE",
+                Action: firmwareRemoveAction,
+            },
+        },
+    }
+}
+```
+
+**Subcommands**:
+
+#### 3.14.1 cocoon firmware list
+
+List all installed firmware files with versions and checksums.
+
+```bash
+$ cocoon firmware list
+FIRMWARE TYPE   VERSION   PATH                                            SIZE    CHECKSUM
+pvh             0.4.2     /var/lib/cocoon/firmware/hypervisor-fw         89.2KB  3d7ae8c1...
+pvh (backup)    0.4.1     /var/lib/cocoon/firmware/hypervisor-fw-0.4.1   88.9KB  f1c3d8a2...
+uefi (x86_64)   -         /usr/share/OVMF/OVMF_CODE.fd                   1.9MB   (system)
+```
+
+#### 3.14.2 cocoon firmware install
+
+Download and install firmware files.
+
+```bash
+# Install latest PVH firmware (default)
+cocoon firmware install pvh
+
+# Install specific version
+cocoon firmware install pvh --version 0.4.2
+
+# Install from custom source
+cocoon firmware install pvh --source /path/to/hypervisor-fw
+
+# Install all firmware types
+cocoon firmware install
+```
+
+**Installation Process**:
+1. Download firmware from GitHub releases (rust-hypervisor-firmware)
+2. Verify checksum against published SHA256
+3. Back up existing firmware (if present)
+4. Install new firmware to `/var/lib/cocoon/firmware/`
+5. Update checksums.txt
+
+**Example Output**:
+
+```bash
+$ cocoon firmware install pvh
+Downloading rust-hypervisor-firmware v0.4.2...
+✅ Downloaded: hypervisor-fw (89.2KB)
+Verifying checksum: 3d7ae8c1a45b2e9f...
+✅ Checksum verified
+Backing up existing firmware...
+✅ Backup created: hypervisor-fw-0.4.1
+Installing firmware...
+✅ Installed: /var/lib/cocoon/firmware/hypervisor-fw
+
+Firmware installation complete. Run 'cocoon doctor' to verify.
+```
+
+#### 3.14.3 cocoon firmware verify
+
+Verify firmware file integrity using SHA256 checksums.
+
+```bash
+# Verify all firmware
+cocoon firmware verify
+
+# Verify specific firmware type
+cocoon firmware verify pvh
+```
+
+**Example Output**:
+
+```bash
+$ cocoon firmware verify
+Verifying PVH firmware...
+✅ hypervisor-fw: checksum matched (3d7ae8c1a45b2e9f...)
+Verifying UEFI firmware...
+⚠️  OVMF: No checksum file (system-managed firmware)
+
+All firmware files verified successfully.
+```
+
+#### 3.14.4 cocoon firmware remove
+
+Remove firmware files (with backup preservation).
+
+```bash
+# Remove specific firmware
+cocoon firmware remove pvh
+
+# Remove with confirmation prompt
+cocoon firmware remove pvh --confirm
+```
+
+**Firmware Types**:
+- `pvh`: rust-hypervisor-firmware (PVH boot, required)
+- `uefi`: OVMF/AAVMF (UEFI fallback, optional)
+- `all`: All firmware types
+
+**Firmware Storage**:
+```
+/var/lib/cocoon/firmware/
+├── hypervisor-fw           # Current PVH firmware (x86_64)
+├── hypervisor-fw-0.4.2     # Versioned backup
+├── hypervisor-fw-0.4.1     # Older backup
+└── checksums.txt           # SHA256 verification
+```
+
+**Exit Codes**:
+- `0`: Success
+- `1`: Command failed (download error, checksum mismatch, etc.)
+- `2`: Firmware not found
+
+**Example Usage**:
+
+```bash
+# List installed firmware
+cocoon firmware list
+
+# Install latest PVH firmware
+cocoon firmware install pvh
+
+# Verify firmware integrity
+cocoon firmware verify
+
+# Update to specific version
+cocoon firmware install pvh --version 0.4.2
+
+# Install from local file
+cocoon firmware install pvh --source ./hypervisor-fw
+
+# Remove old backup
+cocoon firmware remove pvh --version 0.4.1
+```
+
 ---
 
 ## 4. Configuration
@@ -1051,7 +1392,7 @@ type HypervisorConfig struct {
     BinaryPath string `yaml:"binary_path" default:"/usr/local/bin/cloud-hypervisor"`
 
     // Socket path for communication
-    SocketPath string `yaml:"socket_path" default:"/var/run/cocoon"`
+    SocketPath string `yaml:"socket_path" default:"/run/cocoon"`
 
     // Default CPU count
     DefaultCPUs int `yaml:"default_cpus" default:"2"`
@@ -1115,7 +1456,7 @@ storage:
 hypervisor:
   type: cloud-hypervisor
   binary_path: /usr/local/bin/cloud-hypervisor
-  socket_path: /var/run/cocoon
+  socket_path: /run/cocoon
   default_cpus: 2
   default_memory: 2G
 
@@ -1191,7 +1532,7 @@ log:
 10. **Start Cloud Hypervisor**:
     ```bash
     cloud-hypervisor \
-      --api-socket /var/run/cocoon/vm-123.sock \
+      --api-socket /run/cocoon/vm-123.sock \
       --disk path=/var/lib/cocoon/vms/vm-123/overlay.qcow2 \
       --disk path=/var/lib/cocoon/cloud-init/vm-123.iso,readonly=on \
       --cpus boot=2 \
@@ -1225,7 +1566,7 @@ log:
    - Move overlay to trash: `mv overlay.qcow2 /var/lib/cocoon/trash/`
    - Delete serial log: `rm /var/log/cocoon/vm-123-serial.log`
    - Delete cloud-init ISO: `rm /var/lib/cocoon/cloud-init/vm-123.iso`
-   - Delete API socket: `rm /var/run/cocoon/vm-123.sock`
+   - Delete API socket: `rm /run/cocoon/vm-123.sock`
    - Delete VM directory: `rm -rf /var/lib/cocoon/vms/vm-123/`
 6. **Mark as deleted** → Update VM state to `deleted`
 7. **Trigger GC** (optional) → If base image unreferenced, mark for collection
@@ -1460,7 +1801,7 @@ This CLI design implements the Boot Contract specification:
     "memory_mb": 2048
   },
   "runtime": {
-    "api_socket": "/var/run/cocoon/vm-abc-123.sock",
+    "api_socket": "/run/cocoon/vm-abc-123.sock",
     "work_dir": "/var/lib/cocoon/vms/vm-abc-123",
     "state": "running",
     "process_id": 12345

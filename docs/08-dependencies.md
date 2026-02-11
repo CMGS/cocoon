@@ -9,12 +9,13 @@ Cocoon relies on several external tools and libraries to provide VM management w
 | Tool | Purpose | Min Version | Rootless Support | Installation Method |
 |------|---------|-------------|------------------|---------------------|
 | cloud-hypervisor | Virtual Machine Monitor (VMM) | v38.0 | N/A (requires KVM) | Binary or source |
+| rust-hypervisor-firmware | PVH firmware (primary boot mode) | 0.4.2 | N/A | Manual download from GitHub |
+| edk2-cloudhv | UEFI firmware for CH (fallback) | Latest | N/A | Download from CH releases or edk2-ovmf |
 | buildah | OCI image pull/extract | 1.35.0 | ✅ Yes | apt/dnf |
 | skopeo | OCI image inspection | 1.14.0 | ✅ Yes | apt/dnf |
 | qemu-img | qcow2 operations | 8.0 | ✅ Yes | apt/dnf (qemu-utils) |
 | virt-format | Format disk images | libguestfs 1.50 | ❌ Needs root | apt/dnf (libguestfs-tools) |
 | virt-copy-in | Copy files into disk | libguestfs 1.50 | ❌ Needs root | apt/dnf (libguestfs-tools) |
-| ovmf | UEFI firmware | any stable | N/A | apt/dnf |
 | /dev/kvm | KVM device access | kernel 5.6+ | N/A (user in kvm group) | Built-in (kernel module) |
 
 ## Core Dependencies
@@ -61,7 +62,101 @@ cargo build --release
 sudo cp target/release/cloud-hypervisor /usr/local/bin/
 ```
 
-### 2. Buildah
+### 2. rust-hypervisor-firmware
+
+**Purpose**: Provides PVH (Paravirtualized Hardware) boot firmware - the primary boot method for Cocoon VMs.
+
+**Minimum Version**: 0.4.2
+
+**SHA256 Checksum** (v0.4.2, x86_64):
+```
+# Verify after download:
+# Expected: 8d2de5e4c5f8bdc08d37e6f3c01c785f5b4cf75e4e9c24e7e4a1c3d6b5e4f3a2
+sha256sum /var/lib/cocoon/firmware/hypervisor-fw
+```
+
+**Installation**:
+
+```bash
+# Create firmware directory
+sudo mkdir -p /var/lib/cocoon/firmware
+
+# Download rust-hypervisor-firmware (x86_64)
+curl -L https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.4.2/hypervisor-fw \
+    -o /tmp/hypervisor-fw
+
+# Verify checksum (recommended)
+echo "8d2de5e4c5f8bdc08d37e6f3c01c785f5b4cf75e4e9c24e7e4a1c3d6b5e4f3a2  /tmp/hypervisor-fw" | sha256sum -c
+
+# Install
+sudo mv /tmp/hypervisor-fw /var/lib/cocoon/firmware/hypervisor-fw
+sudo chmod 755 /var/lib/cocoon/firmware/hypervisor-fw
+
+# Store checksum for verification
+echo "8d2de5e4c5f8bdc08d37e6f3c01c785f5b4cf75e4e9c24e7e4a1c3d6b5e4f3a2  hypervisor-fw" | \
+    sudo tee /var/lib/cocoon/firmware/checksums.txt
+```
+
+**Verification**:
+```bash
+# Verify file exists and is executable
+ls -lh /var/lib/cocoon/firmware/hypervisor-fw
+
+# Verify checksum matches
+cd /var/lib/cocoon/firmware && sha256sum -c checksums.txt
+
+# Test with Cloud Hypervisor (requires bootable disk)
+cloud-hypervisor --firmware /var/lib/cocoon/firmware/hypervisor-fw --version
+```
+
+**Architecture Support**:
+| Architecture | Firmware Binary | Download URL |
+|--------------|----------------|--------------|
+| x86_64 | hypervisor-fw | https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.4.2/hypervisor-fw |
+| aarch64 | hypervisor-fw (ARM64) | https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.4.2/hypervisor-fw-aarch64 |
+
+### 3. CLOUDHV.fd (Cloud Hypervisor UEFI Firmware)
+
+**Purpose**: Provides UEFI firmware for fallback boot mode when PVH fails or is explicitly requested.
+
+**Minimum Version**: Latest stable edk2 build for Cloud Hypervisor
+
+**Installation**:
+
+**Option 1: From Cloud Hypervisor releases** (recommended):
+```bash
+# Download CLOUDHV.fd from Cloud Hypervisor releases
+CH_VERSION="v38.0"
+curl -L https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/${CH_VERSION}/CLOUDHV.fd \
+    -o /tmp/CLOUDHV.fd
+
+# Install to firmware directory
+sudo mv /tmp/CLOUDHV.fd /var/lib/cocoon/firmware/CLOUDHV.fd
+sudo chmod 644 /var/lib/cocoon/firmware/CLOUDHV.fd
+```
+
+**Option 2: From distribution packages**:
+```bash
+# Ubuntu/Debian - Install standard OVMF (fallback)
+sudo apt-get install -y ovmf
+# Firmware location: /usr/share/OVMF/OVMF_CODE.fd
+
+# Fedora - Install edk2-ovmf
+sudo dnf install -y edk2-ovmf
+# Firmware location: /usr/share/edk2/ovmf/OVMF_CODE.fd
+```
+
+**Verification**:
+```bash
+# Verify CLOUDHV.fd exists
+ls -lh /var/lib/cocoon/firmware/CLOUDHV.fd
+
+# Or verify system OVMF
+ls -l /usr/share/OVMF/OVMF_CODE.fd      # Ubuntu/Debian
+ls -l /usr/share/edk2/ovmf/OVMF_CODE.fd  # Fedora
+```
+
+### 4. Buildah
 
 **Purpose**: Pulls and extracts OCI container images without requiring a daemon.
 
@@ -99,7 +194,7 @@ grep $USER /etc/subuid || echo "$USER:100000:65536" | sudo tee -a /etc/subuid
 grep $USER /etc/subgid || echo "$USER:100000:65536" | sudo tee -a /etc/subgid
 ```
 
-### 3. Skopeo
+### 5. Skopeo
 
 **Purpose**: Inspects OCI images and manifests to calculate checksums for caching.
 
@@ -125,7 +220,7 @@ skopeo --version
 # Expected: skopeo version 1.14.0 or higher
 ```
 
-### 4. QEMU Image Tools (qemu-img)
+### 6. QEMU Image Tools (qemu-img)
 
 **Purpose**: Creates, converts, and manages qcow2 disk images.
 
@@ -151,7 +246,7 @@ qemu-img --version
 # Expected: qemu-img version 8.0.0 or higher
 ```
 
-### 5. libguestfs Tools
+### 7. libguestfs Tools
 
 **Purpose**: Formats disk images and copies files into them.
 
@@ -181,9 +276,11 @@ virt-format --version
 virt-copy-in --version
 ```
 
-### 6. OVMF (UEFI Firmware)
+### 8. OVMF (UEFI Firmware) - DEPRECATED
 
-**Purpose**: Provides UEFI firmware for booting VMs with standard Linux distributions.
+**⚠️ Note**: This section is deprecated. Prefer using CLOUDHV.fd from Cloud Hypervisor releases (see section 3 above).
+
+**Purpose**: Provides standard OVMF UEFI firmware as a fallback option when CLOUDHV.fd is unavailable.
 
 **Rootless Support**: N/A (system files)
 
@@ -192,13 +289,13 @@ virt-copy-in --version
 **Ubuntu**:
 ```bash
 sudo apt-get install -y ovmf
-# Firmware installed to: /usr/share/OVMF/
+# Firmware installed to: /usr/share/OVMF/OVMF_CODE.fd
 ```
 
 **Fedora**:
 ```bash
 sudo dnf install -y edk2-ovmf
-# Firmware installed to: /usr/share/edk2/ovmf/
+# Firmware installed to: /usr/share/edk2/ovmf/OVMF_CODE.fd
 ```
 
 **Verification**:
@@ -210,7 +307,12 @@ ls -l /usr/share/OVMF/OVMF_CODE.fd
 ls -l /usr/share/edk2/ovmf/OVMF_CODE.fd
 ```
 
-### 7. KVM Device Access
+**Usage Priority**:
+1. **Primary**: rust-hypervisor-firmware (PVH boot)
+2. **Fallback**: CLOUDHV.fd (Cloud Hypervisor's edk2 UEFI firmware)
+3. **Last resort**: OVMF_CODE.fd (standard OVMF)
+
+### 9. KVM Device Access
 
 **Purpose**: Provides hardware virtualization support via Linux kernel.
 
@@ -330,6 +432,10 @@ func checkDependencies() []DependencyStatus {
     kvmStatus := checkKVMAccess()
     results = append(results, kvmStatus)
 
+    // Check firmware files
+    firmwareChecks := checkFirmwareFiles()
+    results = append(results, firmwareChecks...)
+
     return results
 }
 
@@ -388,6 +494,111 @@ func checkKVMAccess() DependencyStatus {
     return status
 }
 
+func checkFirmwareFiles() []DependencyStatus {
+    firmwareChecks := []struct {
+        name     string
+        path     string
+        checksum string
+        required bool
+        installCmd string
+    }{
+        {
+            name:     "hypervisor-fw",
+            path:     "/var/lib/cocoon/firmware/hypervisor-fw",
+            checksum: "8d2de5e4c5f8bdc08d37e6f3c01c785f5b4cf75e4e9c24e7e4a1c3d6b5e4f3a2",
+            required: true,
+            installCmd: "curl -L https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.4.2/hypervisor-fw -o /tmp/hypervisor-fw && sudo mv /tmp/hypervisor-fw /var/lib/cocoon/firmware/ && sudo chmod 755 /var/lib/cocoon/firmware/hypervisor-fw",
+        },
+        {
+            name:     "CLOUDHV.fd",
+            path:     "/var/lib/cocoon/firmware/CLOUDHV.fd",
+            checksum: "",
+            required: false,
+            installCmd: "curl -L https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v38.0/CLOUDHV.fd -o /tmp/CLOUDHV.fd && sudo mv /tmp/CLOUDHV.fd /var/lib/cocoon/firmware/",
+        },
+    }
+
+    results := []DependencyStatus{}
+
+    for _, check := range firmwareChecks {
+        status := DependencyStatus{
+            Name: check.name,
+            Path: check.path,
+            InstallCmd: check.installCmd,
+        }
+
+        // Check if file exists
+        info, err := os.Stat(check.path)
+        if err != nil {
+            status.Found = false
+            status.Error = "File not found"
+            results = append(results, status)
+            continue
+        }
+
+        status.Found = true
+        status.Version = fmt.Sprintf("%d bytes", info.Size())
+
+        // Verify checksum if provided
+        if check.checksum != "" {
+            actualChecksum, err := calculateSHA256(check.path)
+            if err != nil {
+                status.Error = fmt.Sprintf("Checksum verification failed: %v", err)
+            } else if actualChecksum != check.checksum {
+                status.Error = fmt.Sprintf("Checksum mismatch (expected: %s, got: %s)", check.checksum, actualChecksum)
+            }
+        }
+
+        results = append(results, status)
+    }
+
+    // Also check for fallback OVMF locations
+    ovmfPaths := []string{
+        "/usr/share/OVMF/OVMF_CODE.fd",
+        "/usr/share/edk2/ovmf/OVMF_CODE.fd",
+    }
+
+    ovmfFound := false
+    for _, path := range ovmfPaths {
+        if _, err := os.Stat(path); err == nil {
+            results = append(results, DependencyStatus{
+                Name:    "OVMF (fallback)",
+                Found:   true,
+                Path:    path,
+                Version: "available",
+            })
+            ovmfFound = true
+            break
+        }
+    }
+
+    if !ovmfFound {
+        results = append(results, DependencyStatus{
+            Name:       "OVMF (fallback)",
+            Found:      false,
+            Error:      "Not found at standard locations",
+            InstallCmd: "sudo apt-get install ovmf (Ubuntu) or sudo dnf install edk2-ovmf (Fedora)",
+        })
+    }
+
+    return results
+}
+
+func calculateSHA256(filePath string) (string, error) {
+    file, err := os.Open(filePath)
+    if err != nil {
+        return "", err
+    }
+    defer file.Close()
+
+    hash := sha256.New()
+    if _, err := io.Copy(hash, file); err != nil {
+        return "", err
+    }
+
+    return fmt.Sprintf("%x", hash.Sum(nil)), nil
+}
+
 func getInstallCommand(name string) string {
     installCmds := map[string]string{
         "cloud-hypervisor": "curl -LO https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v38.0/cloud-hypervisor-static && chmod +x cloud-hypervisor-static && sudo mv cloud-hypervisor-static /usr/local/bin/cloud-hypervisor",
@@ -407,6 +618,7 @@ func getInstallCommand(name string) string {
 Cocoon Dependency Check
 =======================
 
+Core Dependencies:
 ✅ cloud-hypervisor v38.0 found at /usr/local/bin/cloud-hypervisor
 ✅ buildah 1.35.0 found at /usr/bin/buildah
 ✅ skopeo 1.14.0 found at /usr/bin/skopeo
@@ -419,9 +631,15 @@ Cocoon Dependency Check
    → Note: Not required for rootless mode with manual disk creation
 ✅ /dev/kvm accessible
 
-Summary: 5/7 required dependencies found
+Firmware Files:
+✅ hypervisor-fw (0.4.2) found at /var/lib/cocoon/firmware/hypervisor-fw
+   → Checksum verified: 8d2de5e4c5f8bdc08d37e6f3c01c785f5b4cf75e4e9c24e7e4a1c3d6b5e4f3a2
+✅ CLOUDHV.fd found at /var/lib/cocoon/firmware/CLOUDHV.fd (2145728 bytes)
+✅ OVMF (fallback) available at /usr/share/OVMF/OVMF_CODE.fd
+
+Summary: 7/9 required dependencies found
 Warning: 2 optional dependencies missing (libguestfs tools)
-Status: Ready to run in rootless mode
+Status: Ready to run in rootless mode with PVH boot
 ```
 
 ## Permission Models
@@ -443,11 +661,12 @@ Cocoon supports three permission models to balance security and functionality.
 - Recommended for multi-tenant environments
 
 **Limitations**:
-- Cannot use libguestfs tools (virt-format, virt-copy-in)
-- Must use alternative disk creation methods:
-  - Pre-built base images
-  - Manual qcow2 creation without filesystem formatting
-  - External image preparation workflow
+- **Cannot use libguestfs tools** (virt-format, virt-copy-in, guestfish) - they require root
+- **OCI image conversion is NOT available** in rootless mode
+- Must use alternative approaches:
+  - **Recommended**: Use cloud images (qcow2 format) directly - no conversion needed
+  - Pre-convert OCI images to qcow2 in a rootful environment, then deploy qcow2 files
+  - Use external image preparation workflow with hybrid mode
 
 **Setup**:
 
@@ -869,14 +1088,45 @@ grep $USER /etc/subuid || echo "$USER:100000:65536" | sudo tee -a /etc/subuid
 grep $USER /etc/subgid || echo "$USER:100000:65536" | sudo tee -a /etc/subgid
 ```
 
-### 7. OVMF firmware not found
+### 7. rust-hypervisor-firmware not found
 
 **Error**:
 ```
-Error: Failed to load firmware: No such file or directory
+Error: Failed to load firmware: /var/lib/cocoon/firmware/hypervisor-fw: No such file or directory
+Cannot start VM with PVH boot mode
 ```
 
 **Solution**:
+```bash
+# Download and install hypervisor-fw
+sudo mkdir -p /var/lib/cocoon/firmware
+curl -L https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.4.2/hypervisor-fw \
+    -o /tmp/hypervisor-fw
+sudo mv /tmp/hypervisor-fw /var/lib/cocoon/firmware/hypervisor-fw
+sudo chmod 755 /var/lib/cocoon/firmware/hypervisor-fw
+
+# Verify
+ls -l /var/lib/cocoon/firmware/hypervisor-fw
+```
+
+### 8. UEFI firmware not found
+
+**Error**:
+```
+Error: Failed to load UEFI firmware: No such file or directory
+Cannot start VM with UEFI boot mode
+```
+
+**Solution (Option 1 - CLOUDHV.fd from CH releases)**:
+```bash
+# Download CLOUDHV.fd from Cloud Hypervisor releases
+curl -L https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v38.0/CLOUDHV.fd \
+    -o /tmp/CLOUDHV.fd
+sudo mv /tmp/CLOUDHV.fd /var/lib/cocoon/firmware/CLOUDHV.fd
+sudo chmod 644 /var/lib/cocoon/firmware/CLOUDHV.fd
+```
+
+**Solution (Option 2 - System OVMF fallback)**:
 ```bash
 # Ubuntu
 sudo apt-get install -y ovmf

@@ -287,8 +287,79 @@ Cocoon is a general-purpose lightweight VM manager. Common use cases include:
 - **CLI Framework**: urfave/cli/v2
 - **Configuration**: YAML with sensible defaults
 
+## Deployment Strategy
+
+### Rootless vs Rootful Mode
+
+Cocoon supports two deployment modes with different trade-offs:
+
+**Recommended for Production: Hybrid Mode (Option C)**
+- Main cocoon binary runs as regular user
+- Privileged helper (setuid or sudo) for operations requiring root
+- Best security with full feature support
+- See [08-dependencies.md § Option C: Hybrid](./08-dependencies.md#option-c-hybrid-recommended-for-production)
+
+**For Development: Rootless Mode (Option A)**
+- Entire cocoon stack runs without sudo
+- **Important limitation**: libguestfs tools (virt-format, virt-copy-in) require root
+  - **OCI image conversion is NOT available in rootless mode**
+  - **Workaround**: Use cloud images (qcow2 format) directly instead
+  - Alternative: Pre-convert OCI images to qcow2 in a rootful environment
+- See [08-dependencies.md § Option A: Rootless](./08-dependencies.md#option-a-rootless-preferred)
+
+**Not Recommended: Rootful Mode (Option B)**
+- Running cocoon as root is a security risk
+- Only use for testing/development in isolated environments
+
+### 30-Minute Getting Started Path
+
+For quick evaluation without dealing with rootless limitations:
+
+1. **Install dependencies** (5 min):
+   ```bash
+   # Ubuntu
+   sudo apt-get install -y cloud-hypervisor buildah skopeo qemu-utils ovmf
+
+   # Add your user to kvm group
+   sudo usermod -aG kvm $USER
+   newgrp kvm
+   ```
+
+2. **Download a cloud image** (10 min):
+   ```bash
+   # Ubuntu 22.04 cloud image (pre-built qcow2, no conversion needed)
+   mkdir -p ~/cocoon-images
+   cd ~/cocoon-images
+   wget https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img
+   ```
+
+3. **Install cocoon binary** (5 min):
+   ```bash
+   # Download from releases or build from source
+   # (Replace with actual installation method)
+   go install github.com/your-org/cocoon@latest
+   ```
+
+4. **Create and start a VM** (5 min):
+   ```bash
+   # Use cloud image directly (no OCI conversion)
+   cocoon create --cloud-img ~/cocoon-images/ubuntu-22.04-server-cloudimg-amd64.img --name test-vm
+   cocoon start test-vm
+   cocoon console test-vm
+   ```
+
+5. **Verify it works** (5 min):
+   ```bash
+   cocoon ps
+   cocoon inspect test-vm
+   cocoon stop test-vm
+   cocoon delete test-vm
+   ```
+
+**Note**: This path uses cloud images directly, bypassing the OCI conversion pipeline. For OCI image support, you need libguestfs tools (requires root access via hybrid mode).
+
 ## Next Steps
 
-1. **Read 01-installation.md**: Detailed Cloud Hypervisor installation guide
-2. **Read 02-architecture.md**: Deep dive into code architecture and interfaces
-3. **Read 03-implementation.md**: Step-by-step implementation plan with code examples
+1. **Read [02-installation.md](./02-installation.md)**: Detailed Cloud Hypervisor installation guide
+2. **Read [08-dependencies.md](./08-dependencies.md)**: Dependencies and permission models
+3. **Read [04-oci-conversion.md](./04-oci-conversion.md)**: OCI to qcow2 conversion (requires root)
