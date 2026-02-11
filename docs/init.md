@@ -1,17 +1,17 @@
-# RFC 001: Vibe - Cloud Hypervisor based MicroVM Manager with OCI Image Support
+# RFC 001: Cocoon - Cloud Hypervisor based MicroVM Manager with OCI Image Support
 
 ## Metadata
 
 - **RFC Number**: 001
-- **Title**: Vibe - Cloud Hypervisor based MicroVM Manager with OCI Image Support
-- **Author**: Vibe RFC Team
+- **Title**: Cocoon - Cloud Hypervisor based MicroVM Manager with OCI Image Support
+- **Author**: Cocoon RFC Team
 - **Status**: Draft
 - **Created**: 2026-02-11
 - **Updated**: 2026-02-11
 
 ## Abstract
 
-This RFC proposes the design and implementation of **Vibe**, a lightweight virtual machine management CLI tool built on Cloud Hypervisor with native OCI image support. Vibe bridges the gap between container images and virtual machines, enabling AI Agent sandboxes and other use cases to leverage OCI images (e.g., `ubuntu:latest`) directly as VM root filesystems with automatic qcow2 conversion, image caching, and copy-on-write optimization.
+This RFC proposes the design and implementation of **Cocoon**, a lightweight virtual machine management CLI tool built on Cloud Hypervisor with native OCI image support. Cocoon bridges the gap between container images and virtual machines, enabling AI Agent sandboxes and other use cases to leverage OCI images (e.g., `ubuntu:latest`) directly as VM root filesystems with automatic qcow2 conversion, image caching, and copy-on-write optimization.
 
 **Key Features**:
 - Native OCI image support via Buildah integration
@@ -49,7 +49,7 @@ Existing solutions present trade-offs:
 - **BoxLite**: Excellent for AI sandboxes but young project (v0.5.x)
 - **Cloud Hypervisor**: Production-grade VMM but lacks OCI image support
 
-**Vibe** combines the strengths of Cloud Hypervisor's maturity and performance with the convenience of OCI images, providing a purpose-built tool for AI Agent sandbox and microVM use cases.
+**Cocoon** combines the strengths of Cloud Hypervisor's maturity and performance with the convenience of OCI images, providing a purpose-built tool for AI Agent sandbox and microVM use cases.
 
 ## Goals and Non-Goals
 
@@ -506,7 +506,7 @@ kill $CH_PID
 Recommended structure for AI agent sandbox deployments:
 
 ```
-/srv/vibe/
+/srv/cocoon/
 ├── cloud-hypervisor/
 │   ├── firmware/                 # UEFI/PVH firmware
 │   ├── base-images/              # Read-only base images (qcow2)
@@ -532,14 +532,14 @@ Recommended structure for AI agent sandbox deployments:
 **Setup commands:**
 
 ```bash
-sudo mkdir -p /srv/vibe/cloud-hypervisor/{firmware,base-images,kernels}
-sudo mkdir -p /srv/vibe/cache/{manifests,images,buildah}
-sudo mkdir -p /srv/vibe/vms
-sudo mkdir -p /srv/vibe/logs/{vm-logs,hypervisor-logs}
+sudo mkdir -p /srv/cocoon/cloud-hypervisor/{firmware,base-images,kernels}
+sudo mkdir -p /srv/cocoon/cache/{manifests,images,buildah}
+sudo mkdir -p /srv/cocoon/vms
+sudo mkdir -p /srv/cocoon/logs/{vm-logs,hypervisor-logs}
 
 # Set appropriate permissions
-sudo chown -R $USER:$USER /srv/vibe
-sudo chmod -R 755 /srv/vibe
+sudo chown -R $USER:$USER /srv/cocoon
+sudo chmod -R 755 /srv/cocoon
 ```
 
 ### Security Considerations
@@ -553,10 +553,10 @@ Set appropriate permissions for sensitive components:
 sudo chmod 644 /opt/cloud-hypervisor/firmware/*
 
 # VM images (read-write for owner only)
-chmod 600 /srv/vibe/cache/images/*.qcow2
+chmod 600 /srv/cocoon/cache/images/*.qcow2
 
 # Logs (read-only for owner)
-chmod 644 /srv/vibe/logs/*.log
+chmod 644 /srv/cocoon/logs/*.log
 ```
 
 #### KVM Device Access
@@ -621,7 +621,7 @@ sudo apt-get install -y ovmf
 
 ### Overview
 
-This section describes the strategy for handling OCI container images and managing qcow2 disk images for Vibe. The design focuses on efficiency, reusability, and copy-on-write (COW) optimization to support high-concurrency VM operations.
+This section describes the strategy for handling OCI container images and managing qcow2 disk images for Cocoon. The design focuses on efficiency, reusability, and copy-on-write (COW) optimization to support high-concurrency VM operations.
 
 ### Architecture
 
@@ -928,12 +928,12 @@ The image handling strategy provides:
 
 ### Overview
 
-The vibe CLI follows the proven architectural patterns from the core project, implementing a clean, interface-driven design using Go 1.25+ with flat package organization. The architecture emphasizes modularity, testability, and maintainability through the "全部包接口化" (all packages as interfaces) principle.
+The cocoon CLI follows the proven architectural patterns from the core project, implementing a clean, interface-driven design using Go 1.25+ with flat package organization. The architecture emphasizes modularity, testability, and maintainability through the "全部包接口化" (all packages as interfaces) principle.
 
 ### Project Structure
 
 ```
-vibe/
+cocoon/
 ├── main.go                    # CLI entry point using urfave/cli/v2
 ├── go.mod                     # Go 1.25+ module definition
 ├── config/
@@ -1090,10 +1090,10 @@ func main() {
     app.Flags = []cli.Flag{
         &cli.StringFlag{
             Name:        "config",
-            Value:       "/etc/vibe/config.yaml",
+            Value:       "/etc/cocoon/config.yaml",
             Usage:       "config file path",
             Destination: &configPath,
-            EnvVars:     []string{"VIBE_CONFIG_PATH"},
+            EnvVars:     []string{"COCOON_CONFIG_PATH"},
         },
     }
 
@@ -1116,7 +1116,7 @@ func main() {
 **1. Create Command**
 
 ```bash
-vibe create --name myvm --image ubuntu:22.04 --cpus 2 --memory 1G
+cocoon create --name myvm --image ubuntu:22.04 --cpus 2 --memory 1G
 ```
 
 Creates a new VM from an OCI image with specified resources.
@@ -1124,9 +1124,9 @@ Creates a new VM from an OCI image with specified resources.
 **2. Start/Stop Commands**
 
 ```bash
-vibe start myvm
-vibe stop myvm --timeout 30s
-vibe stop myvm --force
+cocoon start myvm
+cocoon stop myvm --timeout 30s
+cocoon stop myvm --force
 ```
 
 Manage VM lifecycle.
@@ -1134,8 +1134,8 @@ Manage VM lifecycle.
 **3. List/Inspect Commands**
 
 ```bash
-vibe list --all
-vibe inspect myvm --format json
+cocoon list --all
+cocoon inspect myvm --format json
 ```
 
 Query VM information.
@@ -1143,8 +1143,8 @@ Query VM information.
 **4. Delete Command**
 
 ```bash
-vibe delete myvm
-vibe delete myvm --force --volumes
+cocoon delete myvm
+cocoon delete myvm --force --volumes
 ```
 
 Delete VM and cleanup associated resources (overlay, references).
@@ -1152,10 +1152,10 @@ Delete VM and cleanup associated resources (overlay, references).
 **5. Image Commands**
 
 ```bash
-vibe image pull ubuntu:22.04
-vibe image list
-vibe image inspect ubuntu:22.04
-vibe image remove ubuntu:22.04
+cocoon image pull ubuntu:22.04
+cocoon image list
+cocoon image inspect ubuntu:22.04
+cocoon image remove ubuntu:22.04
 ```
 
 Manage OCI images.
@@ -1165,24 +1165,24 @@ Manage OCI images.
 Following core's YAML-based configuration pattern:
 
 ```yaml
-# /etc/vibe/config.yaml
+# /etc/cocoon/config.yaml
 storage:
-  root: /var/lib/vibe
-  images_dir: /var/lib/vibe/images
-  volumes_dir: /var/lib/vibe/volumes
+  root: /var/lib/cocoon
+  images_dir: /var/lib/cocoon/images
+  volumes_dir: /var/lib/cocoon/volumes
   default_volume_size: 20G
 
 hypervisor:
   type: cloud-hypervisor
   endpoint: http://localhost:8080
   binary_path: /usr/local/bin/cloud-hypervisor
-  socket_path: /run/vibe/ch.sock
+  socket_path: /run/cocoon/ch.sock
   default_cpus: 2
   default_memory: 1G
 
 image:
-  cache_dir: /var/lib/vibe/cache
-  buildah_root: /var/lib/vibe/buildah
+  cache_dir: /var/lib/cocoon/cache
+  buildah_root: /var/lib/cocoon/buildah
   registries:
     docker.io:
       username: ""
@@ -1194,7 +1194,7 @@ connection_timeout: 10s
 log:
   level: info
   use_json: false
-  file: /var/log/vibe.log
+  file: /var/log/cocoon.log
 ```
 
 ### Cloud Hypervisor REST API Integration
