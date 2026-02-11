@@ -507,7 +507,7 @@ func (m *MountedContainer) ValidateBootability() error {
         {"/boot/vmlinuz", false, "kernel not found (no /boot/vmlinuz*)"},
         {"/boot/initrd", false, "initrd not found (no /boot/initrd*)"},
         {"/sbin/init", true, "init system not found (/sbin/init missing)"},
-        {"/usr/bin/cloud-init", true, "cloud-init not installed (required for task injection)"},
+        {"/usr/bin/cloud-init", true, "cloud-init not installed (required for initialization)"},
         {"/boot/efi/EFI", false, "EFI bootloader not found (no ESP partition)"},
         {"/etc", false, "incomplete rootfs (missing /etc)"},
         {"/usr", false, "incomplete rootfs (missing /usr)"},

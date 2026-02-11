@@ -309,9 +309,9 @@ func main() {
 
 ### 3.2 cocoon run (Create and Start)
 
-**Command**: `cocoon run IMAGE [COMMAND] [FLAGS]`
+**Command**: `cocoon run IMAGE [FLAGS]`
 
-**Purpose**: Create and start a VM in one operation (like `docker run`)
+**Purpose**: Create and start a VM in one operation
 
 **Implementation**: Based on [Boot Contract §4.2](./01-boot-contract.md#42-cocoon-run-create-and-start)
 
@@ -319,8 +319,8 @@ func main() {
 func RunCommand() *cli.Command {
     return &cli.Command{
         Name:      "run",
-        Usage:     "Create and start a VM from an OCI image",
-        ArgsUsage: "IMAGE [COMMAND...]",
+        Usage:     "Create and start a VM from an image",
+        ArgsUsage: "IMAGE",
         Flags: []cli.Flag{
             &cli.StringFlag{
                 Name:    "name",
@@ -344,22 +344,6 @@ func RunCommand() *cli.Command {
                 Usage: "Disk size (e.g., 10G, 20G)",
                 Value: "10G",
             },
-            &cli.StringSliceFlag{
-                Name:    "env",
-                Aliases: []string{"e"},
-                Usage:   "Set environment variables (KEY=VALUE)",
-            },
-            &cli.StringFlag{
-                Name:    "workdir",
-                Aliases: []string{"w"},
-                Usage:   "Working directory in guest",
-                Value:   "/root",
-            },
-            &cli.DurationFlag{
-                Name:  "timeout",
-                Usage: "Task execution timeout",
-                Value: 300 * time.Second,
-            },
             &cli.BoolFlag{
                 Name:  "rm",
                 Usage: "Automatically remove VM when it exits",
@@ -371,13 +355,13 @@ func RunCommand() *cli.Command {
             },
             &cli.StringFlag{
                 Name:  "boot-mode",
-                Usage: "Boot mode: uefi (default) or direct-kernel",
-                Value: "uefi",
+                Usage: "Boot mode: pvh (default) or uefi",
+                Value: "pvh",
             },
             &cli.StringFlag{
                 Name:  "firmware",
-                Usage: "Path to UEFI firmware (OVMF)",
-                Value: "/usr/share/OVMF/OVMF_CODE.fd",
+                Usage: "Path to firmware (hypervisor-fw or OVMF)",
+                Value: "/var/lib/cocoon/firmware/hypervisor-fw",
             },
         },
         Action: runAction,
@@ -387,23 +371,23 @@ func RunCommand() *cli.Command {
 
 **Behavior**:
 
-1. **Create VM Configuration**: Generate VM ID, convert OCI image to qcow2, create cloud-init ISO
+1. **Create VM Configuration**: Generate VM ID, convert OCI image to qcow2, prepare cloud-init
 2. **Start Cloud Hypervisor**: Launch CH process with configured resources
 3. **Wait for Boot**: Poll serial log for boot completion (timeout: 60s)
-4. **Monitor Execution**: Stream serial output to user
+4. **Monitor Boot**: Stream serial output to user (if not detached)
 5. **Auto-cleanup** (if `--rm`): Stop VM and delete resources on exit
 
 **Example Usage**:
 
 ```bash
-# Run Ubuntu with Python script
-cocoon run ubuntu:22.04 python3 /workspace/script.py --cpus 4 --memory 4G
+# Run Ubuntu VM with 4 CPUs and 4GB memory
+cocoon run ubuntu-22.04-cloudimg --name myvm --cpus 4 --memory 4G
 
-# Run with environment variables
-cocoon run python:3.11 -e WORKSPACE=/workspace -e DEBUG=1 python main.py
+# Run VM in background with auto-cleanup
+cocoon run --rm -d ubuntu-22.04-cloudimg --name temp-vm
 
-# Run in background with auto-cleanup
-cocoon run --rm -d alpine:3.19 /bin/sh -c "echo hello"
+# Run with PVH boot mode (faster)
+cocoon run --boot-mode pvh ubuntu-22.04-cloudimg
 ```
 
 ### 3.3 cocoon create (Prepare VM)
@@ -1218,17 +1202,17 @@ log:
 
 ```bash
 # Create and start Ubuntu VM
-cocoon run ubuntu:22.04 --name myvm --cpus 4 --memory 4G
+cocoon run ubuntu-22.04-cloudimg --name myvm --cpus 4 --memory 4G
 
-# Run Python script with environment variables
-cocoon run python:3.11 \
-  -e WORKSPACE=/workspace \
-  -e DEBUG=1 \
-  --workdir /workspace \
-  python main.py
+# Run VM with custom disk size
+cocoon run ubuntu-22.04-cloudimg \
+  --name devvm \
+  --disk 50G \
+  --memory 8G \
+  --cpus 4
 
 # Run in background with auto-cleanup
-cocoon run --rm -d alpine:3.19 /bin/sh -c "echo hello world"
+cocoon run --rm -d ubuntu-22.04-cloudimg --name temp-vm
 ```
 
 ### 6.2 VM Lifecycle Management
@@ -1426,16 +1410,14 @@ This CLI design implements the Boot Contract specification:
   "id": "vm-abc-123",
   "name": "myvm",
   "boot": {
-    "mode": "uefi",
-    "uefi": {
-      "firmware_path": "/usr/share/OVMF/OVMF_CODE.fd"
-    }
+    "mode": "pvh",
+    "firmware": "/var/lib/cocoon/firmware/hypervisor-fw"
   },
   "disk": {
     "root_disk_path": "/var/lib/cocoon/vms/vm-abc-123/overlay.qcow2",
     "size": "10G",
-    "oci_image": "ubuntu:22.04",
-    "base_image": "/var/lib/cocoon/cache/images/ubuntu-22.04-abc123def456.qcow2"
+    "image": "ubuntu-22.04-cloudimg",
+    "base_image": "/var/lib/cocoon/cache/images/ubuntu-22.04-cloudimg-abc123def456.qcow2"
   },
   "resources": {
     "cpus": 2,
@@ -1447,14 +1429,9 @@ This CLI design implements the Boot Contract specification:
     "state": "running",
     "process_id": 12345
   },
-  "task": {
-    "command": ["python3", "/workspace/main.py"],
-    "env": {
-      "WORKSPACE": "/workspace",
-      "COCOON_TASK_ID": "task-123"
-    },
-    "working_dir": "/root",
-    "cloud_init_iso": "/var/lib/cocoon/cloud-init/vm-abc-123.iso"
+  "initialization": {
+    "metadata_server": "http://169.254.169.254",
+    "cloud_init_iso": ""
   },
   "io": {
     "serial": {
@@ -1464,8 +1441,7 @@ This CLI design implements the Boot Contract specification:
   },
   "timeouts": {
     "boot": "60s",
-    "stop": "30s",
-    "task": "300s"
+    "stop": "30s"
   },
   "created_at": "2026-02-11T10:30:00Z",
   "updated_at": "2026-02-11T10:30:05Z",

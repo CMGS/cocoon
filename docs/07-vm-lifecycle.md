@@ -101,7 +101,7 @@ CREATING -----> CREATED -----> STARTING -----> RUNNING -----> STOPPING -----> ST
 **Activities**:
 - Convert OCI image to qcow2 base image
 - Create copy-on-write overlay disk
-- Generate cloud-init ISO with task configuration
+- Prepare cloud-init configuration for VM initialization
 - Allocate VM ID and create working directory
 - Generate VM configuration file
 
@@ -148,26 +148,24 @@ CREATING -----> CREATED -----> STARTING -----> RUNNING -----> STOPPING -----> ST
 - Monitor Cloud Hypervisor process health
 
 #### RUNNING
-**Purpose**: VM is fully operational, executing agent task
+**Purpose**: VM is fully operational and ready for use
 
 **State**:
 - Cloud Hypervisor process running (PID stored in metadata)
 - Guest OS fully booted
-- Agent task executing
-- Serial console streaming output
+- VM accessible via console/API
+- Serial console available for debugging
 
 **Activities**:
-- Execute user-provided agent task
-- Stream serial output to user
-- Monitor task completion
-- Collect exit code
+- VM runs normally
+- Serial output available via `cocoon logs`
+- External orchestration can interact via API/console
+- Monitor VM health
 
 **Exit Conditions**:
-- Task completes → `STOPPING` (if auto-cleanup enabled)
 - User calls `stop` → `STOPPING`
 - User calls `kill` → `ERROR`
 - Cloud Hypervisor crash → `ERROR`
-- Task timeout → `STOPPING` or `ERROR`
 
 #### STOPPING
 **Purpose**: Graceful shutdown in progress
@@ -613,15 +611,6 @@ type RuntimeStatus struct {
     // Exit code (nil if not exited)
     ExitCode *int `json:"exit_code,omitempty"`
 
-    // Agent task command
-    TaskCommand []string `json:"task_command"`
-
-    // Task environment variables
-    TaskEnv map[string]string `json:"task_env"`
-
-    // Task working directory
-    TaskWorkingDir string `json:"task_working_dir"`
-
     // Boot time in milliseconds
     BootTimeMs int64 `json:"boot_time_ms"`
 
@@ -705,12 +694,6 @@ type ErrorInfo struct {
 
   "runtime": {
     "exit_code": null,
-    "task_command": ["python3", "/workspace/main.py"],
-    "task_env": {
-      "WORKSPACE": "/workspace",
-      "COCOON_TASK_ID": "task-abc123"
-    },
-    "task_working_dir": "/root",
     "boot_time_ms": 8500,
     "runtime_seconds": 30.5
   },

@@ -52,19 +52,18 @@ For building your own bootable OCI images, see: `docs/11-bootable-oci-build.md` 
 
 ## Project Motivation
 
-Modern AI Agent sandboxes and code execution platforms face a challenging trade-off between isolation, performance, and usability:
+Modern VM workloads and development environments face a challenging trade-off between isolation, performance, and usability:
 
 - **Docker/Podman**: Fast startup and familiar tooling, but only container-level isolation with shared kernel
 - **Traditional VMs (QEMU/KVM)**: Strong VM-level security boundaries but slow startup and heavyweight operation
-- **BoxLite**: Excellent for AI sandboxes with good balance, but young project (v0.5.x) still maturing
-- **Cloud Hypervisor**: Production-grade VMM with strong isolation and fast startup, but lacks OCI image support
+- **Cloud Hypervisor**: Production-grade VMM with strong isolation and fast startup, but requires manual image preparation
 
-**Cocoon bridges this gap** by combining Cloud Hypervisor's maturity and performance with flexible image support, providing:
+**Cocoon bridges this gap** by combining Cloud Hypervisor's maturity and performance with streamlined image management, providing:
 - **Strong isolation**: VM-level security boundaries via KVM
 - **Fast startup**: Sub-second VM creation using microVM technology
 - **High concurrency**: Efficient management of hundreds of VMs simultaneously
 - **Dual image support**: Cloud Hypervisor native cloud images (recommended) + Bootable OCI images
-- **Familiar workflow**: OCI registry compatibility for bootable OS images
+- **Simplified workflow**: Image conversion and caching for easy VM provisioning
 
 ## Architecture Overview
 
@@ -128,7 +127,7 @@ Cocoon's architecture integrates several components to provide seamless OCI-to-V
 - Standard Linux distributions (Ubuntu, Fedora, Debian) require UEFI
 - Supports secure boot, GPT partitions, and larger disk sizes
 - Broader OS compatibility without custom kernel builds
-- Trade-off: ~500ms boot time vs <100ms for PVH (acceptable for AI sandbox use case)
+- Trade-off: ~500ms boot time vs <100ms for PVH (acceptable for most VM workloads)
 
 ### 2. Per-VM Cloud Hypervisor Process for Isolation
 
@@ -199,7 +198,7 @@ VM overlays:    vm-001-overlay.qcow2 (200KB, writable)
 - ❌ Multi-host orchestration
 
 **Why Deferred**:
-- Phase 1 delivers complete, production-ready tool for AI sandbox use case
+- Phase 1 delivers complete, production-ready VM lifecycle management
 - Network configuration adds significant complexity and testing burden
 - Advanced features can be added incrementally without breaking existing functionality
 
@@ -219,34 +218,38 @@ VM overlays:    vm-001-overlay.qcow2 (200KB, writable)
 ### Non-Goals (Phase 1)
 
 - **Network Configuration**: Explicitly deferred to Phase 2
-- **Live Migration**: Not required for AI sandbox use case
+- **Live Migration**: Out of scope for Phase 1
 - **GPU Passthrough**: Future consideration
 - **Kubernetes Integration**: Future consideration
 - **Multi-host Orchestration**: Future consideration
 
 ## Use Cases
 
-### Primary: AI Agent Sandbox
+Cocoon is a general-purpose lightweight VM manager. Common use cases include:
 
-**Requirements Met**:
+### Development and Testing Environments
+
+**Features**:
+- Spin up isolated VMs from bootable images
+- Efficient disk usage with copy-on-write overlays
+- Quick provisioning and cleanup
+- Strong isolation for testing untrusted code
+
+### Sandboxed Workloads
+
+**Features**:
 - Strong isolation for untrusted code execution
-- Fast VM creation for rapid task execution
-- High concurrency for parallel agent operations
-- Familiar OCI images for environment consistency
+- Fast VM creation for on-demand workloads
+- High concurrency for parallel operations
+- Support for various workload types (including AI agents, build jobs, etc.)
 
-### Secondary: Development Environments
+### Infrastructure and CI/CD
 
-**Enabled Features**:
-- Spin up isolated test environments from OCI images
-- Efficient disk usage for multiple similar VMs
-- Quick cleanup and recreation
-
-### Future: Kubernetes Workloads
-
-**Potential Integration**:
-- CRI plugin for VM-based pods
-- Strong isolation for multi-tenant clusters
-- GPU passthrough for ML workloads
+**Features**:
+- Consistent VM environments from standardized images
+- Fast provisioning for build and test pipelines
+- Multi-tenant isolation with VM boundaries
+- Resource efficiency for large-scale operations
 
 ## Technology Stack
 

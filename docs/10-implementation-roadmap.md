@@ -58,8 +58,8 @@ This document provides a concrete implementation roadmap for Cocoon Phase 1, syn
 These must be implemented correctly from the start:
 
 1. **Boot Contract Compliance** (docs/01-boot-contract.md)
-   - UEFI boot mode
-   - systemd + cloud-init for task injection
+   - PVH/UEFI boot modes
+   - systemd + cloud-init for VM initialization
    - ACPI shutdown with timeout
 
 2. **Concurrency Safety** (docs/06-concurrency.md)

@@ -1,6 +1,6 @@
 # Cocoon Documentation
 
-**Cocoon** is a lightweight VM manager built on Cloud Hypervisor, designed for AI Agent sandboxes and microVM use cases.
+**Cocoon** is a lightweight VM manager built on Cloud Hypervisor for managing microVMs with fast boot times and minimal resource overhead.
 
 ## ⚠️ Important: Supported Images
 

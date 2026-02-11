@@ -178,7 +178,9 @@ ls -la /sbin/init  # Should be symlink to systemd
 
 ---
 
-### 2.2 Task Injection: cloud-init via Metadata Server
+### 2.2 VM Initialization: cloud-init via Metadata Server
+
+**Purpose**: cloud-init is used for **VM initialization only** - setting up users, SSH keys, hostname, and network configuration. It is NOT used for task orchestration or command execution.
 
 **Architecture**:
 ```
@@ -190,9 +192,9 @@ ls -la /sbin/init  # Should be symlink to systemd
        │
        ▼
 ┌─────────────┐
-│  Guest VM   │  3. cloud-init fetches user-data
-│             │  4. Executes task command
-│ cloud-init  │  5. Reports status via serial log
+│  Guest VM   │  3. cloud-init fetches meta-data/user-data
+│             │  4. Configures users, SSH, hostname, network
+│ cloud-init  │  5. VM ready for external access
 └─────────────┘
 ```
 
@@ -219,16 +221,22 @@ GRUB_CMDLINE_LINUX="... ds=nocloud-net;seedfrom=http://169.254.169.254/"
 
 **Metadata Server Endpoints**:
 
-Cocoon runs a lightweight HTTP server on the host:
+Cocoon runs an EC2-compatible metadata server on the host:
 
 ```
 GET http://169.254.169.254/meta-data/instance-id
 → vm-abc-123
 
+GET http://169.254.169.254/meta-data/hostname
+→ vm-abc-123.cocoon.local
+
 GET http://169.254.169.254/user-data
 → #cloud-config
-  runcmd:
-    - /usr/bin/agent-task --input /tmp/input.json --output /tmp/output.json
+  users:
+    - name: cocoon
+      sudo: ALL=(ALL) NOPASSWD:ALL
+      ssh_authorized_keys:
+        - ssh-rsa AAAAB3...
 ```
 
 **Implementation Phases**:
@@ -240,7 +248,7 @@ GET http://169.254.169.254/user-data
 
 ---
 
-### 2.3 Task Execution Flow
+### 2.3 VM Boot Sequence
 
 ```
 1. Cocoon starts metadata server
@@ -251,31 +259,31 @@ GET http://169.254.169.254/user-data
 
 3. VM boots → systemd starts cloud-init.service
 
-4. cloud-init fetches user-data from metadata server
+4. cloud-init fetches metadata from server
+   └─ GET http://169.254.169.254/meta-data/*
    └─ GET http://169.254.169.254/user-data
 
-5. cloud-init executes runcmd
-   └─ /usr/bin/agent-task ...
+5. cloud-init configures VM
+   └─ Create users, set hostname, configure SSH keys
 
-6. Task writes output to serial console
-   └─ Cocoon captures via serial log file
+6. VM initialization complete
+   └─ VM is ready for external access (console, SSH, API)
 
-7. Task completion detected by exit marker
-   └─ "COCOON_TASK_EXIT=0" in serial log
-
-8. Cocoon initiates graceful shutdown
+7. Upper layer can now orchestrate via API
+   └─ External RPC/gRPC can attach, send files, run commands
 ```
 
 ---
 
 ## 3. I/O Mechanisms
 
-### 3.1 Serial Console (Primary I/O)
+### 3.1 Serial Console (Boot and Debug Logs)
 
 **Purpose**:
 - Boot messages capture
-- Task output streaming
-- Error logging
+- Kernel/systemd logs
+- cloud-init initialization logs
+- Error diagnostics and debugging
 
 **Configuration**:
 ```bash
@@ -290,26 +298,29 @@ cloud-hypervisor \
 [    0.234567] Command line: BOOT_IMAGE=/vmlinuz root=/dev/vda1 ds=nocloud-net;...
 [    1.456789] cloud-init[234]: Cloud-init v. 23.3.1 running ...
 [    2.567890] cloud-init[234]: Fetching user-data from http://169.254.169.254/
-[    3.678901] COCOON_TASK_START: agent-task
-[    5.789012] COCOON_TASK_OUTPUT: {"status": "running"}
-[    8.901234] COCOON_TASK_EXIT=0
+[    3.678901] cloud-init[234]: Creating user 'cocoon'
+[    4.789012] cloud-init[234]: Setting hostname to 'vm-abc-123'
+[    5.890123] systemd[1]: Reached target Multi-User System
+[    6.901234] systemd[1]: Reached target Graphical Interface
 ```
 
-**Exit Status Detection**:
+**Boot Completion Detection**:
 ```go
-func MonitorTaskCompletion(vmID string) (int, error) {
+func WaitForBootCompletion(vmID string, timeout time.Duration) error {
     logPath := fmt.Sprintf("/var/log/cocoon/%s.log", vmID)
 
-    // Tail serial log
-    for line := range tailFile(logPath) {
-        if strings.Contains(line, "COCOON_TASK_EXIT=") {
-            parts := strings.Split(line, "=")
-            exitCode, _ := strconv.Atoi(parts[1])
-            return exitCode, nil
+    ctx, cancel := context.WithTimeout(context.Background(), timeout)
+    defer cancel()
+
+    // Tail serial log for boot completion marker
+    for line := range tailFile(ctx, logPath) {
+        // Look for systemd multi-user target (VM is ready)
+        if strings.Contains(line, "Reached target Multi-User System") {
+            return nil
         }
     }
 
-    return -1, fmt.Errorf("task did not complete")
+    return fmt.Errorf("boot timeout exceeded")
 }
 ```
 
@@ -425,15 +436,13 @@ type VMConfig struct {
     SerialLog   string `json:"serial_log"`    // /var/log/cocoon/{vm-id}.log
     PIDFile     string `json:"pid_file"`      // /run/cocoon/vms/{vm-id}/ch.pid
 
-    // Task Injection
+    // Initialization
     MetadataServer string `json:"metadata_server"` // http://169.254.169.254
-    TaskCommand    string `json:"task_command"`    // Command to inject via cloud-init
-    TaskEnv        map[string]string `json:"task_env"` // Environment variables
+    CloudInitISO   string `json:"cloud_init_iso"`  // cloud-init ISO path (Phase 2)
 
     // Timeouts
     BootTimeout time.Duration `json:"boot_timeout"` // Default: 60s
     StopTimeout time.Duration `json:"stop_timeout"` // Default: 30s
-    TaskTimeout time.Duration `json:"task_timeout"` // Default: 300s
 }
 ```
 
@@ -441,7 +450,7 @@ type VMConfig struct {
 ```json
 {
   "vm_id": "vm-abc-123",
-  "name": "agent-task-1",
+  "name": "ubuntu-vm-1",
   "boot_mode": "pvh",
   "firmware": "/var/lib/cocoon/firmware/hypervisor-fw",
   "root_disk": "/var/lib/cocoon/vms/vm-abc-123/overlay.qcow2",
@@ -452,14 +461,9 @@ type VMConfig struct {
   "serial_log": "/var/log/cocoon/vm-abc-123.log",
   "pid_file": "/run/cocoon/vms/vm-abc-123/ch.pid",
   "metadata_server": "http://169.254.169.254",
-  "task_command": "/usr/bin/python3 /tmp/task.py",
-  "task_env": {
-    "TASK_ID": "task-123",
-    "INPUT_FILE": "/tmp/input.json"
-  },
+  "cloud_init_iso": "",
   "boot_timeout": 60000000000,
-  "stop_timeout": 30000000000,
-  "task_timeout": 300000000000
+  "stop_timeout": 30000000000
 }
 ```
 
@@ -602,7 +606,7 @@ virt-customize -a image.qcow2 \
 - [ ] **Metadata Server**:
   - [ ] Implement HTTP server (169.254.169.254:80)
   - [ ] Serve `/meta-data/*` and `/user-data`
-  - [ ] Generate cloud-init user-data from task config
+  - [ ] Generate cloud-init user-data for VM initialization
   - [ ] Per-VM metadata isolation
 
 - [ ] **Image Conversion**:
@@ -611,10 +615,10 @@ virt-customize -a image.qcow2 \
   - [ ] Modify GRUB cmdline for NoCloudNet
   - [ ] Regenerate GRUB config
 
-- [ ] **Task Injection**:
-  - [ ] Generate user-data with runcmd
-  - [ ] Monitor serial log for task completion
-  - [ ] Parse exit codes from serial output
+- [ ] **VM Initialization**:
+  - [ ] Generate user-data with users/SSH keys
+  - [ ] Monitor serial log for boot completion
+  - [ ] Detect systemd multi-user target reached
 
 ### Phase 2: Advanced Features (P1)
 
@@ -640,7 +644,7 @@ virt-customize -a image.qcow2 \
 
 1. ✅ **Dual boot strategy**: PVH primary + UEFI fallback
 2. ✅ **Fast boot**: <100ms with hypervisor-fw
-3. ✅ **Task injection**: cloud-init + metadata server
+3. ✅ **VM initialization**: cloud-init + metadata server for setup (users, SSH, network)
 4. ✅ **Image requirements**: kernel + bootloader + systemd + cloud-init
 5. ✅ **Graceful lifecycle**: ACPI shutdown with timeout
 6. ✅ **Production ready**: Works with standard cloud images
