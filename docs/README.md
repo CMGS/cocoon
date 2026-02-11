@@ -1,6 +1,22 @@
 # Cocoon Documentation
 
-**Cocoon** is a lightweight VM manager built on Cloud Hypervisor with native OCI image support, designed for AI Agent sandboxes and microVM use cases.
+**Cocoon** is a lightweight VM manager built on Cloud Hypervisor, designed for AI Agent sandboxes and microVM use cases.
+
+## ⚠️ Important: Supported Images
+
+**Cocoon requires bootable VM images, NOT regular container images.**
+
+✅ **Supported**:
+- Cloud Hypervisor native cloud images (Ubuntu Cloud, Fedora Cloud, qcow2 format) - **Recommended**
+- Bootable OCI images (custom-built with kernel, initrd, systemd, bootloader)
+
+❌ **NOT Supported**:
+- Regular container images (`ubuntu:latest`, `python:3.11`, `node:20`, etc.)
+- These are application filesystems without kernel/bootloader - **will fail bootability check**
+
+See **[00-overview.md § Supported Image Contract](./00-overview.md#️-supported-image-contract)** for details.
+
+---
 
 ## Quick Navigation
 

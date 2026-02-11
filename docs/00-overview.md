@@ -1,5 +1,55 @@
 # Cocoon Overview
 
+## ⚠️ Supported Image Contract
+
+**IMPORTANT**: Cocoon does NOT support regular container images (e.g., `ubuntu:latest`, `python:3.11`, `node:20`).
+
+### What Cocoon Supports
+
+Cocoon requires **bootable VM images** with a complete operating system, not application containers:
+
+**1. Bootable OCI Images** (OS-like OCI images with VM boot requirements):
+- Must contain: kernel (`/boot/vmlinuz*`), initrd (`/boot/initrd*`), init system (`/sbin/init`)
+- Must have: systemd, cloud-init (for task injection), UEFI/GRUB bootloader
+- Examples: Custom-built OS images packaged as OCI
+
+**2. Cloud Hypervisor Native Cloud Images** (recommended, faster):
+- Standard cloud images in qcow2 format (Ubuntu Cloud, Fedora Cloud, Debian Cloud)
+- Pre-configured for cloud-init and PVH/UEFI boot
+- Direct boot without OCI conversion overhead
+
+### Why Regular Container Images Don't Work
+
+Container images like `ubuntu:latest` are **application filesystems**, not bootable operating systems:
+- ❌ No kernel or initrd
+- ❌ No bootloader (GRUB/systemd-boot)
+- ❌ Missing system services (systemd, udev)
+- ❌ Not designed for VM boot process
+
+**If you try to use a container image, you will get**: `ERROR: Bootability check failed: kernel not found`
+
+### Recommended Images
+
+**Cloud Images (Recommended)**:
+```bash
+# Ubuntu 22.04 Cloud Image
+cocoon image pull https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img
+
+# Fedora Cloud Image
+cocoon image pull https://download.fedoraproject.org/pub/fedora/linux/releases/39/Cloud/x86_64/images/Fedora-Cloud-Base-39-*.qcow2
+```
+
+**Bootable OCI Images** (requires custom build):
+```bash
+# Use provided build tools to create bootable OCI
+cocoon image build-bootable --base ubuntu:22.04 --output myorg/ubuntu-bootable:22.04
+cocoon image pull myorg/ubuntu-bootable:22.04
+```
+
+For building your own bootable OCI images, see: `docs/11-bootable-oci-build.md` (Phase 2)
+
+---
+
 ## Project Motivation
 
 Modern AI Agent sandboxes and code execution platforms face a challenging trade-off between isolation, performance, and usability:
@@ -9,11 +59,12 @@ Modern AI Agent sandboxes and code execution platforms face a challenging trade-
 - **BoxLite**: Excellent for AI sandboxes with good balance, but young project (v0.5.x) still maturing
 - **Cloud Hypervisor**: Production-grade VMM with strong isolation and fast startup, but lacks OCI image support
 
-**Cocoon bridges this gap** by combining Cloud Hypervisor's maturity and performance with the convenience of OCI images, providing:
+**Cocoon bridges this gap** by combining Cloud Hypervisor's maturity and performance with flexible image support, providing:
 - **Strong isolation**: VM-level security boundaries via KVM
 - **Fast startup**: Sub-second VM creation using microVM technology
 - **High concurrency**: Efficient management of hundreds of VMs simultaneously
-- **Familiar tooling**: Direct use of existing OCI images from Docker Hub, ghcr.io, and other registries
+- **Dual image support**: Cloud Hypervisor native cloud images (recommended) + Bootable OCI images
+- **Familiar workflow**: OCI registry compatibility for bootable OS images
 
 ## Architecture Overview
 

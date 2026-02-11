@@ -4,11 +4,33 @@
 **Status**: Draft
 **Last Updated**: 2026-02-11
 
+## ⚠️ Supported Image Contract
+
+**CRITICAL**: Cocoon requires **bootable VM images**, not regular container images.
+
+**Supported Image Types**:
+1. **Cloud Hypervisor Native Cloud Images** (Recommended):
+   - Ubuntu Cloud, Fedora Cloud, Debian Cloud (qcow2 format)
+   - Pre-configured for cloud-init and PVH/UEFI boot
+   - Direct usage without OCI conversion
+
+2. **Bootable OCI Images** (Custom-built):
+   - Must contain: kernel, initrd, init system (systemd), bootloader
+   - Requires build tooling (see docs/11-bootable-oci-build.md)
+
+**NOT Supported**:
+- Regular container images (`ubuntu:latest`, `python:3.11`, etc.)
+- These lack kernel/bootloader and will **fail bootability validation**
+
+See [00-overview.md § Supported Image Contract](./00-overview.md#️-supported-image-contract) for details.
+
+---
+
 ## Executive Summary
 
-This document defines the command-line interface for Cocoon, a lightweight VM management tool that runs OCI container images as microVMs. The CLI follows Docker-like patterns for familiarity while exposing VM-specific capabilities like UEFI boot, resource allocation, and lifecycle management.
+This document defines the command-line interface for Cocoon, a lightweight VM management tool built on Cloud Hypervisor. The CLI follows Docker-like patterns for familiarity while exposing VM-specific capabilities like PVH/UEFI boot modes, resource allocation, and lifecycle management.
 
-The design integrates the [Boot Contract](./01-boot-contract.md) decisions, including UEFI boot, cloud-init task injection, serial console I/O, and graceful shutdown semantics. It also leverages the [storage management](./05-storage-management.md) system for efficient copy-on-write disk handling.
+The design integrates the [Boot Contract](./01-boot-contract.md) decisions, including flexible boot modes (PVH preferred, UEFI optional), cloud-init task injection, serial console I/O, and graceful shutdown semantics. It also leverages the [storage management](./05-storage-management.md) system for efficient copy-on-write disk handling.
 
 ## Table of Contents
 
@@ -844,20 +866,60 @@ func ImageCommand() *cli.Command {
 **Example Usage**:
 
 ```bash
-# Pull image
-cocoon image pull ubuntu:22.04
+# Pull cloud image (recommended)
+cocoon image pull https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img
+
+# Pull bootable OCI image (custom-built)
+cocoon image pull myorg/ubuntu-bootable:22.04
 
 # List images
 cocoon image list
 
 # Inspect image
-cocoon image inspect ubuntu:22.04
+cocoon image inspect ubuntu-22.04-cloudimg
 
 # Verify bootability
-cocoon image verify ubuntu:22.04
+cocoon image verify ubuntu-22.04-cloudimg
 
 # Remove image
-cocoon image rm ubuntu:22.04
+cocoon image rm ubuntu-22.04-cloudimg
+```
+
+**Error Scenarios**:
+
+```bash
+# ❌ WRONG: Attempting to pull regular container image
+$ cocoon image pull ubuntu:22.04
+
+Pulling ubuntu:22.04...
+Converting OCI image to bootable VM disk...
+ERROR: Bootability check failed
+
+╭─────────────────────────────────────────────────────────╮
+│ This is NOT a bootable VM image                         │
+╰─────────────────────────────────────────────────────────╯
+
+The image 'ubuntu:22.04' is a regular container image and
+cannot be booted as a VM. It is missing:
+
+  ✗ Kernel (/boot/vmlinuz*)
+  ✗ Initrd (/boot/initrd*)
+  ✗ Bootloader (GRUB/systemd-boot)
+  ✗ Init system (systemd)
+
+Cocoon requires bootable VM images, not application containers.
+
+Solutions:
+
+  1. Use Cloud Hypervisor native cloud images (recommended):
+     cocoon image pull https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img
+
+  2. Build a bootable OCI image with:
+     cocoon image build-bootable --base ubuntu:22.04 --output myorg/ubuntu-bootable:22.04
+
+  3. See docs/00-overview.md#supported-image-contract for details
+
+Exit code: 1
 ```
 
 ### 3.12 cocoon gc (Garbage Collection)
