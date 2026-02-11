@@ -17,6 +17,65 @@ This document specifies the pipeline for converting OCI container images into bo
 6. Handle rootless and rootful operation modes
 7. Provide robust error handling
 
+---
+
+## ⚠️ Code Examples Disclaimer
+
+**IMPORTANT**: Code examples in this document serve different purposes:
+
+### Illustrative Pseudocode (Conceptual)
+Examples marked as "**Illustrative**" or "**Conceptual**" show the high-level logic and are NOT production-ready:
+- May omit error handling for clarity
+- May use simplified command syntax
+- Actual tool outputs/exit codes may differ
+
+**Example**:
+```go
+// Illustrative: Shows concept, not exact implementation
+if guestfish.Exists("/boot/vmlinuz") {  // Actual API differs
+    return true
+}
+```
+
+### Implementation-Required Behavior (Normative)
+Examples marked as "**MUST**" or "**Implementation-Required**" define mandatory behavior:
+- Exact validation rules that implementations must follow
+- Required external tool usage patterns
+- Critical error conditions
+
+**Example**:
+```go
+// MUST: Implementation-required validation
+func ValidateBootability(rootfs string) error {
+    // This exact check is mandatory
+    if !pathExists(filepath.Join(rootfs, "/boot/vmlinuz*")) {
+        return ErrKernelNotFound
+    }
+    return nil
+}
+```
+
+### Responsibility Boundaries
+
+**Cocoon's Role**:
+- ✅ **Validate**: Check if image has required components (kernel, bootloader, cloud-init)
+- ✅ **Configure**: Modify GRUB config, inject cloud-init datasource settings
+- ❌ **Install**: Does NOT install missing packages (kernel, GRUB, cloud-init)
+
+**User's Role** (Image Provider):
+- Must provide images with kernel, bootloader, and cloud-init **pre-installed**
+- Cocoon only verifies and configures existing components
+
+**Rationale**: Installing packages during conversion would require:
+- Network access (package repos)
+- Package manager knowledge (apt/yum/dnf/apk)
+- Dependency resolution
+- Significantly slower conversion
+
+Instead, Cocoon **fails fast** with clear error messages when components are missing.
+
+---
+
 ## Table of Contents
 
 1. [Architecture Overview](#1-architecture-overview)
@@ -480,6 +539,68 @@ func (m *MountedContainer) ValidateBootability() error {
     }
     // If init is not a symlink, check if it's systemd binary directly
     // (some distros have systemd as /sbin/init directly)
+
+    return nil
+}
+```
+
+**Architecture Detection**:
+
+```go
+func DetectArchitecture(mountPoint string) (string, error) {
+    // Method 1: Check kernel binary architecture
+    kernelPath, _ := filepath.Glob(filepath.Join(mountPoint, "/boot/vmlinuz*"))
+    if len(kernelPath) > 0 {
+        out, err := exec.Command("file", kernelPath[0]).Output()
+        if err == nil {
+            output := string(out)
+            if strings.Contains(output, "x86-64") || strings.Contains(output, "x86_64") {
+                return "x86_64", nil
+            }
+            if strings.Contains(output, "ARM aarch64") || strings.Contains(output, "aarch64") {
+                return "aarch64", nil
+            }
+        }
+    }
+
+    // Method 2: Check dpkg/rpm architecture (for Debian/Ubuntu/Fedora)
+    if _, err := os.Stat(filepath.Join(mountPoint, "/var/lib/dpkg")); err == nil {
+        // Debian/Ubuntu
+        archFile := filepath.Join(mountPoint, "/var/lib/dpkg/arch")
+        if data, err := os.ReadFile(archFile); err == nil {
+            arch := strings.TrimSpace(string(data))
+            if arch == "amd64" {
+                return "x86_64", nil
+            }
+            if arch == "arm64" {
+                return "aarch64", nil
+            }
+        }
+    }
+
+    return "", fmt.Errorf("unable to detect architecture")
+}
+```
+
+**Architecture-Specific Bootloader Validation**:
+
+```go
+func ValidateBootloaderForArch(mountPoint, arch string) error {
+    var expectedBootloader string
+
+    switch arch {
+    case "x86_64":
+        expectedBootloader = "/boot/efi/EFI/BOOT/BOOTX64.EFI"
+    case "aarch64":
+        expectedBootloader = "/boot/efi/EFI/BOOT/BOOTAA64.EFI"
+    default:
+        return fmt.Errorf("unsupported architecture: %s", arch)
+    }
+
+    bootloaderPath := filepath.Join(mountPoint, expectedBootloader)
+    if _, err := os.Stat(bootloaderPath); os.IsNotExist(err) {
+        return fmt.Errorf("bootloader not found for %s: %s", arch, expectedBootloader)
+    }
 
     return nil
 }
