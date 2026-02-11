@@ -15,12 +15,15 @@
    - Direct usage without OCI conversion
 
 2. **Bootable OCI Images** (Custom-built):
+   - **Phase 1**: OCI→qcow2 conversion with **strict bootability validation**
    - Must contain: kernel, initrd, init system (systemd), bootloader
+   - **Non-bootable OCI images will fail with clear error**
    - Requires build tooling (see docs/11-bootable-oci-build.md)
 
-**NOT Supported**:
+**NOT Supported** (Phase 1):
 - Regular container images (`ubuntu:latest`, `python:3.11`, etc.)
 - These lack kernel/bootloader and will **fail bootability validation**
+- Phase 2 will add auto-conversion capabilities
 
 See [00-overview.md § Supported Image Contract](./00-overview.md#️-supported-image-contract) for details.
 
@@ -396,23 +399,28 @@ cocoon run --boot-mode pvh ubuntu-22.04-cloudimg
 
 **Purpose**: Create a VM without starting it
 
+**IMAGE Parameter**:
+- **Positional argument** (required): Image path, URL, or OCI reference
+- **Phase 1 Support** (Current):
+  - Cloud image qcow2: `/path/to/ubuntu-22.04-cloudimg.qcow2`
+  - Cloud image URL: `https://cloud-images.ubuntu.com/.../ubuntu-22.04.img`
+  - **OCI→qcow2 conversion**: Supported with strict bootability validation
+    - Bootable OCI images: Converted and used successfully
+    - Non-bootable OCI images: **Fail with clear error** (missing kernel/bootloader)
+- **Phase 2 Support** (Planned):
+  - Auto-fix non-bootable OCI images during conversion
+
 ```go
 func CreateCommand() *cli.Command {
     return &cli.Command{
         Name:      "create",
-        Usage:     "Create a new VM from an OCI image",
+        Usage:     "Create a new VM from an image",
         ArgsUsage: "IMAGE",
         Flags: []cli.Flag{
             &cli.StringFlag{
                 Name:     "name",
                 Aliases:  []string{"n"},
                 Usage:    "VM name",
-                Required: true,
-            },
-            &cli.StringFlag{
-                Name:     "image",
-                Aliases:  []string{"i"},
-                Usage:    "Cloud image path or URL (Phase 1: qcow2 only; Phase 2: OCI support)",
                 Required: true,
             },
             &cli.IntFlag{
@@ -432,29 +440,50 @@ func CreateCommand() *cli.Command {
                 Usage: "Disk size (e.g., 10G, 20G)",
                 Value: "10G",
             },
-            &cli.StringSliceFlag{
-                Name:    "env",
-                Aliases: []string{"e"},
-                Usage:   "Set environment variables",
-            },
         },
         Action: createAction,
     }
+}
+
+// createAction implementation (illustrative)
+func createAction(c *cli.Context) error {
+    // IMAGE is positional parameter
+    if c.NArg() < 1 {
+        return fmt.Errorf("IMAGE argument required")
+    }
+    image := c.Args().Get(0)
+    name := c.String("name")
+
+    // Detect image type
+    imageType := detectImageType(image)
+    switch imageType {
+    case "qcow2":
+        // Direct use of cloud image
+    case "url":
+        // Download cloud image
+    case "oci":
+        // Phase 1: OCI→qcow2 conversion with STRICT validation
+        // - Bootable OCI: Convert and proceed
+        // - Non-bootable OCI: Fail with clear error
+        // Phase 2: Auto-fix non-bootable OCI images
+    }
+    // ...
 }
 ```
 
 **Example Usage**:
 
 ```bash
-# Create VM from cloud image (Phase 1 - recommended)
-cocoon create --name myvm \
-  --image /var/lib/cocoon/cache/images/ubuntu-22.04-cloudimg.qcow2 \
-  --cpus 4 --memory 8G
+# Create from local cloud image (qcow2)
+cocoon create /var/lib/cocoon/cache/images/ubuntu-22.04-cloudimg.qcow2 --name myvm --cpus 4 --memory 8G
 
-# Or from URL (downloads and caches automatically)
-cocoon create --name myvm \
-  --image https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img \
-  --cpus 4 --memory 8G
+# Create from cloud image URL (downloads and caches)
+cocoon create https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img \
+  --name myvm --cpus 4 --memory 8G
+
+# Create from OCI image (Phase 1: requires bootable OCI, else error)
+cocoon create myorg/ubuntu-bootable:22.04 --name myvm
+# Error if not bootable: "Image is not bootable - missing kernel/bootloader"
 ```
 
 ### 3.4 cocoon start (Boot VM)
@@ -1225,8 +1254,8 @@ cocoon run --rm -d ubuntu-22.04-cloudimg --name temp-vm
 ### 6.2 VM Lifecycle Management
 
 ```bash
-# Create VM without starting
-cocoon create --name myvm --image ubuntu:22.04
+# Create VM without starting (positional IMAGE parameter)
+cocoon create ubuntu-22.04-cloudimg --name myvm
 
 # Start VM
 cocoon start myvm
