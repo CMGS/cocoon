@@ -499,6 +499,7 @@ Before conversion, verify the rootfs has required components:
 
 ```go
 func (m *MountedContainer) ValidateBootability() error {
+    // MUST have components (mandatory)
     required := []struct {
         path    string
         isFile  bool
@@ -507,7 +508,6 @@ func (m *MountedContainer) ValidateBootability() error {
         {"/boot/vmlinuz", false, "kernel not found (no /boot/vmlinuz*)"},
         {"/boot/initrd", false, "initrd/initramfs not found (no /boot/initrd* or /boot/initramfs*)"},
         {"/sbin/init", true, "init system not found (/sbin/init missing)"},
-        {"/usr/bin/cloud-init", true, "cloud-init not installed (required for initialization)"},
         {"/boot/efi/EFI", false, "EFI bootloader not found (no ESP partition)"},
         {"/etc", false, "incomplete rootfs (missing /etc)"},
         {"/usr", false, "incomplete rootfs (missing /usr)"},
@@ -536,7 +536,7 @@ func (m *MountedContainer) ValidateBootability() error {
         }
     }
 
-    // Verify init is systemd (not sysvinit or other)
+    // Verify init is systemd (mandatory for Cocoon)
     initPath := filepath.Join(m.mountPoint, "/sbin/init")
     initTarget, err := os.Readlink(initPath)
     if err == nil {  // init is a symlink
@@ -552,6 +552,13 @@ func (m *MountedContainer) ValidateBootability() error {
         return fmt.Errorf("bootability check failed: %w", err)
     }
 
+    // SHOULD have components (recommended, not mandatory)
+    // cloud-init: Required for Cocoon metadata server integration, but not for basic boot
+    cloudInitPath := filepath.Join(m.mountPoint, "/usr/bin/cloud-init")
+    if _, err := os.Stat(cloudInitPath); os.IsNotExist(err) {
+        log.Warn("cloud-init not found - VM will boot but Cocoon metadata server integration disabled")
+    }
+
     return nil
 }
 
@@ -564,18 +571,23 @@ func (m *MountedContainer) ValidateBootloaderForArch() error {
     }
 
     // Check architecture-specific bootloader
-    var bootloaderPath string
+    // Path semantics: /boot/efi/EFI/BOOT/BOOTX64.EFI is the "mounted path"
+    // (ESP partition mounted at /boot/efi in the rootfs)
+    // The actual ESP internal path is /EFI/BOOT/BOOTX64.EFI
+    var bootloaderMountedPath string
     switch arch {
     case "x86_64":
-        bootloaderPath = filepath.Join(m.mountPoint, "/boot/efi/EFI/BOOT/BOOTX64.EFI")
+        // Mounted path: where bootloader appears after ESP is mounted to /boot/efi
+        bootloaderMountedPath = filepath.Join(m.mountPoint, "/boot/efi/EFI/BOOT/BOOTX64.EFI")
     case "aarch64":
-        bootloaderPath = filepath.Join(m.mountPoint, "/boot/efi/EFI/BOOT/BOOTAA64.EFI")
+        bootloaderMountedPath = filepath.Join(m.mountPoint, "/boot/efi/EFI/BOOT/BOOTAA64.EFI")
     default:
         return fmt.Errorf("unsupported architecture: %s", arch)
     }
 
-    if _, err := os.Stat(bootloaderPath); os.IsNotExist(err) {
-        return fmt.Errorf("bootloader not found for %s: %s", arch, bootloaderPath)
+    if _, err := os.Stat(bootloaderMountedPath); os.IsNotExist(err) {
+        return fmt.Errorf("bootloader not found for %s at %s (ESP should be mounted at /boot/efi)",
+            arch, bootloaderMountedPath)
     }
 
     return nil
@@ -903,10 +915,11 @@ func VerifyBootContract(imagePath string) error {
         return fmt.Errorf("failed to detect architecture: %w", err)
     }
 
-    // Architecture-specific bootloader path
+    // Architecture-specific bootloader path (mounted path in rootfs)
     var bootloaderPath string
     switch arch {
     case "x86_64":
+        // This is the mounted path (ESP mounted at /boot/efi)
         bootloaderPath = "/boot/efi/EFI/BOOT/BOOTX64.EFI"
     case "aarch64":
         bootloaderPath = "/boot/efi/EFI/BOOT/BOOTAA64.EFI"
@@ -914,15 +927,15 @@ func VerifyBootContract(imagePath string) error {
         return fmt.Errorf("unsupported architecture: %s", arch)
     }
 
+    // MUST checks (mandatory for boot)
     checks := []struct {
         name string
         cmd  string
     }{
         {"kernel", "test -f /boot/vmlinuz-*"},
-        // Check for either initrd or initramfs (Fedora uses initramfs-*)
+        // Support both initrd* and initramfs* (Fedora uses initramfs)
         {"initrd", "sh -c 'test -f /boot/initrd* || test -f /boot/initramfs*'"},
         {"init", "test -x /sbin/init"},
-        {"cloud-init", "test -x /usr/bin/cloud-init"},
         {"grub-config", "test -f /boot/grub/grub.cfg"},
         {"uefi-bootloader", fmt.Sprintf("test -f %s", bootloaderPath)},
     }
@@ -934,11 +947,19 @@ func VerifyBootContract(imagePath string) error {
         }
     }
 
-    // Verify init is systemd (not sysvinit)
+    // Verify init is systemd (mandatory for Cocoon)
     cmd := exec.Command("guestfish", "-a", imagePath, "-i",
         "sh", "readlink /sbin/init | grep -q systemd")
     if err := cmd.Run(); err != nil {
         return fmt.Errorf("boot contract violation: init system must be systemd")
+    }
+
+    // SHOULD check (recommended, not mandatory)
+    // cloud-init: Warning if missing, but don't fail
+    cloudInitCmd := exec.Command("guestfish", "-a", imagePath, "-i",
+        "sh", "test -x /usr/bin/cloud-init")
+    if err := cloudInitCmd.Run(); err != nil {
+        log.Warn("cloud-init not found in image - VM will boot but Cocoon metadata server integration disabled")
     }
 
     return nil

@@ -8,10 +8,11 @@
 
 Cocoon requires **bootable VM images** with a complete operating system, not application containers:
 
-**1. Bootable OCI Images** (OS-like OCI images with VM boot requirements):
-- Must contain: kernel (`/boot/vmlinuz*`), initrd (`/boot/initrd*`), init system (`/sbin/init`)
-- Must have: systemd, cloud-init (for task injection), UEFI/GRUB bootloader
-- Examples: Custom-built OS images packaged as OCI
+**1. Bootable OCI Images** (Custom-built OS images packaged as OCI):
+- **MUST contain**: kernel (`/boot/vmlinuz*`), initrd/initramfs, init system (`/sbin/init` → systemd)
+- **MUST have**: GRUB bootloader in ESP (EFI System Partition), GPT partition table
+- **SHOULD have**: cloud-init (recommended for VM initialization with Cocoon metadata server)
+- **Reality**: Building bootable OCI images is complex - see [11-bootable-oci-build.md](./11-bootable-oci-build.md)
 
 **2. Cloud Hypervisor Native Cloud Images** (recommended, faster):
 - Standard cloud images in qcow2 format (Ubuntu Cloud, Fedora Cloud, Debian Cloud)
@@ -39,14 +40,39 @@ cocoon image pull https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-
 cocoon image pull https://download.fedoraproject.org/pub/fedora/linux/releases/39/Cloud/x86_64/images/Fedora-Cloud-Base-39-*.qcow2
 ```
 
-**Bootable OCI Images** (requires custom build):
+**Bootable OCI Images** (Advanced - requires custom build process):
 ```bash
-# Use provided build tools to create bootable OCI
-cocoon image build-bootable --base ubuntu:22.04 --output myorg/ubuntu-bootable:22.04
+# Example: Pull a pre-built bootable OCI image (if available)
 cocoon image pull myorg/ubuntu-bootable:22.04
+
+# Building your own: See docs/11-bootable-oci-build.md (Phase 2 - planned)
+# Currently: Use cloud images (recommended) instead of building custom OCI
 ```
 
-For building your own bootable OCI images, see: `docs/11-bootable-oci-build.md` (Phase 2)
+**Reality Check**: Building bootable OCI images is complex (kernel installation, GRUB setup, ESP partition).
+For Phase 1, **we recommend using cloud images** instead. See [11-bootable-oci-build.md](./11-bootable-oci-build.md) for details.
+
+### How to Get Bootable Images
+
+**Option 1: Cloud Images (Recommended for Phase 1)**:
+- Download: Ubuntu Cloud, Fedora Cloud, Debian Cloud (qcow2 format)
+- Pre-configured with kernel, bootloader, systemd, cloud-init
+- Works immediately with Cocoon (no conversion needed)
+- Sources:
+  - Ubuntu: https://cloud-images.ubuntu.com/
+  - Fedora: https://fedoraproject.org/cloud/download
+  - Debian: https://cloud.debian.org/images/cloud/
+
+**Option 2: Build Custom Bootable OCI (Advanced - Phase 2)**:
+- Requires multi-stage Dockerfile with package installation
+- Must install: kernel, initrd, systemd, GRUB, cloud-init
+- Must configure: ESP partition, GRUB config, bootloader installation
+- See [11-bootable-oci-build.md](./11-bootable-oci-build.md) for build process
+
+**What DOESN'T Work**:
+- ❌ Regular container images: `ubuntu:latest`, `python:3.11`, `node:20`
+- ❌ Application containers from Docker Hub (no kernel/bootloader)
+- ❌ Minimal base images like `alpine:latest` (missing systemd, GRUB)
 
 ---
 

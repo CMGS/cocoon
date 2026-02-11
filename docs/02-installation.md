@@ -167,7 +167,7 @@ sha256sum /var/lib/cocoon/firmware/hypervisor-fw
 
 ```bash
 cloud-hypervisor \
-    --kernel /var/lib/cocoon/firmware/hypervisor-fw \
+    --firmware /var/lib/cocoon/firmware/hypervisor-fw \
     --disk path=/var/lib/cocoon/vms/vm-123/overlay.qcow2 \
     --cpus boot=2 \
     --memory size=2G \
@@ -175,7 +175,10 @@ cloud-hypervisor \
     --console off
 ```
 
-**Note**: `--kernel` parameter accepts PVH firmware path. The firmware then loads the actual kernel from the disk's ESP partition.
+**Parameter Semantics**:
+- `--firmware`: Recommended parameter for loading PVH firmware (architecture-specific firmware loading)
+- `--kernel`: Also works with hypervisor-fw (because it has PVH entry point), but `--firmware` is semantically correct
+- The firmware loads the actual kernel from the disk's ESP partition
 
 #### UEFI Firmware (Fallback)
 
@@ -206,7 +209,7 @@ sudo dnf install -y edk2-ovmf
 **VM Launch with UEFI:**
 
 ```bash
-# Cloud Hypervisor automatically uses UEFI when --kernel is omitted
+# Cloud Hypervisor automatically uses UEFI when both --firmware and --kernel are omitted
 cloud-hypervisor \
     --disk path=/var/lib/cocoon/vms/vm-123/overlay.qcow2 \
     --cpus boot=2 \
@@ -217,7 +220,12 @@ cloud-hypervisor \
 # Cloud Hypervisor will search for OVMF firmware at standard system paths
 ```
 
-**Note**: When `--kernel` is NOT specified, Cloud Hypervisor automatically enters UEFI boot mode and searches for OVMF firmware at standard system locations.
+**UEFI Boot Behavior**:
+- When **both** `--firmware` and `--kernel` are omitted, Cloud Hypervisor enters UEFI boot mode
+- CH automatically searches for OVMF/AAVMF at standard system locations:
+  - Ubuntu/Debian: `/usr/share/OVMF/OVMF_CODE.fd`
+  - Fedora: `/usr/share/edk2/ovmf/OVMF_CODE.fd`
+- No explicit firmware path needed for UEFI fallback
 
 ### Firmware Selection Guide
 
@@ -378,7 +386,7 @@ mkfs.ext4 /tmp/test-disk.raw
 # Example: Launch with PVH firmware
 # Note: This requires a bootable disk with kernel/bootloader
 cloud-hypervisor \
-    --kernel /var/lib/cocoon/firmware/hypervisor-fw \
+    --firmware /var/lib/cocoon/firmware/hypervisor-fw \
     --disk path=/tmp/test-disk.raw \
     --cpus boot=1 \
     --memory size=512M \

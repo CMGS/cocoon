@@ -42,13 +42,18 @@ This document defines the **Boot Contract** - the core specification for how Coc
 **How it works**:
 ```bash
 cloud-hypervisor \
-  --kernel /var/lib/cocoon/firmware/hypervisor-fw \
+  --firmware /var/lib/cocoon/firmware/hypervisor-fw \
   --disk path=/var/lib/cocoon/vms/vm-123/overlay.qcow2 \
   --cpus boot=2 \
   --memory size=2G \
   --serial file=/var/log/cocoon/vm-123.log \
   --console off
 ```
+
+**Parameter Choice**:
+- `--firmware` is the recommended way to load hypervisor-fw (architecture-specific firmware loading)
+- `--kernel` also works because hypervisor-fw has a PVH entry point, but `--firmware` is semantically correct
+- Cloud Hypervisor documentation: "Use --firmware for firmware loading"
 
 **What hypervisor-fw does**:
 1. Boots via PVH entry point (Xen PVH protocol)
@@ -96,7 +101,7 @@ cocoon firmware verify    # Verify integrity
 **UEFI boot command**:
 ```bash
 cloud-hypervisor \
-  # Note: NO --kernel parameter triggers UEFI boot
+  # Note: Omit both --firmware and --kernel to trigger UEFI boot
   --disk path=/var/lib/cocoon/vms/vm-123/overlay.qcow2 \
   --cpus boot=2 \
   --memory size=2G \
@@ -105,13 +110,15 @@ cloud-hypervisor \
 ```
 
 **Firmware Requirements**:
-- **x86_64**: `/usr/share/OVMF/OVMF_CODE.fd` (from edk2/OVMF package)
-- **aarch64**: `/usr/share/AAVMF/AAVMF_CODE.fd` (from edk2-aarch64 package)
+- **x86_64**: `/usr/share/OVMF/OVMF_CODE.fd` (from `ovmf` package)
+- **aarch64**: `/usr/share/AAVMF/AAVMF_CODE.fd` (from `edk2-aarch64` package)
+- Cloud Hypervisor automatically detects system-installed UEFI firmware at standard paths
 
-**When Cloud Hypervisor detects no `--kernel`**:
-- Automatically searches for OVMF firmware
-- Boots via UEFI protocol
-- Firmware loads GRUB from ESP → boots kernel
+**How UEFI fallback works**:
+1. Cocoon omits both `--firmware` and `--kernel` parameters
+2. Cloud Hypervisor enters UEFI boot mode
+3. CH searches for OVMF/AAVMF at standard system paths
+4. UEFI firmware loads GRUB from ESP → boots kernel
 
 ---
 
@@ -473,28 +480,46 @@ type VMConfig struct {
 
 ### 6.1 Bootable Image Contract
 
-An image is **bootable** if it contains:
+An image is **bootable** if it satisfies these requirements:
 
-**Required Components**:
+**MUST Have (Mandatory)**:
 1. ✅ **Kernel**: `/boot/vmlinuz*` (Linux kernel image)
-2. ✅ **Initrd**: `/boot/initrd*` or `/boot/initramfs*`
-3. ✅ **Init System**: `/sbin/init` → systemd
-4. ✅ **Bootloader**: GRUB2 or systemd-boot in ESP
-5. ✅ **cloud-init**: `/usr/bin/cloud-init` + config
-6. ✅ **GPT + ESP**: EFI System Partition (FAT32)
+2. ✅ **Initrd**: `/boot/initrd*` or `/boot/initramfs*` (initial ramdisk)
+3. ✅ **Init System**: `/sbin/init` → systemd (not sysvinit)
+4. ✅ **Bootloader**: GRUB2 in ESP (EFI System Partition)
+   - **Path semantics**:
+     - **ESP internal path**: `/EFI/BOOT/BOOTX64.EFI` (what bootloader sees)
+     - **Mounted path**: `/boot/efi/EFI/BOOT/BOOTX64.EFI` (what rootfs sees after ESP mounted to /boot/efi)
+5. ✅ **GPT + ESP**: EFI System Partition with FAT32 filesystem
 
-**Validation Function**:
+**SHOULD Have (Recommended for VM Initialization)**:
+- 🔵 **cloud-init**: `/usr/bin/cloud-init` + datasource config
+  - **Purpose**: VM initialization (users, SSH keys, hostname, network)
+  - **NOT mandatory**: Can boot without it, but Cocoon metadata server integration requires it
+  - **For basic boot testing**: Not required
+
+**Path Hierarchy Clarification**:
+```
+/dev/vda                         # Virtual disk
+├── /dev/vda1 → ESP (FAT32)     # EFI System Partition
+│   └── /EFI/BOOT/BOOTX64.EFI   # Bootloader (ESP internal path)
+└── /dev/vda2 → / (ext4)        # Root filesystem
+    └── /boot/efi/              # ESP mount point
+        └── /EFI/BOOT/BOOTX64.EFI  # Same bootloader (mounted path)
+```
+
+**Validation Function** (Mandatory checks only):
 ```go
 func ValidateBootability(rootfs string) error {
+    // MUST checks
     checks := []struct {
         path    string
         message string
     }{
         {"/boot/vmlinuz*", "kernel not found"},
-        {"/boot/initrd*", "initrd not found"},
+        {"/boot/initrd* or /boot/initramfs*", "initrd/initramfs not found"},
         {"/sbin/init", "init system not found"},
-        {"/usr/bin/cloud-init", "cloud-init not installed"},
-        {"/boot/efi/EFI", "EFI bootloader not found"},
+        {"/boot/efi/EFI", "EFI bootloader not found (no ESP partition)"},
     }
 
     for _, check := range checks {
@@ -503,10 +528,15 @@ func ValidateBootability(rootfs string) error {
         }
     }
 
-    // Verify init is systemd
+    // Verify init is systemd (mandatory for Cocoon)
     initTarget, _ := os.Readlink(filepath.Join(rootfs, "/sbin/init"))
     if !strings.Contains(initTarget, "systemd") {
         return fmt.Errorf("init system must be systemd, got: %s", initTarget)
+    }
+
+    // SHOULD check (warning, not error)
+    if !pathExists(filepath.Join(rootfs, "/usr/bin/cloud-init")) {
+        log.Warn("cloud-init not found - VM will boot but Cocoon metadata server integration disabled")
     }
 
     return nil
