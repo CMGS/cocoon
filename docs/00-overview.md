@@ -56,6 +56,9 @@ cocoon image pull myorg/ubuntu-bootable:22.04
 **Reality Check**: Building bootable OCI images is complex (kernel installation, GRUB setup, ESP partition).
 For Phase 1, **we recommend using cloud images** instead. See [11-bootable-oci-build.md](./11-bootable-oci-build.md) for details.
 
+**CI/Verified Images**: For deterministic testing, Cocoon provides pinned reference images with fixed digests.
+See [04-oci-conversion.md § 10 Verified Images](./04-oci-conversion.md#10-verified-images-ci-reference) for the CI verification matrix.
+
 ### How to Get Bootable Images
 
 **Option 1: Cloud Images (Recommended for Phase 1)**:

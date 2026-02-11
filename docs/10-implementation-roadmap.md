@@ -9,7 +9,7 @@
 This document provides a concrete implementation roadmap for Cocoon Phase 1, synthesizing all technical specifications into an actionable development plan. It defines implementation phases, critical dependencies, and validation milestones.
 
 **Phase 1 Scope**: Core VM management with OCI image support
-**Target**: Production-ready CLI tool for AI Agent sandbox use cases
+**Target**: Production-ready CLI tool for lightweight VM management
 
 ## Table of Contents
 
@@ -756,7 +756,7 @@ func CreateVM(imageRef, vmID string) error {
 ```go
 app := &cli.App{
     Name:  "cocoon",
-    Usage: "Lightweight VM manager with OCI image support",
+    Usage: "Lightweight VM management built on Cloud Hypervisor",
     Commands: []*cli.Command{...},
 }
 ```

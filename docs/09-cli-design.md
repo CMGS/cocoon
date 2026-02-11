@@ -363,8 +363,8 @@ func RunCommand() *cli.Command {
                 Value:   "2G",
             },
             &cli.StringFlag{
-                Name:  "disk",
-                Usage: "Disk size (e.g., 10G, 20G)",
+                Name:  "disk-size",
+                Usage: "Root disk overlay size (e.g., 10G, 20G)",
                 Value: "10G",
             },
             &cli.BoolFlag{
@@ -456,8 +456,8 @@ func CreateCommand() *cli.Command {
                 Value:   "2G",
             },
             &cli.StringFlag{
-                Name:  "disk",
-                Usage: "Disk size (e.g., 10G, 20G)",
+                Name:  "disk-size",
+                Usage: "Root disk overlay size (e.g., 10G, 20G)",
                 Value: "10G",
             },
         },
@@ -1560,8 +1560,8 @@ log:
            Firmware: "/var/lib/cocoon/firmware/hypervisor-fw",
        },
        Disk: types.DiskConfig{
-           RootDiskPath: overlayPath,
-           Size:         diskSize,
+           RootDiskPath: overlayPath,         // auto-created in /var/lib/cocoon/vms/{vm-id}/
+           Size:         c.String("disk-size"), // from --disk-size flag
        },
        Resources: types.ResourceConfig{
            CPUs:     cpus,
@@ -1630,7 +1630,7 @@ cocoon run ubuntu-22.04-cloudimg --name myvm --cpus 4 --memory 4G
 # Run VM with custom disk size
 cocoon run ubuntu-22.04-cloudimg \
   --name devvm \
-  --disk 50G \
+  --disk-size 50G \
   --memory 8G \
   --cpus 4
 

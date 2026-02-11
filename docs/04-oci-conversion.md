@@ -100,6 +100,8 @@ Instead, Cocoon **fails fast** with clear error messages when components are mis
 7. [Error Handling](#7-error-handling)
 8. [Rootless vs Rootful Considerations](#8-rootless-vs-rootful-considerations)
 9. [Implementation Checklist](#9-implementation-checklist)
+10. [Verified Images (CI Reference)](#10-verified-images-ci-reference)
+11. [References](#11-references)
 
 ---
 
@@ -1580,14 +1582,107 @@ func (c *Converter) checkRootlessSupport() error {
 
 ---
 
-## 10. References
+## 10. Verified Images (CI Reference)
 
-### 10.1 Related Documents
+Phase 1 requires at least one **pinned reference image** per source type for full-pipeline CI verification (conversion → boot detection → lifecycle). These images have fixed digests and known-good checksums, ensuring deterministic CI runs.
+
+### 10.1 Reference Cloud Image (qcow2)
+
+**Ubuntu 22.04 Cloud Image** — primary CI image for boot + lifecycle tests:
+
+| Field | Value |
+|-------|-------|
+| **URL** | `https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img` |
+| **Pinned Release** | `20240126` (pin to a specific date release for reproducibility) |
+| **Pinned URL** | `https://cloud-images.ubuntu.com/releases/22.04/release-20240126/ubuntu-22.04-server-cloudimg-amd64.img` |
+| **SHA256** | Pin in `test/fixtures/verified-images.sha256` (update on deliberate image bump only) |
+| **Format** | qcow2 (direct use, no conversion) |
+| **Boot Mode** | PVH (primary), UEFI (fallback) |
+| **cloud-init** | Pre-installed, NoCloud-Net datasource |
+
+**CI Usage**:
+```bash
+# Download and verify (cached in CI, re-downloaded on checksum mismatch)
+wget -q -O test-image.img "$PINNED_URL"
+sha256sum -c test/fixtures/verified-images.sha256
+
+# Full lifecycle pipeline
+cocoon create test-image.img --name ci-boot-test --cpus 1 --memory 1G --disk-size 5G
+cocoon start ci-boot-test --boot-timeout 120s
+cocoon logs ci-boot-test --tail 20  # Verify boot markers
+cocoon inspect ci-boot-test         # Verify state == RUNNING
+cocoon stop ci-boot-test
+cocoon delete ci-boot-test
+```
+
+### 10.2 Reference Bootable OCI Image
+
+**Purpose**: Validates the complete OCI conversion pipeline (pull → extract → validate → convert → boot).
+
+| Field | Value |
+|-------|-------|
+| **Registry** | `ghcr.io/CMGS/cocoon-test-images/ubuntu-bootable` |
+| **Tag** | `22.04` |
+| **Pinned Digest** | Pin as `ghcr.io/CMGS/cocoon-test-images/ubuntu-bootable@sha256:<digest>` in CI config |
+| **Contents** | Ubuntu 22.04 + kernel + GRUB + systemd + cloud-init |
+| **Architecture** | `linux/amd64` |
+
+**CI Usage**:
+```bash
+# Pull by digest (immutable, deterministic)
+cocoon image pull "ghcr.io/CMGS/cocoon-test-images/ubuntu-bootable@sha256:${PINNED_DIGEST}"
+
+# Verify bootability
+cocoon image verify "ghcr.io/CMGS/cocoon-test-images/ubuntu-bootable@sha256:${PINNED_DIGEST}"
+
+# Full conversion + boot + lifecycle pipeline
+cocoon create "ghcr.io/CMGS/cocoon-test-images/ubuntu-bootable@sha256:${PINNED_DIGEST}" \
+  --name ci-oci-test --cpus 1 --memory 1G --disk-size 5G
+cocoon start ci-oci-test --boot-timeout 180s
+cocoon logs ci-oci-test --tail 20     # Verify systemd + cloud-init markers
+cocoon inspect ci-oci-test            # Verify state == RUNNING
+cocoon stop ci-oci-test
+cocoon delete ci-oci-test
+```
+
+### 10.3 CI Verification Matrix
+
+The following pipeline stages MUST pass for every PR:
+
+| Stage | Cloud Image (qcow2) | Bootable OCI Image |
+|-------|---------------------|-------------------|
+| **Image fetch** | Download + SHA256 verify | Pull by digest |
+| **Bootability validation** | `cocoon image verify` | `cocoon image verify` (before conversion) |
+| **OCI→qcow2 conversion** | N/A (already qcow2) | Buildah extract → libguestfs convert |
+| **PVH boot** | Boot with `hypervisor-fw` | Boot with `hypervisor-fw` |
+| **Boot detection** | Serial log → systemd markers | Serial log → systemd + cloud-init markers |
+| **Lifecycle** | create → start → inspect → stop → delete | create → start → inspect → stop → delete |
+| **Crash recovery** | kill -9 CH → `cocoon doctor --reconcile` | kill -9 CH → `cocoon doctor --reconcile` |
+| **GC** | Delete VM → `cocoon gc --dry-run` | Delete VM → `cocoon gc --dry-run` |
+
+### 10.4 Maintaining Verified Images
+
+**When to bump**:
+- Kernel CVE fix in upstream cloud image
+- Cloud-init version incompatibility discovered
+- New distro release needed for coverage
+
+**How to bump**:
+1. Update URL/digest in `test/fixtures/verified-images.sha256` (or CI config)
+2. Run full CI pipeline manually against new image
+3. Commit with message: `ci: bump verified image to <new-version>`
+4. **Never** use floating tags (`:latest`, `:22.04`) in CI — always pin to digest or dated release
+
+---
+
+## 11. References
+
+### 11.1 Related Documents
 
 - [01-boot-contract.md](01-boot-contract.md) - Boot requirements and VM lifecycle
 - [05-storage-management.md](05-storage-management.md) - COW storage and garbage collection
 
-### 10.2 External Tools
+### 11.2 External Tools
 
 | Tool | Purpose | Documentation |
 |------|---------|---------------|
@@ -1596,7 +1691,7 @@ func (c *Converter) checkRootlessSupport() error {
 | libguestfs | Disk image manipulation | https://libguestfs.org/ |
 | skopeo | OCI manifest inspection | https://github.com/containers/skopeo |
 
-### 10.3 Installation
+### 11.3 Installation
 
 **Ubuntu/Debian**:
 ```bash

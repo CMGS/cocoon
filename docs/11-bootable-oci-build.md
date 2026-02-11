@@ -9,7 +9,7 @@ This document will provide comprehensive guidance on building custom bootable OC
 
 ## Coming Soon
 
-**Planned Content** (tracked in [P1-TODO.md](./P1-TODO.md#p1-1-how-to-build-bootable-oci-images)):
+**Planned Content**:
 
 1. **Minimum Requirements**
    - Package lists per distribution (Ubuntu, Fedora, Debian)
@@ -49,8 +49,8 @@ wget https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-
 # Convert to qcow2 if needed
 qemu-img convert -O qcow2 ubuntu-22.04-server-cloudimg-amd64.img ubuntu-22.04-cloudimg.qcow2
 
-# Use with Cocoon (Phase 1 manual workflow)
-cocoon create --name myvm --disk ubuntu-22.04-cloudimg.qcow2 --cpus 2 --memory 2G
+# Use with Cocoon — IMAGE is a positional parameter, --disk-size sets overlay size
+cocoon create ubuntu-22.04-cloudimg.qcow2 --name myvm --cpus 2 --memory 2G --disk-size 20G
 ```
 
 **Fedora Cloud Images**:
@@ -58,8 +58,8 @@ cocoon create --name myvm --disk ubuntu-22.04-cloudimg.qcow2 --cpus 2 --memory 2
 # Download Fedora 39 Cloud Image
 wget https://download.fedoraproject.org/pub/fedora/linux/releases/39/Cloud/x86_64/images/Fedora-Cloud-Base-39-1.5.x86_64.qcow2
 
-# Use with Cocoon
-cocoon create --name fedora-vm --disk Fedora-Cloud-Base-39-1.5.x86_64.qcow2
+# Use with Cocoon — IMAGE is positional, not a flag
+cocoon create Fedora-Cloud-Base-39-1.5.x86_64.qcow2 --name fedora-vm
 ```
 
 **Why Cloud Images Work**:
@@ -86,12 +86,8 @@ This complexity is **orthogonal to Cocoon's core VM management functionality**. 
 
 Once Phase 1 is stable, we can add bootable OCI build tooling as a convenience feature.
 
-## Next Steps
-
-See [P1-TODO.md § P1-1](./P1-TODO.md#p1-1-how-to-build-bootable-oci-images) for detailed action items and implementation plan.
-
 ## References
 
 - [Boot Contract Specification](./01-boot-contract.md) - Required components
-- [OCI Conversion Guide](./04-oci-conversion.md) - Validation rules
-- [P1-TODO](./P1-TODO.md) - Tracking document for this feature
+- [OCI Conversion Guide](./04-oci-conversion.md) - Validation rules and verified images
+- [CLI Design](./09-cli-design.md) - CLI command reference
