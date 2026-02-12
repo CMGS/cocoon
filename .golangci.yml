@@ -52,6 +52,20 @@ linters:
       max-func-lines: 30
     nestif:
       min-complexity: 5
+  exclusions:
+    generated: strict
+    paths:
+      - vendor
+      - mocks
+      - dist
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - unparam
+          - goconst
+          - gocyclo
 
 formatters:
   enable:
@@ -62,17 +76,3 @@ formatters:
       local-prefixes:
         - github.com/CMGS/cocoon
 
-issues:
-  exclude-dirs:
-    - vendor
-    - mocks
-    - dist
-  exclude-generated: strict
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
-        - gosec
-        - unparam
-        - goconst
-        - gocyclo
