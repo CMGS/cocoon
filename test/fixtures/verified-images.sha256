@@ -1,0 +1,11 @@
+# Cocoon Verified Images - SHA256 Checksums
+# These images are pinned for deterministic CI runs.
+# Update ONLY via deliberate image bump with full pipeline verification.
+#
+# Format: <sha256>  <filename>
+#
+# Ubuntu 22.04 Cloud Image (pinned release: 20240126)
+# TODO: Pin actual checksum after first CI setup
+# xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx  ubuntu-22.04-server-cloudimg-amd64.img
+#
+# See docs/04-oci-conversion.md § 10 "Verified Images" for details.

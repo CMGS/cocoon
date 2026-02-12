@@ -39,11 +39,12 @@ The design integrates the [Boot Contract](./01-boot-contract.md) decisions, incl
 
 1. [Project Structure](#1-project-structure)
 2. [Core Interfaces](#2-core-interfaces)
-3. [CLI Commands](#3-cli-commands)
-4. [Configuration](#4-configuration)
-5. [Implementation Flow](#5-implementation-flow)
-6. [Examples](#6-examples)
-7. [Cross-References](#7-cross-references)
+3. [VM Identifier Resolution](#3-vm-identifier-resolution)
+4. [CLI Commands](#4-cli-commands)
+5. [Configuration](#5-configuration)
+6. [Implementation Flow](#6-implementation-flow)
+7. [Examples](#7-examples)
+8. [Cross-References](#8-cross-references)
 
 ---
 
@@ -268,11 +269,54 @@ func NewHypervisor(ctx context.Context, cfg *config.Config, hypervisorType strin
 
 ---
 
-## 3. CLI Commands
+## 3. VM Identifier Resolution
+
+All CLI commands that operate on a specific VM accept a `<vm-ref>` positional argument. A `<vm-ref>` can be either a `vm_id` or a `name`. Resolution follows a deterministic algorithm with no ambiguity.
+
+For the full identifier rules (format, uniqueness, mutability), see [07-vm-lifecycle.md § 1.4](./07-vm-lifecycle.md#14-vm-identifier-rules).
+
+### 3.1 Resolution Algorithm
+
+1. If `<vm-ref>` starts with `vm-`: treat as exact `vm_id` lookup in `/var/lib/cocoon/vms/{vm_id}/config.json`.
+2. Otherwise: look up `<vm-ref>` in the name index (`/var/lib/cocoon/name-index.json`).
+3. If no match: exit with error `"VM not found: <vm-ref>"`.
+
+No prefix-matching, substring matching, or fuzzy matching is supported.
+
+### 3.2 Identifier Summary
+
+| Identifier | Format | Example | Mutable? | Used In |
+|------------|--------|---------|----------|---------|
+| `vm_id` | `vm-{ulid}` | `vm-01HXYZ5A3B7C8D9E0F1G2H3J4K` | Never | Directories, logs, sockets, locks |
+| `name` | User-chosen or auto-generated | `myvm`, `cocoon-a3f7b2c1` | Immutable after create | CLI commands, display, name index |
+
+### 3.3 Resolution Examples
+
+```bash
+# By name (most common)
+cocoon start myvm
+cocoon stop myvm
+cocoon inspect myvm
+
+# By vm_id (for automation / scripting)
+cocoon start vm-01HXYZ5A3B7C8D9E0F1G2H3J4K
+cocoon inspect vm-01HXYZ5A3B7C8D9E0F1G2H3J4K
+
+# Error: VM not found
+$ cocoon inspect nonexistent
+Error: VM not found: nonexistent
+
+# Error: ambiguity is impossible — names are globally unique
+# If "myvm" exists in the name index, it resolves to exactly one vm_id.
+```
+
+---
+
+## 4. CLI Commands
 
 Using `urfave/cli/v2` (same as core project):
 
-### 3.1 Main Application Structure
+### 4.1 Main Application Structure
 
 ```go
 package main
@@ -330,7 +374,7 @@ func main() {
 }
 ```
 
-### 3.2 cocoon run (Create and Start)
+### 4.2 cocoon run (Create and Start)
 
 **Command**: `cocoon run IMAGE [FLAGS]`
 
@@ -348,7 +392,7 @@ func RunCommand() *cli.Command {
             &cli.StringFlag{
                 Name:    "name",
                 Aliases: []string{"n"},
-                Usage:   "VM name (auto-generated if not specified)",
+                Usage:   "VM name (globally unique; auto-generated as cocoon-{random} if omitted)",
             },
             &cli.IntFlag{
                 Name:    "cpus",
@@ -413,7 +457,7 @@ cocoon run --rm -d ubuntu-22.04-cloudimg --name temp-vm
 cocoon run --boot-mode pvh ubuntu-22.04-cloudimg
 ```
 
-### 3.3 cocoon create (Prepare VM)
+### 4.3 cocoon create (Prepare VM)
 
 **Command**: `cocoon create IMAGE [FLAGS]`
 
@@ -438,10 +482,9 @@ func CreateCommand() *cli.Command {
         ArgsUsage: "IMAGE",
         Flags: []cli.Flag{
             &cli.StringFlag{
-                Name:     "name",
-                Aliases:  []string{"n"},
-                Usage:    "VM name",
-                Required: true,
+                Name:    "name",
+                Aliases: []string{"n"},
+                Usage:   "VM name (globally unique; auto-generated as cocoon-{random} if omitted)",
             },
             &cli.IntFlag{
                 Name:    "cpus",
@@ -473,6 +516,9 @@ func createAction(c *cli.Context) error {
     }
     image := c.Args().Get(0)
     name := c.String("name")
+    if name == "" {
+        name = fmt.Sprintf("cocoon-%s", randomHex(8)) // e.g., "cocoon-a3f7b2c1"
+    }
 
     // Detect image type
     imageType := detectImageType(image)
@@ -494,8 +540,11 @@ func createAction(c *cli.Context) error {
 **Example Usage**:
 
 ```bash
-# Create from local cloud image (qcow2)
+# Create from local cloud image (qcow2) with explicit name
 cocoon create /var/lib/cocoon/cache/images/ubuntu-22.04-cloudimg.qcow2 --name myvm --cpus 4 --memory 8G
+
+# Create without --name (auto-generates name like "cocoon-a3f7b2c1")
+cocoon create ubuntu-22.04-cloudimg --cpus 2 --memory 2G
 
 # Create from cloud image URL (downloads and caches)
 cocoon create https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img \
@@ -504,13 +553,17 @@ cocoon create https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.0
 # Create from OCI image (Phase 1: requires bootable OCI, else error)
 cocoon create myorg/ubuntu-bootable:22.04 --name myvm
 # Error if not bootable: "Image is not bootable - missing kernel/bootloader"
+
+# Error: name already taken
+$ cocoon create ubuntu-22.04-cloudimg --name myvm
+Error: VM name 'myvm' already exists (used by vm-01HXYZ5A3B7C8D9E0F1G2H3J4K)
 ```
 
-### 3.4 cocoon start (Boot VM)
+### 4.4 cocoon start (Boot VM)
 
-**Command**: `cocoon start VM_ID [FLAGS]`
+**Command**: `cocoon start <vm-ref> [FLAGS]`
 
-**Purpose**: Start a previously created VM
+**Purpose**: Start a previously created VM. `<vm-ref>` is resolved via [Section 3](#3-vm-identifier-resolution).
 
 **Implementation**: Based on [Boot Contract §4.2](./01-boot-contract.md#42-cocoon-run-create-and-start)
 
@@ -519,7 +572,7 @@ func StartCommand() *cli.Command {
     return &cli.Command{
         Name:      "start",
         Usage:     "Start a VM",
-        ArgsUsage: "<vm-id>",
+        ArgsUsage: "<vm-ref>",
         Flags: []cli.Flag{
             &cli.DurationFlag{
                 Name:  "boot-timeout",
@@ -547,11 +600,11 @@ cocoon start myvm --attach
 cocoon start myvm --boot-timeout 120s
 ```
 
-### 3.5 cocoon stop (Graceful Shutdown)
+### 4.5 cocoon stop (Graceful Shutdown)
 
-**Command**: `cocoon stop VM_ID [FLAGS]`
+**Command**: `cocoon stop <vm-ref> [FLAGS]`
 
-**Purpose**: Gracefully stop a running VM
+**Purpose**: Gracefully stop a running VM. `<vm-ref>` is resolved via [Section 3](#3-vm-identifier-resolution).
 
 **Implementation**: Based on [Boot Contract §4.3](./01-boot-contract.md#43-cocoon-stop-graceful-shutdown)
 
@@ -560,7 +613,7 @@ func StopCommand() *cli.Command {
     return &cli.Command{
         Name:      "stop",
         Usage:     "Stop a running VM",
-        ArgsUsage: "<vm-id>",
+        ArgsUsage: "<vm-ref>",
         Flags: []cli.Flag{
             &cli.DurationFlag{
                 Name:  "timeout",
@@ -598,11 +651,11 @@ cocoon stop myvm --force
 cocoon stop myvm --timeout 60s
 ```
 
-### 3.6 cocoon delete (Remove VM)
+### 4.6 cocoon delete (Remove VM)
 
-**Command**: `cocoon delete VM_ID [FLAGS]`
+**Command**: `cocoon delete <vm-ref> [FLAGS]`
 
-**Purpose**: Delete VM and cleanup storage
+**Purpose**: Delete VM and cleanup storage. `<vm-ref>` is resolved via [Section 3](#3-vm-identifier-resolution).
 
 **Implementation**: Based on [Boot Contract §4.4](./01-boot-contract.md#44-cocoon-delete-remove-resources)
 
@@ -612,7 +665,7 @@ func DeleteCommand() *cli.Command {
         Name:      "delete",
         Aliases:   []string{"rm"},
         Usage:     "Delete a VM and cleanup storage",
-        ArgsUsage: "<vm-id>",
+        ArgsUsage: "<vm-ref>",
         Flags: []cli.Flag{
             &cli.BoolFlag{
                 Name:    "force",
@@ -651,11 +704,11 @@ cocoon delete myvm --force
 cocoon delete myvm --volumes=false
 ```
 
-### 3.7 cocoon kill (Force Terminate)
+### 4.7 cocoon kill (Force Terminate)
 
-**Command**: `cocoon kill VM_ID`
+**Command**: `cocoon kill <vm-ref>`
 
-**Purpose**: Force terminate a VM (SIGKILL)
+**Purpose**: Force terminate a VM (SIGKILL). `<vm-ref>` is resolved via [Section 3](#3-vm-identifier-resolution).
 
 **Implementation**: Based on [Boot Contract §4.5](./01-boot-contract.md#45-cocoon-kill-force-terminate)
 
@@ -664,7 +717,7 @@ func KillCommand() *cli.Command {
     return &cli.Command{
         Name:      "kill",
         Usage:     "Force terminate a VM",
-        ArgsUsage: "<vm-id>",
+        ArgsUsage: "<vm-ref>",
         Action:    killAction,
     }
 }
@@ -677,7 +730,7 @@ func KillCommand() *cli.Command {
 cocoon kill myvm
 ```
 
-### 3.8 cocoon list (List VMs)
+### 4.8 cocoon list (List VMs)
 
 **Command**: `cocoon list [FLAGS]`
 
@@ -729,23 +782,26 @@ cocoon list --filter running
 **Output Example**:
 
 ```
-VM ID          NAME     IMAGE                        STATE     CPU  MEMORY  UPTIME
-vm-abc-123     myvm1    ubuntu-22.04-cloudimg        running   2    2G      5m30s
-vm-def-456     myvm2    myorg/ubuntu-bootable:22.04  stopped   4    4G      -
+VM ID                              NAME     IMAGE                        STATE     CPU  MEMORY  UPTIME
+vm-01HXYZ5A3B7C8D9E0F1G2H3J4K     myvm     ubuntu-22.04-cloudimg        RUNNING   2    2G      5m30s
+vm-01HABC9D8E7F6G5H4J3K2L1M0N     devbox   myorg/ubuntu-bootable:22.04  STOPPED   4    4G      -
+vm-01H9ZZ8Y7X6W5V4U3T2S1R0Q9P     cocoon-a3f7b2c1  ubuntu-22.04-cloudimg  RUNNING   2    2G      1h12m
 ```
 
-### 3.9 cocoon inspect (VM Details)
+Note: The `NAME` column shows the user-provided name or the auto-generated name (`cocoon-{random}` if `--name` was omitted at create time). Either the `VM ID` or `NAME` can be used as a `<vm-ref>` in subsequent commands.
 
-**Command**: `cocoon inspect VM_ID [FLAGS]`
+### 4.9 cocoon inspect (VM Details)
 
-**Purpose**: Display detailed VM information
+**Command**: `cocoon inspect <vm-ref> [FLAGS]`
+
+**Purpose**: Display detailed VM information. `<vm-ref>` is resolved via [Section 3](#3-vm-identifier-resolution).
 
 ```go
 func InspectCommand() *cli.Command {
     return &cli.Command{
         Name:      "inspect",
         Usage:     "Display detailed VM information",
-        ArgsUsage: "<vm-id>",
+        ArgsUsage: "<vm-ref>",
         Flags: []cli.Flag{
             &cli.StringFlag{
                 Name:  "format",
@@ -770,43 +826,56 @@ cocoon inspect myvm --format yaml
 
 **Output Example**:
 
+The inspect output merges data from `config.json` (immutable) and `metadata.json` (runtime state). See [07-vm-lifecycle.md § 5](./07-vm-lifecycle.md#5-vm-configuration-schema) for the schema details.
+
 ```json
 {
-  "id": "vm-abc-123",
+  "vm_id": "vm-01HXYZ5A3B7C8D9E0F1G2H3J4K",
   "name": "myvm",
-  "state": "running",
-  "image": "ubuntu-22.04-cloudimg",
+  "state": "RUNNING",
+  "previous_state": "STARTING",
+  "image": {
+    "ref": "ubuntu-22.04-cloudimg",
+    "base_checksum": "sha256:ef015678abcd1234..."
+  },
   "boot": {
     "mode": "pvh",
     "firmware_path": "/var/lib/cocoon/firmware/hypervisor-fw"
   },
   "resources": {
     "cpus": 2,
-    "memory_mb": 2048
+    "memory_mb": 1024,
+    "disk_size": "10G"
   },
-  "disk": {
-    "root_disk_path": "/var/lib/cocoon/vms/vm-abc-123/overlay.qcow2",
-    "size": "10G",
-    "base_image": "/var/lib/cocoon/cache/images/ubuntu-22.04-abc123.qcow2"
+  "storage": {
+    "overlay_path": "/var/lib/cocoon/vms/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K/overlay.qcow2",
+    "base_image_path": "/var/lib/cocoon/cache/images/ef015678abcd1234_amd64.qcow2",
+    "serial_log": "/var/log/cocoon/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K-serial.log",
+    "socket_path": "/run/cocoon/vms/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K/api.sock"
+  },
+  "runtime": {
+    "process_pid": 12345,
+    "boot_time": "2.3s",
+    "error_count": 0
   },
   "created_at": "2026-02-11T10:30:00Z",
   "started_at": "2026-02-11T10:30:05Z",
-  "uptime": "5m30s"
+  "updated_at": "2026-02-11T10:30:07Z"
 }
 ```
 
-### 3.10 cocoon logs (Serial Console Output)
+### 4.10 cocoon logs (Serial Console Output)
 
-**Command**: `cocoon logs VM_ID [FLAGS]`
+**Command**: `cocoon logs <vm-ref> [FLAGS]`
 
-**Purpose**: View VM serial console logs
+**Purpose**: View VM serial console logs. `<vm-ref>` is resolved via [Section 3](#3-vm-identifier-resolution).
 
 ```go
 func LogsCommand() *cli.Command {
     return &cli.Command{
         Name:      "logs",
         Usage:     "View VM serial console logs",
-        ArgsUsage: "<vm-id>",
+        ArgsUsage: "<vm-ref>",
         Flags: []cli.Flag{
             &cli.BoolFlag{
                 Name:    "follow",
@@ -841,7 +910,7 @@ cocoon logs myvm --follow
 cocoon logs myvm --tail 50 --timestamps
 ```
 
-### 3.11 cocoon image (Image Management)
+### 4.11 cocoon image (Image Management)
 
 **Command**: `cocoon image SUBCOMMAND [FLAGS]`
 
@@ -982,7 +1051,7 @@ Solutions:
 Exit code: 1
 ```
 
-### 3.12 cocoon gc (Garbage Collection)
+### 4.12 cocoon gc (Garbage Collection)
 
 **Command**: `cocoon gc [FLAGS]`
 
@@ -1024,7 +1093,7 @@ cocoon gc --dry-run
 cocoon gc --grace-period 12h
 ```
 
-### 3.13 cocoon doctor (System Health Check)
+### 4.13 cocoon doctor (System Health Check)
 
 **Command**: `cocoon doctor [FLAGS]`
 
@@ -1179,7 +1248,7 @@ Exit code: 1
 
 ---
 
-### 3.14 cocoon firmware (Firmware Management)
+### 4.14 cocoon firmware (Firmware Management)
 
 **Command**: `cocoon firmware <subcommand> [FLAGS]`
 
@@ -1233,7 +1302,7 @@ func FirmwareCommand() *cli.Command {
 
 **Subcommands**:
 
-#### 3.14.1 cocoon firmware list
+#### 4.14.1 cocoon firmware list
 
 List all installed firmware files with versions and checksums.
 
@@ -1246,7 +1315,7 @@ uefi (x86_64)   v38.0     /var/lib/cocoon/firmware/CLOUDHV.fd             2.1MB 
 uefi (fallback)  -         /usr/share/OVMF/OVMF_CODE.fd                   1.9MB   (system, deprecated)
 ```
 
-#### 3.14.2 cocoon firmware install
+#### 4.14.2 cocoon firmware install
 
 Download and install firmware files.
 
@@ -1290,7 +1359,7 @@ Installing firmware...
 Firmware installation complete. Run 'cocoon doctor' to verify.
 ```
 
-#### 3.14.3 cocoon firmware verify
+#### 4.14.3 cocoon firmware verify
 
 Verify firmware file integrity using SHA256 checksums.
 
@@ -1314,7 +1383,7 @@ Verifying UEFI firmware...
 All firmware files verified successfully.
 ```
 
-#### 3.14.4 cocoon firmware remove
+#### 4.14.4 cocoon firmware remove
 
 Remove firmware files (with backup preservation).
 
@@ -1370,11 +1439,11 @@ cocoon firmware remove pvh --version 0.4.1
 
 ---
 
-## 4. Configuration
+## 5. Configuration
 
 Following core's YAML-based configuration pattern:
 
-### 4.1 Configuration Structure
+### 5.1 Configuration Structure
 
 ```go
 package types
@@ -1486,7 +1555,7 @@ type LogConfig struct {
 }
 ```
 
-### 4.2 Example Configuration File
+### 5.2 Example Configuration File
 
 ```yaml
 # /etc/cocoon/config.yaml
@@ -1534,9 +1603,9 @@ log:
 
 ---
 
-## 5. Implementation Flow
+## 6. Implementation Flow
 
-### 5.1 VM Creation Flow (`cocoon run`)
+### 6.1 VM Creation Flow (`cocoon run`)
 
 1. **Parse CLI flags** → Validate inputs
 2. **Load configuration** → Read YAML config from `/etc/cocoon/config.yaml`
@@ -1592,7 +1661,7 @@ log:
 14. **Stream output** → If not `--detach`, stream serial log to stdout
 15. **Auto-cleanup** → If `--rm`, delete VM when process exits
 
-### 5.2 VM Stop Flow (`cocoon stop`)
+### 6.2 VM Stop Flow (`cocoon stop`)
 
 1. **Load VM config** → Read `config.json` from VM directory
 2. **Check VM state** → Verify VM is running
@@ -1602,7 +1671,7 @@ log:
 6. **Verify shutdown** → Confirm CH process terminated
 7. **Update VM state** → Mark as `stopped` in metadata
 
-### 5.3 VM Delete Flow (`cocoon delete`)
+### 6.3 VM Delete Flow (`cocoon delete`)
 
 1. **Load VM config** → Read `config.json`
 2. **Check VM state** → If running and no `--force`, error
@@ -1619,9 +1688,9 @@ log:
 
 ---
 
-## 6. Examples
+## 7. Examples
 
-### 6.1 Basic VM Creation
+### 7.1 Basic VM Creation
 
 ```bash
 # Create and start Ubuntu VM
@@ -1638,7 +1707,7 @@ cocoon run ubuntu-22.04-cloudimg \
 cocoon run --rm -d ubuntu-22.04-cloudimg --name temp-vm
 ```
 
-### 6.2 VM Lifecycle Management
+### 7.2 VM Lifecycle Management
 
 ```bash
 # Create VM without starting (positional IMAGE parameter)
@@ -1663,7 +1732,7 @@ cocoon delete myvm
 cocoon delete myvm --force
 ```
 
-### 6.3 Image Management
+### 7.3 Image Management
 
 ```bash
 # Pull bootable OCI image
@@ -1685,7 +1754,7 @@ cocoon image rm myorg/ubuntu-bootable:22.04
 cocoon image rm myorg/ubuntu-bootable:22.04 --force
 ```
 
-### 6.4 Monitoring and Cleanup
+### 7.4 Monitoring and Cleanup
 
 ```bash
 # List all VMs
@@ -1704,7 +1773,7 @@ cocoon gc
 cocoon gc --dry-run
 ```
 
-### 6.5 High-Concurrency VM Pool
+### 7.5 High-Concurrency VM Pool
 
 ```bash
 # Create 100 VMs from same base image (uses COW)
@@ -1724,18 +1793,19 @@ done
 
 ---
 
-## 7. Cross-References
+## 8. Cross-References
 
-### 7.1 Related Cocoon Documents
+### 8.1 Related Cocoon Documents
 
 - [00-overview.md](./00-overview.md): Project motivation and architecture overview
 - [01-boot-contract.md](./01-boot-contract.md): Boot modes, lifecycle semantics, VM configuration schema
 - [02-installation.md](./02-installation.md): Cloud Hypervisor installation and prerequisites
 - [05-storage-management.md](./05-storage-management.md): COW overlays, reference counting, garbage collection
 - [06-concurrency.md](./06-concurrency.md): Thread-safety for reference counting and storage operations
+- [07-vm-lifecycle.md](./07-vm-lifecycle.md): VM state machine, identifier rules (`vm_id`/`name`), config.json/metadata.json schemas
 - [08-dependencies.md](./08-dependencies.md): Required packages and tools
 
-### 7.2 Boot Contract Integration
+### 8.2 Boot Contract Integration
 
 This CLI design implements the Boot Contract specification:
 
@@ -1748,7 +1818,7 @@ This CLI design implements the Boot Contract specification:
 | §5 VM Configuration Schema | `types.VMConfig` in Go code |
 | §6 OCI to Bootable Bridge | `ImageManager.VerifyBootable()` and conversion logic |
 
-### 7.3 Storage Management Integration
+### 8.3 Storage Management Integration
 
 | Storage Document Section | CLI Implementation |
 |-------------------------|-------------------|
@@ -1757,7 +1827,7 @@ This CLI design implements the Boot Contract specification:
 | Garbage Collection | `cocoon gc` command |
 | Storage Layout | Configured via `storage.*` in YAML config |
 
-### 7.4 External References
+### 8.4 External References
 
 - **Cloud Hypervisor API**: https://github.com/cloud-hypervisor/cloud-hypervisor/blob/main/vmm/src/api/openapi/cloud-hypervisor.yaml
 - **cloud-init NoCloud**: https://cloudinit.readthedocs.io/en/latest/topics/datasources/nocloud.html
@@ -1766,7 +1836,7 @@ This CLI design implements the Boot Contract specification:
 
 ---
 
-## 8. Implementation Checklist
+## 9. Implementation Checklist
 
 ### Phase 1: Core Commands (P0)
 
@@ -1826,49 +1896,45 @@ This CLI design implements the Boot Contract specification:
 
 ---
 
-## Appendix A: Complete VMConfig Example
+## Appendix A: Complete VM Files Example
 
-```go
-// Complete VM configuration as saved to disk
+For the canonical schema definitions, see [07-vm-lifecycle.md § 5](./07-vm-lifecycle.md#5-vm-configuration-schema).
+
+**config.json** (immutable, written once at create):
+```json
 {
-  "id": "vm-abc-123",
+  "vm_id": "vm-01HXYZ5A3B7C8D9E0F1G2H3J4K",
   "name": "myvm",
-  "boot": {
-    "mode": "pvh",
-    "firmware": "/var/lib/cocoon/firmware/hypervisor-fw"
-  },
-  "disk": {
-    "root_disk_path": "/var/lib/cocoon/vms/vm-abc-123/overlay.qcow2",
-    "size": "10G",
-    "image": "ubuntu-22.04-cloudimg",
-    "base_image": "/var/lib/cocoon/cache/images/ubuntu-22.04-cloudimg-abc123def456.qcow2"
-  },
-  "resources": {
-    "cpus": 2,
-    "memory_mb": 2048
-  },
-  "runtime": {
-    "api_socket": "/run/cocoon/vms/vm-abc-123/api.sock",
-    "work_dir": "/var/lib/cocoon/vms/vm-abc-123",
-    "state": "running",
-    "process_id": 12345
-  },
-  "initialization": {
-    "metadata_server": "http://169.254.169.254"
-  },
-  "io": {
-    "serial": {
-      "mode": "file",
-      "log_file": "/var/log/cocoon/vm-abc-123-serial.log"
-    }
-  },
-  "timeouts": {
-    "boot": "60s",
-    "stop": "30s"
-  },
+  "image_ref": "ubuntu-22.04-cloudimg",
+  "base_checksum": "sha256:ef015678abcd1234...",
+  "base_image_path": "/var/lib/cocoon/cache/images/ef015678abcd1234_amd64.qcow2",
+  "boot_mode": "pvh",
+  "firmware_path": "/var/lib/cocoon/firmware/hypervisor-fw",
+  "cpus": 2,
+  "memory_mb": 1024,
+  "disk_size": "10G",
+  "overlay_path": "/var/lib/cocoon/vms/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K/overlay.qcow2",
+  "serial_log": "/var/log/cocoon/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K-serial.log",
+  "socket_path": "/run/cocoon/vms/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K/api.sock",
   "created_at": "2026-02-11T10:30:00Z",
-  "updated_at": "2026-02-11T10:30:05Z",
-  "started_at": "2026-02-11T10:30:05Z"
+  "schema_version": 1
+}
+```
+
+**metadata.json** (mutable, updated on every state transition):
+```json
+{
+  "vm_id": "vm-01HXYZ5A3B7C8D9E0F1G2H3J4K",
+  "state": "RUNNING",
+  "previous_state": "STARTING",
+  "process_pid": 12345,
+  "boot_time": "2.3s",
+  "last_error": "",
+  "error_count": 0,
+  "updated_at": "2026-02-11T10:30:07Z",
+  "started_at": "2026-02-11T10:30:05Z",
+  "stopped_at": "",
+  "schema_version": 1
 }
 ```
 

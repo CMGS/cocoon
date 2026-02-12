@@ -28,8 +28,8 @@ Level 4: VM Metadata Lock (per-VM)
 
 **Lock File Locations**:
 - GC Lock: `/var/lib/cocoon/gc.lock`
-- Reference Counter Lock: `/var/lib/cocoon/cache/references.lock`
-- Image Conversion Lock: `/var/lib/cocoon/cache/locks/{checksum}.lock`
+- Reference Counter Lock: `/var/lib/cocoon/references.lock`
+- Image Conversion Lock: `/var/lib/cocoon/cache/locks/{checksum}_{arch}.lock`
 - VM Metadata Lock: `/var/lib/cocoon/vms/{vm-id}/metadata.lock`
 
 **Rules**:
@@ -89,10 +89,11 @@ func NewImageLockManager(storageDir string) *ImageLockManager {
     }
 }
 
-// LockImage acquires the file lock for a specific image checksum
-// Returns lock file handle that must be closed to release the lock
-func (m *ImageLockManager) LockImage(checksum string) (*os.File, error) {
-    lockPath := filepath.Join(m.lockDir, checksum+".lock")
+// LockImage acquires the file lock for a specific image identity.
+// The lock key matches the cache filename: {checksum}_{arch}.
+// Returns lock file handle that must be closed to release the lock.
+func (m *ImageLockManager) LockImage(checksum, arch string) (*os.File, error) {
+    lockPath := filepath.Join(m.lockDir, checksum+"_"+arch+".lock")
 
     // Open or create lock file
     lockFile, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0644)
@@ -110,10 +111,10 @@ func (m *ImageLockManager) LockImage(checksum string) (*os.File, error) {
     return lockFile, nil
 }
 
-// TryLockImage attempts to acquire the lock without blocking
-// Returns (lock file, true) if successful, (nil, false) if already locked
-func (m *ImageLockManager) TryLockImage(checksum string) (*os.File, bool) {
-    lockPath := filepath.Join(m.lockDir, checksum+".lock")
+// TryLockImage attempts to acquire the lock without blocking.
+// Returns (lock file, true) if successful, (nil, false) if already locked.
+func (m *ImageLockManager) TryLockImage(checksum, arch string) (*os.File, bool) {
+    lockPath := filepath.Join(m.lockDir, checksum+"_"+arch+".lock")
 
     lockFile, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0644)
     if err != nil {
@@ -144,29 +145,31 @@ func (m *ImageLockManager) UnlockImage(lockFile *os.File) {
 
 ```go
 func (mgr *ImageManager) PrepareBaseImage(image string) (*ImageInfo, error) {
-    // 1. Calculate checksum (no lock needed, read-only operation)
-    checksum, err := mgr.cache.CalculateManifestChecksum(image)
+    // 1. Calculate checksum and resolve arch (no lock needed, read-only operation)
+    //    See 05-storage-management.md § "Image Checksum Identity" for the algorithm.
+    checksum, arch, err := mgr.cache.CalculateImageIdentity(image)
     if err != nil {
         return nil, err
     }
 
     // 2. Fast path: check if already cached (no lock for read)
-    cachedPath := mgr.cache.GetCachedImage(checksum)
+    cachedPath := mgr.cache.GetCachedImage(checksum, arch)
     if cachedPath != nil {
-        return &ImageInfo{Path: cachedPath, Checksum: checksum}, nil
+        return &ImageInfo{Path: cachedPath, Checksum: checksum, Arch: arch}, nil
     }
 
     // 3. Slow path: acquire file-based lock for conversion
-    lockFile, err := mgr.imageLocks.LockImage(checksum)
+    //    Lock key: {checksum}_{arch} — matches cache filename.
+    lockFile, err := mgr.imageLocks.LockImage(checksum, arch)
     if err != nil {
         return nil, err
     }
     defer mgr.imageLocks.UnlockImage(lockFile)
 
     // 4. Double-check cache (another process may have finished while we waited)
-    cachedPath = mgr.cache.GetCachedImage(checksum)
+    cachedPath = mgr.cache.GetCachedImage(checksum, arch)
     if cachedPath != nil {
-        return &ImageInfo{Path: cachedPath, Checksum: checksum}, nil
+        return &ImageInfo{Path: cachedPath, Checksum: checksum, Arch: arch}, nil
     }
 
     // 5. Pull and convert (only one process does this)
@@ -192,7 +195,7 @@ func (mgr *ImageManager) PrepareBaseImage(image string) (*ImageInfo, error) {
         return nil, err
     }
 
-    return &ImageInfo{Path: baseImage, Checksum: checksum}, nil
+    return &ImageInfo{Path: baseImage, Checksum: checksum, Arch: arch}, nil
 }
 ```
 
@@ -222,12 +225,21 @@ No manual cleanup of stale locks is needed.
 
 ### Problem
 
-`references.json` tracks which VMs use which base images:
+`references.json` tracks which VMs use which base images, keyed by
+content-addressed identity (`{checksum}_{arch}`), not by absolute path:
 
 ```json
 {
-  "/cache/images/abc123.qcow2": ["vm-001", "vm-002"],
-  "/cache/images/def456.qcow2": ["vm-003"]
+  "abc123def456_amd64": {
+    "path": "/var/lib/cocoon/cache/images/abc123def456_amd64.qcow2",
+    "refs": ["vm-001", "vm-002"],
+    "created_at": "2026-02-12T10:00:00Z"
+  },
+  "f7e8d9c0b1a2_amd64": {
+    "path": "/var/lib/cocoon/cache/images/f7e8d9c0b1a2_amd64.qcow2",
+    "refs": ["vm-003"],
+    "created_at": "2026-02-12T11:00:00Z"
+  }
 }
 ```
 
@@ -248,9 +260,11 @@ import (
     "os"
     "path/filepath"
     "syscall"
+    "time"
 )
 
-// ReferenceCounter tracks base image usage with atomic operations
+// ReferenceCounter tracks base image usage with atomic operations.
+// Keys are content-addressed: {checksum}_{arch} (see 05-storage-management.md).
 type ReferenceCounter struct {
     storageDir string
     lockFile   string
@@ -260,18 +274,25 @@ type ReferenceCounter struct {
 func NewReferenceCounter(storageDir string) *ReferenceCounter {
     return &ReferenceCounter{
         storageDir: storageDir,
-        lockFile:   filepath.Join(storageDir, "cache", "references.lock"),
-        dataFile:   filepath.Join(storageDir, "cache", "references.json"),
+        lockFile:   filepath.Join(storageDir, "references.lock"),
+        dataFile:   filepath.Join(storageDir, "references.json"),
     }
 }
 
-// RefData represents the reference data structure
-type RefData struct {
-    References map[string][]string `json:"references"`
+// RefEntry represents a single image reference entry
+type RefEntry struct {
+    Path      string   `json:"path"`
+    Refs      []string `json:"refs"`
+    CreatedAt string   `json:"created_at"`
 }
 
-// updateReferences performs an atomic update operation
-func (rc *ReferenceCounter) updateReferences(op func(*RefData) error) error {
+// RefData represents the reference data structure.
+// Keys are content-addressed: {checksum}_{arch} (e.g., "a1b2c3d4e5f6_amd64").
+type RefData map[string]*RefEntry
+
+// updateReferences performs an atomic update operation.
+// The imageKey parameter uses the content-addressed format: {checksum}_{arch}.
+func (rc *ReferenceCounter) updateReferences(op func(RefData) error) error {
     // 1. Acquire exclusive file lock
     lockFile, err := os.OpenFile(rc.lockFile, os.O_RDWR|os.O_CREATE, 0644)
     if err != nil {
@@ -286,15 +307,15 @@ func (rc *ReferenceCounter) updateReferences(op func(*RefData) error) error {
     }
     defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
 
-    // 2. Read current references
-    refs := &RefData{References: make(map[string][]string)}
+    // 2. Read current references (keyed by {checksum}_{arch})
+    refs := make(RefData)
 
     data, err := os.ReadFile(rc.dataFile)
     if err != nil && !os.IsNotExist(err) {
         return err
     }
     if len(data) > 0 {
-        if err := json.Unmarshal(data, refs); err != nil {
+        if err := json.Unmarshal(data, &refs); err != nil {
             return err
         }
     }
@@ -339,48 +360,70 @@ func (rc *ReferenceCounter) updateReferences(op func(*RefData) error) error {
     return nil
 }
 
-// AddReference adds a VM reference to a base image
-func (rc *ReferenceCounter) AddReference(baseImage, vmID string) error {
-    return rc.updateReferences(func(refs *RefData) error {
-        vms := refs.References[baseImage]
+// imageKey builds the content-addressed key: {checksum}_{arch}
+func imageKey(checksum, arch string) string {
+    return checksum + "_" + arch
+}
+
+// AddReference adds a VM reference to a base image.
+// Parameters use the content-addressed identity from
+// 05-storage-management.md § "Image Checksum Identity".
+func (rc *ReferenceCounter) AddReference(checksum, arch, vmID string) error {
+    key := imageKey(checksum, arch)
+    return rc.updateReferences(func(refs RefData) error {
+        entry := refs[key]
+        if entry == nil {
+            entry = &RefEntry{
+                Path:      filepath.Join(rc.storageDir, "cache", "images", key+".qcow2"),
+                CreatedAt: time.Now().Format(time.RFC3339),
+            }
+            refs[key] = entry
+        }
         // Check if already exists
-        for _, vm := range vms {
+        for _, vm := range entry.Refs {
             if vm == vmID {
                 return nil // Already referenced
             }
         }
-        refs.References[baseImage] = append(vms, vmID)
+        entry.Refs = append(entry.Refs, vmID)
         return nil
     })
 }
 
 // RemoveReference removes a VM reference from a base image
-func (rc *ReferenceCounter) RemoveReference(baseImage, vmID string) error {
-    return rc.updateReferences(func(refs *RefData) error {
-        vms := refs.References[baseImage]
-        newVMs := []string{}
-        for _, vm := range vms {
+func (rc *ReferenceCounter) RemoveReference(checksum, arch, vmID string) error {
+    key := imageKey(checksum, arch)
+    return rc.updateReferences(func(refs RefData) error {
+        entry := refs[key]
+        if entry == nil {
+            return nil
+        }
+        newRefs := []string{}
+        for _, vm := range entry.Refs {
             if vm != vmID {
-                newVMs = append(newVMs, vm)
+                newRefs = append(newRefs, vm)
             }
         }
-        if len(newVMs) > 0 {
-            refs.References[baseImage] = newVMs
+        if len(newRefs) > 0 {
+            entry.Refs = newRefs
         } else {
-            delete(refs.References, baseImage)
+            delete(refs, key)
         }
         return nil
     })
 }
 
 // GetReferences returns all VMs referencing a base image
-func (rc *ReferenceCounter) GetReferences(baseImage string) ([]string, error) {
+func (rc *ReferenceCounter) GetReferences(checksum, arch string) ([]string, error) {
+    key := imageKey(checksum, arch)
     var result []string
 
-    err := rc.updateReferences(func(refs *RefData) error {
-        vms := refs.References[baseImage]
-        result = make([]string, len(vms))
-        copy(result, vms)
+    err := rc.updateReferences(func(refs RefData) error {
+        entry := refs[key]
+        if entry != nil {
+            result = make([]string, len(entry.Refs))
+            copy(result, entry.Refs)
+        }
         return nil
     })
 
@@ -388,12 +431,13 @@ func (rc *ReferenceCounter) GetReferences(baseImage string) ([]string, error) {
 }
 
 // IsReferenced checks if a base image has any references
-func (rc *ReferenceCounter) IsReferenced(baseImage string) (bool, error) {
+func (rc *ReferenceCounter) IsReferenced(checksum, arch string) (bool, error) {
+    key := imageKey(checksum, arch)
     var referenced bool
 
-    err := rc.updateReferences(func(refs *RefData) error {
-        vms := refs.References[baseImage]
-        referenced = len(vms) > 0
+    err := rc.updateReferences(func(refs RefData) error {
+        entry := refs[key]
+        referenced = entry != nil && len(entry.Refs) > 0
         return nil
     })
 
@@ -453,16 +497,18 @@ parallel -j 50 cocoon create myorg/ubuntu-bootable:22.04 --name vm-{} ::: {001..
 **Verification**:
 ```bash
 # Check references
-$ cat /var/lib/cocoon/cache/references.json
+$ cat /var/lib/cocoon/references.json
 {
-  "/var/lib/cocoon/cache/images/abc123.qcow2": [
-    "vm-001", "vm-002", ..., "vm-050"
-  ]
+  "abc123def456_amd64": {
+    "path": "/var/lib/cocoon/cache/images/abc123def456_amd64.qcow2",
+    "refs": ["vm-001", "vm-002", ..., "vm-050"],
+    "created_at": "2026-02-12T10:00:00Z"
+  }
 }
 
 # Check disk usage (1 base + 50 overlays, not 50 full images)
-$ du -sh /var/lib/cocoon/cache/images/abc123.qcow2
-5.2G    abc123.qcow2
+$ du -sh /var/lib/cocoon/cache/images/abc123def456_amd64.qcow2
+5.2G    abc123def456_amd64.qcow2
 
 $ du -sh /var/lib/cocoon/vms/vm-*/overlay.qcow2
 196K    vm-001/overlay.qcow2
@@ -486,8 +532,8 @@ $ cocoon delete vm-042
 
 1. **GC Process**:
    - Acquires reference lock
-   - Reads references: `{"abc123.qcow2": ["vm-042"]}`
-   - Sees vm-042 references abc123.qcow2
+   - Reads references: `{"abc123def456_amd64": {"refs": ["vm-042"], ...}}`
+   - Sees vm-042 references abc123def456_amd64
    - Skips deletion (image is referenced)
    - Releases lock
    - Moves to next image
@@ -495,13 +541,13 @@ $ cocoon delete vm-042
 2. **Delete Process** (runs after GC releases lock):
    - Acquires reference lock
    - Removes vm-042 from references
-   - Writes: `{"abc123.qcow2": []}`
+   - Removes empty entry for abc123def456_amd64
    - Releases lock
    - Deletes overlay file
 
 3. **Next GC Run**:
    - Acquires reference lock
-   - Reads references: `{"abc123.qcow2": []}`
+   - Reads references: no entry for abc123def456_amd64
    - Sees no references
    - Checks grace period (24 hours default)
    - If elapsed, moves image to trash
@@ -511,25 +557,27 @@ $ cocoon delete vm-042
 The critical section is protected by the reference lock:
 
 ```go
-func (gc *GarbageCollector) CollectImage(baseImage string) error {
+func (gc *GarbageCollector) CollectImage(imageKey string) error {
     // WRONG: Check references outside lock (race condition)
-    refs, _ := gc.refs.GetReferences(baseImage)
+    refs, _ := gc.refs.GetReferences(imageKey)  // not safe alone
     if len(refs) > 0 {
         return nil // Image in use
     }
     // VM could be deleted here!
-    os.Remove(baseImage) // DANGEROUS
+    imagePath := filepath.Join(gc.storageDir, "cache", "images", imageKey+".qcow2")
+    os.Remove(imagePath) // DANGEROUS
 
     // CORRECT: Check and delete in same critical section
-    return gc.refs.updateReferences(func(refData *RefData) error {
-        refs := refData.References[baseImage]
-        if len(refs) > 0 {
+    return gc.refs.updateReferences(func(refData RefData) error {
+        entry := refData[imageKey]
+        if entry != nil && len(entry.Refs) > 0 {
             return nil // Image in use, skip
         }
 
         // No references, safe to delete
-        trashPath := gc.trashDir + filepath.Base(baseImage)
-        return os.Rename(baseImage, trashPath)
+        imagePath := filepath.Join(gc.storageDir, "cache", "images", imageKey+".qcow2")
+        trashPath := filepath.Join(gc.trashDir, imageKey+".qcow2")
+        return os.Rename(imagePath, trashPath)
     })
 }
 ```
@@ -937,6 +985,7 @@ import (
     "fmt"
     "os"
     "path/filepath"
+    "strings"
     "syscall"
     "time"
 )
@@ -972,35 +1021,40 @@ func (gc *GarbageCollector) Run() error {
     }
     defer syscall.Flock(int(gcLock.Fd()), syscall.LOCK_UN)
 
-    // 2. Now safe to perform GC operations
+    // 2. Now safe to perform GC operations.
+    //    Scan cache/images/ for content-addressed files ({checksum}_{arch}.qcow2).
     images, err := filepath.Glob(filepath.Join(gc.storageDir, "cache", "images", "*.qcow2"))
     if err != nil {
         return err
     }
 
-    for _, image := range images {
-        if err := gc.DeleteUnreferencedImage(image); err != nil {
+    for _, imagePath := range images {
+        // Derive the content-addressed key from the filename (strip .qcow2)
+        imageKey := strings.TrimSuffix(filepath.Base(imagePath), ".qcow2")
+        if err := gc.DeleteUnreferencedImage(imageKey); err != nil {
             // Log but continue with other images
-            fmt.Printf("Failed to GC %s: %v\n", image, err)
+            fmt.Printf("Failed to GC %s: %v\n", imageKey, err)
         }
     }
 
     return nil
 }
 
-// DeleteUnreferencedImage uses reference lock for atomic check-and-delete
-func (gc *GarbageCollector) DeleteUnreferencedImage(image string) error {
+// DeleteUnreferencedImage uses reference lock for atomic check-and-delete.
+// imageKey is the content-addressed identity: {checksum}_{arch}.
+func (gc *GarbageCollector) DeleteUnreferencedImage(imageKey string) error {
     // GC lock (Level 1) is already held
     // Now acquire reference lock (Level 2) - follows hierarchy
-    return gc.refs.updateReferences(func(refData *RefData) error {
+    return gc.refs.updateReferences(func(refData RefData) error {
         // Check references inside lock
-        refs := refData.References[image]
-        if len(refs) > 0 {
+        entry := refData[imageKey]
+        if entry != nil && len(entry.Refs) > 0 {
             return nil // Image in use, skip
         }
 
         // No references, check grace period
-        info, err := os.Stat(image)
+        imagePath := filepath.Join(gc.storageDir, "cache", "images", imageKey+".qcow2")
+        info, err := os.Stat(imagePath)
         if err != nil {
             return err
         }
@@ -1011,8 +1065,8 @@ func (gc *GarbageCollector) DeleteUnreferencedImage(image string) error {
         }
 
         // Safe to delete - move to trash (soft delete)
-        trashPath := filepath.Join(gc.trashDir, filepath.Base(image))
-        return os.Rename(image, trashPath)
+        trashPath := filepath.Join(gc.trashDir, imageKey+".qcow2")
+        return os.Rename(imagePath, trashPath)
     })
 }
 ```
@@ -1201,8 +1255,8 @@ func lockWithTimeout(mu *sync.Mutex, timeout time.Duration) error {
 | Lock Purpose | File Path | Lock Level |
 |--------------|-----------|------------|
 | GC operations | `/var/lib/cocoon/gc.lock` | Level 1 (highest) |
-| Reference counter | `/var/lib/cocoon/cache/references.lock` | Level 2 |
-| Image conversion | `/var/lib/cocoon/cache/locks/{checksum}.lock` | Level 3 |
+| Reference counter | `/var/lib/cocoon/references.lock` | Level 2 |
+| Image conversion | `/var/lib/cocoon/cache/locks/{checksum}_{arch}.lock` | Level 3 |
 | VM metadata | `/var/lib/cocoon/vms/{vm-id}/metadata.lock` | Level 4 (lowest) |
 
 ### Crash Consistency
@@ -1233,7 +1287,7 @@ parallel -j 20 cocoon create myorg/ubuntu-bootable:22.04 --name vm-{} ::: {001..
 ls -lh /var/lib/cocoon/cache/images/
 
 # Verify all references recorded
-cat /var/lib/cocoon/cache/references.json | jq '.references | length'
+cat /var/lib/cocoon/references.json | jq 'keys | length'
 
 # Crash test: Kill process mid-create
 cocoon create myorg/ubuntu-bootable:22.04 --name vm-test &
@@ -1263,7 +1317,7 @@ time parallel -j 100 cocoon create myorg/ubuntu-bootable:22.04 --name vm-{} ::: 
 
 **P0-C1: Image Conversion Lock**
 - ✅ Changed from sync.Mutex to file-based flock
-- ✅ Lock path: `/var/lib/cocoon/cache/locks/{checksum}.lock`
+- ✅ Lock path: `/var/lib/cocoon/cache/locks/{checksum}_{arch}.lock`
 - ✅ Handles process crash (kernel auto-releases)
 - ✅ 20 concurrent processes = 1 pull+convert, others wait
 

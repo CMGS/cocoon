@@ -76,6 +76,32 @@ These must be implemented correctly from the start:
 
 ## 2. Phase Breakdown
 
+### Phase 0a: Spec Freeze (Pre-Implementation Gate)
+
+**Goal**: All P0 specifications must be finalized before entering the coding phase. Incomplete specs guarantee rework.
+
+**Checklist** (ALL must be checked before Phase 0 begins):
+
+- [ ] **config.json schema** finalized (docs/07-vm-lifecycle.md § 4.5)
+  - Immutable fields defined, source-of-truth rules documented
+- [ ] **VM identifier rules** finalized (docs/07-vm-lifecycle.md § 1.5)
+  - vm_id format, name uniqueness, CLI resolution, name-index.json
+- [ ] **Canonical filesystem layout** finalized (docs/05-storage-management.md § 2.1)
+  - Single source of truth for all paths, overlay naming, references.json key format
+- [ ] **Image checksum identity** finalized (docs/04-oci-conversion.md § 6 + docs/05-storage-management.md)
+  - Precise algorithm, multi-arch strategy, cache filename pattern
+- [ ] **cocoon-helper interface spec** finalized (docs/08-dependencies.md)
+  - Subcommands, exit codes, path allowlist, sudoers template
+- [ ] **Boot contract** stable (docs/01-boot-contract.md)
+  - PVH/UEFI parameters, firmware paths, boot detection patterns
+
+**Why This Gate Exists**: Starting implementation before these specs are frozen will result in:
+- Components A and B disagreeing on file paths and schemas
+- Reconcile/GC logic built on assumptions that change mid-development
+- Migration code needed before v1.0 is even released
+
+---
+
 ### Phase 0: Foundation (Week 1)
 
 **Goal**: Set up project structure, dependencies, and development environment

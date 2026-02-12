@@ -72,6 +72,8 @@ This document specifies how Cocoon integrates with Cloud Hypervisor to manage VM
 
 ### 2.1 Directory Structure
 
+> See [05-storage-management.md § Canonical Filesystem Layout](./05-storage-management.md#canonical-filesystem-layout-normative) for the authoritative filesystem layout specification.
+
 VM data is split across two locations by data lifetime:
 
 **Persistent state** (`/var/lib/cocoon/`) — survives reboot, used by reconcile/GC:

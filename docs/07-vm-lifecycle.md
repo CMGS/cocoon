@@ -8,10 +8,12 @@
 
 This document defines the complete VM lifecycle management system for Cocoon, including:
 1. State machine with all possible transitions
-2. Allowed operations per state
-3. Metadata schema and persistence
-4. Idempotency rules and error handling
-5. Reconciliation and cleanup procedures
+2. VM identifier rules (`vm_id` vs `name`) and resolution
+3. Allowed operations per state
+4. Metadata schema and persistence
+5. VM configuration schema (`config.json` immutable vs `metadata.json` mutable)
+6. Idempotency rules and error handling
+7. Reconciliation and cleanup procedures
 
 The lifecycle system ensures consistent, predictable VM behavior across all operations (create, start, stop, delete, inspect).
 
@@ -21,11 +23,12 @@ The lifecycle system ensures consistent, predictable VM behavior across all oper
 2. [State Transitions](#2-state-transitions)
 3. [Operations and Permissions](#3-operations-and-permissions)
 4. [Metadata Schema](#4-metadata-schema)
-5. [Metadata Persistence](#5-metadata-persistence)
-6. [Idempotency Rules](#6-idempotency-rules)
-7. [Error Handling](#7-error-handling)
-8. [Reconciliation](#8-reconciliation)
-9. [Implementation Guide](#9-implementation-guide)
+5. [VM Configuration Schema (config.json vs metadata.json)](#5-vm-configuration-schema)
+6. [Metadata Persistence](#6-metadata-persistence)
+7. [Idempotency Rules](#7-idempotency-rules)
+8. [Error Handling](#8-error-handling)
+9. [Reconciliation](#9-reconciliation)
+10. [Implementation Guide](#10-implementation-guide)
 
 ---
 
@@ -237,12 +240,78 @@ CREATING -----> CREATED -----> STARTING -----> RUNNING -----> STOPPING -----> ST
 **State**:
 - All files removed
 - Metadata removed from registry
-- VM ID freed for reuse
+- VM ID is **never reused** (ULID guarantees global uniqueness)
 
 **Properties**:
 - Terminal state (no transitions out)
 - Idempotent (can delete multiple times)
 - Cleanup guaranteed
+
+### 1.4 VM Identifier Rules
+
+#### 1.4.1 vm_id (Internal Primary Key)
+
+- **Format**: `vm-{ulid}` (e.g., `vm-01HXYZ5A3B7C8D9E0F1G2H3J4K`). ULID is time-sortable and globally unique.
+- Generated at create time, **never reused** even after deletion.
+- Used as directory name: `/var/lib/cocoon/vms/{vm_id}/`
+- Used in lock files, log files, socket paths:
+  - Lock: `/var/lib/cocoon/vms/{vm_id}/metadata.lock`
+  - Serial log: `/var/log/cocoon/{vm_id}-serial.log`
+  - API socket: `/run/cocoon/vms/{vm_id}/api.sock`
+
+#### 1.4.2 name (User-Facing Alias)
+
+- Optional on create. If omitted, auto-generated as `cocoon-{random-8-chars}` (e.g., `cocoon-a3f7b2c1`).
+- **Globally unique** — `cocoon create` fails with a clear error if the name already exists.
+- **Immutable after create** — no rename support in Phase 1.
+- Stored in `config.json` and in the global name index.
+
+#### 1.4.3 Name Index
+
+- **File**: `/var/lib/cocoon/name-index.json`
+- **Format**:
+  ```json
+  {
+    "myvm": "vm-01HXYZ5A3B7C8D9E0F1G2H3J4K",
+    "devbox": "vm-01HABC9D8E7F6G5H4J3K2L1M0N"
+  }
+  ```
+- Protected by `metadata.lock`-level file lock (see [Section 6: Metadata Persistence](#6-metadata-persistence)).
+- **Rebuilt from config.json files during reconcile** — the name index is a derived cache, not the source of truth.
+
+#### 1.4.4 CLI Resolution
+
+All CLI commands accept a `<vm-ref>` that resolves as follows (see also `09-cli-design.md`):
+
+1. If `<vm-ref>` starts with `vm-`: treat as exact `vm_id` lookup.
+2. Otherwise: look up `<vm-ref>` in the name index.
+3. If no match: error `"VM not found: <vm-ref>"`.
+
+No prefix-matching or fuzzy matching is supported.
+
+```go
+func ResolveVMRef(ref string) (string, error) {
+    if strings.HasPrefix(ref, "vm-") {
+        // Direct vm_id lookup
+        if _, err := LoadConfig(ref); err != nil {
+            return "", fmt.Errorf("VM not found: %s", ref)
+        }
+        return ref, nil
+    }
+
+    // Name index lookup
+    index, err := LoadNameIndex()
+    if err != nil {
+        return "", fmt.Errorf("failed to load name index: %w", err)
+    }
+
+    vmID, ok := index[ref]
+    if !ok {
+        return "", fmt.Errorf("VM not found: %s", ref)
+    }
+    return vmID, nil
+}
+```
 
 ---
 
@@ -756,24 +825,161 @@ type ErrorInfo struct {
 
 ---
 
-## 5. Metadata Persistence
+## 5. VM Configuration Schema
 
-### 5.1 Storage Path Structure
+Cocoon splits per-VM persistent data into two files with distinct mutability semantics:
+- **`config.json`** — immutable VM configuration, written once at create time
+- **`metadata.json`** — mutable runtime state, updated on every state transition
+
+Both files live in `/var/lib/cocoon/vms/{vm_id}/`.
+
+### 5.1 config.json — Immutable VM Configuration
+
+`config.json` is written once during `cocoon create` and **never modified after creation** (Phase 2 may allow controlled resize of CPU/memory, but the file is treated as append-only migration, not in-place edit).
+
+```go
+// config.json — immutable, written once at create, never modified after
+type VMConfig struct {
+    // Identity
+    VMID        string `json:"vm_id"`         // Primary key: vm-{ulid}, never reused
+    Name        string `json:"name"`          // User alias, globally unique
+
+    // Image provenance (immutable after create)
+    ImageRef      string `json:"image_ref"`       // Original image reference (path/URL/OCI ref)
+    BaseChecksum  string `json:"base_checksum"`   // SHA256 of base qcow2 in cache
+    BaseImagePath string `json:"base_image_path"` // Path to cached base: /var/lib/cocoon/cache/images/{checksum}_{arch}.qcow2
+
+    // Boot configuration (immutable)
+    BootMode     string `json:"boot_mode"`      // "pvh" or "uefi"
+    FirmwarePath string `json:"firmware_path"`  // Resolved firmware path at creation
+
+    // Resources (immutable after create; Phase 2 may allow resize)
+    CPUs     int    `json:"cpus"`
+    MemoryMB int64  `json:"memory_mb"`        // Internal: always bytes-convertible
+    DiskSize string `json:"disk_size"`         // Overlay size, e.g. "10G"
+
+    // Storage paths (derived, stored for fast lookup)
+    OverlayPath string `json:"overlay_path"`   // /var/lib/cocoon/vms/{vm-id}/overlay.qcow2
+    SerialLog   string `json:"serial_log"`     // /var/log/cocoon/{vm-id}-serial.log
+    SocketPath  string `json:"socket_path"`    // /run/cocoon/vms/{vm-id}/api.sock
+
+    // Timestamps
+    CreatedAt string `json:"created_at"`       // RFC3339
+
+    // Schema version for migration
+    SchemaVersion int `json:"schema_version"`  // Currently 1
+}
+```
+
+**Example config.json**:
+```json
+{
+  "vm_id": "vm-01HXYZ5A3B7C8D9E0F1G2H3J4K",
+  "name": "myvm",
+  "image_ref": "myorg/ubuntu-bootable:22.04",
+  "base_checksum": "sha256:ef015678abcd1234...",
+  "base_image_path": "/var/lib/cocoon/cache/images/ef015678abcd1234_amd64.qcow2",
+  "boot_mode": "pvh",
+  "firmware_path": "/var/lib/cocoon/firmware/hypervisor-fw",
+  "cpus": 2,
+  "memory_mb": 1024,
+  "disk_size": "10G",
+  "overlay_path": "/var/lib/cocoon/vms/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K/overlay.qcow2",
+  "serial_log": "/var/log/cocoon/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K-serial.log",
+  "socket_path": "/run/cocoon/vms/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K/api.sock",
+  "created_at": "2026-02-11T20:00:00Z",
+  "schema_version": 1
+}
+```
+
+### 5.2 metadata.json — Mutable Runtime State
+
+`metadata.json` is updated on every state transition, process start/stop, and error event.
+
+```go
+// metadata.json — mutable, updated on every state transition
+type VMMetadata struct {
+    VMID          string `json:"vm_id"`            // Must match config.json
+    State         string `json:"state"`            // Current state: CREATING/CREATED/STARTING/RUNNING/STOPPING/STOPPED/ERROR/DELETED
+    PreviousState string `json:"previous_state"`   // For transition auditing
+
+    // Runtime (changes with each start/stop cycle)
+    ProcessPID int    `json:"process_pid,omitempty"`  // CH process PID (0 if not running)
+    BootTime   string `json:"boot_time,omitempty"`    // Duration string, e.g. "2.3s"
+
+    // Error tracking
+    LastError  string `json:"last_error,omitempty"`
+    ErrorCount int    `json:"error_count"`
+
+    // Timestamps
+    UpdatedAt string `json:"updated_at"`          // RFC3339, updated on every state change
+    StartedAt string `json:"started_at,omitempty"`
+    StoppedAt string `json:"stopped_at,omitempty"`
+
+    // Schema version
+    SchemaVersion int `json:"schema_version"`      // Currently 1
+}
+```
+
+**Example metadata.json** (VM currently running):
+```json
+{
+  "vm_id": "vm-01HXYZ5A3B7C8D9E0F1G2H3J4K",
+  "state": "RUNNING",
+  "previous_state": "STARTING",
+  "process_pid": 12345,
+  "boot_time": "2.3s",
+  "last_error": "",
+  "error_count": 0,
+  "updated_at": "2026-02-11T20:01:08Z",
+  "started_at": "2026-02-11T20:01:06Z",
+  "stopped_at": "",
+  "schema_version": 1
+}
+```
+
+### 5.3 Source of Truth
+
+| Question | Source | File |
+|----------|--------|------|
+| What should this VM look like? | **config.json** | Immutable configuration: image, resources, paths |
+| What is this VM doing right now? | **metadata.json** | Mutable runtime state: current state, PID, errors |
+
+**config.json** is the source of truth for "what this VM should be." Reconcile uses it to reconstruct expected configuration — it knows the VM exists, what image it was created from, how many CPUs it should have, and where its files live.
+
+**metadata.json** is the source of truth for "what this VM is doing now." It tracks runtime state, the Cloud Hypervisor process PID, error history, and timestamps for the current lifecycle.
+
+**On crash recovery**: `config.json` survives intact (it is never modified after creation). `metadata.json` may be stale if the crash occurred during a state transition. Reconciliation reads `config.json` to know the VM exists and its expected configuration, then probes actual system state (is the process alive? is the socket responsive?) to rebuild `metadata.json` accurately.
+
+**On upgrade/migration**: The `SchemaVersion` field in both files enables forward migration. `config.json` rarely changes schema since its fields are stable by design. `metadata.json` schema may evolve more frequently as new runtime tracking is added.
+
+### 5.4 Relationship to Section 4
+
+Section 4 defines the **combined** `VMMetadata` struct used during the initial implementation phase. As the implementation matures, the fields in Section 4's `VMMetadata` will be split into `VMConfig` (Section 5.1) and `VMMetadata` (Section 5.2) as described above. The combined struct in Section 4 remains useful as a reference for `cocoon inspect` output, which merges data from both files.
+
+---
+
+## 6. Metadata Persistence
+
+### 6.1 Storage Path Structure
 
 ```
-/var/lib/cocoon/vms/{vm-id}/
-├── metadata.json          # Primary metadata
-├── metadata.lock          # File lock for atomic updates
-├── overlay.qcow2          # VM overlay disk
+/var/lib/cocoon/
+├── name-index.json            # Global name → vm_id mapping (see Section 1.4.3)
+└── vms/{vm-id}/
+    ├── config.json            # Immutable VM configuration (see Section 5.1)
+    ├── metadata.json          # Mutable runtime state (see Section 5.2)
+    ├── metadata.lock          # File lock for atomic updates
+    └── overlay.qcow2          # VM overlay disk
 
 /run/cocoon/vms/{vm-id}/
-└── api.sock               # Cloud Hypervisor API socket
+└── api.sock                   # Cloud Hypervisor API socket
 
 /var/log/cocoon/
-└── vm-{id}-serial.log     # Serial console output
+└── {vm-id}-serial.log         # Serial console output
 ```
 
-### 5.2 Atomic Updates
+### 6.2 Atomic Updates
 
 Metadata updates use atomic write with temporary file + rename:
 
@@ -857,7 +1063,7 @@ func LoadMetadata(vmID string) (*VMMetadata, error) {
 }
 ```
 
-### 5.3 Consistency Guarantees
+### 6.3 Consistency Guarantees
 
 **Write Atomicity**:
 - All metadata updates use temp file + rename
@@ -876,9 +1082,9 @@ func LoadMetadata(vmID string) (*VMMetadata, error) {
 
 ---
 
-## 6. Idempotency Rules
+## 7. Idempotency Rules
 
-### 6.1 Operation Idempotency
+### 7.1 Operation Idempotency
 
 All Cocoon operations are designed to be idempotent where safe:
 
@@ -996,7 +1202,7 @@ func Delete(vmID string, force bool) error {
 - Deleting DELETED VM → **No-op, success**
 - **Fully idempotent**
 
-### 6.2 Idempotency Summary
+### 7.2 Idempotency Summary
 
 | Operation | Idempotent? | Behavior on Retry |
 |-----------|-------------|-------------------|
@@ -1008,9 +1214,9 @@ func Delete(vmID string, force bool) error {
 
 ---
 
-## 7. Error Handling
+## 8. Error Handling
 
-### 7.1 Error Types
+### 8.1 Error Types
 
 ```go
 type ErrorType string
@@ -1039,7 +1245,7 @@ const (
 )
 ```
 
-### 7.2 Error State Handling
+### 8.2 Error State Handling
 
 When a VM enters ERROR state:
 
@@ -1074,7 +1280,7 @@ func HandleError(vmID string, errType ErrorType, err error) {
 }
 ```
 
-### 7.3 Error Recovery
+### 8.3 Error Recovery
 
 **User Actions in ERROR State**:
 
@@ -1103,9 +1309,9 @@ func HandleError(vmID string, errType ErrorType, err error) {
 
 ---
 
-## 8. Reconciliation
+## 9. Reconciliation
 
-### 8.1 Purpose
+### 9.1 Purpose
 
 **Reconciliation** ensures metadata consistency with actual system state:
 - Detect orphaned Cloud Hypervisor processes
@@ -1113,19 +1319,25 @@ func HandleError(vmID string, errType ErrorType, err error) {
 - Cleanup stale resources
 - Fix metadata inconsistencies
 
-### 8.2 Crash Recovery and Reconciliation
+### 9.2 Crash Recovery and Reconciliation
 
-#### 8.2.1 Sources of Truth (Priority Order)
+#### 9.2.1 Sources of Truth (Priority Order)
 
 When reconciling VM state after crashes (kill -9, power loss, partial state), sources of truth are evaluated in this priority order:
+
+**Priority 0: config.json (VM existence and expected configuration)**
+- If `config.json` exists in `/var/lib/cocoon/vms/{vm_id}/`, the VM exists
+- Immutable — never corrupted by partial writes during state transitions
+- Provides expected paths, resource configuration, and identity (see [Section 5.1](#51-configjson--immutable-vm-configuration))
+- Used to rebuild the name index if it becomes stale
 
 **Priority 1: Cloud Hypervisor Process Status**
 - Check if PID from metadata.json is still running
 - Validate process is actually `cloud-hypervisor` (not PID reuse)
-- **Most authoritative**: If process is dead, VM cannot be RUNNING
+- **Most authoritative for runtime state**: If process is dead, VM cannot be RUNNING
 
 **Priority 2: API Socket Connectivity**
-- Check if CH API socket exists at `hypervisor.ch_socket`
+- Check if CH API socket exists at path from `config.json` (`socket_path`)
 - Attempt connection to socket
 - If process is running but socket missing → inconsistent state
 
@@ -1135,7 +1347,7 @@ When reconciling VM state after crashes (kill -9, power loss, partial state), so
 - Used to determine expected state vs actual state
 
 **Priority 4: Overlay Disk Existence**
-- Check if `storage.overlay_path` exists
+- Check if overlay exists at path from `config.json` (`overlay_path`)
 - If missing, VM cannot be recovered (data loss)
 - If present, VM can potentially be restarted
 
@@ -1144,7 +1356,7 @@ When reconciling VM state after crashes (kill -9, power loss, partial state), so
 - Cross-reference with metadata.json PID
 - Stale PID files indicate crash or unclean shutdown
 
-#### 8.2.2 Crash Scenarios and Recovery
+#### 9.2.2 Crash Scenarios and Recovery
 
 | Scenario | metadata.json | PID Running? | Socket Exists? | Action | New State |
 |----------|---------------|--------------|----------------|--------|-----------|
@@ -1158,7 +1370,7 @@ When reconciling VM state after crashes (kill -9, power loss, partial state), so
 | **Stuck stopping** | STOPPING | Yes | Yes | Force kill | STOPPED |
 | **Orphaned socket** | STOPPED | No | Yes | Clean socket | STOPPED |
 
-#### 8.2.3 Reconciliation Algorithm
+#### 9.2.3 Reconciliation Algorithm
 
 **On Startup (cocoon daemon start or cocoon reconcile)**:
 
@@ -1458,7 +1670,7 @@ func canConnectToSocket(socketPath string) bool {
 }
 ```
 
-#### 8.2.4 Crash Scenarios in Detail
+#### 9.2.4 Crash Scenarios in Detail
 
 **Scenario 1: kill -9 on Cloud Hypervisor**
 ```
@@ -1516,7 +1728,7 @@ Reconciliation:
 5. Cleanup: Do NOT kill bash (wrong process)
 ```
 
-### 8.3 Reconciliation Command
+### 9.3 Reconciliation Command
 
 ```bash
 # Dry-run: Report inconsistencies only
@@ -1561,7 +1773,7 @@ Summary:
 Run 'cocoon doctor --reconcile --fix' to repair inconsistencies.
 ```
 
-### 8.5 Legacy Reconciliation Logic (Simple Version)
+### 9.5 Legacy Reconciliation Logic (Simple Version)
 
 **Note**: This is a simplified version. See Section 8.2 for the full crash recovery algorithm.
 
@@ -1704,7 +1916,7 @@ func detectOrphanedCHProcesses(knownVMs []string) []int {
 }
 ```
 
-### 8.6 Reconciliation Schedule
+### 9.6 Reconciliation Schedule
 
 **When to Run**:
 1. **On daemon startup** (if running as daemon)
@@ -1719,9 +1931,9 @@ func detectOrphanedCHProcesses(knownVMs []string) []int {
 
 ---
 
-## 9. Implementation Guide
+## 10. Implementation Guide
 
-### 9.1 Phase 1: Core State Machine (P0)
+### 10.1 Phase 1: Core State Machine (P0)
 
 **Tasks**:
 - [ ] Implement `VMState` enum and validation
@@ -1735,7 +1947,7 @@ func detectOrphanedCHProcesses(knownVMs []string) []int {
 - `internal/vm/metadata.go`: Metadata CRUD
 - `internal/vm/operations.go`: Operations with state checks
 
-### 9.2 Phase 2: Operations (P0)
+### 10.2 Phase 2: Operations (P0)
 
 **Tasks**:
 - [ ] Implement `create` with CREATING → CREATED transition
@@ -1749,7 +1961,7 @@ func detectOrphanedCHProcesses(knownVMs []string) []int {
 - [ ] Capture error details in metadata
 - [ ] Save serial log excerpts on error
 
-### 9.3 Phase 3: Idempotency (P1)
+### 10.3 Phase 3: Idempotency (P1)
 
 **Tasks**:
 - [ ] Add idempotency checks to `start` (RUNNING → no-op)
@@ -1757,7 +1969,7 @@ func detectOrphanedCHProcesses(knownVMs []string) []int {
 - [ ] Add idempotency checks to `delete` (non-existent → no-op)
 - [ ] Add tests for all idempotency scenarios
 
-### 9.4 Phase 4: Reconciliation (P1)
+### 10.4 Phase 4: Reconciliation (P1)
 
 **Tasks**:
 - [ ] Implement `listAllVMs()` scanner
@@ -1767,7 +1979,7 @@ func detectOrphanedCHProcesses(knownVMs []string) []int {
 - [ ] Add dry-run mode (default)
 - [ ] Add reconciliation on daemon startup
 
-### 9.5 Testing Checklist
+### 10.5 Testing Checklist
 
 **State Machine Tests**:
 - [ ] Valid transitions succeed
@@ -1802,16 +2014,16 @@ func detectOrphanedCHProcesses(knownVMs []string) []int {
 
 ---
 
-## 10. References
+## 11. References
 
-### 10.1 Related Documents
+### 11.1 Related Documents
 
 - `00-overview.md`: Project overview
 - `01-boot-contract.md`: Boot contract and UEFI boot (P0 CRITICAL)
 - `05-storage-management.md`: Storage and COW
 - `06-concurrency.md`: Concurrency and locking
 
-### 10.2 External References
+### 11.2 External References
 
 - **Cloud Hypervisor API**: https://github.com/cloud-hypervisor/cloud-hypervisor/blob/main/vmm/src/api/openapi/cloud-hypervisor.yaml
 - **Linux Process States**: https://man7.org/linux/man-pages/man1/ps.1.html

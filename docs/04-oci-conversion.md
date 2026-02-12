@@ -1103,23 +1103,103 @@ func ConvertOCIToQcow2(
 - Instant "pull" for previously seen images
 - Automatic deduplication across tenants
 
-### 6.2 Checksum Calculation Strategy
+### 6.2 Checksum Identity Contract (Normative)
 
-**Approach**: Calculate checksum from OCI manifest (config digest + layer digests).
+This section defines the precise checksum algorithm used for cache filenames,
+`references.json` keys, and conversion lock names. It is consistent with
+[05-storage-management.md § Image Checksum Identity](./05-storage-management.md#image-checksum-identity-normative),
+which is the single source of truth for filesystem paths.
 
 **Why not image tag?** Tags are mutable (`ubuntu:22.04` can point to different content over time).
 
 **Why manifest?** Manifest is immutable and content-addressable.
 
+#### For OCI Images (Primary Path)
+
+```
+checksum = SHA256(
+    manifest.config.digest + "\n" +
+    sort(manifest.layers[*].digest).join("\n") + "\n" +
+    platform_os + "/" + platform_arch       // e.g., "linux/amd64"
+)
+```
+
+- Layer digests are **sorted lexicographically** before joining (ensures stability
+  regardless of manifest layer ordering).
+- The platform string (`linux/amd64`) is appended to distinguish identical layer
+  sets built for different architectures.
+- The full 64-character hex digest is computed; the first **12 hex characters**
+  (48 bits) are used for filenames and keys. The full digest is stored in
+  `references.json` metadata for collision verification.
+- Cache filename: `{checksum_12}_{arch}.qcow2` (e.g., `a1b2c3d4e5f6_amd64.qcow2`)
+
+**Multi-arch manifest lists**: When skopeo returns a manifest list
+(`mediaType: application/vnd.oci.image.index.v1+json`), resolve to the
+platform-specific manifest FIRST using `runtime.GOARCH`, then compute the
+checksum above on the resolved single-platform manifest.
+
+#### For Cloud Images (qcow2/img files)
+
+```
+checksum = SHA256(file_content)[:12]
+arch     = detect from image metadata, or default to runtime.GOARCH
+```
+
+#### For URL-Based Images
+
+```
+checksum = SHA256(downloaded_file_content)[:12]
+arch     = detect or default to runtime.GOARCH
+```
+
+#### Implementation
+
 ```go
-func CalculateOCIChecksum(image string) (string, error) {
+import (
+    "crypto/sha256"
+    "encoding/hex"
+    "encoding/json"
+    "fmt"
+    "os/exec"
+    "runtime"
+    "sort"
+    "strings"
+)
+
+// ImageIdentity holds the content-addressed identity of a base image.
+type ImageIdentity struct {
+    Checksum string // 12-char hex prefix of SHA-256
+    FullHash string // Full 64-char hex SHA-256 (for collision checks)
+    Arch     string // "amd64", "arm64", etc.
+}
+
+// CalculateOCIIdentity computes the checksum identity for an OCI image.
+// See 05-storage-management.md § "Image Checksum Identity" for the contract.
+func CalculateOCIIdentity(image string) (*ImageIdentity, error) {
     // Use skopeo to get raw manifest
-    cmd := exec.Command("skopeo", "inspect", "--raw", fmt.Sprintf("docker://%s", image))
+    cmd := exec.Command("skopeo", "inspect", "--raw",
+        fmt.Sprintf("docker://%s", image))
     output, err := cmd.Output()
     if err != nil {
-        return "", fmt.Errorf("failed to fetch manifest: %w", err)
+        return nil, fmt.Errorf("failed to fetch manifest: %w", err)
     }
 
+    // Detect manifest list vs single manifest
+    var probe struct {
+        MediaType string `json:"mediaType"`
+    }
+    json.Unmarshal(output, &probe)
+
+    if strings.Contains(probe.MediaType, "image.index") ||
+        strings.Contains(probe.MediaType, "manifest.list") {
+        // Multi-arch manifest list — resolve to platform-specific manifest
+        return resolveMultiArchIdentity(image)
+    }
+
+    return calculateSingleManifestIdentity(output, goarchToOCI(runtime.GOARCH))
+}
+
+func calculateSingleManifestIdentity(rawManifest []byte, arch string) (*ImageIdentity, error) {
     var manifest struct {
         Config struct {
             Digest string `json:"digest"`
@@ -1129,28 +1209,82 @@ func CalculateOCIChecksum(image string) (string, error) {
         } `json:"layers"`
     }
 
-    if err := json.Unmarshal(output, &manifest); err != nil {
-        return "", fmt.Errorf("failed to parse manifest: %w", err)
+    if err := json.Unmarshal(rawManifest, &manifest); err != nil {
+        return nil, fmt.Errorf("failed to parse manifest: %w", err)
     }
 
-    // Create stable representation
+    // Sort layer digests for stability
+    layerDigests := make([]string, len(manifest.Layers))
+    for i, l := range manifest.Layers {
+        layerDigests[i] = l.Digest
+    }
+    sort.Strings(layerDigests)
+
+    // Build canonical representation:
+    //   config_digest + "\n" + sorted_layers.join("\n") + "\n" + platform
     var sb strings.Builder
     sb.WriteString(manifest.Config.Digest)
-    for _, layer := range manifest.Layers {
-        sb.WriteString(layer.Digest)
-    }
+    sb.WriteString("\n")
+    sb.WriteString(strings.Join(layerDigests, "\n"))
+    sb.WriteString("\n")
+    sb.WriteString("linux/" + arch) // e.g., "linux/amd64"
 
-    // Calculate SHA256
+    // SHA-256
     hash := sha256.Sum256([]byte(sb.String()))
-    return hex.EncodeToString(hash[:]), nil
+    fullHex := hex.EncodeToString(hash[:])
+
+    return &ImageIdentity{
+        Checksum: fullHex[:12],
+        FullHash: fullHex,
+        Arch:     arch,
+    }, nil
+}
+
+func resolveMultiArchIdentity(image string) (*ImageIdentity, error) {
+    // Fetch platform-specific manifest using --override-arch
+    arch := goarchToOCI(runtime.GOARCH)
+    cmd := exec.Command("skopeo", "inspect", "--raw",
+        "--override-arch", arch,
+        fmt.Sprintf("docker://%s", image))
+    output, err := cmd.Output()
+    if err != nil {
+        return nil, fmt.Errorf("failed to resolve %s manifest: %w", arch, err)
+    }
+    return calculateSingleManifestIdentity(output, arch)
+}
+
+// goarchToOCI maps Go's GOARCH to OCI platform architecture strings.
+func goarchToOCI(goarch string) string {
+    switch goarch {
+    case "amd64":
+        return "amd64"
+    case "arm64":
+        return "arm64"
+    default:
+        return goarch
+    }
+}
+
+// CacheFilename returns the content-addressed filename: {checksum}_{arch}.qcow2
+func (id *ImageIdentity) CacheFilename() string {
+    return fmt.Sprintf("%s_%s.qcow2", id.Checksum, id.Arch)
+}
+
+// CacheKey returns the content-addressed key: {checksum}_{arch}
+// Used as the key in references.json and lock filenames.
+func (id *ImageIdentity) CacheKey() string {
+    return fmt.Sprintf("%s_%s", id.Checksum, id.Arch)
 }
 ```
 
 ### 6.3 Cache Lookup
 
+Cache filenames use the content-addressed pattern `{checksum}_{arch}.qcow2`
+(see [05-storage-management.md § Canonical Filesystem Layout](./05-storage-management.md#canonical-filesystem-layout-normative)).
+
 ```go
 type ImageCache struct {
-    cacheDir string
+    cacheDir string // e.g., /var/lib/cocoon/cache/images
 }
 
 func NewImageCache(cacheDir string) *ImageCache {
@@ -1158,13 +1292,10 @@ func NewImageCache(cacheDir string) *ImageCache {
     return &ImageCache{cacheDir: cacheDir}
 }
 
-func (c *ImageCache) Get(image string) (string, error) {
-    checksum, err := CalculateOCIChecksum(image)
-    if err != nil {
-        return "", err
-    }
-
-    cachedPath := filepath.Join(c.cacheDir, fmt.Sprintf("%s.qcow2", checksum))
+// GetByIdentity checks the cache for a previously converted image.
+// Returns the path to the cached qcow2 file, or os.ErrNotExist.
+func (c *ImageCache) GetByIdentity(id *ImageIdentity) (string, error) {
+    cachedPath := filepath.Join(c.cacheDir, id.CacheFilename())
 
     if _, err := os.Stat(cachedPath); err == nil {
         // Cache hit
@@ -1175,71 +1306,75 @@ func (c *ImageCache) Get(image string) (string, error) {
     return "", os.ErrNotExist
 }
 
-func (c *ImageCache) Put(image string, qcow2Path string) error {
-    checksum, err := CalculateOCIChecksum(image)
-    if err != nil {
-        return err
-    }
-
-    cachedPath := filepath.Join(c.cacheDir, fmt.Sprintf("%s.qcow2", checksum))
+// PutByIdentity stores a converted qcow2 image in the cache.
+func (c *ImageCache) PutByIdentity(id *ImageIdentity, qcow2Path string) (string, error) {
+    cachedPath := filepath.Join(c.cacheDir, id.CacheFilename())
 
     // Copy qcow2 to cache (use reflink if available)
     cmd := exec.Command("cp", "--reflink=auto", qcow2Path, cachedPath)
-    return cmd.Run()
+    if err := cmd.Run(); err != nil {
+        return "", err
+    }
+    return cachedPath, nil
 }
 ```
 
 ### 6.4 Complete Pipeline with Caching
 
 ```go
-func PrepareBaseImage(image string, cache *ImageCache) (string, error) {
-    // 1. Check cache
-    cachedPath, err := cache.Get(image)
+// PrepareBaseImage returns the cached qcow2 path and its content-addressed identity.
+func PrepareBaseImage(image string, cache *ImageCache) (string, *ImageIdentity, error) {
+    // 1. Calculate content-addressed identity (checksum + arch)
+    identity, err := CalculateOCIIdentity(image)
+    if err != nil {
+        return "", nil, fmt.Errorf("failed to calculate image identity: %w", err)
+    }
+
+    // 2. Check cache using identity key ({checksum}_{arch}.qcow2)
+    cachedPath, err := cache.GetByIdentity(identity)
     if err == nil {
-        log.Printf("Cache hit: %s -> %s", image, cachedPath)
-        return cachedPath, nil
+        log.Printf("Cache hit: %s -> %s (key: %s)", image, cachedPath, identity.CacheKey())
+        return cachedPath, identity, nil
     }
 
-    log.Printf("Cache miss: %s, converting from OCI...", image)
+    log.Printf("Cache miss: %s (key: %s), converting from OCI...", image, identity.CacheKey())
 
-    // 2. Pull OCI image
-    buildah := NewBuildahClient()
+    // 3. Pull OCI image
+    buildah, _ := NewBuildahClient()
     if err := buildah.Pull(image); err != nil {
-        return "", fmt.Errorf("failed to pull image: %w", err)
+        return "", nil, fmt.Errorf("failed to pull image: %w", err)
     }
 
-    // 3. Extract rootfs
+    // 4. Extract rootfs
     mounted, err := buildah.ExtractImage(image)
     if err != nil {
-        return "", fmt.Errorf("failed to extract image: %w", err)
+        return "", nil, fmt.Errorf("failed to extract image: %w", err)
     }
     defer mounted.Cleanup()
 
-    // 4. Validate bootability
+    // 5. Validate bootability
     if err := mounted.ValidateBootability(); err != nil {
-        return "", fmt.Errorf("image is not bootable: %w", err)
+        return "", nil, fmt.Errorf("image is not bootable: %w", err)
     }
 
-    // 5. Convert to qcow2
+    // 6. Convert to qcow2 in temp directory
     tempPath := filepath.Join(os.TempDir(), fmt.Sprintf("cocoon-%s.qcow2", uuid.New().String()))
     if err := ConvertOCIToQcow2(mounted.Path(), tempPath, "10G"); err != nil {
         os.Remove(tempPath)
-        return "", fmt.Errorf("conversion failed: %w", err)
+        return "", nil, fmt.Errorf("conversion failed: %w", err)
     }
 
-    // 6. Store in cache
-    if err := cache.Put(image, tempPath); err != nil {
+    // 7. Store in cache under content-addressed filename
+    cachedPath, err = cache.PutByIdentity(identity, tempPath)
+    if err != nil {
         os.Remove(tempPath)
-        return "", fmt.Errorf("failed to cache image: %w", err)
+        return "", nil, fmt.Errorf("failed to cache image: %w", err)
     }
-
-    // 7. Get cached path
-    cachedPath, _ = cache.Get(image)
 
     // 8. Cleanup temp file
     os.Remove(tempPath)
 
-    return cachedPath, nil
+    return cachedPath, identity, nil
 }
 ```
 
@@ -1680,7 +1815,8 @@ The following pipeline stages MUST pass for every PR:
 ### 11.1 Related Documents
 
 - [01-boot-contract.md](01-boot-contract.md) - Boot requirements and VM lifecycle
-- [05-storage-management.md](05-storage-management.md) - COW storage and garbage collection
+- [05-storage-management.md](05-storage-management.md) - COW storage, garbage collection, and **Image Checksum Identity** (normative)
+- [06-concurrency.md](06-concurrency.md) - Conversion lock keys use the same `{checksum}_{arch}` identity
 
 ### 11.2 External Tools
 
@@ -1726,15 +1862,18 @@ func main() {
 
     // 2. Prepare base image (with caching)
     image := "myorg/ubuntu-bootable:22.04"
-    basePath, err := PrepareBaseImage(image, cache)
+    basePath, identity, err := PrepareBaseImage(image, cache)
     if err != nil {
         log.Fatalf("Failed to prepare image: %v", err)
     }
 
-    fmt.Printf("Base image ready: %s\n", basePath)
+    fmt.Printf("Base image ready: %s (key: %s)\n", basePath, identity.CacheKey())
 
     // 3. Create VM overlay disk (covered in 05-storage-management.md)
     // overlayPath := createOverlay(basePath, "vm-001")
+
+    // 4. Register reference (covered in 05-storage-management.md)
+    // refCounter.AddReference(identity.Checksum, identity.Arch, "vm-001")
 }
 ```
 

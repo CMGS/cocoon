@@ -6,40 +6,93 @@ This document describes the storage management strategy for the Cocoon AI Agent 
 
 ## Storage Layout
 
-### Directory Structure
+### Canonical Filesystem Layout (Normative)
 
-The storage system uses a well-organized hierarchy that separates cached base images, per-VM overlays, temporary files, and soft-deleted resources:
+**This section is the single source of truth for all Cocoon filesystem paths.**
+Other documents MUST reference this section rather than defining their own paths.
 
 ```
-/var/lib/cocoon/
+/var/lib/cocoon/                          # Persistent root (survives reboot)
 ├── cache/
-│   ├── manifests/              # Image metadata (checksum-based)
-│   │   ├── abc123...json       # Manifest checksum → metadata
-│   │   └── def456...json
-│   ├── images/                 # Base qcow2 files (backing files)
-│   │   ├── abc123...qcow2      # Checksum-based filenames
-│   │   └── def456...qcow2
-│   ├── locks/                  # Image conversion locks (per-checksum)
-│   │   ├── abc123...lock
-│   │   └── def456...lock
-│   ├── references.json         # Reference counter data
-│   └── references.lock         # Reference counter lock file
+│   ├── images/                           # Base qcow2 images (content-addressed)
+│   │   ├── {checksum}_{arch}.qcow2       # e.g., a1b2c3d4_amd64.qcow2
+│   │   └── ...
+│   ├── manifests/                        # OCI manifest cache
+│   ├── buildah/                          # Buildah storage root
+│   └── locks/
+│       └── {checksum}_{arch}.lock        # Per-image conversion lock
 ├── vms/
-│   ├── vm-001/
-│   │   ├── overlay.qcow2       # VM's COW overlay
-│   │   ├── config.json         # VM configuration
-│   │   ├── metadata.json       # Runtime metadata
-│   │   └── metadata.lock       # VM metadata lock file
-│   ├── vm-002/
-│   │   ├── overlay.qcow2
-│   │   ├── config.json
-│   │   ├── metadata.json
-│   │   └── metadata.lock
+│   ├── {vm-id}/                          # e.g., vm-01HXYZ.../
+│   │   ├── config.json                   # Immutable VM configuration
+│   │   ├── metadata.json                 # Mutable runtime state
+│   │   ├── metadata.lock                 # flock for metadata writes
+│   │   └── overlay.qcow2                 # COW overlay (ALWAYS this name)
 │   └── ...
-├── temp/                       # Temporary images during creation
-├── trash/                      # Soft-deleted images (for recovery)
-└── gc.lock                     # Global GC lock file
+├── references.json                       # Base image reference counts
+├── references.lock                       # flock for reference counter
+├── gc.lock                               # Global GC lock
+├── name-index.json                       # name → vm_id mapping
+├── temp/                                 # Scratch space for conversions
+└── trash/                                # Soft-deleted images (for recovery)
+
+/run/cocoon/                              # Runtime/ephemeral (tmpfs, cleared on reboot)
+└── vms/
+    └── {vm-id}/
+        ├── api.sock                      # Cloud Hypervisor API socket
+        └── ch.pid                        # CH process PID file
+
+/var/log/cocoon/                          # Logs (persistent)
+├── vm-{id}-serial.log                    # Serial console per VM
+└── cocoon.log                            # Main cocoon log (optional)
 ```
+
+**Key rules**:
+- Overlay is ALWAYS `overlay.qcow2` inside the VM directory (not `{vm_id}.qcow2`)
+- Base images are ALWAYS `{checksum}_{arch}.qcow2` (content-addressed)
+- `references.json` key is ALWAYS `{checksum}_{arch}` (NOT absolute path)
+- Runtime sockets and PID files live under `/run/cocoon/` (ephemeral, cleared on reboot)
+- Logs are separate under `/var/log/cocoon/` (persistent)
+
+### Image Checksum Identity (Normative)
+
+The `{checksum}` component used in cache filenames, `references.json` keys, and
+conversion lock names is computed as follows. All checksums use **SHA-256**
+truncated to **12 hex characters** (48 bits) for path brevity, with the full
+64-character digest stored in `references.json` metadata for collision checks.
+
+**For OCI images** (the primary path):
+
+```
+checksum = SHA256(
+    manifest.config.digest + "\n" +
+    sort(manifest.layers[*].digest).join("\n") + "\n" +
+    platform_os + "/" + platform_arch       // e.g., "linux/amd64"
+)[:12]
+```
+
+- For **multi-arch manifest lists**: resolve to the platform-specific manifest
+  FIRST (using runtime `GOARCH`), then compute the checksum above.
+- Cache filename: `{checksum}_{arch}.qcow2` (e.g., `a1b2c3d4e5f6_amd64.qcow2`)
+
+**For cloud images** (raw qcow2/img files):
+
+```
+checksum = SHA256(file_content)[:12]
+arch     = detect from image metadata, or default to runtime arch
+```
+
+- Cache filename: same pattern `{checksum}_{arch}.qcow2`
+
+**For URL-based images**:
+
+```
+checksum = SHA256(downloaded_file_content)[:12]
+arch     = detect or default to runtime arch
+```
+
+This identity contract is referenced by:
+- [06-concurrency.md](./06-concurrency.md) (conversion lock keys)
+- [04-oci-conversion.md](./04-oci-conversion.md) (image pipeline)
 
 ### Storage Configuration
 
@@ -107,7 +160,7 @@ class COWImageManager:
         The overlay image only stores differences from the base.
         Multiple VMs can share the same base image.
         """
-        overlay_path = self.overlay_dir / f"{vm_id}.qcow2"
+        overlay_path = self.overlay_dir / vm_id / "overlay.qcow2"
 
         cmd = [
             "qemu-img", "create",
@@ -189,68 +242,88 @@ from pathlib import Path
 from typing import Dict, Set
 
 class ReferenceCounter:
+    """Tracks base image usage via content-addressed keys ({checksum}_{arch})."""
+
     def __init__(self, storage_config: StorageConfig):
         self.storage = storage_config
-        self.ref_file = self.storage.cache_dir / "references.json"
-        self.refs: Dict[str, Set[str]] = defaultdict(set)
+        self.ref_file = self.storage.root / "references.json"
+        self.refs: Dict[str, dict] = {}
         self.load()
 
     def load(self):
         """Load reference counts from disk."""
         if self.ref_file.exists():
-            data = json.loads(self.ref_file.read_text())
-            self.refs = {k: set(v) for k, v in data.items()}
+            self.refs = json.loads(self.ref_file.read_text())
 
     def save(self):
         """Save reference counts to disk."""
-        data = {k: list(v) for k, v in self.refs.items()}
-        self.ref_file.write_text(json.dumps(data, indent=2))
+        self.ref_file.write_text(json.dumps(self.refs, indent=2))
 
-    def add_reference(self, base_image: Path, vm_id: str):
+    def _image_key(self, checksum: str, arch: str) -> str:
+        """Build the content-addressed key: {checksum}_{arch}."""
+        return f"{checksum}_{arch}"
+
+    def add_reference(self, checksum: str, arch: str, vm_id: str):
         """Add VM reference to base image."""
-        self.refs[str(base_image)].add(vm_id)
+        key = self._image_key(checksum, arch)
+        if key not in self.refs:
+            self.refs[key] = {
+                "path": str(self.storage.cache_dir / "images" / f"{key}.qcow2"),
+                "refs": [],
+                "created_at": datetime.now().isoformat() + "Z",
+            }
+        if vm_id not in self.refs[key]["refs"]:
+            self.refs[key]["refs"].append(vm_id)
         self.save()
 
-    def remove_reference(self, base_image: Path, vm_id: str):
+    def remove_reference(self, checksum: str, arch: str, vm_id: str):
         """Remove VM reference from base image."""
-        self.refs[str(base_image)].discard(vm_id)
-        if not self.refs[str(base_image)]:
-            del self.refs[str(base_image)]
-        self.save()
+        key = self._image_key(checksum, arch)
+        if key in self.refs:
+            refs = self.refs[key]["refs"]
+            if vm_id in refs:
+                refs.remove(vm_id)
+            if not refs:
+                del self.refs[key]
+            self.save()
 
-    def get_references(self, base_image: Path) -> Set[str]:
+    def get_references(self, checksum: str, arch: str) -> Set[str]:
         """Get all VMs referencing base image."""
-        return self.refs.get(str(base_image), set())
+        key = self._image_key(checksum, arch)
+        entry = self.refs.get(key)
+        return set(entry["refs"]) if entry else set()
 
-    def is_referenced(self, base_image: Path) -> bool:
+    def is_referenced(self, checksum: str, arch: str) -> bool:
         """Check if base image is referenced by any VM."""
-        return len(self.get_references(base_image)) > 0
+        return len(self.get_references(checksum, arch)) > 0
 
     def get_unreferenced_images(self) -> list[Path]:
         """Get all base images with zero references."""
-        all_images = set(
-            str(p) for p in self.storage.cache_dir.glob("images/*.qcow2")
-        )
-        referenced = set(self.refs.keys())
-        unreferenced = all_images - referenced
-        return [Path(p) for p in unreferenced]
+        all_images = {
+            p.stem: p for p in (self.storage.cache_dir / "images").glob("*.qcow2")
+        }
+        referenced_keys = set(self.refs.keys())
+        unreferenced = set(all_images.keys()) - referenced_keys
+        return [all_images[k] for k in unreferenced]
 ```
 
 ### references.json Structure
 
-The reference count file stores a mapping of base image paths to VM IDs:
+The reference count file stores a mapping of image identity keys (`{checksum}_{arch}`) to
+reference metadata. Keys are content-addressed identifiers, NOT absolute paths.
 
 ```json
 {
-  "/var/lib/cocoon/cache/images/abc123...qcow2": [
-    "vm-001",
-    "vm-002",
-    "vm-003"
-  ],
-  "/var/lib/cocoon/cache/images/def456...qcow2": [
-    "vm-010",
-    "vm-011"
-  ]
+  "a1b2c3d4e5f6_amd64": {
+    "path": "/var/lib/cocoon/cache/images/a1b2c3d4e5f6_amd64.qcow2",
+    "refs": ["vm-001", "vm-002", "vm-003"],
+    "created_at": "2026-02-12T10:00:00Z"
+  },
+  "f7e8d9c0b1a2_amd64": {
+    "path": "/var/lib/cocoon/cache/images/f7e8d9c0b1a2_amd64.qcow2",
+    "refs": ["vm-010", "vm-011"],
+    "created_at": "2026-02-12T11:00:00Z"
+  }
 }
 ```
 
@@ -261,14 +334,14 @@ Reference counting operations are performed during VM lifecycle events:
 ```python
 # When creating a VM
 async def create_vm(image: str, vm_id: str) -> Path:
-    # ... prepare base image ...
-    base_image = await image_mgr.prepare_base_image(image)
+    # ... prepare base image (returns checksum, arch, path) ...
+    image_info = await image_mgr.prepare_base_image(image)
 
     # ... create overlay ...
-    overlay = cow_mgr.create_overlay(base_image, vm_id)
+    overlay = cow_mgr.create_overlay(image_info.path, vm_id)
 
-    # Register reference
-    ref_counter.add_reference(base_image, vm_id)
+    # Register reference using content-addressed key
+    ref_counter.add_reference(image_info.checksum, image_info.arch, vm_id)
 
     return overlay
 
@@ -276,10 +349,11 @@ async def create_vm(image: str, vm_id: str) -> Path:
 def delete_vm(vm_id: str):
     # ... load config ...
     config = json.loads((vm_dir / "config.json").read_text())
-    base_image = Path(config["base_image"])
+    checksum = config["base_image_checksum"]
+    arch = config["base_image_arch"]
 
-    # Remove reference
-    ref_counter.remove_reference(base_image, vm_id)
+    # Remove reference using content-addressed key
+    ref_counter.remove_reference(checksum, arch, vm_id)
 
     # ... cleanup overlay ...
 ```
@@ -288,7 +362,7 @@ def delete_vm(vm_id: str):
 
 Reference counting operations must be **cross-process safe**. See [06-concurrency.md](./06-concurrency.md) for details on:
 
-- File-based locking (flock) for `references.json` updates at `/var/lib/cocoon/cache/references.lock`
+- File-based locking (flock) for `references.json` updates at `/var/lib/cocoon/references.lock`
 - Atomic read-modify-write operations using temp files and fsync
 - Race condition prevention during simultaneous VM creation/deletion across multiple processes
 - Crash recovery (locks auto-released by kernel on process crash)
@@ -527,25 +601,27 @@ async def create_vm(image: str, vm_id: str) -> Path:
     ref_counter = ReferenceCounter(storage)
 
     # 2. Prepare base image (pulls if not cached)
-    base_image = await image_mgr.prepare_base_image(image)
-    print(f"Base image ready: {base_image}")
+    image_info = await image_mgr.prepare_base_image(image)
+    print(f"Base image ready: {image_info.path}")
 
     # 3. Create VM directory
     vm_dir = storage.vm_dir / vm_id
     vm_dir.mkdir(exist_ok=True)
 
-    # 4. Create COW overlay
-    overlay = cow_mgr.create_overlay(base_image, vm_id)
+    # 4. Create COW overlay (always overlay.qcow2 inside VM dir)
+    overlay = cow_mgr.create_overlay(image_info.path, vm_id)
     print(f"Overlay created: {overlay}")
 
-    # 5. Register reference
-    ref_counter.add_reference(base_image, vm_id)
+    # 5. Register reference using content-addressed key
+    ref_counter.add_reference(image_info.checksum, image_info.arch, vm_id)
 
     # 6. Save VM config
     config = {
         "vm_id": vm_id,
         "image": image,
-        "base_image": str(base_image),
+        "base_image_checksum": image_info.checksum,
+        "base_image_arch": image_info.arch,
+        "base_image_path": str(image_info.path),
         "overlay": str(overlay),
         "created": datetime.now().isoformat()
     }
@@ -568,11 +644,12 @@ def delete_vm(vm_id: str):
 
     # 1. Load config
     config = json.loads((vm_dir / "config.json").read_text())
-    base_image = Path(config["base_image"])
-    overlay = Path(config["overlay"])
+    checksum = config["base_image_checksum"]
+    arch = config["base_image_arch"]
+    overlay = vm_dir / "overlay.qcow2"
 
-    # 2. Remove reference
-    ref_counter.remove_reference(base_image, vm_id)
+    # 2. Remove reference using content-addressed key
+    ref_counter.remove_reference(checksum, arch, vm_id)
 
     # 3. Move overlay to trash (soft delete)
     trash_overlay = storage.trash_dir / f"{vm_id}-overlay.qcow2"
@@ -587,8 +664,8 @@ def delete_vm(vm_id: str):
     print(f"Overlay moved to trash: {trash_overlay}")
 
     # 5. Check if base image can be garbage collected
-    if not ref_counter.is_referenced(base_image):
-        print(f"Base image {base_image} can be garbage collected")
+    if not ref_counter.is_referenced(checksum, arch):
+        print(f"Base image {checksum}_{arch} can be garbage collected")
 ```
 
 ### Workflow 3: High-Concurrency VM Pool
@@ -605,8 +682,8 @@ async def create_vm_pool(image: str, count: int) -> list[Path]:
     ref_counter = ReferenceCounter(storage)
 
     # 1. Prepare base image once (shared by all VMs)
-    base_image = await image_mgr.prepare_base_image(image)
-    print(f"Base image ready: {base_image}")
+    image_info = await image_mgr.prepare_base_image(image)
+    print(f"Base image ready: {image_info.path}")
 
     # 2. Create overlays concurrently
     async def create_one_vm(idx: int) -> Path:
@@ -614,13 +691,15 @@ async def create_vm_pool(image: str, count: int) -> list[Path]:
         vm_dir = storage.vm_dir / vm_id
         vm_dir.mkdir(exist_ok=True)
 
-        overlay = cow_mgr.create_overlay(base_image, vm_id)
-        ref_counter.add_reference(base_image, vm_id)
+        overlay = cow_mgr.create_overlay(image_info.path, vm_id)
+        ref_counter.add_reference(image_info.checksum, image_info.arch, vm_id)
 
         config = {
             "vm_id": vm_id,
             "image": image,
-            "base_image": str(base_image),
+            "base_image_checksum": image_info.checksum,
+            "base_image_arch": image_info.arch,
+            "base_image_path": str(image_info.path),
             "overlay": str(overlay)
         }
         (vm_dir / "config.json").write_text(json.dumps(config, indent=2))

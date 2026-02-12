@@ -83,6 +83,27 @@ See [04-oci-conversion.md § 10 Verified Images](./04-oci-conversion.md#10-verif
 
 ---
 
+## Terminology
+
+| Term | Definition |
+|------|-----------|
+| **cloud image** | Pre-built qcow2/img VM disk from a distro vendor (Ubuntu Cloud, Fedora Cloud, Debian Cloud). Ready to boot without conversion. |
+| **bootable OCI image** | Custom-built OCI container image containing kernel, bootloader, systemd. Requires OCI→qcow2 conversion. |
+| **base image** | Cached qcow2 file in `/var/lib/cocoon/cache/images/`. Either a downloaded cloud image or a converted OCI image. Content-addressed by checksum. |
+| **overlay** | Per-VM copy-on-write disk at `/var/lib/cocoon/vms/{vm-id}/overlay.qcow2`. Backed by a base image. |
+| **vm_id** | Internal primary key (`vm-{ulid}`). Never reused. Used in directory names, logs, locks. |
+| **name** | User-facing VM alias. Globally unique. Optional on create. |
+| **vm-ref** | CLI argument that accepts either vm_id or name. Resolved by the CLI. |
+| **firmware** | Binary loaded by Cloud Hypervisor at boot. PVH: `hypervisor-fw`. UEFI: `CLOUDHV.fd`. |
+
+**Resource Units**:
+- CLI accepts human-readable units: `512M`, `1G`, `2G`, `10G`
+- Internal representation: bytes (int64)
+- config.json stores human-readable strings for readability
+- metadata.json stores duration as strings ("2.3s") for readability
+
+---
+
 ## Project Motivation
 
 Modern VM workloads and development environments face a challenging trade-off between isolation, performance, and usability:
@@ -201,7 +222,7 @@ VM overlays:    vm-001-overlay.qcow2 (200KB, writable)
 
 **Implementation**:
 1. Calculate SHA256 of (config_digest + all_layer_digests + platform)
-2. Store qcow2 as `{checksum}.qcow2` in cache directory
+2. Store qcow2 as `{checksum}_{arch}.qcow2` in cache directory
 3. Reference counter tracks VM usage of each base image
 
 ## Phase 1 vs Phase 2 Scope
@@ -342,9 +363,11 @@ For quick evaluation without dealing with rootless limitations:
 
 3. **Install cocoon binary** (5 min):
    ```bash
-   # Download from releases or build from source
-   # (Replace with actual installation method)
-   go install github.com/your-org/cocoon@latest
+   # Build from source (replace with release URL when available)
+   git clone https://github.com/CMGS/cocoon.git
+   cd cocoon
+   go build -o cocoon ./cmd/cocoon
+   sudo mv cocoon /usr/local/bin/
    ```
 
 4. **Run health check and download firmware** (2 min):

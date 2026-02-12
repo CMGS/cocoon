@@ -743,122 +743,161 @@ cocoon (user) → cocoon-helper (setuid or sudo) → libguestfs tools
 - All features available
 - Audit trail for privileged operations
 
-**Implementation**:
+#### cocoon-helper Interface Specification
 
-**cocoon-helper** (setuid binary or sudo wrapper):
-```bash
-#!/bin/bash
-# /usr/local/bin/cocoon-helper
-# This script runs with elevated privileges (via sudo or setuid)
+The privileged helper is a compiled Go binary (not a shell script) that provides
+a strict, auditable interface between unprivileged cocoon and root-only
+libguestfs operations.
 
-case "$1" in
-    format-disk)
-        virt-format --filesystem=ext4 "$2"
-        ;;
-    copy-into-disk)
-        virt-copy-in -a "$2" "$3" /
-        ;;
-    *)
-        echo "Unknown operation: $1"
-        exit 1
-        ;;
-esac
+##### 1. Binary Interface
+
+```
+cocoon-helper <subcommand> [args...]
 ```
 
-**Setup**:
+**Subcommands**:
 
-```bash
-# 1. Install cocoon-helper
-sudo cp cocoon-helper /usr/local/bin/
-sudo chmod 755 /usr/local/bin/cocoon-helper
+| Subcommand | Purpose | Args | Stdin | Stdout |
+|------------|---------|------|-------|--------|
+| `convert` | Full OCI rootfs to qcow2 pipeline | `--rootfs-path <path> --output <path> --size <size>` | -- | JSON result |
+| `partition` | Create GPT partition table + format | `--image <path>` | -- | JSON result |
+| `copy-rootfs` | Copy rootfs into qcow2 image | `--image <path> --rootfs <path>` | -- | JSON result |
+| `validate-boot` | Validate bootloader in qcow2 | `--image <path> --arch <arch>` | -- | JSON result |
+| `version` | Print helper version | -- | -- | Version string |
 
-# 2. Configure sudo (option 1: per-command)
-cat > /etc/sudoers.d/cocoon-helper <<EOF
-# Allow users in 'cocoon' group to run cocoon-helper
-%cocoon ALL=(ALL) NOPASSWD: /usr/local/bin/cocoon-helper
-EOF
+**Exit Codes**:
 
-# 3. Add users to cocoon group
-sudo groupadd cocoon
-sudo usermod -aG cocoon $USER
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Validation error (image not bootable, missing component) |
+| 2 | Permission denied (not running as root, path outside allowlist) |
+| 3 | Tool missing (guestfish, virt-customize not found) |
+| 4 | I/O error (disk full, file not found) |
+| 5 | Internal error |
 
-# 4. Verify
-sudo -n /usr/local/bin/cocoon-helper format-disk /tmp/test.qcow2
+**Stdout format** (JSON on success):
+```json
+{"status": "ok", "output_path": "/var/lib/cocoon/cache/images/abc123_amd64.qcow2"}
 ```
 
-**Alternative: setuid binary** (more secure, requires compilation):
+**Stdout format** (JSON on error):
+```json
+{"status": "error", "code": 1, "message": "Bootloader not found for x86_64 at /boot/efi/EFI/BOOT/BOOTX64.EFI"}
+```
+
+**Stderr**: Human-readable progress and debug messages (not parsed by cocoon).
+
+##### 2. Path Allowlist (Security)
+
+The helper MUST enforce a strict path allowlist. Any file operation on a path
+outside the allowlist MUST be rejected with exit code 2.
+
+**Allowed paths** (write):
+- `/var/lib/cocoon/cache/**`
+- `/var/lib/cocoon/temp/**`
+- `/tmp/cocoon-*`
+
+**Allowed paths** (read):
+- All write paths above
+- `/var/lib/cocoon/vms/**/overlay.qcow2` (for validate-boot)
+- Buildah mount paths: `/tmp/buildah-*` (read-only rootfs source)
+
+**Security checks** (MUST implement all five):
+
+1. `filepath.Abs()` + `filepath.EvalSymlinks()` before ANY file operation
+2. Reject if resolved path is outside allowlist
+3. Reject if any path component is `..`
+4. Reject if target is a symlink pointing outside allowlist
+5. Log every file operation to stderr for audit
+
+##### 3. Sudoers Configuration
+
+Minimal sudoers file that restricts privilege escalation to specific subcommands only:
+
+```sudoers
+# /etc/sudoers.d/cocoon-helper
+# ONLY allows cocoon-helper subcommands, nothing else
+cocoon ALL=(root) NOPASSWD: /usr/local/bin/cocoon-helper convert *
+cocoon ALL=(root) NOPASSWD: /usr/local/bin/cocoon-helper partition *
+cocoon ALL=(root) NOPASSWD: /usr/local/bin/cocoon-helper copy-rootfs *
+cocoon ALL=(root) NOPASSWD: /usr/local/bin/cocoon-helper validate-boot *
+cocoon ALL=(root) NOPASSWD: /usr/local/bin/cocoon-helper version
+```
+
+**Anti-patterns** (MUST NOT use):
+```sudoers
+# WRONG: Too permissive - grants root for everything
+cocoon ALL=(root) NOPASSWD: ALL
+# WRONG: Allows arbitrary subcommands including future ones
+cocoon ALL=(root) NOPASSWD: /usr/local/bin/cocoon-helper *
+```
+
+##### 4. Cocoon to Helper Integration
+
+The main cocoon binary invokes the helper via `sudo` and parses structured JSON
+from stdout:
 
 ```go
-// cocoon-helper.go
-package main
+func (c *Converter) ConvertViaHelper(rootfsPath, outputPath, size string) error {
+    cmd := exec.Command("sudo", "/usr/local/bin/cocoon-helper",
+        "convert",
+        "--rootfs-path", rootfsPath,
+        "--output", outputPath,
+        "--size", size)
 
-import (
-    "fmt"
-    "os"
-    "os/exec"
-    "path/filepath"
-)
+    var stdout, stderr bytes.Buffer
+    cmd.Stdout = &stdout
+    cmd.Stderr = &stderr
 
-func main() {
-    if len(os.Args) < 2 {
-        fmt.Fprintln(os.Stderr, "Usage: cocoon-helper <operation> <args>")
-        os.Exit(1)
-    }
-
-    operation := os.Args[1]
-
-    // Validate caller is in 'cocoon' group
-    if !isAuthorized() {
-        fmt.Fprintln(os.Stderr, "Permission denied")
-        os.Exit(1)
-    }
-
-    switch operation {
-    case "format-disk":
-        formatDisk(os.Args[2])
-    case "copy-into-disk":
-        copyIntoDisk(os.Args[2], os.Args[3])
-    default:
-        fmt.Fprintf(os.Stderr, "Unknown operation: %s\n", operation)
-        os.Exit(1)
-    }
-}
-
-func formatDisk(diskPath string) {
-    // Validate path is within allowed directory
-    if !isValidPath(diskPath) {
-        fmt.Fprintln(os.Stderr, "Invalid path")
-        os.Exit(1)
-    }
-
-    cmd := exec.Command("virt-format", "--filesystem=ext4", diskPath)
-    cmd.Stdout = os.Stdout
-    cmd.Stderr = os.Stderr
     if err := cmd.Run(); err != nil {
-        os.Exit(1)
+        // Parse structured error from stdout
+        var result HelperResult
+        json.Unmarshal(stdout.Bytes(), &result)
+        return fmt.Errorf("helper failed (code %d): %s", result.Code, result.Message)
     }
-}
 
-func isValidPath(path string) bool {
-    // Only allow paths under /var/lib/cocoon or /srv/cocoon
-    allowedDirs := []string{"/var/lib/cocoon", "/srv/cocoon"}
-    absPath, _ := filepath.Abs(path)
-
-    for _, dir := range allowedDirs {
-        if filepath.HasPrefix(absPath, dir) {
-            return true
-        }
-    }
-    return false
+    return nil
 }
 ```
 
-**Build and install setuid helper**:
+##### 5. Testing Contract
+
+The following test categories are required before the helper is considered
+production-ready:
+
+- **Unit tests -- path allowlist**: Verify that `../` traversal, symlinks
+  pointing outside the allowlist, and paths not in the allowlist are all
+  rejected with exit code 2.
+- **Integration tests -- convert pipeline**: Run `sudo cocoon-helper convert`
+  end-to-end and verify the output qcow2 is valid and bootable.
+- **Security tests -- forbidden paths**: Confirm the helper refuses to write to
+  `/etc`, `/root`, `/home`, `/usr`, and any path outside the allowlist.
+- **Privilege drop tests**: After conversion, verify the output file is owned by
+  the cocoon user (not root) and has mode 0644.
+
+##### Setup
+
 ```bash
-go build -o cocoon-helper cocoon-helper.go
-sudo chown root:cocoon cocoon-helper
-sudo chmod 4750 cocoon-helper  # setuid root, executable by cocoon group
-sudo mv cocoon-helper /usr/local/bin/
+# 1. Build and install cocoon-helper
+go build -o cocoon-helper ./cmd/cocoon-helper
+sudo install -o root -g cocoon -m 0750 cocoon-helper /usr/local/bin/cocoon-helper
+
+# 2. Create cocoon group and add user
+sudo groupadd -f cocoon
+sudo usermod -aG cocoon $USER
+
+# 3. Install sudoers rule
+sudo install -m 0440 /dev/stdin /etc/sudoers.d/cocoon-helper <<'EOF'
+cocoon ALL=(root) NOPASSWD: /usr/local/bin/cocoon-helper convert *
+cocoon ALL=(root) NOPASSWD: /usr/local/bin/cocoon-helper partition *
+cocoon ALL=(root) NOPASSWD: /usr/local/bin/cocoon-helper copy-rootfs *
+cocoon ALL=(root) NOPASSWD: /usr/local/bin/cocoon-helper validate-boot *
+cocoon ALL=(root) NOPASSWD: /usr/local/bin/cocoon-helper version
+EOF
+
+# 4. Verify
+sudo -n /usr/local/bin/cocoon-helper version
 ```
 
 ## Installation Guides by Distribution
