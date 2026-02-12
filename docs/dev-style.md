@@ -60,3 +60,22 @@ func (m *manager) doWork() {
     ctx := context.Background() // should receive ctx as parameter
 }
 ```
+
+## Pre-Commit Checklist
+
+### Rule
+
+Always run `make lint` and `make test` before every commit and push. No exceptions.
+
+### Steps
+
+```bash
+make lint    # Must report 0 issues
+make test    # All tests must pass
+git add ...
+git commit ...
+git push
+```
+
+If either command fails, fix the issues before committing. Do not use
+`--no-verify` or skip checks.
