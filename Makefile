@@ -1,5 +1,6 @@
 .PHONY: all build build-linux test test-race test-short lint vet fmt fmt-check \
-       mock clean deps install setup-dev setup-ch check ci coverage cloc verify help
+       mock clean deps install setup-dev setup-ch teardown-dev teardown-ch \
+       update-dev update-ch check ci coverage cloc verify help
 
 REPO_PATH := github.com/CMGS/cocoon
 REVISION := $(shell git rev-parse HEAD || echo unknown)
@@ -130,6 +131,18 @@ setup-dev: ## Install development tools and dependencies
 
 setup-ch: ## Install Cloud Hypervisor and firmware (Linux only)
 	bash scripts/init-cloud-hypervisor.sh
+
+teardown-dev: ## Uninstall development tools and dependencies
+	bash scripts/teardown-dev.sh
+
+teardown-ch: ## Uninstall Cloud Hypervisor and firmware
+	bash scripts/teardown-cloud-hypervisor.sh
+
+update-dev: ## Update development tools and dependencies
+	bash scripts/update-dev.sh
+
+update-ch: ## Update Cloud Hypervisor and firmware
+	bash scripts/update-cloud-hypervisor.sh
 
 cloc: ## Count lines of code (requires cloc)
 	cloc --exclude-dir=vendor,mocks,dist --exclude-ext=json .
