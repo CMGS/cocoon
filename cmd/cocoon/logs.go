@@ -26,6 +26,11 @@ func logsCommand() *cli.Command {
 				Value: 100,
 				Usage: "number of lines to show from the end",
 			},
+			&cli.BoolFlag{
+				Name:    "timestamps",
+				Aliases: []string{"t"},
+				Usage:   "prefix each line with a timestamp",
+			},
 		},
 		Action: logsAction,
 	}
@@ -52,22 +57,24 @@ func logsAction(c *cli.Context) error {
 
 	follow := c.Bool("follow")
 	tailN := c.Int("tail")
+	timestamps := c.Bool("timestamps")
 
 	// Print the last N lines.
-	if err := printTailLines(logPath, tailN); err != nil {
+	if err := printTailLines(logPath, tailN, timestamps); err != nil {
 		return fmt.Errorf("read log file: %w", err)
 	}
 
 	// If --follow, poll for new data.
 	if follow {
-		return followLog(c, logPath)
+		return followLog(c, logPath, timestamps)
 	}
 
 	return nil
 }
 
 // printTailLines reads the last n lines from a file and prints them.
-func printTailLines(path string, n int) error {
+// If timestamps is true, each line is prefixed with the current time.
+func printTailLines(path string, n int, timestamps bool) error {
 	f, err := os.Open(path) //nolint:gosec // G304: path is a derived serial log path, not direct user input
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -97,14 +104,14 @@ func printTailLines(path string, n int) error {
 	}
 
 	for _, line := range lines {
-		fmt.Println(line)
+		printLogLine(line, timestamps)
 	}
 	return nil
 }
 
 // followLog opens the log file and polls for new data every 500ms.
 // It respects context cancellation for graceful shutdown.
-func followLog(c *cli.Context, path string) error {
+func followLog(c *cli.Context, path string, timestamps bool) error {
 	f, err := os.Open(path) //nolint:gosec // G304: path is a derived serial log path
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -136,13 +143,26 @@ func followLog(c *cli.Context, path string) error {
 			for {
 				line, err := reader.ReadString('\n')
 				if len(line) > 0 {
-					fmt.Print(line)
+					if timestamps {
+						fmt.Printf("%s %s", time.Now().UTC().Format(time.RFC3339), line)
+					} else {
+						fmt.Print(line)
+					}
 				}
 				if err != nil {
 					break
 				}
 			}
 		}
+	}
+}
+
+// printLogLine prints a single log line, optionally prefixed with a timestamp.
+func printLogLine(line string, timestamps bool) {
+	if timestamps {
+		fmt.Printf("%s %s\n", time.Now().UTC().Format(time.RFC3339), line)
+	} else {
+		fmt.Println(line)
 	}
 }
 

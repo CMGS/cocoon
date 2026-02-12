@@ -53,8 +53,8 @@ func DefaultConfig() *CocoonConfig {
 		UEFIFirmwarePath: "/var/lib/cocoon/firmware/CLOUDHV.fd",
 		BuildahRoot:      "/var/lib/cocoon/cache/buildah",
 
-		DefaultCPUs:     1,
-		DefaultMemoryMB: 512,
+		DefaultCPUs:     2,
+		DefaultMemoryMB: 2048,
 		DefaultDiskSize: "10G",
 
 		GCGracePeriodHours: 24,

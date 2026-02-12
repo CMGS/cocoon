@@ -40,7 +40,7 @@ const CurrentConfigSchemaVersion = 1
 
 // Default resource values.
 const (
-	DefaultCPUs     = 1
-	DefaultMemoryMB = 512
+	DefaultCPUs     = 2
+	DefaultMemoryMB = 2048
 	DefaultDiskSize = "10G"
 )

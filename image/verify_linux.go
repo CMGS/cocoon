@@ -8,6 +8,9 @@ import (
 	"strings"
 )
 
+// guestfishTrue is the string guestfish returns for boolean true results.
+const guestfishTrue = "true"
+
 // deepVerifyBoot performs deep boot verification on Linux using guestfish.
 // It mounts the qcow2 image read-only and checks for required boot components:
 //   - Kernel: /boot/vmlinuz*
@@ -48,8 +51,8 @@ func deepVerifyBoot(imagePath string, result *BootCheckResult) error {
 		}
 	}
 	if !result.InitrdFound {
-		initramfsOut, err := exec.Command("guestfish", "--ro", "-a", imagePath, "-i", "glob-expand", "/boot/initramfs*").Output()
-		if err == nil {
+		initramfsOut, errInitramfs := exec.Command("guestfish", "--ro", "-a", imagePath, "-i", "glob-expand", "/boot/initramfs*").Output()
+		if errInitramfs == nil {
 			initramfsFiles := strings.TrimSpace(string(initramfsOut))
 			if initramfsFiles != "" {
 				result.InitrdFound = true
@@ -67,8 +70,8 @@ func deepVerifyBoot(imagePath string, result *BootCheckResult) error {
 	}
 	// Also check if /sbin/init is systemd itself (some distros).
 	if !result.SystemdFound {
-		isFileOut, err := exec.Command("guestfish", "--ro", "-a", imagePath, "-i", "is-file", "/lib/systemd/systemd").Output()
-		if err == nil && strings.TrimSpace(string(isFileOut)) == "true" {
+		isFileOut, errSystemd := exec.Command("guestfish", "--ro", "-a", imagePath, "-i", "is-file", "/lib/systemd/systemd").Output()
+		if errSystemd == nil && strings.TrimSpace(string(isFileOut)) == guestfishTrue {
 			result.SystemdFound = true
 		}
 	}
@@ -81,8 +84,8 @@ func deepVerifyBoot(imagePath string, result *BootCheckResult) error {
 		"/boot/efi/EFI/BOOT/bootaa64.efi",
 	}
 	for _, uefiPath := range uefiPaths {
-		isFileOut, err := exec.Command("guestfish", "--ro", "-a", imagePath, "-i", "is-file", uefiPath).Output()
-		if err == nil && strings.TrimSpace(string(isFileOut)) == "true" {
+		isFileOut, errUEFI := exec.Command("guestfish", "--ro", "-a", imagePath, "-i", "is-file", uefiPath).Output() //nolint:gosec // uefiPath is from a hardcoded list, not user input
+		if errUEFI == nil && strings.TrimSpace(string(isFileOut)) == guestfishTrue {
 			result.BootloaderFound = true
 			break
 		}
@@ -90,7 +93,7 @@ func deepVerifyBoot(imagePath string, result *BootCheckResult) error {
 
 	// Check for cloud-init.
 	cloudInitOut, err := exec.Command("guestfish", "--ro", "-a", imagePath, "-i", "is-file", "/usr/bin/cloud-init").Output()
-	if err == nil && strings.TrimSpace(string(cloudInitOut)) == "true" {
+	if err == nil && strings.TrimSpace(string(cloudInitOut)) == guestfishTrue {
 		result.CloudInitFound = true
 	}
 

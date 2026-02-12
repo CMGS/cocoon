@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	cli "github.com/urfave/cli/v2"
 
@@ -10,8 +11,8 @@ import (
 
 func psCommand() *cli.Command {
 	return &cli.Command{
-		Name:    "ps",
-		Aliases: []string{"list", "ls"},
+		Name:    "list",
+		Aliases: []string{"ps", "ls"},
 		Usage:   "List VMs",
 		Flags: []cli.Flag{
 			&cli.BoolFlag{
@@ -28,6 +29,10 @@ func psCommand() *cli.Command {
 				Name:    "quiet",
 				Aliases: []string{"q"},
 				Usage:   "only display VM IDs",
+			},
+			&cli.StringFlag{
+				Name:  "filter",
+				Usage: "filter by field (e.g., state=running)",
 			},
 		},
 		Action: psAction,
@@ -48,6 +53,7 @@ func psAction(c *cli.Context) error {
 	all := c.Bool("all")
 	quiet := c.Bool("quiet")
 	format := c.String("format")
+	filter := c.String("filter")
 
 	// Filter out DELETED and ERROR states unless --all is specified.
 	if !all {
@@ -58,6 +64,14 @@ func psAction(c *cli.Context) error {
 			}
 		}
 		vms = filtered
+	}
+
+	// Apply --filter if specified. Supports "state=<value>" format.
+	if filter != "" {
+		vms, err = applyFilter(vms, filter)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Quiet mode: print only VM IDs, one per line.
@@ -88,4 +102,34 @@ func psAction(c *cli.Context) error {
 	}
 	printTable(headers, rows)
 	return nil
+}
+
+// applyFilter filters the VM list based on a "key=value" expression.
+// Supported keys: state, name.
+func applyFilter(vms []*types.VMInspect, filter string) ([]*types.VMInspect, error) {
+	parts := strings.SplitN(filter, "=", 2)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid filter format %q; expected key=value (e.g., state=running)", filter)
+	}
+
+	key := strings.ToLower(strings.TrimSpace(parts[0]))
+	value := strings.ToLower(strings.TrimSpace(parts[1]))
+
+	filtered := make([]*types.VMInspect, 0, len(vms))
+	for _, v := range vms {
+		switch key {
+		case "state":
+			if strings.EqualFold(string(v.State), value) {
+				filtered = append(filtered, v)
+			}
+		case "name":
+			if strings.EqualFold(v.Name, value) {
+				filtered = append(filtered, v)
+			}
+		default:
+			return nil, fmt.Errorf("unsupported filter key %q; supported keys: state, name", key)
+		}
+	}
+
+	return filtered, nil
 }

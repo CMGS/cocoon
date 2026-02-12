@@ -52,14 +52,18 @@ func main() {
 	}
 
 	app.Commands = []*cli.Command{
+		createCommand(),
 		runCommand(),
 		startCommand(),
 		stopCommand(),
+		killCommand(),
 		rmCommand(),
 		psCommand(),
 		inspectCommand(),
 		logsCommand(),
 		imagesCommand(),
+		gcCommand(),
+		firmwareCommand(),
 		doctorCommand(),
 		versionCommand(),
 	}

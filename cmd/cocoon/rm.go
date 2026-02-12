@@ -8,8 +8,8 @@ import (
 
 func rmCommand() *cli.Command {
 	return &cli.Command{
-		Name:      "rm",
-		Aliases:   []string{"delete"},
+		Name:      "delete",
+		Aliases:   []string{"rm"},
 		Usage:     "Remove a VM and cleanup storage",
 		ArgsUsage: "VM_REF",
 		Flags: []cli.Flag{
@@ -25,7 +25,7 @@ func rmCommand() *cli.Command {
 
 func rmAction(c *cli.Context) error {
 	if c.NArg() < 1 {
-		return fmt.Errorf("VM_REF argument required\n\nUsage: cocoon rm VM_REF [flags]")
+		return fmt.Errorf("VM_REF argument required\n\nUsage: cocoon delete VM_REF [flags]")
 	}
 
 	app, err := initApp(c)

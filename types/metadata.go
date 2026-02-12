@@ -17,6 +17,9 @@ type VMMetadataFile struct {
 	LastError  string `json:"last_error,omitempty"`
 	ErrorCount int    `json:"error_count"`
 
+	// Lifecycle flags
+	AutoRemove bool `json:"auto_remove,omitempty"`
+
 	// Timestamps (RFC 3339)
 	UpdatedAt string `json:"updated_at"`
 	StartedAt string `json:"started_at,omitempty"`
