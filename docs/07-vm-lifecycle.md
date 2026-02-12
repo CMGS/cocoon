@@ -545,16 +545,19 @@ func TransitionState(vmID string, to VMState) error {
 
 ---
 
-## 4. Metadata Schema
+## 4. Inspect Output Schema (Merged View)
 
-### 4.1 Complete Metadata Structure
+This section defines the **merged view** struct returned by `cocoon inspect`. It combines data from the immutable `config.json` and mutable `metadata.json` files (see Section 5 for the on-disk split). This struct is never persisted as a single file — it exists only in memory and in API/CLI output.
+
+### 4.1 Complete Inspect Structure
 
 ```go
 package metadata
 
 import "time"
 
-// VMMetadata is the complete metadata for a VM
+// VMMetadata is the merged inspect view combining config.json + metadata.json.
+// This struct is NOT written to disk as a single file.
 type VMMetadata struct {
     // ===== Identity =====
     VMID      string    `json:"vm_id"`
@@ -597,7 +600,7 @@ type ImageInfo struct {
     // Image digest (sha256)
     Digest string `json:"digest"`
 
-    // Content-addressed base image key ({checksum_12}_{arch})
+    // Content-addressed base image key ({checksum_16}_{arch})
     BaseKey string `json:"base_key"`
 
     // Image size in bytes
@@ -745,7 +748,7 @@ type ErrorInfo struct {
 }
 ```
 
-### 4.2 Example Metadata (JSON)
+### 4.2 Example Inspect Output (JSON)
 
 ```json
 {
@@ -756,14 +759,14 @@ type ErrorInfo struct {
   "image": {
     "ref": "myorg/ubuntu-bootable:22.04",
     "digest": "sha256:abcd1234...",
-    "base_key": "ef015678abcd_amd64",
+    "base_key": "ef015678abcd1234_amd64",
     "size": 419430400,
     "pulled_at": "2026-02-11T20:00:00Z"
   },
 
   "storage": {
     "overlay_path": "/var/lib/cocoon/vms/vm-abc123/overlay.qcow2",
-    "base_path": "/var/lib/cocoon/cache/images/ef015678abcd_amd64.qcow2",
+    "base_path": "/var/lib/cocoon/cache/images/ef015678abcd1234_amd64.qcow2",
     "size": "10G",
     "used_bytes": 2147483648,
     "filesystem": "ext4"
@@ -851,7 +854,7 @@ type VMConfig struct {
 
     // Image provenance (immutable after create)
     ImageRef        string `json:"image_ref"`          // Original image reference (path/URL/OCI ref)
-    BaseKey         string `json:"base_key"`           // Content-addressed key: {checksum_12}_{arch} (e.g., "a1b2c3d4e5f6_amd64")
+    BaseKey         string `json:"base_key"`           // Content-addressed key: {checksum_16}_{arch} (e.g., "a1b2c3d4e5f6a7b8_amd64")
     BaseDigestFull  string `json:"base_digest_full"`   // Full SHA-256 hex (64 chars) for collision audit
     Arch            string `json:"arch"`               // Architecture: "amd64", "arm64", etc.
 
@@ -884,7 +887,7 @@ type VMConfig struct {
   "vm_id": "vm-01HXYZ5A3B7C8D9E0F1G2H3J4K",
   "name": "myvm",
   "image_ref": "myorg/ubuntu-bootable:22.04",
-  "base_key": "ef015678abcd_amd64",
+  "base_key": "ef015678abcd1234_amd64",
   "base_digest_full": "ef015678abcd1234567890abcdef1234567890abcdef1234567890abcdef1234",
   "arch": "amd64",
   "boot_strategy": "pvh_then_uefi",
@@ -892,7 +895,7 @@ type VMConfig struct {
   "cpus": 2,
   "memory_mb": 1024,
   "disk_size": "10G",
-  "base_image_path": "/var/lib/cocoon/cache/images/ef015678abcd_amd64.qcow2",
+  "base_image_path": "/var/lib/cocoon/cache/images/ef015678abcd1234_amd64.qcow2",
   "overlay_path": "/var/lib/cocoon/vms/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K/overlay.qcow2",
   "serial_log": "/var/log/cocoon/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K-serial.log",
   "socket_path": "/run/cocoon/vms/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K/api.sock",
@@ -968,7 +971,7 @@ type VMMetadata struct {
 
 ### 5.4 Relationship to Section 4
 
-Section 4 defines the **combined** `VMMetadata` struct used during the initial implementation phase. As the implementation matures, the fields in Section 4's `VMMetadata` will be split into `VMConfig` (Section 5.1) and `VMMetadata` (Section 5.2) as described above. The combined struct in Section 4 remains useful as a reference for `cocoon inspect` output, which merges data from both files.
+Section 4 defines the `VMMetadata` struct as a **merged view** — it represents the combined data returned by `cocoon inspect`, which reads from both `config.json` and `metadata.json` and assembles a unified JSON response. **The on-disk format is always split** into `config.json` (immutable) and `metadata.json` (mutable) from Phase 1 onwards. There is no "combined file" phase; the Section 4 struct is purely an API/display model.
 
 ---
 

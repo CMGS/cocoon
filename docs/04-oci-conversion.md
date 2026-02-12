@@ -1130,10 +1130,10 @@ checksum = SHA256(
   two semantically different images to the same checksum.
 - The platform string (`linux/amd64`) is appended to distinguish identical layer
   sets built for different architectures.
-- The full 64-character hex digest is computed; the first **12 hex characters**
-  (48 bits) are used for filenames and keys. The full digest is stored in
+- The full 64-character hex digest is computed; the first **16 hex characters**
+  (64 bits) are used for filenames and keys. The full digest is stored in
   `references.json` metadata for collision verification.
-- Cache filename: `{checksum_12}_{arch}.qcow2` (e.g., `a1b2c3d4e5f6_amd64.qcow2`)
+- Cache filename: `{checksum_16}_{arch}.qcow2` (e.g., `a1b2c3d4e5f6a7b8_amd64.qcow2`)
 
 **Multi-arch manifest lists**: When skopeo returns a manifest list
 (`mediaType: application/vnd.oci.image.index.v1+json`), resolve to the
@@ -1143,14 +1143,14 @@ checksum above on the resolved single-platform manifest.
 #### For Cloud Images (qcow2/img files)
 
 ```
-checksum = SHA256(file_content)[:12]
+checksum = SHA256(file_content)[:16]
 arch     = detect from image metadata, or default to runtime.GOARCH
 ```
 
 #### For URL-Based Images
 
 ```
-checksum = SHA256(downloaded_file_content)[:12]
+checksum = SHA256(downloaded_file_content)[:16]
 arch     = detect or default to runtime.GOARCH
 ```
 
@@ -1169,7 +1169,7 @@ import (
 
 // ImageIdentity holds the content-addressed identity of a base image.
 type ImageIdentity struct {
-    Checksum string // 12-char hex prefix of SHA-256
+    Checksum string // 16-char hex prefix of SHA-256
     FullHash string // Full 64-char hex SHA-256 (for collision checks)
     Arch     string // "amd64", "arm64", etc.
 }
@@ -1234,7 +1234,7 @@ func calculateSingleManifestIdentity(rawManifest []byte, arch string) (*ImageIde
     fullHex := hex.EncodeToString(hash[:])
 
     return &ImageIdentity{
-        Checksum: fullHex[:12],
+        Checksum: fullHex[:16],
         FullHash: fullHex,
         Arch:     arch,
     }, nil

@@ -302,7 +302,7 @@ type RefEntry struct {
 }
 
 // RefData represents the reference data structure.
-// Keys are content-addressed: {checksum}_{arch} (e.g., "a1b2c3d4e5f6_amd64").
+// Keys are content-addressed: {checksum}_{arch} (e.g., "a1b2c3d4e5f6a7b8_amd64").
 type RefData map[string]*RefEntry
 
 // updateReferences performs an atomic update operation.
@@ -375,24 +375,37 @@ func (rc *ReferenceCounter) updateReferences(op func(RefData) error) error {
     return nil
 }
 
-// imageKey builds the content-addressed key: {checksum}_{arch}
-func imageKey(checksum, arch string) string {
-    return checksum + "_" + arch
+// ParseBaseKey splits base_key into (checksum, arch).
+// E.g., "a1b2c3d4e5f6a7b8_amd64" → ("a1b2c3d4e5f6a7b8", "amd64").
+func ParseBaseKey(baseKey string) (checksum, arch string, err error) {
+    idx := strings.LastIndex(baseKey, "_")
+    if idx < 0 {
+        return "", "", fmt.Errorf("invalid base_key format: %s", baseKey)
+    }
+    return baseKey[:idx], baseKey[idx+1:], nil
 }
 
 // AddReference adds a VM reference to a base image.
-// Parameters use the content-addressed identity from
-// 05-storage-management.md § "Image Checksum Identity".
-func (rc *ReferenceCounter) AddReference(checksum, arch, vmID string) error {
-    key := imageKey(checksum, arch)
+// baseKey is the content-addressed key: {checksum_16}_{arch}.
+// digestFull is the full 64-char SHA-256 hex for collision detection.
+// sourceRef is the original image reference (OCI ref / URL / path).
+func (rc *ReferenceCounter) AddReference(baseKey, vmID, digestFull, sourceRef string) error {
     return rc.updateReferences(func(refs RefData) error {
-        entry := refs[key]
-        if entry == nil {
-            entry = &RefEntry{
-                Path:      filepath.Join(rc.storageDir, "cache", "images", key+".qcow2"),
-                CreatedAt: time.Now().Format(time.RFC3339),
+        entry := refs[baseKey]
+        if entry != nil {
+            // Collision check: same key but different full digest
+            if digestFull != "" && entry.DigestFull != "" && entry.DigestFull != digestFull {
+                return fmt.Errorf("checksum collision: base_key %s already maps to a different image "+
+                    "(stored: %s…, incoming: %s…)", baseKey, entry.DigestFull[:16], digestFull[:16])
             }
-            refs[key] = entry
+        } else {
+            entry = &RefEntry{
+                Path:       filepath.Join(rc.storageDir, "cache", "images", baseKey+".qcow2"),
+                DigestFull: digestFull,
+                SourceRef:  sourceRef,
+                CreatedAt:  time.Now().Format(time.RFC3339),
+            }
+            refs[baseKey] = entry
         }
         // Check if already exists
         for _, vm := range entry.Refs {
@@ -405,11 +418,11 @@ func (rc *ReferenceCounter) AddReference(checksum, arch, vmID string) error {
     })
 }
 
-// RemoveReference removes a VM reference from a base image
-func (rc *ReferenceCounter) RemoveReference(checksum, arch, vmID string) error {
-    key := imageKey(checksum, arch)
+// RemoveReference removes a VM reference from a base image.
+// baseKey is the content-addressed key: {checksum_16}_{arch}.
+func (rc *ReferenceCounter) RemoveReference(baseKey, vmID string) error {
     return rc.updateReferences(func(refs RefData) error {
-        entry := refs[key]
+        entry := refs[baseKey]
         if entry == nil {
             return nil
         }
@@ -422,19 +435,19 @@ func (rc *ReferenceCounter) RemoveReference(checksum, arch, vmID string) error {
         if len(newRefs) > 0 {
             entry.Refs = newRefs
         } else {
-            delete(refs, key)
+            delete(refs, baseKey)
         }
         return nil
     })
 }
 
-// GetReferences returns all VMs referencing a base image
-func (rc *ReferenceCounter) GetReferences(checksum, arch string) ([]string, error) {
-    key := imageKey(checksum, arch)
+// GetReferences returns all VMs referencing a base image.
+// baseKey is the content-addressed key: {checksum_16}_{arch}.
+func (rc *ReferenceCounter) GetReferences(baseKey string) ([]string, error) {
     var result []string
 
     err := rc.updateReferences(func(refs RefData) error {
-        entry := refs[key]
+        entry := refs[baseKey]
         if entry != nil {
             result = make([]string, len(entry.Refs))
             copy(result, entry.Refs)
@@ -445,13 +458,13 @@ func (rc *ReferenceCounter) GetReferences(checksum, arch string) ([]string, erro
     return result, err
 }
 
-// IsReferenced checks if a base image has any references
-func (rc *ReferenceCounter) IsReferenced(checksum, arch string) (bool, error) {
-    key := imageKey(checksum, arch)
+// IsReferenced checks if a base image has any references.
+// baseKey is the content-addressed key: {checksum_16}_{arch}.
+func (rc *ReferenceCounter) IsReferenced(baseKey string) (bool, error) {
     var referenced bool
 
     err := rc.updateReferences(func(refs RefData) error {
-        entry := refs[key]
+        entry := refs[baseKey]
         referenced = entry != nil && len(entry.Refs) > 0
         return nil
     })
@@ -691,7 +704,7 @@ type Orphan struct {
     Type    string // "overlay", "config", "reference"
     VMID    string
     Path    string
-    BaseKey string // Content-addressed key: {checksum_12}_{arch}
+    BaseKey string // Content-addressed key: {checksum_16}_{arch}
 }
 
 // ScanOrphans detects inconsistent state
@@ -741,7 +754,7 @@ func (r *Reconciler) ScanOrphans() ([]Orphan, error) {
         }
 
         var config struct {
-            BaseKey string `json:"base_key"` // e.g., "a1b2c3d4e5f6_amd64"
+            BaseKey string `json:"base_key"` // e.g., "a1b2c3d4e5f6a7b8_amd64"
         }
         json.Unmarshal(configData, &config)
 
@@ -790,7 +803,7 @@ func (r *Reconciler) Reconcile(orphans []Orphan) error {
         case "reference":
             // Config exists but no reference -> add missing reference
             // This completes the incomplete operation
-            err := r.refs.AddReferenceByKey(orphan.BaseKey, orphan.VMID)
+            err := r.refs.AddReference(orphan.BaseKey, orphan.VMID, "", "")
             if err != nil {
                 return err
             }
@@ -1164,7 +1177,7 @@ type ReferenceCounterRW struct {
 }
 
 // GetReferences uses read lock (multiple readers allowed).
-// baseKey is the content-addressed key: {checksum_12}_{arch}.
+// baseKey is the content-addressed key: {checksum_16}_{arch}.
 func (rc *ReferenceCounterRW) GetReferences(baseKey string) ([]string, error) {
     rc.rwLock.RLock()
     defer rc.rwLock.RUnlock()
@@ -1176,7 +1189,7 @@ func (rc *ReferenceCounterRW) GetReferences(baseKey string) ([]string, error) {
 }
 
 // AddReference uses write lock (exclusive).
-// baseKey is the content-addressed key: {checksum_12}_{arch}.
+// baseKey is the content-addressed key: {checksum_16}_{arch}.
 func (rc *ReferenceCounterRW) AddReference(baseKey, vmID string) error {
     rc.rwLock.Lock()
     defer rc.rwLock.Unlock()

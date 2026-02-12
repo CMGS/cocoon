@@ -186,7 +186,7 @@ go run ./cmd/test-client/main.go
    ```go
    // pkg/storage/layout.go
    func InitializeStorage() error
-   func GetBaseImagePath(baseKey string) string  // baseKey = {checksum_12}_{arch}
+   func GetBaseImagePath(baseKey string) string  // baseKey = {checksum_16}_{arch}
    func GetOverlayPath(vmID string) string
    ```
 
@@ -195,7 +195,7 @@ go run ./cmd/test-client/main.go
    // pkg/storage/refcount.go
    type ReferenceCounter interface { ... }
    func NewReferenceCounter(path string) ReferenceCounter
-   // base_key = {checksum_12}_{arch}, e.g., "a1b2c3d4e5f6_amd64"
+   // base_key = {checksum_16}_{arch}, e.g., "a1b2c3d4e5f6a7b8_amd64"
    func (r *ReferenceCounter) AddReference(baseKey, vmID, digestFull, sourceRef string) error
    func (r *ReferenceCounter) RemoveReference(baseKey, vmID string) error
    ```

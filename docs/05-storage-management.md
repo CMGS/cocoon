@@ -15,12 +15,12 @@ Other documents MUST reference this section rather than defining their own paths
 /var/lib/cocoon/                          # Persistent root (survives reboot)
 ├── cache/
 │   ├── images/                           # Base qcow2 images (content-addressed)
-│   │   ├── {checksum}_{arch}.qcow2       # e.g., a1b2c3d4e5f6_amd64.qcow2
+│   │   ├── {checksum_16}_{arch}.qcow2    # e.g., a1b2c3d4e5f6a7b8_amd64.qcow2
 │   │   └── ...
 │   ├── manifests/                        # OCI manifest cache
 │   ├── buildah/                          # Buildah storage root
 │   └── locks/
-│       └── {checksum}_{arch}.lock        # Per-image conversion lock
+│       └── {checksum_16}_{arch}.lock     # Per-image conversion lock
 ├── vms/
 │   ├── {vm-id}/                          # e.g., vm-01HXYZ.../
 │   │   ├── config.json                   # Immutable VM configuration
@@ -69,8 +69,8 @@ Other documents MUST reference these definitions rather than re-defining fields.
 | `vm_id` | string | `"vm-01HXYZ..."` | Internal primary key (`vm-{ulid}`), never reused |
 | `name` | string | `"myvm"` | User-facing alias, globally unique, immutable |
 | `image_ref` | string | `"myorg/ubuntu:22.04"` | Original image reference (path/URL/OCI ref) |
-| `base_key` | string | `"a1b2c3d4e5f6_amd64"` | Content-addressed key: `{checksum_12}_{arch}` |
-| `base_digest_full` | string | `"a1b2c3d4e5f6..."` (64 hex) | Full SHA-256 for collision audit |
+| `base_key` | string | `"a1b2c3d4e5f6a7b8_amd64"` | Content-addressed key: `{checksum_16}_{arch}` |
+| `base_digest_full` | string | `"a1b2c3d4e5f6a7b8..."` (64 hex) | Full SHA-256 for collision audit |
 | `arch` | string | `"amd64"` | Architecture |
 | `boot_strategy` | string | `"pvh_then_uefi"` | `"pvh_then_uefi"` / `"uefi_only"` / `"pvh_only"` |
 | `firmware_path` | string | `"/var/lib/cocoon/firmware/hypervisor-fw"` | Primary firmware path |
@@ -106,9 +106,9 @@ Other documents MUST reference these definitions rather than re-defining fields.
 
 | Field | Type | Example | Description |
 |-------|------|---------|-------------|
-| *key* | string | `"a1b2c3d4e5f6_amd64"` | Content-addressed: `{checksum_12}_{arch}` |
+| *key* | string | `"a1b2c3d4e5f6a7b8_amd64"` | Content-addressed: `{checksum_16}_{arch}` |
 | `.path` | string | `"/var/lib/cocoon/cache/images/..."` | Cached qcow2 path |
-| `.digest_full` | string | `"a1b2c3d4e5f6..."` (64 hex) | Full SHA-256 for collision detection |
+| `.digest_full` | string | `"a1b2c3d4e5f6a7b8..."` (64 hex) | Full SHA-256 for collision detection |
 | `.source_ref` | string | `"myorg/ubuntu:22.04"` | Original image ref (audit) |
 | `.refs` | []string | `["vm-001", "vm-002"]` | VM IDs using this base |
 | `.created_at` | string | `"2026-02-12T10:00:00Z"` | First cache timestamp |
@@ -126,7 +126,7 @@ Other documents MUST reference these definitions rather than re-defining fields.
 
 The `{checksum}` component used in cache filenames, `references.json` keys, and
 conversion lock names is computed as follows. All checksums use **SHA-256**
-truncated to **12 hex characters** (48 bits) for path brevity. The full
+truncated to **16 hex characters** (64 bits) for path brevity. The full
 64-character digest is stored in `references.json` as the `digest_full` field
 for collision detection (see [references.json Structure](#referencesjson-structure)).
 
@@ -137,7 +137,7 @@ checksum = SHA256(
     manifest.config.digest + "\n" +
     manifest.layers[*].digest.join("\n") + "\n" +
     platform_os + "/" + platform_arch       // e.g., "linux/amd64"
-)[:12]
+)[:16]
 ```
 
 - Layer digests are joined in **manifest order** (the OCI spec guarantees layer
@@ -145,12 +145,12 @@ checksum = SHA256(
   filesystem stacking sequence).
 - For **multi-arch manifest lists**: resolve to the platform-specific manifest
   FIRST (using runtime `GOARCH`), then compute the checksum above.
-- Cache filename: `{checksum}_{arch}.qcow2` (e.g., `a1b2c3d4e5f6_amd64.qcow2`)
+- Cache filename: `{checksum}_{arch}.qcow2` (e.g., `a1b2c3d4e5f6a7b8_amd64.qcow2`)
 
 **For cloud images** (raw qcow2/img files):
 
 ```
-checksum = SHA256(file_content)[:12]
+checksum = SHA256(file_content)[:16]
 arch     = detect from image metadata, or default to runtime arch
 ```
 
@@ -159,24 +159,27 @@ arch     = detect from image metadata, or default to runtime arch
 **For URL-based images**:
 
 ```
-checksum = SHA256(downloaded_file_content)[:12]
+checksum = SHA256(downloaded_file_content)[:16]
 arch     = detect or default to runtime arch
 ```
 
 #### Collision Handling
 
-Because checksums are truncated to 12 hex characters (48 bits), collisions are
-theoretically possible. The `digest_full` field in `references.json` enables
-detection:
+Although 16 hex characters (64 bits) make accidental collisions extremely
+unlikely (birthday-bound: ~2³² ≈ 4 billion images before 50% collision
+probability), the `digest_full` field in `references.json` provides a safety
+net:
 
 1. **On AddReference**: If a `base_key` already exists in `references.json`,
    compare the incoming `digest_full` against the stored `digest_full`.
 2. **If they match**: Same image — proceed normally (increment refcount).
 3. **If they differ**: **Collision detected** — return an error:
-   `"checksum collision: base_key {key} already maps to a different image (stored: {stored_digest[:16]}…, incoming: {incoming_digest[:16]}…)"`
-4. **User remediation**: The user must use a different tag or rebuild the image.
-   At 48 bits, the probability of an accidental collision among 1 million images
-   is ~10⁻⁴, so this is a safety guard, not a routine path.
+   `"checksum collision: base_key {key} already maps to a different image
+   (stored: {stored_digest[:16]}…, incoming: {incoming_digest[:16]}…)"`
+4. **Remediation**: This error is a hard failure. The operator must resolve it
+   manually — either purge the stale entry (if the cached image is no longer
+   needed) or increase the truncation length in a future schema migration.
+   At 64 bits this scenario is effectively impossible under normal usage.
 
 This identity contract is referenced by:
 - [06-concurrency.md](./06-concurrency.md) (conversion lock keys)
@@ -325,12 +328,23 @@ Reference counting ensures base images are not deleted while VMs still depend on
 
 ```python
 import json
-from collections import defaultdict
+import os
+import tempfile
 from pathlib import Path
-from typing import Dict, Set
+from typing import Dict, Set, Tuple
 
 class ReferenceCounter:
-    """Tracks base image usage via content-addressed keys ({checksum}_{arch})."""
+    """
+    Tracks base image usage via content-addressed keys (base_key = {checksum}_{arch}).
+
+    All public methods accept base_key as the primary identifier.
+    Use ParseBaseKey() to decompose into (checksum, arch) when needed.
+
+    IMPORTANT: All mutations (add/remove) MUST be called while holding
+    references.lock (flock, Level 2). See 06-concurrency.md § Lock Hierarchy.
+    Persistence uses atomic write (temp + fsync + rename) per 06-concurrency.md
+    § Atomic Read-Modify-Write.
+    """
 
     def __init__(self, storage_config: StorageConfig):
         self.storage = storage_config
@@ -344,49 +358,74 @@ class ReferenceCounter:
             self.refs = json.loads(self.ref_file.read_text())
 
     def save(self):
-        """Save reference counts to disk."""
-        self.ref_file.write_text(json.dumps(self.refs, indent=2))
+        """Atomic write: temp file + fsync + rename (see 06-concurrency.md)."""
+        data = json.dumps(self.refs, indent=2).encode()
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(self.ref_file.parent), suffix=".tmp"
+        )
+        try:
+            os.write(fd, data)
+            os.fsync(fd)
+            os.close(fd)
+            os.rename(tmp_path, str(self.ref_file))
+        except BaseException:
+            os.close(fd)
+            os.unlink(tmp_path)
+            raise
 
-    def _image_key(self, checksum: str, arch: str) -> str:
-        """Build the content-addressed key: {checksum}_{arch}."""
-        return f"{checksum}_{arch}"
+    @staticmethod
+    def parse_base_key(base_key: str) -> Tuple[str, str]:
+        """Parse base_key into (checksum, arch). E.g., 'a1b2c3d4e5f6a7b8_amd64' → ('a1b2c3d4e5f6a7b8', 'amd64')."""
+        parts = base_key.rsplit("_", 1)
+        if len(parts) != 2:
+            raise ValueError(f"Invalid base_key format: {base_key}")
+        return parts[0], parts[1]
 
-    def add_reference(self, checksum: str, arch: str, vm_id: str,
+    def add_reference(self, base_key: str, vm_id: str,
                       digest_full: str = "", source_ref: str = ""):
-        """Add VM reference to base image."""
-        key = self._image_key(checksum, arch)
-        if key not in self.refs:
-            self.refs[key] = {
-                "path": str(self.storage.cache_dir / "images" / f"{key}.qcow2"),
+        """
+        Add VM reference to base image.
+
+        If base_key already exists, verifies digest_full matches (collision check).
+        Raises ValueError on collision.
+        """
+        if base_key in self.refs:
+            stored = self.refs[base_key].get("digest_full", "")
+            if digest_full and stored and stored != digest_full:
+                raise ValueError(
+                    f"checksum collision: base_key {base_key} already maps to a "
+                    f"different image (stored: {stored[:16]}…, incoming: {digest_full[:16]}…)"
+                )
+        else:
+            self.refs[base_key] = {
+                "path": str(self.storage.cache_dir / "images" / f"{base_key}.qcow2"),
                 "digest_full": digest_full,
                 "source_ref": source_ref,
                 "refs": [],
                 "created_at": datetime.now().isoformat() + "Z",
             }
-        if vm_id not in self.refs[key]["refs"]:
-            self.refs[key]["refs"].append(vm_id)
+        if vm_id not in self.refs[base_key]["refs"]:
+            self.refs[base_key]["refs"].append(vm_id)
         self.save()
 
-    def remove_reference(self, checksum: str, arch: str, vm_id: str):
+    def remove_reference(self, base_key: str, vm_id: str):
         """Remove VM reference from base image."""
-        key = self._image_key(checksum, arch)
-        if key in self.refs:
-            refs = self.refs[key]["refs"]
+        if base_key in self.refs:
+            refs = self.refs[base_key]["refs"]
             if vm_id in refs:
                 refs.remove(vm_id)
             if not refs:
-                del self.refs[key]
+                del self.refs[base_key]
             self.save()
 
-    def get_references(self, checksum: str, arch: str) -> Set[str]:
+    def get_references(self, base_key: str) -> Set[str]:
         """Get all VMs referencing base image."""
-        key = self._image_key(checksum, arch)
-        entry = self.refs.get(key)
+        entry = self.refs.get(base_key)
         return set(entry["refs"]) if entry else set()
 
-    def is_referenced(self, checksum: str, arch: str) -> bool:
+    def is_referenced(self, base_key: str) -> bool:
         """Check if base image is referenced by any VM."""
-        return len(self.get_references(checksum, arch)) > 0
+        return len(self.get_references(base_key)) > 0
 
     def get_unreferenced_images(self) -> list[Path]:
         """Get all base images with zero references."""
@@ -400,21 +439,21 @@ class ReferenceCounter:
 
 ### references.json Structure
 
-The reference count file stores a mapping of image identity keys (`{checksum}_{arch}`) to
+The reference count file stores a mapping of `base_key` (`{checksum_16}_{arch}`) to
 reference metadata. Keys are content-addressed identifiers, NOT absolute paths.
 
 ```json
 {
-  "a1b2c3d4e5f6_amd64": {
-    "path": "/var/lib/cocoon/cache/images/a1b2c3d4e5f6_amd64.qcow2",
-    "digest_full": "a1b2c3d4e5f6789012345678abcdef0123456789abcdef0123456789abcdef01",
+  "a1b2c3d4e5f6a7b8_amd64": {
+    "path": "/var/lib/cocoon/cache/images/a1b2c3d4e5f6a7b8_amd64.qcow2",
+    "digest_full": "a1b2c3d4e5f6a7b8901234567890abcdef1234567890abcdef1234567890abcd",
     "source_ref": "myorg/ubuntu-bootable:22.04",
     "refs": ["vm-001", "vm-002", "vm-003"],
     "created_at": "2026-02-12T10:00:00Z"
   },
-  "f7e8d9c0b1a2_amd64": {
-    "path": "/var/lib/cocoon/cache/images/f7e8d9c0b1a2_amd64.qcow2",
-    "digest_full": "f7e8d9c0b1a2345678901234abcdef5678901234abcdef5678901234abcdef56",
+  "f7e8d9c0b1a2e3f4_amd64": {
+    "path": "/var/lib/cocoon/cache/images/f7e8d9c0b1a2e3f4_amd64.qcow2",
+    "digest_full": "f7e8d9c0b1a2e3f4567890abcdef1234567890abcdef1234567890abcdef1234",
     "source_ref": "https://cloud-images.ubuntu.com/.../ubuntu-22.04-cloudimg-amd64.img",
     "refs": ["vm-010", "vm-011"],
     "created_at": "2026-02-12T11:00:00Z"
@@ -424,7 +463,7 @@ reference metadata. Keys are content-addressed identifiers, NOT absolute paths.
 
 **Field definitions**:
 - `path`: Derived filesystem path to the cached qcow2 (for fast lookup)
-- `digest_full`: Full 64-character SHA-256 hex digest (for collision detection when two different images produce the same 12-char truncation)
+- `digest_full`: Full 64-character SHA-256 hex digest (for collision detection when two different images produce the same 16-char truncation)
 - `source_ref`: Original image reference (OCI ref / URL / file path) for audit and human readability
 - `refs`: List of vm_ids currently using this base image
 - `created_at`: RFC 3339 timestamp of first cache entry
@@ -436,14 +475,15 @@ Reference counting operations are performed during VM lifecycle events:
 ```python
 # When creating a VM
 async def create_vm(image: str, vm_id: str) -> Path:
-    # ... prepare base image (returns checksum, arch, path) ...
+    # ... prepare base image (returns base_key, digest_full, source_ref, path) ...
     image_info = await image_mgr.prepare_base_image(image)
 
-    # ... create overlay ...
-    overlay = cow_mgr.create_overlay(image_info.path, vm_id)
+    # Pin reference FIRST (short lock hold), then create overlay outside lock
+    ref_counter.add_reference(image_info.base_key, vm_id,
+                              image_info.digest_full, image_info.source_ref)
 
-    # Register reference using content-addressed key
-    ref_counter.add_reference(image_info.checksum, image_info.arch, vm_id)
+    # ... create overlay (outside references.lock) ...
+    overlay = cow_mgr.create_overlay(image_info.path, vm_id)
 
     return overlay
 
@@ -451,10 +491,10 @@ async def create_vm(image: str, vm_id: str) -> Path:
 def delete_vm(vm_id: str):
     # ... load config ...
     config = json.loads((vm_dir / "config.json").read_text())
-    base_key = config["base_key"]  # e.g., "a1b2c3d4e5f6_amd64"
+    base_key = config["base_key"]  # e.g., "a1b2c3d4e5f6a7b8_amd64"
 
-    # Remove reference using content-addressed key
-    ref_counter.remove_reference_by_key(base_key, vm_id)
+    # Remove reference using base_key
+    ref_counter.remove_reference(base_key, vm_id)
 
     # ... cleanup overlay ...
 ```
@@ -745,11 +785,11 @@ def delete_vm(vm_id: str):
 
     # 1. Load config
     config = json.loads((vm_dir / "config.json").read_text())
-    base_key = config["base_key"]  # e.g., "a1b2c3d4e5f6_amd64"
+    base_key = config["base_key"]  # e.g., "a1b2c3d4e5f6a7b8_amd64"
     overlay = vm_dir / "overlay.qcow2"
 
     # 2. Remove reference using content-addressed key
-    ref_counter.remove_reference_by_key(base_key, vm_id)
+    ref_counter.remove_reference(base_key, vm_id)
 
     # 3. Move overlay to trash (soft delete)
     trash_overlay = storage.trash_dir / f"{vm_id}-overlay.qcow2"

@@ -836,7 +836,7 @@ The inspect output merges data from `config.json` (immutable) and `metadata.json
   "previous_state": "STARTING",
   "image": {
     "ref": "ubuntu-22.04-cloudimg",
-    "base_key": "ef015678abcd_amd64"
+    "base_key": "ef015678abcd1234_amd64"
   },
   "boot": {
     "strategy": "pvh_then_uefi",
@@ -1523,7 +1523,7 @@ type ImageConfig struct {
     CacheDir string `yaml:"cache_dir" default:"/var/lib/cocoon/cache"`
 
     // Buildah storage root
-    BuildahRoot string `yaml:"buildah_root" default:"/var/lib/cocoon/buildah"`
+    BuildahRoot string `yaml:"buildah_root" default:"/var/lib/cocoon/cache/buildah"`
 }
 
 // RegistryConfig defines registry credentials
@@ -1578,7 +1578,7 @@ hypervisor:
 
 image:
   cache_dir: /var/lib/cocoon/cache
-  buildah_root: /var/lib/cocoon/buildah
+  buildah_root: /var/lib/cocoon/cache/buildah
   registries:
     docker.io:
       username: ""
@@ -1619,7 +1619,11 @@ log:
 5. **Verify bootability** → `ImageManager.VerifyBootable(image)` (Boot Contract §6)
    - qcow2 files: inspect partitions via guestfish
    - OCI images: validate rootfs components before conversion
-6. **Acquire references.lock** (Level 2)
+6. **Pin base image reference** (short lock hold):
+   - **Acquire references.lock** (Level 2)
+   - `refCounter.AddReference(baseKey, vmID, digestFull, sourceRef)` — immediately adds `vmID` to `refs[]`, protecting the base image from GC
+   - **Release references.lock**
+   - This "pin" ensures the base image survives even if GC runs during the subsequent (slow) steps. On failure in later steps, the cleanup path removes this reference.
 7. **Create COW overlay** → `StorageManager.CreateOverlay(baseKey, vmID)`
 8. **Start metadata server** → Start HTTP server on 169.254.169.254 for cloud-init (Boot Contract §2.2)
 9. **Configure VM**:
@@ -1658,12 +1662,16 @@ log:
       --console off
     ```
 11. **Wait for boot** → Poll serial log for boot completion marker (timeout: 60s)
-12. **Update reference counter** → `refCounter.AddReference(baseKey, vmID, digestFull, sourceRef)`
-13. **Release references.lock**
-14. **Save VM metadata** → Write `config.json` (immutable) and `metadata.json` (mutable) to VM directory (acquires per-VM `metadata.lock`, Level 4)
-15. **Acquire name-index.lock** (Level 2) → Add `name → vm_id` to `name-index.json`, release lock
-16. **Stream output** → If not `--detach`, stream serial log to stdout
-17. **Auto-cleanup** → If `--rm`, delete VM when process exits
+12. **Save VM metadata** → Write `config.json` (immutable) and `metadata.json` (mutable) to VM directory (acquires per-VM `metadata.lock`, Level 4)
+13. **Acquire name-index.lock** (Level 2) → Add `name → vm_id` to `name-index.json`, release lock
+14. **Stream output** → If not `--detach`, stream serial log to stdout
+15. **Auto-cleanup** → If `--rm`, delete VM when process exits
+
+**Failure cleanup**: If any step after 6 fails, the cleanup path must:
+- **Acquire references.lock** (Level 2)
+- `refCounter.RemoveReference(baseKey, vmID)` — remove the pinned reference
+- **Release references.lock**
+- Delete overlay, VM directory, and any partial resources
 
 ### 6.2 VM Stop Flow (`cocoon stop`)
 
@@ -1918,7 +1926,7 @@ For the canonical schema definitions, see [07-vm-lifecycle.md § 5](./07-vm-life
   "vm_id": "vm-01HXYZ5A3B7C8D9E0F1G2H3J4K",
   "name": "myvm",
   "image_ref": "ubuntu-22.04-cloudimg",
-  "base_key": "ef015678abcd_amd64",
+  "base_key": "ef015678abcd1234_amd64",
   "base_digest_full": "ef015678abcd1234567890abcdef1234567890abcdef1234567890abcdef1234",
   "arch": "amd64",
   "boot_strategy": "pvh_then_uefi",
