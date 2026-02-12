@@ -1,4 +1,4 @@
-package image
+package pipeline
 
 import (
 	"context"
@@ -18,15 +18,16 @@ import (
 	"time"
 
 	"github.com/CMGS/cocoon/config"
-	"github.com/CMGS/cocoon/lock"
+	"github.com/CMGS/cocoon/image"
+	"github.com/CMGS/cocoon/lock/flock"
 	"github.com/CMGS/cocoon/storage"
 	"github.com/CMGS/cocoon/types"
 )
 
 // Compile-time interface check.
-var _ Manager = (*manager)(nil)
+var _ image.Manager = (*manager)(nil)
 
-// manager is the default implementation of the Manager interface.
+// manager is the default implementation of the image.Manager interface.
 // It coordinates image pulling, conversion, caching, and bootability
 // verification using external tools (Buildah, qemu-img, libguestfs).
 type manager struct {
@@ -34,10 +35,10 @@ type manager struct {
 	refCtr storage.ReferenceCounter
 }
 
-// NewManager creates a new image Manager backed by the given configuration.
+// New creates a new image.Manager backed by the given configuration.
 // The configuration determines cache directories, lock paths, and tool locations.
 // The ReferenceCounter is used to populate reference counts when listing cached images.
-func NewManager(cfg *config.CocoonConfig, refCtr storage.ReferenceCounter) Manager {
+func New(cfg *config.CocoonConfig, refCtr storage.ReferenceCounter) image.Manager {
 	return &manager{cfg: cfg, refCtr: refCtr}
 }
 
@@ -47,15 +48,15 @@ func NewManager(cfg *config.CocoonConfig, refCtr storage.ReferenceCounter) Manag
 //   - OCI: contains "/" and no path separator at start (e.g., "docker.io/library/ubuntu:22.04")
 //   - URL: starts with "http://" or "https://"
 //   - Local file: starts with "/" or "./" or contains no "/" (existing file path)
-func (m *manager) Pull(ctx context.Context, ref string) (*ImageIdentity, error) {
+func (m *manager) Pull(ctx context.Context, ref string) (*image.ImageIdentity, error) {
 	imgType := classifyRef(ref)
 
 	switch imgType {
-	case ImageTypeOCI:
+	case image.ImageTypeOCI:
 		return m.pullOCI(ctx, ref)
-	case ImageTypeURL:
+	case image.ImageTypeURL:
 		return m.pullURL(ctx, ref)
-	case ImageTypeLocalFile:
+	case image.ImageTypeLocalFile:
 		return m.pullLocal(ctx, ref)
 	default:
 		return nil, fmt.Errorf("unsupported image reference type: %q", ref)
@@ -72,13 +73,13 @@ func (m *manager) Pull(ctx context.Context, ref string) (*ImageIdentity, error) 
 // The source image path is taken from identity.TempPath. The source format is
 // auto-detected via qemu-img info. If the source is already qcow2, it is
 // atomically copied to cache. If raw, it is converted with qemu-img convert.
-func (m *manager) Convert(ctx context.Context, identity *ImageIdentity) (string, error) {
+func (m *manager) Convert(ctx context.Context, identity *image.ImageIdentity) (string, error) {
 	baseKey := identity.BaseKey()
 	basePath := m.cfg.BaseImagePath(baseKey)
 
 	// Acquire per-image conversion lock (Level 3 in lock hierarchy).
 	lockPath := m.cfg.ConversionLockPath(baseKey)
-	fl := lock.New(lockPath)
+	fl := flock.New(lockPath)
 	if err := fl.Lock(); err != nil {
 		return "", fmt.Errorf("acquire conversion lock for %s: %w", baseKey, err)
 	}
@@ -105,7 +106,7 @@ func (m *manager) Convert(ctx context.Context, identity *ImageIdentity) (string,
 	}
 
 	// Handle OCI image type: rootfs mount -> qcow2 conversion via guestfish.
-	if identity.ImageType == ImageTypeOCI {
+	if identity.ImageType == image.ImageTypeOCI {
 		log.Printf("image %s: converting OCI rootfs -> qcow2", baseKey)
 
 		// Ensure cache directory exists.
@@ -179,7 +180,7 @@ func (m *manager) Convert(ctx context.Context, identity *ImageIdentity) (string,
 	}
 
 	// Clean up temp source if it was downloaded (not a user's local file).
-	if identity.ImageType == ImageTypeURL {
+	if identity.ImageType == image.ImageTypeURL {
 		if err := os.Remove(srcPath); err != nil {
 			log.Printf("warning: failed to clean up temp source %s: %v", srcPath, err)
 		}
@@ -192,7 +193,7 @@ func (m *manager) Convert(ctx context.Context, identity *ImageIdentity) (string,
 // Prepare is the combined pull+convert+cache pipeline. It first checks whether
 // a cached base image already exists for the given ref. If so, it skips pull
 // and convert entirely. Otherwise it runs Pull + Convert and caches the result.
-func (m *manager) Prepare(ctx context.Context, ref string) (*ImageIdentity, string, error) {
+func (m *manager) Prepare(ctx context.Context, ref string) (*image.ImageIdentity, string, error) {
 	// Step 1: Pull to determine the image identity.
 	identity, err := m.Pull(ctx, ref)
 	if err != nil {
@@ -230,13 +231,13 @@ func (m *manager) Prepare(ctx context.Context, ref string) (*ImageIdentity, stri
 // Deep verification (platform-dependent):
 //   - Linux: uses guestfish to inspect image contents (kernel, initrd, systemd, bootloader)
 //   - Darwin: stub that adds a warning (guestfish not available)
-func (m *manager) VerifyBootability(ctx context.Context, imagePath string) (*BootCheckResult, error) {
+func (m *manager) VerifyBootability(ctx context.Context, imagePath string) (*image.BootCheckResult, error) {
 	info, err := os.Stat(imagePath)
 	if err != nil {
 		return nil, fmt.Errorf("image path does not exist: %w", err)
 	}
 
-	result := &BootCheckResult{
+	result := &image.BootCheckResult{
 		Bootable:  false,
 		BootModes: []string{},
 		Errors:    []string{},
@@ -297,7 +298,7 @@ func (m *manager) VerifyBootability(ctx context.Context, imagePath string) (*Boo
 
 // evaluateDeepVerification checks deep verification results and populates
 // errors, warnings, and boot modes accordingly.
-func evaluateDeepVerification(result *BootCheckResult) {
+func evaluateDeepVerification(result *image.BootCheckResult) {
 	// Deep verification ran, evaluate results strictly.
 	result.Errors = nil // reset basic-level errors
 	if !result.KernelFound {
@@ -328,7 +329,7 @@ func evaluateDeepVerification(result *BootCheckResult) {
 
 // ListCached returns all cached base images found in the image cache directory.
 // Each cached image is identified by its filename pattern: {checksum_16}_{arch}.qcow2.
-func (m *manager) ListCached(ctx context.Context) ([]*CachedImage, error) {
+func (m *manager) ListCached(ctx context.Context) ([]*image.CachedImage, error) {
 	cacheDir := m.cfg.ImageCacheDir()
 
 	entries, err := os.ReadDir(cacheDir)
@@ -339,7 +340,7 @@ func (m *manager) ListCached(ctx context.Context) ([]*CachedImage, error) {
 		return nil, fmt.Errorf("read cache directory: %w", err)
 	}
 
-	var images []*CachedImage
+	var images []*image.CachedImage
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -371,7 +372,7 @@ func (m *manager) ListCached(ctx context.Context) ([]*CachedImage, error) {
 			}
 		}
 
-		images = append(images, &CachedImage{
+		images = append(images, &image.CachedImage{
 			BaseKey:   baseKey,
 			Path:      filepath.Join(cacheDir, name),
 			Size:      info.Size(),
@@ -405,29 +406,29 @@ func (m *manager) RemoveCached(ctx context.Context, baseKey string) error {
 
 // --- Internal helpers ---
 
-// classifyRef determines the ImageType for a given reference string.
-func classifyRef(ref string) ImageType {
+// classifyRef determines the image.ImageType for a given reference string.
+func classifyRef(ref string) image.ImageType {
 	if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
-		return ImageTypeURL
+		return image.ImageTypeURL
 	}
 
 	// Local file: check if path exists on disk.
 	if strings.HasPrefix(ref, "/") || strings.HasPrefix(ref, "./") || strings.HasPrefix(ref, "../") {
-		return ImageTypeLocalFile
+		return image.ImageTypeLocalFile
 	}
 
 	// If the reference has no scheme and exists as a file, treat it as local.
 	if _, err := os.Stat(ref); err == nil {
-		return ImageTypeLocalFile
+		return image.ImageTypeLocalFile
 	}
 
 	// Default: treat as OCI registry reference.
-	return ImageTypeOCI
+	return image.ImageTypeOCI
 }
 
 // pullOCI handles pulling an OCI image from a container registry.
 // Delegates to the platform-specific pullOCIPlatform function.
-func (m *manager) pullOCI(ctx context.Context, ref string) (*ImageIdentity, error) {
+func (m *manager) pullOCI(ctx context.Context, ref string) (*image.ImageIdentity, error) {
 	return pullOCIPlatform(ctx, m.cfg, ref)
 }
 
@@ -435,7 +436,7 @@ func (m *manager) pullOCI(ctx context.Context, ref string) (*ImageIdentity, erro
 // It downloads the file to a temp directory, computes the SHA-256 checksum
 // during download using io.TeeReader, and returns the ImageIdentity with
 // the temp file path set for subsequent conversion.
-func (m *manager) pullURL(ctx context.Context, ref string) (*ImageIdentity, error) {
+func (m *manager) pullURL(ctx context.Context, ref string) (*image.ImageIdentity, error) {
 	log.Printf("image pull (URL): %s", ref)
 
 	// Ensure temp directory exists.
@@ -536,14 +537,14 @@ func (m *manager) pullURL(ctx context.Context, ref string) (*ImageIdentity, erro
 	// Compute identity from checksum.
 	fullDigest := hex.EncodeToString(h.Sum(nil))
 	checksum := fullDigest[:checksumHexLen]
-	arch := GOARCHToOCI(runtime.GOARCH)
+	arch := goarchToOCI(runtime.GOARCH)
 
-	identity := &ImageIdentity{
+	identity := &image.ImageIdentity{
 		Checksum:   checksum,
 		Arch:       arch,
 		FullDigest: fullDigest,
 		SourceRef:  ref,
-		ImageType:  ImageTypeURL,
+		ImageType:  image.ImageTypeURL,
 		TempPath:   tmpPath,
 	}
 
@@ -555,7 +556,7 @@ func (m *manager) pullURL(ctx context.Context, ref string) (*ImageIdentity, erro
 // pullLocal handles a local file reference. It computes the file checksum to
 // determine the image identity and sets TempPath to the absolute path so
 // Convert can find the source file.
-func (m *manager) pullLocal(_ context.Context, ref string) (*ImageIdentity, error) {
+func (m *manager) pullLocal(_ context.Context, ref string) (*image.ImageIdentity, error) {
 	absPath, err := filepath.Abs(ref)
 	if err != nil {
 		return nil, fmt.Errorf("resolve absolute path for %q: %w", ref, err)
@@ -565,19 +566,19 @@ func (m *manager) pullLocal(_ context.Context, ref string) (*ImageIdentity, erro
 		return nil, types.NewPermanentError(fmt.Errorf("local image file not found: %w", statErr))
 	}
 
-	fullDigest, checksum, err := ComputeFileChecksum(absPath)
+	fullDigest, checksum, err := computeFileChecksum(absPath)
 	if err != nil {
 		return nil, fmt.Errorf("compute checksum for %q: %w", ref, err)
 	}
 
-	arch := DefaultArch()
+	arch := defaultArch()
 
-	identity := &ImageIdentity{
+	identity := &image.ImageIdentity{
 		Checksum:   checksum,
 		Arch:       arch,
 		FullDigest: fullDigest,
 		SourceRef:  ref,
-		ImageType:  ImageTypeLocalFile,
+		ImageType:  image.ImageTypeLocalFile,
 		TempPath:   absPath,
 	}
 

@@ -1,4 +1,4 @@
-package storage
+package local
 
 import (
 	"fmt"
@@ -8,13 +8,14 @@ import (
 	"time"
 
 	"github.com/CMGS/cocoon/config"
-	"github.com/CMGS/cocoon/lock"
+	"github.com/CMGS/cocoon/lock/flock"
+	"github.com/CMGS/cocoon/storage"
 	"github.com/CMGS/cocoon/types"
 	"github.com/CMGS/cocoon/utils"
 )
 
 // Compile-time interface check.
-var _ GarbageCollector = (*fileGarbageCollector)(nil)
+var _ storage.GarbageCollector = (*fileGarbageCollector)(nil)
 
 // fileGarbageCollector implements GarbageCollector.
 //
@@ -29,7 +30,7 @@ type fileGarbageCollector struct {
 
 // NewGarbageCollector creates a GarbageCollector backed by the filesystem
 // layout defined in config.
-func NewGarbageCollector(cfg *config.CocoonConfig) GarbageCollector {
+func NewGarbageCollector(cfg *config.CocoonConfig) storage.GarbageCollector {
 	return &fileGarbageCollector{cfg: cfg}
 }
 
@@ -37,7 +38,7 @@ func NewGarbageCollector(cfg *config.CocoonConfig) GarbageCollector {
 
 // withGCLock acquires gc.lock (Level 1) for the duration of fn.
 func (gc *fileGarbageCollector) withGCLock(fn func() error) error {
-	fl := lock.New(gc.cfg.GCLock())
+	fl := flock.New(gc.cfg.GCLock())
 	if err := fl.Lock(); err != nil {
 		return fmt.Errorf("acquire gc.lock: %w", err)
 	}
@@ -49,7 +50,7 @@ func (gc *fileGarbageCollector) withGCLock(fn func() error) error {
 // withRefsLock acquires references.lock (Level 2) for the duration of fn.
 // Must only be called while gc.lock (Level 1) is already held.
 func (gc *fileGarbageCollector) withRefsLock(fn func(refs types.ReferencesFile) (types.ReferencesFile, error)) error {
-	fl := lock.New(gc.cfg.ReferencesLock())
+	fl := flock.New(gc.cfg.ReferencesLock())
 	if err := fl.Lock(); err != nil {
 		return fmt.Errorf("acquire references.lock: %w", err)
 	}

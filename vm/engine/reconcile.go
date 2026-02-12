@@ -1,4 +1,4 @@
-package vm
+package engine
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 
 	"github.com/CMGS/cocoon/types"
 	"github.com/CMGS/cocoon/utils"
+	"github.com/CMGS/cocoon/vm"
 )
 
 // Reconcile scans all VMs and detects inconsistencies between metadata and
@@ -21,7 +22,7 @@ import (
 //
 // The name index is always rebuilt during reconciliation since it is a
 // derived cache (source of truth is config.json).
-func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]Inconsistency, error) {
+func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inconsistency, error) {
 	entries, err := os.ReadDir(m.cfg.VMDir())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -30,7 +31,7 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]Incons
 		return nil, fmt.Errorf("scan VM directory: %w", err)
 	}
 
-	var inconsistencies []Inconsistency
+	var inconsistencies []vm.Inconsistency
 
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -41,10 +42,10 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]Incons
 		// Check config.json existence (Priority 0 source of truth).
 		configPath := m.cfg.VMConfigPath(vmID)
 		if _, statErr := os.Stat(configPath); os.IsNotExist(statErr) {
-			inconsistencies = append(inconsistencies, Inconsistency{
+			inconsistencies = append(inconsistencies, vm.Inconsistency{
 				VMID:     vmID,
-				Type:     InconsistencyMetadataCorrupt,
-				Severity: SeverityCritical,
+				Type:     vm.InconsistencyMetadataCorrupt,
+				Severity: vm.SeverityCritical,
 				Details:  "config.json missing; VM directory is orphaned",
 			})
 			continue
@@ -53,10 +54,10 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]Incons
 		// Load metadata.json.
 		meta, metaErr := m.LoadMetadata(vmID)
 		if metaErr != nil {
-			inconsistencies = append(inconsistencies, Inconsistency{
+			inconsistencies = append(inconsistencies, vm.Inconsistency{
 				VMID:     vmID,
-				Type:     InconsistencyMetadataCorrupt,
-				Severity: SeverityCritical,
+				Type:     vm.InconsistencyMetadataCorrupt,
+				Severity: vm.SeverityCritical,
 				Details:  fmt.Sprintf("failed to load metadata.json: %v", metaErr),
 			})
 			continue
@@ -70,9 +71,9 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]Incons
 		metaState := types.VMState(meta.State)
 
 		if actualState != metaState {
-			inconsistencies = append(inconsistencies, Inconsistency{
+			inconsistencies = append(inconsistencies, vm.Inconsistency{
 				VMID:          vmID,
-				Type:          InconsistencyStateMismatch,
+				Type:          vm.InconsistencyStateMismatch,
 				Severity:      reconcileSeverity(metaState, actualState),
 				Details:       fmt.Sprintf("metadata=%s, actual=%s", meta.State, actualState),
 				ExpectedState: meta.State,
@@ -88,10 +89,10 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]Incons
 		if vmCfg != nil && vmCfg.OverlayPath != "" {
 			if _, overlayErr := os.Stat(vmCfg.OverlayPath); os.IsNotExist(overlayErr) {
 				if metaState != types.VMStateDeleted {
-					inconsistencies = append(inconsistencies, Inconsistency{
+					inconsistencies = append(inconsistencies, vm.Inconsistency{
 						VMID:     vmID,
-						Type:     InconsistencyMissingOverlay,
-						Severity: SeverityCritical,
+						Type:     vm.InconsistencyMissingOverlay,
+						Severity: vm.SeverityCritical,
 						Details:  fmt.Sprintf("overlay missing at %s", vmCfg.OverlayPath),
 					})
 				}
@@ -111,10 +112,10 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]Incons
 
 	// Rebuild the name index (it is a derived cache).
 	if _, err := RebuildNameIndex(m.cfg); err != nil {
-		inconsistencies = append(inconsistencies, Inconsistency{
+		inconsistencies = append(inconsistencies, vm.Inconsistency{
 			VMID:     "",
-			Type:     InconsistencyMetadataCorrupt,
-			Severity: SeverityWarning,
+			Type:     vm.InconsistencyMetadataCorrupt,
+			Severity: vm.SeverityWarning,
 			Details:  fmt.Sprintf("failed to rebuild name index: %v", err),
 		})
 	}
@@ -196,18 +197,18 @@ func (m *manager) determineActualState(meta *types.VMMetadataFile, vmCfg *types.
 }
 
 // detectZombieResources finds stale PID files and zombie sockets.
-func (m *manager) detectZombieResources(vmID string, meta *types.VMMetadataFile, vmCfg *types.VMConfig) []Inconsistency {
-	var zombies []Inconsistency
+func (m *manager) detectZombieResources(vmID string, meta *types.VMMetadataFile, vmCfg *types.VMConfig) []vm.Inconsistency {
+	var zombies []vm.Inconsistency
 
 	// Check PID file.
 	pidFilePath := m.cfg.VMPIDPath(vmID)
 	if pidData, err := os.ReadFile(pidFilePath); err == nil { //nolint:gosec // G304: PID file path is derived from internal config
 		pidFromFile, _ := strconv.Atoi(strings.TrimSpace(string(pidData)))
 		if pidFromFile > 0 && pidFromFile != meta.ProcessPID {
-			zombies = append(zombies, Inconsistency{
+			zombies = append(zombies, vm.Inconsistency{
 				VMID:     vmID,
-				Type:     InconsistencyStalePIDFile,
-				Severity: SeverityWarning,
+				Type:     vm.InconsistencyStalePIDFile,
+				Severity: vm.SeverityWarning,
 				Details:  fmt.Sprintf("PID file has %d, metadata has %d", pidFromFile, meta.ProcessPID),
 			})
 		}
@@ -221,10 +222,10 @@ func (m *manager) detectZombieResources(vmID string, meta *types.VMMetadataFile,
 	if socketPath != "" {
 		if _, err := os.Stat(socketPath); err == nil {
 			if !utils.IsProcessAlive(meta.ProcessPID) {
-				zombies = append(zombies, Inconsistency{
+				zombies = append(zombies, vm.Inconsistency{
 					VMID:     vmID,
-					Type:     InconsistencyZombieSocket,
-					Severity: SeverityWarning,
+					Type:     vm.InconsistencyZombieSocket,
+					Severity: vm.SeverityWarning,
 					Details:  fmt.Sprintf("socket exists at %s but process %d not running", socketPath, meta.ProcessPID),
 				})
 			}
@@ -235,12 +236,12 @@ func (m *manager) detectZombieResources(vmID string, meta *types.VMMetadataFile,
 }
 
 // applyFix attempts to repair an inconsistency.
-func (m *manager) applyFix(inc *Inconsistency, force bool) error {
+func (m *manager) applyFix(inc *vm.Inconsistency, force bool) error {
 	switch inc.Type {
-	case InconsistencyStateMismatch:
+	case vm.InconsistencyStateMismatch:
 		return m.fixStateMismatch(inc, force)
 
-	case InconsistencyZombieSocket:
+	case vm.InconsistencyZombieSocket:
 		// Remove the stale socket file.
 		vmCfg, err := m.LoadConfig(inc.VMID)
 		if err != nil {
@@ -248,11 +249,11 @@ func (m *manager) applyFix(inc *Inconsistency, force bool) error {
 		}
 		return os.Remove(vmCfg.SocketPath)
 
-	case InconsistencyStalePIDFile:
+	case vm.InconsistencyStalePIDFile:
 		pidFilePath := m.cfg.VMPIDPath(inc.VMID)
 		return os.Remove(pidFilePath)
 
-	case InconsistencyZombieProcess:
+	case vm.InconsistencyZombieProcess:
 		if !force {
 			return fmt.Errorf("--force required to kill zombie processes")
 		}
@@ -267,11 +268,11 @@ func (m *manager) applyFix(inc *Inconsistency, force bool) error {
 		}
 		return nil
 
-	case InconsistencyMetadataCorrupt:
+	case vm.InconsistencyMetadataCorrupt:
 		// Cannot auto-fix corrupt metadata without more context.
 		return fmt.Errorf("manual intervention required for corrupt metadata")
 
-	case InconsistencyMissingOverlay:
+	case vm.InconsistencyMissingOverlay:
 		// Cannot recreate an overlay.
 		return fmt.Errorf("overlay disk missing; VM data is lost")
 
@@ -281,7 +282,7 @@ func (m *manager) applyFix(inc *Inconsistency, force bool) error {
 }
 
 // fixStateMismatch updates metadata.json to reflect the actual system state.
-func (m *manager) fixStateMismatch(inc *Inconsistency, force bool) error {
+func (m *manager) fixStateMismatch(inc *vm.Inconsistency, force bool) error {
 	meta, err := m.LoadMetadata(inc.VMID)
 	if err != nil {
 		return err
@@ -338,14 +339,14 @@ func canConnectToSocket(socketPath string) bool {
 }
 
 // reconcileSeverity returns the severity based on the state mismatch.
-func reconcileSeverity(expected, actual types.VMState) InconsistencySeverity {
+func reconcileSeverity(expected, actual types.VMState) vm.InconsistencySeverity {
 	// A running VM that is actually dead is critical.
 	if expected == types.VMStateRunning && actual == types.VMStateError {
-		return SeverityCritical
+		return vm.SeverityCritical
 	}
 	// Transient states that resolved are info.
 	if expected == types.VMStateStopping && actual == types.VMStateStopped {
-		return SeverityInfo
+		return vm.SeverityInfo
 	}
-	return SeverityWarning
+	return vm.SeverityWarning
 }

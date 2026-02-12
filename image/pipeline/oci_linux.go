@@ -1,9 +1,11 @@
 //go:build linux
 
-package image
+package pipeline
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -11,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/CMGS/cocoon/config"
+	"github.com/CMGS/cocoon/image"
 	"github.com/CMGS/cocoon/types"
 )
 
@@ -28,12 +31,12 @@ type ociManifest struct {
 
 // ociIndex represents an OCI image index / Docker manifest list.
 type ociIndex struct {
-	MediaType string `json:"mediaType"`
+	MediaType     string `json:"mediaType"`
 	SchemaVersion int    `json:"schemaVersion"`
 }
 
 // pullOCIPlatform pulls an OCI image on Linux using skopeo and buildah.
-func pullOCIPlatform(ctx context.Context, cfg *config.CocoonConfig, ref string) (*ImageIdentity, error) {
+func pullOCIPlatform(ctx context.Context, cfg *config.CocoonConfig, ref string) (*image.ImageIdentity, error) {
 	// 1. Check required tools are available.
 	if _, err := exec.LookPath("skopeo"); err != nil {
 		return nil, types.NewPermanentError(fmt.Errorf("skopeo not found in PATH: %w", err))
@@ -42,7 +45,7 @@ func pullOCIPlatform(ctx context.Context, cfg *config.CocoonConfig, ref string) 
 		return nil, types.NewPermanentError(fmt.Errorf("buildah not found in PATH: %w", err))
 	}
 
-	arch := GOARCHToOCI(runtime.GOARCH)
+	arch := goarchToOCI(runtime.GOARCH)
 	root := cfg.BuildahRoot
 
 	// 2. Inspect the raw manifest to determine if it's a manifest list or single manifest.
@@ -81,7 +84,7 @@ func pullOCIPlatform(ctx context.Context, cfg *config.CocoonConfig, ref string) 
 	}
 
 	// 6. Compute content-addressed identity.
-	fullDigest, checksum := ComputeOCIChecksum(configDigest, layerDigests, arch)
+	fullDigest, checksum := computeOCIChecksum(configDigest, layerDigests, arch)
 
 	// 7. Pull image with buildah.
 	if _, err := runCmd(ctx, "buildah", "--root", root, "pull", ref); err != nil {
@@ -103,12 +106,12 @@ func pullOCIPlatform(ctx context.Context, cfg *config.CocoonConfig, ref string) 
 	mountPath := strings.TrimSpace(string(mountOut))
 
 	// 10. Return identity.
-	return &ImageIdentity{
+	return &image.ImageIdentity{
 		Checksum:    checksum,
 		Arch:        arch,
 		FullDigest:  fullDigest,
 		SourceRef:   ref,
-		ImageType:   ImageTypeOCI,
+		ImageType:   image.ImageTypeOCI,
 		TempPath:    mountPath,
 		ContainerID: containerID,
 	}, nil
@@ -153,4 +156,20 @@ func classifyBuildahError(err error) error {
 		return types.NewTransientError(err)
 	}
 	return types.NewPermanentError(err)
+}
+
+// computeOCIChecksum computes a content-addressed checksum for an OCI image
+// from its config digest, layer digests, and target architecture.
+func computeOCIChecksum(configDigest string, layerDigests []string, arch string) (fullDigest string, checksum string) {
+	var sb strings.Builder
+	sb.WriteString(configDigest)
+	sb.WriteString("\n")
+	sb.WriteString(strings.Join(layerDigests, "\n"))
+	sb.WriteString("\n")
+	sb.WriteString("linux/" + arch)
+
+	hash := sha256.Sum256([]byte(sb.String()))
+	fullDigest = hex.EncodeToString(hash[:])
+	checksum = fullDigest[:checksumHexLen]
+	return fullDigest, checksum
 }

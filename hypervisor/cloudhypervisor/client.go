@@ -1,4 +1,4 @@
-package hypervisor
+package cloudhypervisor
 
 import (
 	"bytes"
@@ -17,12 +17,13 @@ import (
 	"time"
 
 	"github.com/CMGS/cocoon/config"
+	"github.com/CMGS/cocoon/hypervisor"
 	"github.com/CMGS/cocoon/types"
 	"github.com/CMGS/cocoon/utils"
 )
 
 // Compile-time interface check.
-var _ Client = (*client)(nil)
+var _ hypervisor.Client = (*client)(nil)
 
 // Default retry parameters for CH REST API calls.
 const (
@@ -30,8 +31,8 @@ const (
 	defaultBaseBackoff = 100 * time.Millisecond
 )
 
-// client implements the Client interface using HTTP over Unix socket for the
-// CH REST API and os/exec for process management.
+// client implements the hypervisor.Client interface using HTTP over Unix socket
+// for the CH REST API and os/exec for process management.
 type client struct {
 	cfg *config.CocoonConfig
 
@@ -46,8 +47,8 @@ type client struct {
 	baseBackoff time.Duration
 }
 
-// NewClient creates a new hypervisor client backed by the given Cocoon config.
-func NewClient(cfg *config.CocoonConfig) Client {
+// New creates a new hypervisor client backed by the given Cocoon config.
+func New(cfg *config.CocoonConfig) hypervisor.Client {
 	return &client{
 		cfg:         cfg,
 		httpTimeout: 30 * time.Second,
@@ -195,7 +196,7 @@ func (c *client) IsAlive(vmID string) bool {
 // ---------------------------------------------------------------------------
 
 // CreateVM sends PUT /api/v1/vm.create.
-func (c *client) CreateVM(ctx context.Context, socketPath string, vmCfg *CHVMConfig) error {
+func (c *client) CreateVM(ctx context.Context, socketPath string, vmCfg *hypervisor.CHVMConfig) error {
 	body, err := json.Marshal(vmCfg)
 	if err != nil {
 		return fmt.Errorf("marshal vm config: %w", err)
@@ -234,8 +235,8 @@ func (c *client) DeleteVM(ctx context.Context, socketPath string) error {
 }
 
 // GetVMInfo sends GET /api/v1/vm.info and decodes the JSON response.
-func (c *client) GetVMInfo(ctx context.Context, socketPath string) (*CHVMInfo, error) {
-	var info *CHVMInfo
+func (c *client) GetVMInfo(ctx context.Context, socketPath string) (*hypervisor.CHVMInfo, error) {
+	var info *hypervisor.CHVMInfo
 	err := c.doWithRetry(ctx, func() error {
 		var innerErr error
 		info, innerErr = c.doGetVMInfo(ctx, socketPath)
@@ -245,7 +246,7 @@ func (c *client) GetVMInfo(ctx context.Context, socketPath string) (*CHVMInfo, e
 }
 
 // doGetVMInfo is the single-attempt implementation of GetVMInfo.
-func (c *client) doGetVMInfo(ctx context.Context, socketPath string) (*CHVMInfo, error) {
+func (c *client) doGetVMInfo(ctx context.Context, socketPath string) (*hypervisor.CHVMInfo, error) {
 	hc := c.newHTTPClient(socketPath)
 
 	url := "http://localhost/api/v1/vm.info"
@@ -268,7 +269,7 @@ func (c *client) doGetVMInfo(ctx context.Context, socketPath string) (*CHVMInfo,
 		}
 	}
 
-	var info CHVMInfo
+	var info hypervisor.CHVMInfo
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
 		return nil, fmt.Errorf("decode vm.info response: %w", err)
 	}

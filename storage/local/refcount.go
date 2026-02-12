@@ -1,4 +1,4 @@
-package storage
+package local
 
 import (
 	"fmt"
@@ -9,13 +9,14 @@ import (
 	"time"
 
 	"github.com/CMGS/cocoon/config"
-	"github.com/CMGS/cocoon/lock"
+	"github.com/CMGS/cocoon/lock/flock"
+	"github.com/CMGS/cocoon/storage"
 	"github.com/CMGS/cocoon/types"
 	"github.com/CMGS/cocoon/utils"
 )
 
 // Compile-time interface check.
-var _ ReferenceCounter = (*fileReferenceCounter)(nil)
+var _ storage.ReferenceCounter = (*fileReferenceCounter)(nil)
 
 // fileReferenceCounter implements ReferenceCounter using flock-protected
 // atomic JSON persistence.
@@ -28,7 +29,7 @@ type fileReferenceCounter struct {
 }
 
 // NewReferenceCounter creates a ReferenceCounter backed by references.json.
-func NewReferenceCounter(cfg *config.CocoonConfig) ReferenceCounter {
+func NewReferenceCounter(cfg *config.CocoonConfig) storage.ReferenceCounter {
 	return &fileReferenceCounter{cfg: cfg}
 }
 
@@ -36,7 +37,7 @@ func NewReferenceCounter(cfg *config.CocoonConfig) ReferenceCounter {
 
 // withRefsLock acquires references.lock, runs fn, then releases the lock.
 func (rc *fileReferenceCounter) withRefsLock(fn func() error) error {
-	fl := lock.New(rc.cfg.ReferencesLock())
+	fl := flock.New(rc.cfg.ReferencesLock())
 	if err := fl.Lock(); err != nil {
 		return fmt.Errorf("acquire references.lock: %w", err)
 	}

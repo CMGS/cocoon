@@ -7,9 +7,13 @@ import (
 
 	"github.com/CMGS/cocoon/config"
 	"github.com/CMGS/cocoon/hypervisor"
+	"github.com/CMGS/cocoon/hypervisor/cloudhypervisor"
 	"github.com/CMGS/cocoon/image"
+	"github.com/CMGS/cocoon/image/pipeline"
 	"github.com/CMGS/cocoon/storage"
+	"github.com/CMGS/cocoon/storage/local"
 	"github.com/CMGS/cocoon/vm"
+	"github.com/CMGS/cocoon/vm/engine"
 )
 
 // appContext holds initialized managers for CLI commands.
@@ -42,12 +46,12 @@ func initApp(_ *cli.Context) (*appContext, error) {
 	}
 
 	// Initialize managers.
-	hyper := hypervisor.NewClient(cfg)
-	refCtr := storage.NewReferenceCounter(cfg)
-	cowMgr := storage.NewCOWManager(cfg)
-	gc := storage.NewGarbageCollector(cfg)
-	imgMgr := image.NewManager(cfg, refCtr)
-	vmMgr := vm.NewManager(cfg, hyper, refCtr, cowMgr, imgMgr)
+	hyper := cloudhypervisor.New(cfg)
+	refCtr := local.NewReferenceCounter(cfg)
+	cowMgr := local.NewCOWManager(cfg)
+	gc := local.NewGarbageCollector(cfg)
+	imgMgr := pipeline.New(cfg, refCtr)
+	vmMgr := engine.New(cfg, hyper, refCtr, cowMgr, imgMgr)
 
 	return &appContext{
 		cfg:    cfg,

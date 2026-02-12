@@ -1,4 +1,4 @@
-package vm
+package engine
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 	storemocks "github.com/CMGS/cocoon/storage/mocks"
 	"github.com/CMGS/cocoon/types"
 	"github.com/CMGS/cocoon/utils"
+	"github.com/CMGS/cocoon/vm"
 )
 
 // ---------------------------------------------------------------------------
@@ -21,7 +22,7 @@ import (
 // ---------------------------------------------------------------------------
 
 type testDeps struct {
-	mgr        Manager
+	mgr        vm.Manager
 	cfg        *config.CocoonConfig
 	hyper      *hypermocks.MockClient
 	refCounter *storemocks.MockReferenceCounter
@@ -60,7 +61,7 @@ func setupTestManager(t *testing.T) *testDeps {
 	cowMgr := &storemocks.MockCOWManager{}
 	imgMgr := &imgmocks.MockManager{}
 
-	mgr := NewManager(cfg, hyper, refCounter, cowMgr, imgMgr)
+	mgr := New(cfg, hyper, refCounter, cowMgr, imgMgr)
 
 	return &testDeps{
 		mgr:        mgr,
@@ -85,7 +86,7 @@ func defaultMockIdentity() *image.ImageIdentity {
 
 // createTestVM is a convenience helper that provisions a VM through Create
 // using standard mock wiring and returns the VMConfig.
-func createTestVM(t *testing.T, td *testDeps, opts *CreateOptions) *types.VMConfig {
+func createTestVM(t *testing.T, td *testDeps, opts *vm.CreateOptions) *types.VMConfig {
 	t.Helper()
 	identity := defaultMockIdentity()
 
@@ -114,7 +115,7 @@ func TestCreate_HappyPath(t *testing.T) {
 	t.Parallel()
 	td := setupTestManager(t)
 
-	opts := &CreateOptions{
+	opts := &vm.CreateOptions{
 		Image: "docker.io/library/ubuntu:22.04",
 		Name:  "test-vm",
 		CPUs:  4,
@@ -183,7 +184,7 @@ func TestCreate_NonBootableImage(t *testing.T) {
 		}, nil
 	}
 
-	_, err := td.mgr.Create(t.Context(), &CreateOptions{
+	_, err := td.mgr.Create(t.Context(), &vm.CreateOptions{
 		Image: "docker.io/library/ubuntu:22.04",
 	})
 	if err == nil {
@@ -216,7 +217,7 @@ func TestCreate_SkipVerify(t *testing.T) {
 		return filepath.Join(td.cfg.RootDir, "vms", vmID, "overlay.qcow2"), nil
 	}
 
-	vmCfg, err := td.mgr.Create(t.Context(), &CreateOptions{
+	vmCfg, err := td.mgr.Create(t.Context(), &vm.CreateOptions{
 		Image:      "docker.io/library/ubuntu:22.04",
 		SkipVerify: true,
 	})
@@ -239,7 +240,7 @@ func TestDelete_HappyPath(t *testing.T) {
 	t.Parallel()
 	td := setupTestManager(t)
 
-	opts := &CreateOptions{
+	opts := &vm.CreateOptions{
 		Image: "docker.io/library/ubuntu:22.04",
 		Name:  "delete-me",
 	}
@@ -275,7 +276,7 @@ func TestDelete_ForceOnRunningVM(t *testing.T) {
 	t.Parallel()
 	td := setupTestManager(t)
 
-	opts := &CreateOptions{
+	opts := &vm.CreateOptions{
 		Image: "docker.io/library/ubuntu:22.04",
 		Name:  "force-delete",
 	}
@@ -340,7 +341,7 @@ func TestInspect(t *testing.T) {
 	t.Parallel()
 	td := setupTestManager(t)
 
-	opts := &CreateOptions{
+	opts := &vm.CreateOptions{
 		Image:    "docker.io/library/ubuntu:22.04",
 		Name:     "inspect-me",
 		CPUs:     2,
@@ -402,8 +403,8 @@ func TestList(t *testing.T) {
 	td := setupTestManager(t)
 
 	// Create two VMs.
-	vm1 := createTestVM(t, td, &CreateOptions{Image: "img1", Name: "list-vm-1"})
-	vm2 := createTestVM(t, td, &CreateOptions{Image: "img2", Name: "list-vm-2"})
+	vm1 := createTestVM(t, td, &vm.CreateOptions{Image: "img1", Name: "list-vm-1"})
+	vm2 := createTestVM(t, td, &vm.CreateOptions{Image: "img2", Name: "list-vm-2"})
 
 	results, err := td.mgr.List(t.Context())
 	if err != nil {
@@ -451,7 +452,7 @@ func TestResolveVMRef_ByName(t *testing.T) {
 	t.Parallel()
 	td := setupTestManager(t)
 
-	vmCfg := createTestVM(t, td, &CreateOptions{
+	vmCfg := createTestVM(t, td, &vm.CreateOptions{
 		Image: "docker.io/library/ubuntu:22.04",
 		Name:  "my-vm",
 	})
@@ -473,7 +474,7 @@ func TestResolveVMRef_ByVMID(t *testing.T) {
 	t.Parallel()
 	td := setupTestManager(t)
 
-	vmCfg := createTestVM(t, td, &CreateOptions{
+	vmCfg := createTestVM(t, td, &vm.CreateOptions{
 		Image: "docker.io/library/ubuntu:22.04",
 		Name:  "resolve-id",
 	})
@@ -512,7 +513,7 @@ func TestTransitionState_Valid(t *testing.T) {
 	t.Parallel()
 	td := setupTestManager(t)
 
-	vmCfg := createTestVM(t, td, &CreateOptions{
+	vmCfg := createTestVM(t, td, &vm.CreateOptions{
 		Image: "docker.io/library/ubuntu:22.04",
 		Name:  "transition-ok",
 	})
@@ -544,7 +545,7 @@ func TestTransitionState_Invalid(t *testing.T) {
 	t.Parallel()
 	td := setupTestManager(t)
 
-	vmCfg := createTestVM(t, td, &CreateOptions{
+	vmCfg := createTestVM(t, td, &vm.CreateOptions{
 		Image: "docker.io/library/ubuntu:22.04",
 		Name:  "transition-bad",
 	})
@@ -576,7 +577,7 @@ func TestTransitionState_FullLifecycle(t *testing.T) {
 	t.Parallel()
 	td := setupTestManager(t)
 
-	vmCfg := createTestVM(t, td, &CreateOptions{
+	vmCfg := createTestVM(t, td, &vm.CreateOptions{
 		Image: "docker.io/library/ubuntu:22.04",
 		Name:  "lifecycle",
 	})
@@ -619,7 +620,7 @@ func TestCreate_EmptyImage(t *testing.T) {
 	t.Parallel()
 	td := setupTestManager(t)
 
-	_, err := td.mgr.Create(t.Context(), &CreateOptions{Image: ""})
+	_, err := td.mgr.Create(t.Context(), &vm.CreateOptions{Image: ""})
 	if err == nil {
 		t.Fatal("expected error for empty image, got nil")
 	}
@@ -633,7 +634,7 @@ func TestCreate_AutoGeneratedName(t *testing.T) {
 	t.Parallel()
 	td := setupTestManager(t)
 
-	vmCfg := createTestVM(t, td, &CreateOptions{
+	vmCfg := createTestVM(t, td, &vm.CreateOptions{
 		Image: "docker.io/library/ubuntu:22.04",
 		// Name is intentionally omitted.
 	})
@@ -654,7 +655,7 @@ func TestLoadConfig_HappyPath(t *testing.T) {
 	t.Parallel()
 	td := setupTestManager(t)
 
-	vmCfg := createTestVM(t, td, &CreateOptions{
+	vmCfg := createTestVM(t, td, &vm.CreateOptions{
 		Image: "docker.io/library/ubuntu:22.04",
 		Name:  "load-config",
 	})
@@ -688,7 +689,7 @@ func TestLoadMetadata_HappyPath(t *testing.T) {
 	t.Parallel()
 	td := setupTestManager(t)
 
-	vmCfg := createTestVM(t, td, &CreateOptions{
+	vmCfg := createTestVM(t, td, &vm.CreateOptions{
 		Image: "docker.io/library/ubuntu:22.04",
 		Name:  "load-meta",
 	})
@@ -713,7 +714,7 @@ func TestSaveMetadata(t *testing.T) {
 	t.Parallel()
 	td := setupTestManager(t)
 
-	vmCfg := createTestVM(t, td, &CreateOptions{
+	vmCfg := createTestVM(t, td, &vm.CreateOptions{
 		Image: "docker.io/library/ubuntu:22.04",
 		Name:  "save-meta",
 	})
@@ -751,7 +752,7 @@ func TestCreate_DefaultValues(t *testing.T) {
 	t.Parallel()
 	td := setupTestManager(t)
 
-	vmCfg := createTestVM(t, td, &CreateOptions{
+	vmCfg := createTestVM(t, td, &vm.CreateOptions{
 		Image: "docker.io/library/ubuntu:22.04",
 		Name:  "defaults",
 		// CPUs, MemoryMB, DiskSize all left at zero/empty.
@@ -779,13 +780,13 @@ func TestCreate_DuplicateName(t *testing.T) {
 	t.Parallel()
 	td := setupTestManager(t)
 
-	createTestVM(t, td, &CreateOptions{
+	createTestVM(t, td, &vm.CreateOptions{
 		Image: "docker.io/library/ubuntu:22.04",
 		Name:  "dupe-name",
 	})
 
 	// Second create with same name should fail.
-	_, err := td.mgr.Create(t.Context(), &CreateOptions{
+	_, err := td.mgr.Create(t.Context(), &vm.CreateOptions{
 		Image: "docker.io/library/ubuntu:22.04",
 		Name:  "dupe-name",
 	})

@@ -19,6 +19,3 @@ type Locker interface {
 	// Path returns the lock file path.
 	Path() string
 }
-
-// Compile-time interface check.
-var _ Locker = (*FileLock)(nil)

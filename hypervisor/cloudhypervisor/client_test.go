@@ -1,4 +1,4 @@
-package hypervisor
+package cloudhypervisor
 
 import (
 	"context"

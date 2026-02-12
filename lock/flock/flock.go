@@ -1,12 +1,17 @@
-package lock
+package flock
 
 import (
 	"fmt"
 	"os"
 	"syscall"
+
+	"github.com/CMGS/cocoon/lock"
 )
 
-// FileLock provides cross-process mutual exclusion using flock(2).
+// Compile-time interface check.
+var _ lock.Locker = (*Lock)(nil)
+
+// Lock provides cross-process mutual exclusion using flock(2).
 // Lock files are long-lived and never deleted after use.
 //
 // Lock hierarchy (must acquire in order to prevent deadlocks):
@@ -16,20 +21,20 @@ import (
 //	Level 2: Name Index Lock      (/var/lib/cocoon/name-index.lock) — never held with references.lock
 //	Level 3: Image Conversion Lock (/var/lib/cocoon/cache/locks/{base_key}.lock)
 //	Level 4: VM Metadata Lock     (/var/lib/cocoon/vms/{vm-id}/metadata.lock)
-type FileLock struct {
+type Lock struct {
 	path string
 	file *os.File
 }
 
-// New creates a new FileLock for the given path.
+// New creates a new Lock for the given path.
 // The lock file is created if it does not exist.
 // Returns the Locker interface to support dependency injection and testing.
-func New(path string) Locker {
-	return &FileLock{path: path}
+func New(path string) lock.Locker {
+	return &Lock{path: path}
 }
 
 // Lock acquires an exclusive flock. Blocks until the lock is available.
-func (l *FileLock) Lock() error {
+func (l *Lock) Lock() error {
 	f, err := os.OpenFile(l.path, os.O_RDWR|os.O_CREATE, 0o644) //nolint:gosec // G302: lock files need to be readable by other cocoon processes
 	if err != nil {
 		return fmt.Errorf("open lock file %s: %w", l.path, err)
@@ -46,7 +51,7 @@ func (l *FileLock) Lock() error {
 
 // TryLock attempts to acquire the lock without blocking.
 // Returns false if the lock is held by another process.
-func (l *FileLock) TryLock() (bool, error) {
+func (l *Lock) TryLock() (bool, error) {
 	f, err := os.OpenFile(l.path, os.O_RDWR|os.O_CREATE, 0o644) //nolint:gosec // G302: lock files need to be readable by other cocoon processes
 	if err != nil {
 		return false, fmt.Errorf("open lock file %s: %w", l.path, err)
@@ -67,7 +72,7 @@ func (l *FileLock) TryLock() (bool, error) {
 
 // Unlock releases the flock and closes the file.
 // The lock file is NOT deleted (long-lived by design).
-func (l *FileLock) Unlock() error {
+func (l *Lock) Unlock() error {
 	if l.file == nil {
 		return nil
 	}
@@ -81,6 +86,6 @@ func (l *FileLock) Unlock() error {
 }
 
 // Path returns the lock file path.
-func (l *FileLock) Path() string {
+func (l *Lock) Path() string {
 	return l.path
 }

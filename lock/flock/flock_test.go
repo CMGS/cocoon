@@ -1,4 +1,4 @@
-package lock
+package flock
 
 import (
 	"path/filepath"

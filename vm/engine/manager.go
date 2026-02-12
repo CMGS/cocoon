@@ -1,4 +1,4 @@
-package vm
+package engine
 
 import (
 	"context"
@@ -16,14 +16,15 @@ import (
 	"github.com/CMGS/cocoon/config"
 	"github.com/CMGS/cocoon/hypervisor"
 	"github.com/CMGS/cocoon/image"
-	"github.com/CMGS/cocoon/lock"
+	"github.com/CMGS/cocoon/lock/flock"
 	"github.com/CMGS/cocoon/storage"
 	"github.com/CMGS/cocoon/types"
 	"github.com/CMGS/cocoon/utils"
+	"github.com/CMGS/cocoon/vm"
 )
 
 // Compile-time interface check.
-var _ Manager = (*manager)(nil)
+var _ vm.Manager = (*manager)(nil)
 
 // manager is the concrete implementation of the Manager interface.
 type manager struct {
@@ -34,14 +35,14 @@ type manager struct {
 	imgMgr     image.Manager
 }
 
-// NewManager creates a new VM manager backed by the given configuration and dependencies.
-func NewManager(
+// New creates a new VM manager backed by the given configuration and dependencies.
+func New(
 	cfg *config.CocoonConfig,
 	hyper hypervisor.Client,
 	refCounter storage.ReferenceCounter,
 	cowMgr storage.COWManager,
 	imgMgr image.Manager,
-) Manager {
+) vm.Manager {
 	return &manager{
 		cfg:        cfg,
 		hyper:      hyper,
@@ -134,7 +135,7 @@ func (m *manager) LoadMetadata(vmID string) (*types.VMMetadataFile, error) {
 // Uses metadata.lock (Level 4) to serialize concurrent writers.
 func (m *manager) SaveMetadata(meta *types.VMMetadataFile) error {
 	lockPath := m.cfg.VMMetadataLock(meta.VMID)
-	fl := lock.New(lockPath)
+	fl := flock.New(lockPath)
 	if err := fl.Lock(); err != nil {
 		return fmt.Errorf("acquire metadata lock for %s: %w", meta.VMID, err)
 	}
@@ -154,7 +155,7 @@ func (m *manager) SaveMetadata(meta *types.VMMetadataFile) error {
 // The previous state is recorded in metadata for auditing.
 func (m *manager) TransitionState(vmID string, to types.VMState, reason string) error {
 	lockPath := m.cfg.VMMetadataLock(vmID)
-	fl := lock.New(lockPath)
+	fl := flock.New(lockPath)
 	if err := fl.Lock(); err != nil {
 		return fmt.Errorf("acquire metadata lock for %s: %w", vmID, err)
 	}
@@ -185,7 +186,7 @@ func (m *manager) TransitionState(vmID string, to types.VMState, reason string) 
 // Create provisions a new VM: generates an ID, prepares the image, creates
 // the overlay, writes config.json and metadata.json, pins the reference,
 // registers the name, and transitions CREATING -> CREATED.
-func (m *manager) Create(ctx context.Context, opts *CreateOptions) (*types.VMConfig, error) {
+func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VMConfig, error) {
 	if opts == nil || opts.Image == "" {
 		return nil, fmt.Errorf("image is required")
 	}
@@ -689,7 +690,7 @@ func (m *manager) List(ctx context.Context) ([]*types.VMInspect, error) {
 // additional mutation function to metadata before persisting.
 func (m *manager) transitionStateWithUpdate(vmID string, to types.VMState, reason string, mutate func(*types.VMMetadataFile)) error {
 	lockPath := m.cfg.VMMetadataLock(vmID)
-	fl := lock.New(lockPath)
+	fl := flock.New(lockPath)
 	if err := fl.Lock(); err != nil {
 		return fmt.Errorf("acquire metadata lock for %s: %w", vmID, err)
 	}
@@ -722,7 +723,7 @@ func (m *manager) transitionStateWithUpdate(vmID string, to types.VMState, reaso
 // within the same state.
 func (m *manager) updateMetadata(vmID string, mutate func(*types.VMMetadataFile)) error {
 	lockPath := m.cfg.VMMetadataLock(vmID)
-	fl := lock.New(lockPath)
+	fl := flock.New(lockPath)
 	if err := fl.Lock(); err != nil {
 		return fmt.Errorf("acquire metadata lock for %s: %w", vmID, err)
 	}

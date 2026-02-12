@@ -1,19 +1,20 @@
-package vm
+package engine
 
 import (
 	"fmt"
 	"os"
 
 	"github.com/CMGS/cocoon/config"
-	"github.com/CMGS/cocoon/lock"
+	"github.com/CMGS/cocoon/lock/flock"
 	"github.com/CMGS/cocoon/utils"
+	"github.com/CMGS/cocoon/vm"
 )
 
 // LoadNameIndex reads the global name-index.json file.
 // Returns an empty index if the file does not exist.
-func LoadNameIndex(cfg *config.CocoonConfig) (NameIndex, error) {
+func LoadNameIndex(cfg *config.CocoonConfig) (vm.NameIndex, error) {
 	path := cfg.NameIndexFile()
-	index := make(NameIndex)
+	index := make(vm.NameIndex)
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return index, nil
@@ -27,7 +28,7 @@ func LoadNameIndex(cfg *config.CocoonConfig) (NameIndex, error) {
 
 // SaveNameIndex writes the name-index.json file atomically.
 // Caller MUST hold the name-index.lock before calling this.
-func SaveNameIndex(cfg *config.CocoonConfig, index NameIndex) error {
+func SaveNameIndex(cfg *config.CocoonConfig, index vm.NameIndex) error {
 	return utils.AtomicWriteJSON(cfg.NameIndexFile(), index)
 }
 
@@ -35,7 +36,7 @@ func SaveNameIndex(cfg *config.CocoonConfig, index NameIndex) error {
 // Acquires name-index.lock (Level 2) for the duration of the operation.
 // Returns an error if the name already exists.
 func AddName(cfg *config.CocoonConfig, name, vmID string) error {
-	fl := lock.New(cfg.NameIndexLock())
+	fl := flock.New(cfg.NameIndexLock())
 	if err := fl.Lock(); err != nil {
 		return fmt.Errorf("acquire name index lock: %w", err)
 	}
@@ -58,7 +59,7 @@ func AddName(cfg *config.CocoonConfig, name, vmID string) error {
 // Acquires name-index.lock (Level 2) for the duration of the operation.
 // No-op if the name does not exist.
 func RemoveName(cfg *config.CocoonConfig, name string) error {
-	fl := lock.New(cfg.NameIndexLock())
+	fl := flock.New(cfg.NameIndexLock())
 	if err := fl.Lock(); err != nil {
 		return fmt.Errorf("acquire name index lock: %w", err)
 	}
@@ -79,8 +80,8 @@ func RemoveName(cfg *config.CocoonConfig, name string) error {
 
 // RebuildNameIndex scans all VM config.json files and rebuilds the name index.
 // Used during reconciliation to ensure the derived cache is consistent.
-func RebuildNameIndex(cfg *config.CocoonConfig) (NameIndex, error) {
-	fl := lock.New(cfg.NameIndexLock())
+func RebuildNameIndex(cfg *config.CocoonConfig) (vm.NameIndex, error) {
+	fl := flock.New(cfg.NameIndexLock())
 	if err := fl.Lock(); err != nil {
 		return nil, fmt.Errorf("acquire name index lock: %w", err)
 	}
@@ -89,13 +90,13 @@ func RebuildNameIndex(cfg *config.CocoonConfig) (NameIndex, error) {
 	entries, err := os.ReadDir(cfg.VMDir())
 	if err != nil {
 		if os.IsNotExist(err) {
-			index := make(NameIndex)
+			index := make(vm.NameIndex)
 			return index, SaveNameIndex(cfg, index)
 		}
 		return nil, fmt.Errorf("read VM directory: %w", err)
 	}
 
-	index := make(NameIndex)
+	index := make(vm.NameIndex)
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue

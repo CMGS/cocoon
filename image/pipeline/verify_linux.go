@@ -1,11 +1,13 @@
 //go:build linux
 
-package image
+package pipeline
 
 import (
 	"log"
 	"os/exec"
 	"strings"
+
+	"github.com/CMGS/cocoon/image"
 )
 
 // guestfishTrue is the string guestfish returns for boolean true results.
@@ -20,7 +22,7 @@ const guestfishTrue = "true"
 //
 // If guestfish is not installed, this is non-fatal: a warning is logged and
 // the function returns nil.
-func deepVerifyBoot(imagePath string, result *BootCheckResult) error {
+func deepVerifyBoot(imagePath string, result *image.BootCheckResult) error {
 	// Check if guestfish is available.
 	gfPath, err := exec.LookPath("guestfish")
 	if err != nil {

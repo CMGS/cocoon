@@ -1,6 +1,6 @@
 //go:build darwin
 
-package image
+package pipeline
 
 import (
 	"context"

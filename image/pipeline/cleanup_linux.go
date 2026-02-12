@@ -1,6 +1,6 @@
 //go:build linux
 
-package image
+package pipeline
 
 import (
 	"log"

@@ -1,4 +1,4 @@
-package image
+package pipeline
 
 import (
 	"encoding/json"

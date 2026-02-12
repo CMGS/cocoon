@@ -1,4 +1,4 @@
-package storage
+package local
 
 import (
 	"encoding/json"
@@ -10,10 +10,11 @@ import (
 	"time"
 
 	"github.com/CMGS/cocoon/config"
+	"github.com/CMGS/cocoon/storage"
 )
 
 // Compile-time interface check.
-var _ COWManager = (*fileCOWManager)(nil)
+var _ storage.COWManager = (*fileCOWManager)(nil)
 
 // fileCOWManager implements COWManager using qemu-img for overlay creation
 // and standard filesystem operations for base image management.
@@ -23,7 +24,7 @@ type fileCOWManager struct {
 
 // NewCOWManager creates a COWManager that stores base images in
 // cache/images/ and overlays under vms/{vmID}/overlay.qcow2.
-func NewCOWManager(cfg *config.CocoonConfig) COWManager {
+func NewCOWManager(cfg *config.CocoonConfig) storage.COWManager {
 	return &fileCOWManager{cfg: cfg}
 }
 
@@ -148,7 +149,7 @@ func (m *fileCOWManager) RemoveOverlay(vmID string) error {
 
 // GetOverlayInfo returns metadata about an existing overlay by running
 // `qemu-img info --output=json` and combining it with filesystem stat data.
-func (m *fileCOWManager) GetOverlayInfo(vmID string) (*OverlayInfo, error) {
+func (m *fileCOWManager) GetOverlayInfo(vmID string) (*storage.OverlayInfo, error) {
 	overlayPath := m.cfg.VMOverlayPath(vmID)
 
 	fi, err := os.Stat(overlayPath)
@@ -175,7 +176,7 @@ func (m *fileCOWManager) GetOverlayInfo(vmID string) (*OverlayInfo, error) {
 		return nil, fmt.Errorf("parse qemu-img info output: %w", err)
 	}
 
-	info := &OverlayInfo{
+	info := &storage.OverlayInfo{
 		VMID:          vmID,
 		OverlayPath:   overlayPath,
 		BackingFile:   qemuInfo.BackingFile,
