@@ -1143,7 +1143,14 @@ func (vm *VMManager) CreateVM(image string, vmID string) error {
 | VM metadata update | VM lock (L4) | Exclusive | 1-5ms | Low (per-VM) |
 | Overlay creation | None | N/A | 10-50ms | None |
 
-### Optimization: Read-Write Locks
+### Optimization: In-Process Read-Write Cache (Optional)
+
+**Important**: This is an **optional in-process optimization** layered on top of the
+mandatory cross-process flock-based locking described above. The flock-based
+`ReferenceCounter` (§ 2) is the primary implementation and handles all cross-process
+safety. This `ReferenceCounterRW` adds an in-memory cache with `sync.RWMutex` for
+read-heavy workloads **within a single long-running process** (e.g., a future daemon mode).
+It is NOT a replacement for flock.
 
 For scenarios with many readers and few writers:
 
@@ -1235,7 +1242,9 @@ func deleteVM(vmID string) {
 
 ### Deadlock Detection
 
-Use Go's `-race` detector and timeout-based detection:
+Use Go's `-race` detector and timeout-based detection.
+**Note**: The `sync.Mutex` below is illustrative for in-process testing utilities.
+All production locks use file-based `flock` as defined in this document.
 
 ```go
 func lockWithTimeout(mu *sync.Mutex, timeout time.Duration) error {

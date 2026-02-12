@@ -1008,7 +1008,7 @@ func main() {
 
     // Step 2: Launch Cloud Hypervisor process
     config := &VMConfig{
-        DiskPath:     "/var/lib/cocoon/images/vm-example-001.qcow2",
+        DiskPath:     "/var/lib/cocoon/vms/vm-example-001/overlay.qcow2",
         CPUs:         2,
         MemoryMB:     2048,
         // Cloud-init data served via metadata server at 169.254.169.254

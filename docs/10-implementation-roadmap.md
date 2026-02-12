@@ -1364,7 +1364,7 @@ qemu-img >= 8.0
 **Critical Path**: Foundation → Hypervisor → Storage → OCI → Lifecycle → Concurrency → CLI → Integration → Production
 
 **Success Criteria**:
-1. ✅ Can pull any OCI image and convert to bootable qcow2
+1. ✅ Can pull bootable OCI images and convert to qcow2 (non-bootable images rejected at validation)
 2. ✅ Can create 100+ VMs from single base image (COW efficiency)
 3. ✅ VM lifecycle operations (create, start, stop, delete) work reliably
 4. ✅ Crash recovery and reconciliation handle failures gracefully
