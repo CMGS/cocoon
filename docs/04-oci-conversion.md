@@ -1873,7 +1873,7 @@ func main() {
     // overlayPath := createOverlay(basePath, "vm-001")
 
     // 4. Register reference (covered in 05-storage-management.md)
-    // refCounter.AddReference(identity.Checksum, identity.Arch, "vm-001")
+    // refCounter.AddReference(identity.CacheKey(), "vm-001", identity.FullHash, image)
 }
 ```
 

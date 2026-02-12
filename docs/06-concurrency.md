@@ -239,16 +239,16 @@ content-addressed identity (`{checksum}_{arch}`), not by absolute path:
 
 ```json
 {
-  "abc123def456_amd64": {
-    "path": "/var/lib/cocoon/cache/images/abc123def456_amd64.qcow2",
-    "digest_full": "abc123def456789012345678abcdef0123456789abcdef0123456789abcdef01",
+  "abc123def456a7b8_amd64": {
+    "path": "/var/lib/cocoon/cache/images/abc123def456a7b8_amd64.qcow2",
+    "digest_full": "abc123def456a7b8901234567890abcdef1234567890abcdef1234567890abcd",
     "source_ref": "myorg/ubuntu-bootable:22.04",
     "refs": ["vm-001", "vm-002"],
     "created_at": "2026-02-12T10:00:00Z"
   },
-  "f7e8d9c0b1a2_amd64": {
-    "path": "/var/lib/cocoon/cache/images/f7e8d9c0b1a2_amd64.qcow2",
-    "digest_full": "f7e8d9c0b1a2345678901234abcdef5678901234abcdef5678901234abcdef56",
+  "f7e8d9c0b1a2e3f4_amd64": {
+    "path": "/var/lib/cocoon/cache/images/f7e8d9c0b1a2e3f4_amd64.qcow2",
+    "digest_full": "f7e8d9c0b1a2e3f4567890abcdef1234567890abcdef1234567890abcdef1234",
     "source_ref": "myorg/fedora-bootable:39",
     "refs": ["vm-003"],
     "created_at": "2026-02-12T11:00:00Z"
@@ -527,16 +527,16 @@ parallel -j 50 cocoon create myorg/ubuntu-bootable:22.04 --name vm-{} ::: {001..
 # Check references
 $ cat /var/lib/cocoon/references.json
 {
-  "abc123def456_amd64": {
-    "path": "/var/lib/cocoon/cache/images/abc123def456_amd64.qcow2",
+  "abc123def456a7b8_amd64": {
+    "path": "/var/lib/cocoon/cache/images/abc123def456a7b8_amd64.qcow2",
     "refs": ["vm-001", "vm-002", ..., "vm-050"],
     "created_at": "2026-02-12T10:00:00Z"
   }
 }
 
 # Check disk usage (1 base + 50 overlays, not 50 full images)
-$ du -sh /var/lib/cocoon/cache/images/abc123def456_amd64.qcow2
-5.2G    abc123def456_amd64.qcow2
+$ du -sh /var/lib/cocoon/cache/images/abc123def456a7b8_amd64.qcow2
+5.2G    abc123def456a7b8_amd64.qcow2
 
 $ du -sh /var/lib/cocoon/vms/vm-*/overlay.qcow2
 196K    vm-001/overlay.qcow2
@@ -560,8 +560,8 @@ $ cocoon delete vm-042
 
 1. **GC Process**:
    - Acquires reference lock
-   - Reads references: `{"abc123def456_amd64": {"refs": ["vm-042"], ...}}`
-   - Sees vm-042 references abc123def456_amd64
+   - Reads references: `{"abc123def456a7b8_amd64": {"refs": ["vm-042"], ...}}`
+   - Sees vm-042 references abc123def456a7b8_amd64
    - Skips deletion (image is referenced)
    - Releases lock
    - Moves to next image
@@ -569,13 +569,13 @@ $ cocoon delete vm-042
 2. **Delete Process** (runs after GC releases lock):
    - Acquires reference lock
    - Removes vm-042 from references
-   - Removes empty entry for abc123def456_amd64
+   - Removes empty entry for abc123def456a7b8_amd64
    - Releases lock
    - Deletes overlay file
 
 3. **Next GC Run**:
    - Acquires reference lock
-   - Reads references: no entry for abc123def456_amd64
+   - Reads references: no entry for abc123def456a7b8_amd64
    - Sees no references
    - Checks grace period (24 hours default)
    - If elapsed, moves image to trash
@@ -759,7 +759,7 @@ func (r *Reconciler) ScanOrphans() ([]Orphan, error) {
         json.Unmarshal(configData, &config)
 
         // Check if VM is in references (keyed by base_key)
-        refs, _ := r.refs.GetReferencesByKey(config.BaseKey)
+        refs, _ := r.refs.GetReferences(config.BaseKey)
         found := false
         for _, ref := range refs {
             if ref == vmID {
@@ -1122,7 +1122,7 @@ VM create and delete operations must prevent GC from running concurrently:
 ```go
 // VM operations should check if GC is running
 func (vm *VMManager) CreateVM(image string, vmID string) error {
-    // Try to acquire GC lock in non-blocking mode
+    // Acquire GC lock (blocking — waits if GC is running)
     gcLockPath := filepath.Join(vm.storageDir, "gc.lock")
     gcLock, err := os.OpenFile(gcLockPath, os.O_RDWR|os.O_CREATE, 0644)
     if err != nil {
@@ -1130,10 +1130,10 @@ func (vm *VMManager) CreateVM(image string, vmID string) error {
     }
     defer gcLock.Close()
 
-    // Try lock (non-blocking) - if GC is running, wait or fail
+    // Blocking exclusive lock — VM creation waits until GC finishes
     err = syscall.Flock(int(gcLock.Fd()), syscall.LOCK_EX)
     if err != nil {
-        return fmt.Errorf("cannot create VM: GC is running")
+        return fmt.Errorf("cannot acquire GC lock: %w", err)
     }
     defer syscall.Flock(int(gcLock.Fd()), syscall.LOCK_UN)
 
@@ -1156,57 +1156,15 @@ func (vm *VMManager) CreateVM(image string, vmID string) error {
 | VM metadata update | VM lock (L4) | Exclusive | 1-5ms | Low (per-VM) |
 | Overlay creation | None | N/A | 10-50ms | None |
 
-### Optimization: In-Process Read-Write Cache (Optional)
+### Optimization: In-Process Read-Write Cache (Optional — Deferred to Daemon Mode)
 
-**Important**: This is an **optional in-process optimization** layered on top of the
-mandatory cross-process flock-based locking described above. The flock-based
-`ReferenceCounter` (§ 2) is the primary implementation and handles all cross-process
-safety. This `ReferenceCounterRW` adds an in-memory cache with `sync.RWMutex` for
-read-heavy workloads **within a single long-running process** (e.g., a future daemon mode).
-It is NOT a replacement for flock.
-
-For scenarios with many readers and few writers:
-
-```go
-type ReferenceCounterRW struct {
-    storageDir string
-    lockFile   string
-    dataFile   string
-    rwLock     sync.RWMutex
-    cache      *RefData
-}
-
-// GetReferences uses read lock (multiple readers allowed).
-// baseKey is the content-addressed key: {checksum_16}_{arch}.
-func (rc *ReferenceCounterRW) GetReferences(baseKey string) ([]string, error) {
-    rc.rwLock.RLock()
-    defer rc.rwLock.RUnlock()
-
-    refs := rc.cache.References[baseKey]
-    result := make([]string, len(refs))
-    copy(result, refs)
-    return result, nil
-}
-
-// AddReference uses write lock (exclusive).
-// baseKey is the content-addressed key: {checksum_16}_{arch}.
-func (rc *ReferenceCounterRW) AddReference(baseKey, vmID string) error {
-    rc.rwLock.Lock()
-    defer rc.rwLock.Unlock()
-
-    // Update cache and persist to disk
-    return rc.updateReferencesLocked(func(refs *RefData) error {
-        vms := refs.References[baseKey]
-        refs.References[baseKey] = append(vms, vmID)
-        return nil
-    })
-}
-```
-
-**When to use**:
-- Read-heavy workloads (many GC scans, few creates/deletes)
-- Reduces contention for read operations
-- Adds complexity (cache invalidation)
+If a future daemon mode needs many concurrent readers (e.g., frequent GC scans)
+and few writers, an in-process `sync.RWMutex` cache can be layered on top of the
+flock-based `ReferenceCounter`. This is NOT needed for Phase 1 (one CLI
+invocation = one process = no contention within process). Design and implement
+this when daemon mode is introduced; it must correctly wrap `RefData`
+(`map[string]*RefEntry`) and invalidate the cache after every flock-protected
+write.
 
 ## 8. Deadlock Prevention
 

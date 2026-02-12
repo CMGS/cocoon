@@ -330,6 +330,7 @@ Reference counting ensures base images are not deleted while VMs still depend on
 import json
 import os
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Set, Tuple
 
@@ -727,136 +728,10 @@ See [future/storage-quotas.md](./future/storage-quotas.md) for detailed design.
 
 ## Example Workflows
 
-### Workflow 1: Create VM with Storage Tracking
-
-```python
-async def create_vm(image: str, vm_id: str) -> Path:
-    """Complete workflow to create a new VM from an OCI image."""
-    # 1. Setup
-    storage = StorageConfig.default()
-    storage.ensure_dirs()
-
-    cache = ImageCache(storage.cache_dir)
-    image_mgr = ImageManager(cache)
-    cow_mgr = COWImageManager(storage.vm_dir)
-    ref_counter = ReferenceCounter(storage)
-
-    # 2. Prepare base image (pulls if not cached)
-    image_info = await image_mgr.prepare_base_image(image)
-    print(f"Base image ready: {image_info.path}")
-
-    # 3. Create VM directory
-    vm_dir = storage.vm_dir / vm_id
-    vm_dir.mkdir(exist_ok=True)
-
-    # 4. Create COW overlay (always overlay.qcow2 inside VM dir)
-    overlay = cow_mgr.create_overlay(image_info.path, vm_id)
-    print(f"Overlay created: {overlay}")
-
-    # 5. Register reference using content-addressed key
-    ref_counter.add_reference(image_info.checksum, image_info.arch, vm_id)
-
-    # 6. Save VM config
-    config = {
-        "vm_id": vm_id,
-        "image_ref": image,
-        "base_key": f"{image_info.checksum}_{image_info.arch}",
-        "base_digest_full": image_info.full_hash,
-        "arch": image_info.arch,
-        "overlay_path": str(overlay),
-        "created_at": datetime.now().isoformat()
-    }
-    (vm_dir / "config.json").write_text(json.dumps(config, indent=2))
-
-    return overlay
-```
-
-### Workflow 2: Delete VM with Reference Cleanup
-
-```python
-def delete_vm(vm_id: str):
-    """Complete workflow to delete a VM and cleanup resources."""
-    storage = StorageConfig.default()
-    ref_counter = ReferenceCounter(storage)
-
-    vm_dir = storage.vm_dir / vm_id
-    if not vm_dir.exists():
-        raise ValueError(f"VM not found: {vm_id}")
-
-    # 1. Load config
-    config = json.loads((vm_dir / "config.json").read_text())
-    base_key = config["base_key"]  # e.g., "a1b2c3d4e5f6a7b8_amd64"
-    overlay = vm_dir / "overlay.qcow2"
-
-    # 2. Remove reference using content-addressed key
-    ref_counter.remove_reference(base_key, vm_id)
-
-    # 3. Move overlay to trash (soft delete)
-    trash_overlay = storage.trash_dir / f"{vm_id}-overlay.qcow2"
-    if overlay.exists():
-        overlay.rename(trash_overlay)
-
-    # 4. Remove VM directory
-    import shutil
-    shutil.rmtree(vm_dir)
-
-    print(f"VM deleted: {vm_id}")
-    print(f"Overlay moved to trash: {trash_overlay}")
-
-    # 5. Check if base image can be garbage collected
-    if not ref_counter.is_referenced_by_key(base_key):
-        print(f"Base image {base_key} can be garbage collected")
-```
-
-### Workflow 3: High-Concurrency VM Pool
-
-```python
-async def create_vm_pool(image: str, count: int) -> list[Path]:
-    """Create multiple VMs concurrently from the same base image."""
-    storage = StorageConfig.default()
-    storage.ensure_dirs()
-
-    cache = ImageCache(storage.cache_dir)
-    image_mgr = ImageManager(cache)
-    cow_mgr = COWImageManager(storage.vm_dir)
-    ref_counter = ReferenceCounter(storage)
-
-    # 1. Prepare base image once (shared by all VMs)
-    image_info = await image_mgr.prepare_base_image(image)
-    print(f"Base image ready: {image_info.path}")
-
-    # 2. Create overlays concurrently
-    async def create_one_vm(idx: int) -> Path:
-        vm_id = f"vm-{idx:03d}"
-        vm_dir = storage.vm_dir / vm_id
-        vm_dir.mkdir(exist_ok=True)
-
-        overlay = cow_mgr.create_overlay(image_info.path, vm_id)
-        ref_counter.add_reference(image_info.checksum, image_info.arch, vm_id)
-
-        config = {
-            "vm_id": vm_id,
-            "image_ref": image,
-            "base_key": f"{image_info.checksum}_{image_info.arch}",
-            "base_digest_full": image_info.full_hash,
-            "arch": image_info.arch,
-            "overlay_path": str(overlay)
-        }
-        (vm_dir / "config.json").write_text(json.dumps(config, indent=2))
-
-        return overlay
-
-    # Create all VMs in parallel
-    overlays = await asyncio.gather(*[
-        create_one_vm(i) for i in range(count)
-    ])
-
-    print(f"Created {count} VMs from 1 base image")
-    print(f"Disk usage: 1 base (~5GB) + {count} overlays (~200KB each)")
-    print(f"Total: ~{5 + count * 0.0002:.2f} GB instead of {count * 5} GB")
-
-    return overlays
-```
+The canonical create/delete sequences are defined above in [Add/Remove Operations](#addremove-operations)
+and in [09-cli-design.md § 6.1–6.3](./09-cli-design.md#61-vm-creation-flow-cocoon-run).
+Refer to those sections for the authoritative ordering (pin reference → create overlay → boot)
+and API signatures (`add_reference(base_key, vm_id, digest_full, source_ref)`).
 
 ## Performance Considerations
 

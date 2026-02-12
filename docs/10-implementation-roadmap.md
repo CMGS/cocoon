@@ -203,8 +203,8 @@ go run ./cmd/test-client/main.go
 3. **COW Operations** (docs/05-storage-management.md §4)
    ```go
    // pkg/storage/qcow2.go
-   func CreateBaseImage(srcPath, checksum string) error
-   func CreateOverlay(baseChecksum, vmID string) error
+   func CreateBaseImage(srcPath, baseKey string) error
+   func CreateOverlay(baseKey, vmID string) error
    func DeleteOverlay(vmID string) error
    ```
 
