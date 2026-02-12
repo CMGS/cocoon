@@ -136,7 +136,7 @@ func downloadFirmware(url, destPath string, perm os.FileMode, force bool) error 
 	if err != nil {
 		return fmt.Errorf("HTTP GET: %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // best-effort close on HTTP response
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("unexpected HTTP status: %s", resp.Status)
@@ -149,8 +149,8 @@ func downloadFirmware(url, destPath string, perm os.FileMode, force bool) error 
 	}
 	tmpPath := tmpFile.Name()
 	defer func() {
-		tmpFile.Close()
-		os.Remove(tmpPath) //nolint:errcheck // best-effort cleanup
+		tmpFile.Close()    //nolint:errcheck,gosec // closed explicitly below; this is fallback cleanup
+		os.Remove(tmpPath) //nolint:errcheck,gosec // best-effort cleanup of temp file
 	}()
 
 	// Copy with progress.

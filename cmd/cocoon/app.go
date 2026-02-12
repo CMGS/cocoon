@@ -24,7 +24,7 @@ type appContext struct {
 }
 
 // initApp creates and initializes all managers from CLI context.
-func initApp(c *cli.Context) (*appContext, error) {
+func initApp(_ *cli.Context) (*appContext, error) {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
