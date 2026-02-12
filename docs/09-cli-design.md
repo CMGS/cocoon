@@ -421,13 +421,13 @@ func RunCommand() *cli.Command {
                 Usage:   "Run VM in background",
             },
             &cli.StringFlag{
-                Name:  "boot-mode",
-                Usage: "Boot mode: pvh (default) or uefi",
-                Value: "pvh",
+                Name:  "boot-strategy",
+                Usage: "Boot strategy: pvh_then_uefi (default), uefi_only, pvh_only",
+                Value: "pvh_then_uefi",
             },
             &cli.StringFlag{
                 Name:  "firmware",
-                Usage: "Path to PVH firmware (hypervisor-fw); for UEFI use --boot-mode uefi",
+                Usage: "Path to PVH firmware (hypervisor-fw); for UEFI-only use --boot-strategy uefi_only",
                 Value: "/var/lib/cocoon/firmware/hypervisor-fw",
             },
         },
@@ -453,8 +453,8 @@ cocoon run ubuntu-22.04-cloudimg --name myvm --cpus 4 --memory 4G
 # Run VM in background with auto-cleanup
 cocoon run --rm -d ubuntu-22.04-cloudimg --name temp-vm
 
-# Run with PVH boot mode (faster)
-cocoon run --boot-mode pvh ubuntu-22.04-cloudimg
+# Run with PVH-only boot strategy (no UEFI fallback)
+cocoon run --boot-strategy pvh_only ubuntu-22.04-cloudimg
 ```
 
 ### 4.3 cocoon create (Prepare VM)
@@ -1823,7 +1823,7 @@ This CLI design implements the Boot Contract specification:
 
 | Boot Contract Section | CLI Implementation |
 |----------------------|-------------------|
-| §1 Boot Path Decision | `--boot-mode` flag (default: pvh), `--firmware` flag, automatic UEFI fallback |
+| §1 Boot Path Decision | `--boot-strategy` flag (default: pvh_then_uefi), `--firmware` flag, automatic UEFI fallback |
 | §2 Guest Init Model | Metadata server startup in `cocoon run` |
 | §3 I/O Mechanisms | Serial console via `--serial-log`, `cocoon logs` command |
 | §4 Lifecycle Semantics | `run`, `stop`, `delete`, `kill` commands |
@@ -1887,7 +1887,7 @@ This CLI design implements the Boot Contract specification:
 ### Phase 2: Advanced Features (P1)
 
 - [ ] **Boot Modes**:
-  - [ ] Direct kernel boot support (`--boot-mode direct-kernel`)
+  - [ ] Direct kernel boot support (`--boot-strategy direct_kernel`)
   - [ ] Kernel/initrd extraction from OCI images
 
 - [ ] **I/O Enhancements**:

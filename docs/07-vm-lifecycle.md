@@ -281,7 +281,7 @@ CREATING -----> CREATED -----> STARTING -----> RUNNING -----> STOPPING -----> ST
     "devbox": "vm-01HABC9D8E7F6G5H4J3K2L1M0N"
   }
   ```
-- Protected by `metadata.lock`-level file lock (see [Section 6: Metadata Persistence](#6-metadata-persistence)).
+- Protected by `/var/lib/cocoon/name-index.lock` (flock, Level 2 — see [06-concurrency.md § Lock Hierarchy](./06-concurrency.md#lock-hierarchy) and [05-storage-management.md § Canonical Layout](./05-storage-management.md#canonical-filesystem-layout-normative)).
 - **Rebuilt from config.json files during reconcile** — the name index is a derived cache, not the source of truth.
 
 #### 1.4.4 CLI Resolution

@@ -4,8 +4,11 @@
 #
 # Format: <sha256>  <filename>
 #
-# Ubuntu 22.04 Cloud Image (pinned release: 20240126)
-# TODO: Pin actual checksum after first CI setup
-# xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx  ubuntu-22.04-server-cloudimg-amd64.img
-#
+# STATUS: Placeholder — actual checksums will be populated during Phase 1
+# CI setup when the first pipeline downloads and verifies the pinned image.
 # See docs/04-oci-conversion.md § 10 "Verified Images" for details.
+#
+# Ubuntu 22.04 Cloud Image (pinned release: 20240126)
+# Source: https://cloud-images.ubuntu.com/releases/22.04/release-20240126/ubuntu-22.04-server-cloudimg-amd64.img
+# Uncomment and fill after first CI download:
+# <sha256-hash>  ubuntu-22.04-server-cloudimg-amd64.img

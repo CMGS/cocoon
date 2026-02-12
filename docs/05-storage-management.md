@@ -15,7 +15,7 @@ Other documents MUST reference this section rather than defining their own paths
 /var/lib/cocoon/                          # Persistent root (survives reboot)
 ├── cache/
 │   ├── images/                           # Base qcow2 images (content-addressed)
-│   │   ├── {checksum}_{arch}.qcow2       # e.g., a1b2c3d4_amd64.qcow2
+│   │   ├── {checksum}_{arch}.qcow2       # e.g., a1b2c3d4e5f6_amd64.qcow2
 │   │   └── ...
 │   ├── manifests/                        # OCI manifest cache
 │   ├── buildah/                          # Buildah storage root
@@ -135,11 +135,14 @@ for collision detection (see [references.json Structure](#referencesjson-structu
 ```
 checksum = SHA256(
     manifest.config.digest + "\n" +
-    sort(manifest.layers[*].digest).join("\n") + "\n" +
+    manifest.layers[*].digest.join("\n") + "\n" +
     platform_os + "/" + platform_arch       // e.g., "linux/amd64"
 )[:12]
 ```
 
+- Layer digests are joined in **manifest order** (the OCI spec guarantees layer
+  ordering within a manifest is immutable and meaningful — it encodes the
+  filesystem stacking sequence).
 - For **multi-arch manifest lists**: resolve to the platform-specific manifest
   FIRST (using runtime `GOARCH`), then compute the checksum above.
 - Cache filename: `{checksum}_{arch}.qcow2` (e.g., `a1b2c3d4e5f6_amd64.qcow2`)
@@ -159,6 +162,21 @@ arch     = detect from image metadata, or default to runtime arch
 checksum = SHA256(downloaded_file_content)[:12]
 arch     = detect or default to runtime arch
 ```
+
+#### Collision Handling
+
+Because checksums are truncated to 12 hex characters (48 bits), collisions are
+theoretically possible. The `digest_full` field in `references.json` enables
+detection:
+
+1. **On AddReference**: If a `base_key` already exists in `references.json`,
+   compare the incoming `digest_full` against the stored `digest_full`.
+2. **If they match**: Same image — proceed normally (increment refcount).
+3. **If they differ**: **Collision detected** — return an error:
+   `"checksum collision: base_key {key} already maps to a different image (stored: {stored_digest[:16]}…, incoming: {incoming_digest[:16]}…)"`
+4. **User remediation**: The user must use a different tag or rebuild the image.
+   At 48 bits, the probability of an accidental collision among 1 million images
+   is ~10⁻⁴, so this is a safety guard, not a routine path.
 
 This identity contract is referenced by:
 - [06-concurrency.md](./06-concurrency.md) (conversion lock keys)

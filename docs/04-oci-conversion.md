@@ -1119,13 +1119,15 @@ which is the single source of truth for filesystem paths.
 ```
 checksum = SHA256(
     manifest.config.digest + "\n" +
-    sort(manifest.layers[*].digest).join("\n") + "\n" +
+    manifest.layers[*].digest.join("\n") + "\n" +
     platform_os + "/" + platform_arch       // e.g., "linux/amd64"
 )
 ```
 
-- Layer digests are **sorted lexicographically** before joining (ensures stability
-  regardless of manifest layer ordering).
+- Layer digests are joined in **manifest order** — the OCI spec guarantees layer
+  ordering within a manifest is immutable and meaningful (it encodes the
+  filesystem stacking sequence). Sorting would lose this ordering and could map
+  two semantically different images to the same checksum.
 - The platform string (`linux/amd64`) is appended to distinguish identical layer
   sets built for different architectures.
 - The full 64-character hex digest is computed; the first **12 hex characters**
@@ -1162,7 +1164,6 @@ import (
     "fmt"
     "os/exec"
     "runtime"
-    "sort"
     "strings"
 )
 
@@ -1213,15 +1214,14 @@ func calculateSingleManifestIdentity(rawManifest []byte, arch string) (*ImageIde
         return nil, fmt.Errorf("failed to parse manifest: %w", err)
     }
 
-    // Sort layer digests for stability
+    // Preserve manifest-order layer digests (OCI spec guarantees immutable ordering)
     layerDigests := make([]string, len(manifest.Layers))
     for i, l := range manifest.Layers {
         layerDigests[i] = l.Digest
     }
-    sort.Strings(layerDigests)
 
     // Build canonical representation:
-    //   config_digest + "\n" + sorted_layers.join("\n") + "\n" + platform
+    //   config_digest + "\n" + layers_in_manifest_order.join("\n") + "\n" + platform
     var sb strings.Builder
     sb.WriteString(manifest.Config.Digest)
     sb.WriteString("\n")
@@ -1730,7 +1730,7 @@ Phase 1 requires at least one **pinned reference image** per source type for ful
 | **URL** | `https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img` |
 | **Pinned Release** | `20240126` (pin to a specific date release for reproducibility) |
 | **Pinned URL** | `https://cloud-images.ubuntu.com/releases/22.04/release-20240126/ubuntu-22.04-server-cloudimg-amd64.img` |
-| **SHA256** | Pin in `test/fixtures/verified-images.sha256` (update on deliberate image bump only) |
+| **SHA256** | Pin in `test/fixtures/verified-images.sha256` — placeholder until Phase 1 CI setup (update on deliberate image bump only) |
 | **Format** | qcow2 (direct use, no conversion) |
 | **Boot Mode** | PVH (primary), UEFI (fallback) |
 | **cloud-init** | Pre-installed, NoCloud-Net datasource |
