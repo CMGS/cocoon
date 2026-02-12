@@ -269,7 +269,7 @@ func (m *manager) Create(ctx context.Context, opts *CreateOptions) (*types.VMCon
 	}
 
 	// Step 2: Create the COW overlay.
-	overlayPath, err := m.cowMgr.CreateOverlay(baseKey, vmID)
+	overlayPath, err := m.cowMgr.CreateOverlay(baseKey, vmID, diskSize)
 	if err != nil {
 		return nil, fmt.Errorf("create overlay for %s: %w", vmID, err)
 	}
@@ -437,6 +437,8 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 		return transErr
 	}
 
+	bootStartTime := time.Now()
+
 	// Attempt boot with fallback logic based on boot strategy.
 	var result *bootResult
 	var bootErr error
@@ -481,10 +483,9 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 	}
 
 	// Transition STARTING -> RUNNING with runtime metadata.
-	now := time.Now().UTC().Format(time.RFC3339)
 	if err := m.transitionStateWithUpdate(vmID, types.VMStateRunning, "boot completed", func(md *types.VMMetadataFile) {
 		md.ProcessPID = result.pid
-		md.BootTime = now
+		md.BootTime = time.Since(bootStartTime).Round(time.Millisecond).String()
 		md.LastBootMode = string(result.bootMode)
 		md.LastFirmwarePath = result.firmwarePath
 	}); err != nil {
@@ -515,8 +516,23 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 
 	// If already stopping, wait for it to finish.
 	if state == types.VMStateStopping {
-		// TODO: Wait for the CH process to exit, with timeout.
-		return nil
+		deadline := time.Now().Add(timeout)
+		for time.Now().Before(deadline) {
+			if !m.hyper.IsAlive(vmID) {
+				now := time.Now().UTC().Format(time.RFC3339)
+				_ = m.transitionStateWithUpdate(vmID, types.VMStateStopped, "process exited during stop wait", func(md *types.VMMetadataFile) {
+					md.StoppedAt = now
+					md.ProcessPID = 0
+				})
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("context canceled while waiting for VM %s to stop: %w", vmID, ctx.Err())
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
+		return fmt.Errorf("VM %s still stopping after %v timeout", vmID, timeout)
 	}
 
 	// Validate that we can stop from the current state.

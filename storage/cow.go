@@ -93,7 +93,7 @@ func (m *fileCOWManager) CreateBaseImage(srcPath, baseKey string) error {
 // `qemu-img create -f qcow2 -F qcow2 -b <backing>`.
 //
 // No global lock is required because each VM directory is unique.
-func (m *fileCOWManager) CreateOverlay(baseKey, vmID string) (string, error) {
+func (m *fileCOWManager) CreateOverlay(baseKey, vmID, diskSize string) (string, error) {
 	basePath := m.cfg.BaseImagePath(baseKey)
 	if _, err := os.Stat(basePath); err != nil {
 		return "", fmt.Errorf("base image not found for key %s: %w", baseKey, err)
@@ -117,6 +117,16 @@ func (m *fileCOWManager) CreateOverlay(baseKey, vmID string) (string, error) {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("qemu-img create overlay: %s: %w", string(output), err)
+	}
+
+	// Optionally resize the overlay to the requested disk size.
+	if diskSize != "" {
+		resizeCmd := exec.Command("qemu-img", "resize", overlayPath, diskSize) //nolint:gosec // G204: args are controlled internal values, not user input
+		resizeOut, resizeErr := resizeCmd.CombinedOutput()
+		if resizeErr != nil {
+			_ = os.Remove(overlayPath)
+			return "", fmt.Errorf("qemu-img resize overlay to %s: %s: %w", diskSize, string(resizeOut), resizeErr)
+		}
 	}
 
 	return overlayPath, nil

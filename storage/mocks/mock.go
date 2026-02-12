@@ -70,7 +70,7 @@ func (m *MockReferenceCounter) GetUnreferencedImages() ([]string, error) {
 // If a Func field is nil, the method returns zero values.
 type MockCOWManager struct {
 	CreateBaseImageFunc func(srcPath, baseKey string) error
-	CreateOverlayFunc   func(baseKey, vmID string) (string, error)
+	CreateOverlayFunc   func(baseKey, vmID, diskSize string) (string, error)
 	RemoveOverlayFunc   func(vmID string) error
 	GetOverlayInfoFunc  func(vmID string) (*storage.OverlayInfo, error)
 }
@@ -85,9 +85,9 @@ func (m *MockCOWManager) CreateBaseImage(srcPath, baseKey string) error {
 	return nil
 }
 
-func (m *MockCOWManager) CreateOverlay(baseKey, vmID string) (string, error) {
+func (m *MockCOWManager) CreateOverlay(baseKey, vmID, diskSize string) (string, error) {
 	if m.CreateOverlayFunc != nil {
-		return m.CreateOverlayFunc(baseKey, vmID)
+		return m.CreateOverlayFunc(baseKey, vmID, diskSize)
 	}
 	return "", nil
 }

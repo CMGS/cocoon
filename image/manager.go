@@ -104,6 +104,38 @@ func (m *manager) Convert(ctx context.Context, identity *ImageIdentity) (string,
 		return "", fmt.Errorf("convert %s: source file not found at %s: %w", baseKey, srcPath, err)
 	}
 
+	// Handle OCI image type: rootfs mount -> qcow2 conversion via guestfish.
+	if identity.ImageType == ImageTypeOCI {
+		log.Printf("image %s: converting OCI rootfs -> qcow2", baseKey)
+
+		// Ensure cache directory exists.
+		cacheDir := m.cfg.ImageCacheDir()
+		if err := os.MkdirAll(cacheDir, 0o755); err != nil { //nolint:gosec // G301: cache dir needs world-readable access for VM processes
+			return "", fmt.Errorf("convert %s: create cache dir: %w", baseKey, err)
+		}
+
+		tmpPath := basePath + ".tmp"
+		defer func() { _ = os.Remove(tmpPath) }()
+
+		diskSize := "10G" // Default size for OCI conversion
+		if err := convertOCI(ctx, srcPath, tmpPath, diskSize); err != nil {
+			return "", types.NewPermanentError(fmt.Errorf("convert OCI %s: %w", baseKey, err))
+		}
+
+		// Atomic rename into cache.
+		if err := os.Rename(tmpPath, basePath); err != nil {
+			return "", fmt.Errorf("convert %s: rename to cache: %w", baseKey, err)
+		}
+
+		// Cleanup buildah container.
+		if identity.ContainerID != "" {
+			cleanupBuildahContainer(identity.ContainerID, m.cfg)
+		}
+
+		log.Printf("image %s: OCI conversion complete -> %s", baseKey, basePath)
+		return basePath, nil
+	}
+
 	// Detect source image format.
 	format, err := detectImageFormat(srcPath)
 	if err != nil {
@@ -394,10 +426,9 @@ func classifyRef(ref string) ImageType {
 }
 
 // pullOCI handles pulling an OCI image from a container registry.
-// OCI registry pulls require Buildah and skopeo which are not yet integrated.
+// Delegates to the platform-specific pullOCIPlatform function.
 func (m *manager) pullOCI(ctx context.Context, ref string) (*ImageIdentity, error) {
-	log.Printf("image pull (OCI): %s - not yet implemented", ref)
-	return nil, fmt.Errorf("OCI registry pull requires buildah; not yet implemented. Use a direct URL or local file path instead. (ref: %s)", ref)
+	return pullOCIPlatform(ctx, m.cfg, ref)
 }
 
 // pullURL handles downloading an image from an HTTP/HTTPS URL.

@@ -95,7 +95,7 @@ func createTestVM(t *testing.T, td *testDeps, opts *CreateOptions) *types.VMConf
 	td.imgMgr.VerifyBootabilityFunc = func(_ context.Context, _ string) (*image.BootCheckResult, error) {
 		return &image.BootCheckResult{Bootable: true}, nil
 	}
-	td.cowMgr.CreateOverlayFunc = func(baseKey, vmID string) (string, error) {
+	td.cowMgr.CreateOverlayFunc = func(baseKey, vmID, diskSize string) (string, error) {
 		return filepath.Join(td.cfg.RootDir, "vms", vmID, "overlay.qcow2"), nil
 	}
 
@@ -212,7 +212,7 @@ func TestCreate_SkipVerify(t *testing.T) {
 		verifyCallCount++
 		return &image.BootCheckResult{Bootable: false, Errors: []string{"boom"}}, nil
 	}
-	td.cowMgr.CreateOverlayFunc = func(baseKey, vmID string) (string, error) {
+	td.cowMgr.CreateOverlayFunc = func(baseKey, vmID, diskSize string) (string, error) {
 		return filepath.Join(td.cfg.RootDir, "vms", vmID, "overlay.qcow2"), nil
 	}
 

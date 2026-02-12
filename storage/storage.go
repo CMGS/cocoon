@@ -57,7 +57,7 @@ type COWManager interface {
 	// CreateOverlay creates a thin COW overlay backed by the base image
 	// identified by baseKey.  Returns the absolute overlay path
 	// (/var/lib/cocoon/vms/{vmID}/overlay.qcow2).
-	CreateOverlay(baseKey, vmID string) (overlayPath string, err error)
+	CreateOverlay(baseKey, vmID, diskSize string) (overlayPath string, err error)
 
 	// RemoveOverlay removes the VM overlay directory entirely.
 	RemoveOverlay(vmID string) error

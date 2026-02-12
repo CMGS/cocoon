@@ -57,6 +57,10 @@ type ImageIdentity struct {
 	// TempPath is the transient filesystem path where the pulled image is
 	// stored before conversion. It is not persisted to JSON.
 	TempPath string `json:"-"`
+
+	// ContainerID is the buildah container ID for OCI images.
+	// Transient; needed for cleanup after conversion.
+	ContainerID string `json:"-"`
 }
 
 // BaseKey returns the content-addressed key: {checksum_16}_{arch}.
