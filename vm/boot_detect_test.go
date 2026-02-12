@@ -147,7 +147,7 @@ func TestWaitForBoot_SuccessPatternMatch(t *testing.T) {
 	// Write log content that includes a success pattern.
 	writeToFile(t, logPath, "Booting kernel...\nsystemd started\nubuntu login: \n")
 
-	ctx := context.Background()
+	ctx := t.Context()
 	err := waitForBoot(ctx, logPath, 2*time.Second,
 		[]string{`login:`},
 		[]string{`Kernel panic`},
@@ -165,7 +165,7 @@ func TestWaitForBoot_FailurePatternMatch(t *testing.T) {
 	// Write log content that includes a failure pattern.
 	writeToFile(t, logPath, "Booting kernel...\nKernel panic - not syncing: VFS\n")
 
-	ctx := context.Background()
+	ctx := t.Context()
 	err := waitForBoot(ctx, logPath, 2*time.Second,
 		[]string{`login:`},
 		[]string{`Kernel panic`},
@@ -189,7 +189,7 @@ func TestWaitForBoot_Timeout(t *testing.T) {
 	// Write some content that does NOT match any pattern.
 	writeToFile(t, logPath, "loading modules...\ninitialized hardware\n")
 
-	ctx := context.Background()
+	ctx := t.Context()
 	err := waitForBoot(ctx, logPath, 100*time.Millisecond,
 		[]string{`login:`},
 		[]string{`Kernel panic`},
@@ -213,7 +213,7 @@ func TestWaitForBoot_FileAppearsLate(t *testing.T) {
 		writeToFile(t, logPath, "starting boot...\nubuntu login: \n")
 	}()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	err := waitForBoot(ctx, logPath, 2*time.Second,
 		[]string{`login:`},
 		[]string{`Kernel panic`},
@@ -231,7 +231,7 @@ func TestWaitForBoot_InvalidSuccessRegex(t *testing.T) {
 	// Create the file so we can reach the pattern compilation step.
 	writeToFile(t, logPath, "anything\n")
 
-	ctx := context.Background()
+	ctx := t.Context()
 	err := waitForBoot(ctx, logPath, 1*time.Second,
 		[]string{`[invalid`}, // bad regex
 		[]string{`Kernel panic`},
@@ -251,7 +251,7 @@ func TestWaitForBoot_InvalidFailureRegex(t *testing.T) {
 
 	writeToFile(t, logPath, "anything\n")
 
-	ctx := context.Background()
+	ctx := t.Context()
 	err := waitForBoot(ctx, logPath, 1*time.Second,
 		[]string{`login:`},
 		[]string{`[invalid`}, // bad regex
@@ -279,7 +279,7 @@ func TestWaitForBoot_PartialLineBuffering(t *testing.T) {
 		writeToFile(t, logPath, " root\n")
 	}()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	err := waitForBoot(ctx, logPath, 2*time.Second,
 		[]string{`login:`},
 		[]string{`Kernel panic`},
@@ -296,7 +296,7 @@ func TestWaitForBoot_ContextCancelled(t *testing.T) {
 
 	writeToFile(t, logPath, "booting...\n")
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	// Cancel immediately.
 	cancel()
 
@@ -320,7 +320,7 @@ func TestWaitForBoot_FailureBeforeSuccess(t *testing.T) {
 	// Failure pattern appears before success pattern; should fail.
 	writeToFile(t, logPath, "Kernel panic\nlogin:\n")
 
-	ctx := context.Background()
+	ctx := t.Context()
 	err := waitForBoot(ctx, logPath, 2*time.Second,
 		[]string{`login:`},
 		[]string{`Kernel panic`},
@@ -343,7 +343,7 @@ func TestWaitForFile_AlreadyExists(t *testing.T) {
 	path := filepath.Join(dir, "existing.log")
 	writeToFile(t, path, "data")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 	defer cancel()
 
 	if err := waitForFile(ctx, path); err != nil {
@@ -361,7 +361,7 @@ func TestWaitForFile_AppearsLater(t *testing.T) {
 		writeToFile(t, path, "data")
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 
 	if err := waitForFile(ctx, path); err != nil {
@@ -374,7 +374,7 @@ func TestWaitForFile_Timeout(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "never.log")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
 
 	err := waitForFile(ctx, path)

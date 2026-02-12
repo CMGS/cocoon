@@ -172,7 +172,7 @@ func newTestClient() *client {
 func TestDoWithRetry_SucceedsFirstTry(t *testing.T) {
 	c := newTestClient()
 	calls := 0
-	err := c.doWithRetry(context.Background(), func() error {
+	err := c.doWithRetry(t.Context(), func() error {
 		calls++
 		return nil
 	})
@@ -187,7 +187,7 @@ func TestDoWithRetry_SucceedsFirstTry(t *testing.T) {
 func TestDoWithRetry_RetriesTransientThenSucceeds(t *testing.T) {
 	c := newTestClient()
 	calls := 0
-	err := c.doWithRetry(context.Background(), func() error {
+	err := c.doWithRetry(t.Context(), func() error {
 		calls++
 		if calls <= 2 {
 			return &apiError{StatusCode: 503, Message: "unavailable"}
@@ -205,7 +205,7 @@ func TestDoWithRetry_RetriesTransientThenSucceeds(t *testing.T) {
 func TestDoWithRetry_NonRetryableReturnsImmediately(t *testing.T) {
 	c := newTestClient()
 	calls := 0
-	err := c.doWithRetry(context.Background(), func() error {
+	err := c.doWithRetry(t.Context(), func() error {
 		calls++
 		return &apiError{StatusCode: 400, Message: "bad request"}
 	})
@@ -220,7 +220,7 @@ func TestDoWithRetry_NonRetryableReturnsImmediately(t *testing.T) {
 func TestDoWithRetry_ExhaustsRetries(t *testing.T) {
 	c := newTestClient()
 	calls := 0
-	err := c.doWithRetry(context.Background(), func() error {
+	err := c.doWithRetry(t.Context(), func() error {
 		calls++
 		return &apiError{StatusCode: 503, Message: "unavailable"}
 	})

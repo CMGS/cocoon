@@ -99,7 +99,7 @@ func createTestVM(t *testing.T, td *testDeps, opts *CreateOptions) *types.VMConf
 		return filepath.Join(td.cfg.RootDir, "vms", vmID, "overlay.qcow2"), nil
 	}
 
-	vmCfg, err := td.mgr.Create(context.Background(), opts)
+	vmCfg, err := td.mgr.Create(t.Context(), opts)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestCreate_NonBootableImage(t *testing.T) {
 		}, nil
 	}
 
-	_, err := td.mgr.Create(context.Background(), &CreateOptions{
+	_, err := td.mgr.Create(t.Context(), &CreateOptions{
 		Image: "docker.io/library/ubuntu:22.04",
 	})
 	if err == nil {
@@ -216,7 +216,7 @@ func TestCreate_SkipVerify(t *testing.T) {
 		return filepath.Join(td.cfg.RootDir, "vms", vmID, "overlay.qcow2"), nil
 	}
 
-	vmCfg, err := td.mgr.Create(context.Background(), &CreateOptions{
+	vmCfg, err := td.mgr.Create(t.Context(), &CreateOptions{
 		Image:      "docker.io/library/ubuntu:22.04",
 		SkipVerify: true,
 	})
@@ -246,7 +246,7 @@ func TestDelete_HappyPath(t *testing.T) {
 	vmCfg := createTestVM(t, td, opts)
 
 	// Delete the VM.
-	err := td.mgr.Delete(context.Background(), vmCfg.VMID, false)
+	err := td.mgr.Delete(t.Context(), vmCfg.VMID, false)
 	if err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
@@ -299,13 +299,13 @@ func TestDelete_ForceOnRunningVM(t *testing.T) {
 	// No explicit mock needed here; the default nil func returns nil.
 
 	// Without force, should fail.
-	err = td.mgr.Delete(context.Background(), vmCfg.VMID, false)
+	err = td.mgr.Delete(t.Context(), vmCfg.VMID, false)
 	if !errors.Is(err, types.ErrVMRunning) {
 		t.Fatalf("expected ErrVMRunning without force, got %v", err)
 	}
 
 	// With force, should succeed.
-	err = td.mgr.Delete(context.Background(), vmCfg.VMID, true)
+	err = td.mgr.Delete(t.Context(), vmCfg.VMID, true)
 	if err != nil {
 		t.Fatalf("expected nil error with force=true, got %v", err)
 	}
@@ -326,7 +326,7 @@ func TestDelete_Idempotent(t *testing.T) {
 	td := setupTestManager(t)
 
 	// Delete a VM that does not exist.
-	err := td.mgr.Delete(context.Background(), "vm-NONEXISTENT000000000000000", false)
+	err := td.mgr.Delete(t.Context(), "vm-NONEXISTENT000000000000000", false)
 	if err != nil {
 		t.Fatalf("expected nil for non-existent VM, got %v", err)
 	}
@@ -348,7 +348,7 @@ func TestInspect(t *testing.T) {
 	}
 	vmCfg := createTestVM(t, td, opts)
 
-	inspect, err := td.mgr.Inspect(context.Background(), vmCfg.VMID)
+	inspect, err := td.mgr.Inspect(t.Context(), vmCfg.VMID)
 	if err != nil {
 		t.Fatalf("Inspect: %v", err)
 	}
@@ -384,7 +384,7 @@ func TestInspect_NotFound(t *testing.T) {
 	t.Parallel()
 	td := setupTestManager(t)
 
-	_, err := td.mgr.Inspect(context.Background(), "vm-DOESNOTEXIST000000000000")
+	_, err := td.mgr.Inspect(t.Context(), "vm-DOESNOTEXIST000000000000")
 	if err == nil {
 		t.Fatal("expected error for non-existent VM, got nil")
 	}
@@ -405,7 +405,7 @@ func TestList(t *testing.T) {
 	vm1 := createTestVM(t, td, &CreateOptions{Image: "img1", Name: "list-vm-1"})
 	vm2 := createTestVM(t, td, &CreateOptions{Image: "img2", Name: "list-vm-2"})
 
-	results, err := td.mgr.List(context.Background())
+	results, err := td.mgr.List(t.Context())
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -434,7 +434,7 @@ func TestList_Empty(t *testing.T) {
 	t.Parallel()
 	td := setupTestManager(t)
 
-	results, err := td.mgr.List(context.Background())
+	results, err := td.mgr.List(t.Context())
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -605,7 +605,7 @@ func TestCreate_NilOptions(t *testing.T) {
 	t.Parallel()
 	td := setupTestManager(t)
 
-	_, err := td.mgr.Create(context.Background(), nil)
+	_, err := td.mgr.Create(t.Context(), nil)
 	if err == nil {
 		t.Fatal("expected error for nil options, got nil")
 	}
@@ -619,7 +619,7 @@ func TestCreate_EmptyImage(t *testing.T) {
 	t.Parallel()
 	td := setupTestManager(t)
 
-	_, err := td.mgr.Create(context.Background(), &CreateOptions{Image: ""})
+	_, err := td.mgr.Create(t.Context(), &CreateOptions{Image: ""})
 	if err == nil {
 		t.Fatal("expected error for empty image, got nil")
 	}
@@ -785,7 +785,7 @@ func TestCreate_DuplicateName(t *testing.T) {
 	})
 
 	// Second create with same name should fail.
-	_, err := td.mgr.Create(context.Background(), &CreateOptions{
+	_, err := td.mgr.Create(t.Context(), &CreateOptions{
 		Image: "docker.io/library/ubuntu:22.04",
 		Name:  "dupe-name",
 	})

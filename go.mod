@@ -1,6 +1,6 @@
 module github.com/CMGS/cocoon
 
-go 1.22.0
+go 1.24.0
 
 require (
 	github.com/oklog/ulid/v2 v2.1.0
