@@ -37,6 +37,7 @@ Getting Cocoon up and running with OCI image support:
 | [08](./08-dependencies.md) | Dependencies & Permissions | ✅ Draft | **P0** |
 | [09](./09-cli-design.md) | CLI Design | ✅ Draft | P1 |
 | [10](./10-implementation-roadmap.md) | Implementation Roadmap | ✅ Draft | P1 |
+| [11](./11-bootable-oci-build.md) | Bootable OCI Image Build | ✅ Draft | P1 |
 
 **P0 = Critical** - Must be resolved before implementation starts
 **P1 = Important** - Should be clarified during implementation
@@ -51,6 +52,7 @@ Service exposure, networking, and operational tooling:
 | [future/networking](./future/networking.md) | Network Configuration | 📋 Planned |
 | [future/api-server](./future/api-server.md) | gRPC/REST API Server | 📋 Planned |
 | [future/observability](./future/observability.md) | Monitoring & Logging | 📋 Planned |
+| [future/storage-quotas](./future/storage-quotas.md) | Storage Quotas | 📋 Planned |
 
 ## Reading Path
 
@@ -110,4 +112,4 @@ For major architectural changes or feature proposals, use the RFC process:
 - See [rfc/README.md](./rfc/README.md) for the RFC process
 - Use [rfc/TEMPLATE.md](./rfc/TEMPLATE.md) to create new RFCs
 
-Currently, the Cocoon architecture is captured directly in the main docs (00-overview.md through 10-implementation-roadmap.md) rather than as formal RFCs.
+Currently, the Cocoon architecture is captured directly in the main docs (00-overview.md through 11-bootable-oci-build.md) rather than as formal RFCs.
