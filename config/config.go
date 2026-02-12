@@ -72,7 +72,7 @@ func LoadConfig(path string) (*CocoonConfig, error) {
 		return cfg, nil
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: config file path is from CLI flag or env var, intentional
 	if err != nil {
 		if os.IsNotExist(err) {
 			return cfg, nil
@@ -200,7 +200,7 @@ func (c *CocoonConfig) EnsureDirs() error {
 		c.LogDir,
 	}
 	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: cocoon directories need world-readable access for VM processes
 			return fmt.Errorf("create directory %s: %w", dir, err)
 		}
 	}

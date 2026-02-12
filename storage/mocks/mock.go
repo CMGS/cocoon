@@ -16,10 +16,10 @@ import (
 // Each method can be overridden by setting the corresponding Func field.
 // If a Func field is nil, the method returns zero values.
 type MockReferenceCounter struct {
-	AddReferenceFunc         func(baseKey, vmID, digestFull, sourceRef string) error
-	RemoveReferenceFunc      func(baseKey, vmID string) error
-	GetReferencesFunc        func(baseKey string) ([]string, error)
-	IsReferencedFunc         func(baseKey string) (bool, error)
+	AddReferenceFunc          func(baseKey, vmID, digestFull, sourceRef string) error
+	RemoveReferenceFunc       func(baseKey, vmID string) error
+	GetReferencesFunc         func(baseKey string) ([]string, error)
+	IsReferencedFunc          func(baseKey string) (bool, error)
 	GetUnreferencedImagesFunc func() ([]string, error)
 }
 

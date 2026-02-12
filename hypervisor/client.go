@@ -48,7 +48,7 @@ func NewClient(cfg *config.CocoonConfig) Client {
 func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (int, error) {
 	// Ensure runtime directory exists.
 	runtimeDir := c.cfg.VMRuntimeDir(vmID)
-	if err := os.MkdirAll(runtimeDir, 0755); err != nil {
+	if err := os.MkdirAll(runtimeDir, 0o755); err != nil { //nolint:gosec // G301: VM runtime dir needs to be world-readable for CH process
 		return 0, fmt.Errorf("create runtime dir %s: %w", runtimeDir, err)
 	}
 
@@ -69,7 +69,7 @@ func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (
 		args = append(args, "--firmware", firmwarePath)
 	}
 
-	cmd := exec.CommandContext(ctx, c.cfg.CHBinary, args...)
+	cmd := exec.CommandContext(ctx, c.cfg.CHBinary, args...) //nolint:gosec // CHBinary is a trusted config value, not user input
 
 	// Detach the CH process from the parent process group so it survives
 	// if cocoon exits unexpectedly.
@@ -122,7 +122,7 @@ func (c *client) Shutdown(ctx context.Context, vmID string, timeout time.Duratio
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("shutdown cancelled for %s: %w", vmID, ctx.Err())
+			return fmt.Errorf("shutdown canceled for %s: %w", vmID, ctx.Err())
 		case <-ticker.C:
 			if !c.IsAlive(vmID) {
 				return nil
@@ -205,7 +205,7 @@ func (c *client) GetVMInfo(ctx context.Context, socketPath string) (*CHVMInfo, e
 	if err != nil {
 		return nil, fmt.Errorf("GET %s: %w", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -233,7 +233,7 @@ func (c *client) WaitForSocket(ctx context.Context, socketPath string, timeout t
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("context cancelled while waiting for socket %s: %w", socketPath, ctx.Err())
+			return fmt.Errorf("context canceled while waiting for socket %s: %w", socketPath, ctx.Err())
 		case <-ticker.C:
 			if time.Now().After(deadline) {
 				return fmt.Errorf("timeout waiting for socket %s after %s", socketPath, timeout)
@@ -301,7 +301,7 @@ func (c *client) doPUT(ctx context.Context, socketPath, path string, body []byte
 	if err != nil {
 		return fmt.Errorf("PUT %s: %w", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusNoContent {
 		respBody, _ := io.ReadAll(resp.Body)

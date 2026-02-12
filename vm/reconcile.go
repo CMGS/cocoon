@@ -201,7 +201,7 @@ func (m *manager) detectZombieResources(vmID string, meta *types.VMMetadataFile,
 
 	// Check PID file.
 	pidFilePath := m.cfg.VMPIDPath(vmID)
-	if pidData, err := os.ReadFile(pidFilePath); err == nil {
+	if pidData, err := os.ReadFile(pidFilePath); err == nil { //nolint:gosec // G304: PID file path is derived from internal config
 		pidFromFile, _ := strconv.Atoi(strings.TrimSpace(string(pidData)))
 		if pidFromFile > 0 && pidFromFile != meta.ProcessPID {
 			zombies = append(zombies, Inconsistency{
@@ -333,7 +333,7 @@ func canConnectToSocket(socketPath string) bool {
 	if err != nil {
 		return false
 	}
-	conn.Close()
+	_ = conn.Close()
 	return true
 }
 
@@ -349,4 +349,3 @@ func reconcileSeverity(expected, actual types.VMState) InconsistencySeverity {
 	}
 	return SeverityWarning
 }
-

@@ -38,7 +38,7 @@ func (m *fileCOWManager) CreateBaseImage(srcPath, baseKey string) error {
 	}
 
 	// Ensure the cache directory exists.
-	if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil { //nolint:gosec // G301: image cache dir needs world-readable access for VM processes
 		return fmt.Errorf("create image cache dir: %w", err)
 	}
 
@@ -52,27 +52,27 @@ func (m *fileCOWManager) CreateBaseImage(srcPath, baseKey string) error {
 	defer func() {
 		// Clean up temp on failure.
 		if err != nil {
-			os.Remove(tmpPath)
+			_ = os.Remove(tmpPath)
 		}
 	}()
 
-	src, err := os.Open(srcPath)
+	src, err := os.Open(srcPath) //nolint:gosec // G304: srcPath is an internal image cache path, not user input
 	if err != nil {
-		tmpFile.Close()
+		_ = tmpFile.Close()
 		return fmt.Errorf("open source image %s: %w", srcPath, err)
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 
 	if _, err = io.Copy(tmpFile, src); err != nil {
-		tmpFile.Close()
+		_ = tmpFile.Close()
 		return fmt.Errorf("copy base image: %w", err)
 	}
 	if err = tmpFile.Sync(); err != nil {
-		tmpFile.Close()
+		_ = tmpFile.Close()
 		return fmt.Errorf("sync base image: %w", err)
 	}
-	if err = tmpFile.Chmod(0644); err != nil {
-		tmpFile.Close()
+	if err = tmpFile.Chmod(0o644); err != nil {
+		_ = tmpFile.Close()
 		return fmt.Errorf("chmod base image: %w", err)
 	}
 	if err = tmpFile.Close(); err != nil {
@@ -98,14 +98,14 @@ func (m *fileCOWManager) CreateOverlay(baseKey, vmID string) (string, error) {
 	}
 
 	vmDir := m.cfg.VMPersistDir(vmID)
-	if err := os.MkdirAll(vmDir, 0755); err != nil {
+	if err := os.MkdirAll(vmDir, 0o755); err != nil { //nolint:gosec // G301: VM directory needs world-readable access for CH process
 		return "", fmt.Errorf("create VM directory: %w", err)
 	}
 
 	overlayPath := m.cfg.VMOverlayPath(vmID)
 
 	// qemu-img create -f qcow2 -F qcow2 -b <backing> <overlay>
-	cmd := exec.Command(
+	cmd := exec.Command( //nolint:gosec // G204: args are controlled internal paths, not user input
 		"qemu-img", "create",
 		"-f", "qcow2",
 		"-F", "qcow2",
@@ -145,7 +145,7 @@ func (m *fileCOWManager) GetOverlayInfo(vmID string) (*OverlayInfo, error) {
 	}
 
 	// Run qemu-img info to get backing file and size details.
-	cmd := exec.Command("qemu-img", "info", "--output=json", overlayPath)
+	cmd := exec.Command("qemu-img", "info", "--output=json", overlayPath) //nolint:gosec // G204: overlayPath is a controlled internal path
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("qemu-img info: %w", err)

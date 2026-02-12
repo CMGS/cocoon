@@ -20,20 +20,20 @@ func AtomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	defer func() {
 		// Clean up temp file on failure.
 		if err != nil {
-			os.Remove(tmpPath)
+			_ = os.Remove(tmpPath)
 		}
 	}()
 
 	if _, err = tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("write temp file: %w", err)
 	}
 	if err = tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("sync temp file: %w", err)
 	}
 	if err = tmp.Chmod(perm); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("chmod temp file: %w", err)
 	}
 	if err = tmp.Close(); err != nil {
@@ -52,12 +52,12 @@ func AtomicWriteJSON(path string, v any) error {
 		return fmt.Errorf("marshal JSON: %w", err)
 	}
 	data = append(data, '\n')
-	return AtomicWriteFile(path, data, 0644)
+	return AtomicWriteFile(path, data, 0o644)
 }
 
 // ReadJSON reads and unmarshals a JSON file.
 func ReadJSON(path string, v any) error {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path is an internal config/metadata path, not direct user input
 	if err != nil {
 		return err
 	}

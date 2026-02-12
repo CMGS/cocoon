@@ -108,13 +108,13 @@ func (m *manager) Convert(ctx context.Context, identity *ImageIdentity) (string,
 
 	// Ensure cache directory exists.
 	cacheDir := m.cfg.ImageCacheDir()
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil { //nolint:gosec // G301: cache dir needs world-readable access for VM processes
 		return "", fmt.Errorf("convert %s: create cache dir: %w", baseKey, err)
 	}
 
 	// Use a temp file in the cache directory for atomic placement.
 	tmpPath := basePath + ".tmp"
-	defer os.Remove(tmpPath) // clean up on any error path
+	defer func() { _ = os.Remove(tmpPath) }() // clean up on any error path
 
 	switch format {
 	case "qcow2":
@@ -127,7 +127,7 @@ func (m *manager) Convert(ctx context.Context, identity *ImageIdentity) (string,
 	case "raw":
 		// Convert raw to qcow2 using qemu-img.
 		log.Printf("image %s: converting raw -> qcow2", baseKey)
-		cmd := exec.CommandContext(ctx, "qemu-img", "convert", "-f", "raw", "-O", "qcow2", srcPath, tmpPath)
+		cmd := exec.CommandContext(ctx, "qemu-img", "convert", "-f", "raw", "-O", "qcow2", srcPath, tmpPath) //nolint:gosec // args are controlled internal paths, not user input
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return "", fmt.Errorf("convert %s: qemu-img convert: %s: %w", baseKey, string(out), err)
 		}
@@ -166,7 +166,7 @@ func (m *manager) Prepare(ctx context.Context, ref string) (*ImageIdentity, stri
 	basePath := m.cfg.BaseImagePath(baseKey)
 
 	// Step 2: Check cache before converting.
-	if _, err := os.Stat(basePath); err == nil {
+	if _, statErr := os.Stat(basePath); statErr == nil {
 		log.Printf("image %s: cache hit for %q, skipping conversion", baseKey, ref)
 		return identity, basePath, nil
 	}
@@ -214,9 +214,9 @@ func (m *manager) VerifyBootability(ctx context.Context, imagePath string) (*Boo
 
 	// Basic check: qemu-img check for image integrity.
 	checkCmd := exec.CommandContext(ctx, "qemu-img", "check", imagePath)
-	if out, err := checkCmd.CombinedOutput(); err != nil {
+	if out, checkErr := checkCmd.CombinedOutput(); checkErr != nil {
 		result.Errors = append(result.Errors, fmt.Sprintf("qemu-img check failed: %s", strings.TrimSpace(string(out))))
-		log.Printf("image %s: qemu-img check failed: %v", imagePath, err)
+		log.Printf("image %s: qemu-img check failed: %v", imagePath, checkErr)
 		return result, nil
 	}
 
@@ -245,42 +245,48 @@ func (m *manager) VerifyBootability(ctx context.Context, imagePath string) (*Boo
 	// If deep verification was skipped (darwin or no guestfish), keep
 	// optimistic result and add a warning.
 	deepDone := result.KernelFound || result.InitrdFound || result.SystemdFound || result.BootloaderFound
-	if deepDone {
-		// Deep verification ran, evaluate results strictly.
-		result.Errors = nil // reset basic-level errors
-		if !result.KernelFound {
-			result.Errors = append(result.Errors, "kernel not found: no /boot/vmlinuz* detected")
-		}
-		if !result.InitrdFound {
-			result.Errors = append(result.Errors, "initrd/initramfs not found: no /boot/initrd* or /boot/initramfs* detected")
-		}
-		if !result.SystemdFound {
-			result.Errors = append(result.Errors, "systemd not found: /sbin/init must be systemd")
-		}
-		if !result.BootloaderFound {
-			result.Errors = append(result.Errors, "UEFI bootloader not found in ESP")
-		}
-		if !result.CloudInitFound {
-			result.Warnings = append(result.Warnings, "cloud-init not found: VM will boot but Cocoon metadata server integration will be disabled")
-		}
-
-		// Determine boot modes from deep findings.
-		result.BootModes = nil
-		if result.KernelFound && result.BootloaderFound {
-			result.BootModes = append(result.BootModes, string(types.BootModePVH))
-			result.BootModes = append(result.BootModes, string(types.BootModeUEFI))
-		}
-
-		result.Bootable = len(result.Errors) == 0
-	} else {
+	if !deepDone {
 		// Deep verification did not run; keep optimistic result.
 		result.Warnings = append(result.Warnings, "deep boot contract verification requires guestfish (not available)")
+	} else {
+		evaluateDeepVerification(result)
 	}
 
 	log.Printf("image %s: bootability check complete: bootable=%v, modes=%v, errors=%d, warnings=%d",
 		imagePath, result.Bootable, result.BootModes, len(result.Errors), len(result.Warnings))
 
 	return result, nil
+}
+
+// evaluateDeepVerification checks deep verification results and populates
+// errors, warnings, and boot modes accordingly.
+func evaluateDeepVerification(result *BootCheckResult) {
+	// Deep verification ran, evaluate results strictly.
+	result.Errors = nil // reset basic-level errors
+	if !result.KernelFound {
+		result.Errors = append(result.Errors, "kernel not found: no /boot/vmlinuz* detected")
+	}
+	if !result.InitrdFound {
+		result.Errors = append(result.Errors, "initrd/initramfs not found: no /boot/initrd* or /boot/initramfs* detected")
+	}
+	if !result.SystemdFound {
+		result.Errors = append(result.Errors, "systemd not found: /sbin/init must be systemd")
+	}
+	if !result.BootloaderFound {
+		result.Errors = append(result.Errors, "UEFI bootloader not found in ESP")
+	}
+	if !result.CloudInitFound {
+		result.Warnings = append(result.Warnings, "cloud-init not found: VM will boot but Cocoon metadata server integration will be disabled")
+	}
+
+	// Determine boot modes from deep findings.
+	result.BootModes = nil
+	if result.KernelFound && result.BootloaderFound {
+		result.BootModes = append(result.BootModes, string(types.BootModePVH))
+		result.BootModes = append(result.BootModes, string(types.BootModeUEFI))
+	}
+
+	result.Bootable = len(result.Errors) == 0
 }
 
 // ListCached returns all cached base images found in the image cache directory.
@@ -391,7 +397,7 @@ func (m *manager) pullURL(ctx context.Context, ref string) (*ImageIdentity, erro
 
 	// Ensure temp directory exists.
 	tempDir := m.cfg.TempDir()
-	if err := os.MkdirAll(tempDir, 0755); err != nil {
+	if err := os.MkdirAll(tempDir, 0o755); err != nil { //nolint:gosec // G301: temp dir needs world-readable access for image operations
 		return nil, fmt.Errorf("create temp dir: %w", err)
 	}
 
@@ -406,8 +412,8 @@ func (m *manager) pullURL(ctx context.Context, ref string) (*ImageIdentity, erro
 	success := false
 	defer func() {
 		if !success {
-			tmpFile.Close()
-			os.Remove(tmpPath)
+			_ = tmpFile.Close()
+			_ = os.Remove(tmpPath)
 		}
 	}()
 
@@ -421,7 +427,7 @@ func (m *manager) pullURL(ctx context.Context, ref string) (*ImageIdentity, erro
 	if err != nil {
 		return nil, fmt.Errorf("HTTP GET %s: %w", ref, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP GET %s: unexpected status %d %s", ref, resp.StatusCode, resp.Status)
@@ -493,14 +499,14 @@ func (m *manager) pullURL(ctx context.Context, ref string) (*ImageIdentity, erro
 // pullLocal handles a local file reference. It computes the file checksum to
 // determine the image identity and sets TempPath to the absolute path so
 // Convert can find the source file.
-func (m *manager) pullLocal(ctx context.Context, ref string) (*ImageIdentity, error) {
+func (m *manager) pullLocal(_ context.Context, ref string) (*ImageIdentity, error) {
 	absPath, err := filepath.Abs(ref)
 	if err != nil {
 		return nil, fmt.Errorf("resolve absolute path for %q: %w", ref, err)
 	}
 
-	if _, err := os.Stat(absPath); err != nil {
-		return nil, fmt.Errorf("local image file not found: %w", err)
+	if _, statErr := os.Stat(absPath); statErr != nil {
+		return nil, fmt.Errorf("local image file not found: %w", statErr)
 	}
 
 	fullDigest, checksum, err := ComputeFileChecksum(absPath)
@@ -530,32 +536,32 @@ var _ = time.Now
 // The caller is responsible for the final rename if needed; this function
 // writes directly to dst.
 func atomicCopyFile(src, dst string) error {
-	in, err := os.Open(src)
+	in, err := os.Open(src) //nolint:gosec // G304: src is an internal image cache path
 	if err != nil {
 		return fmt.Errorf("open source %s: %w", src, err)
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 
-	out, err := os.Create(dst)
+	out, err := os.Create(dst) //nolint:gosec // G304: dst is an internal cache path
 	if err != nil {
 		return fmt.Errorf("create destination %s: %w", dst, err)
 	}
 
 	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		os.Remove(dst)
+		_ = out.Close()
+		_ = os.Remove(dst)
 		return fmt.Errorf("copy %s -> %s: %w", src, dst, err)
 	}
 
 	// Fsync to ensure data is flushed to disk before rename.
 	if err := out.Sync(); err != nil {
-		out.Close()
-		os.Remove(dst)
+		_ = out.Close()
+		_ = os.Remove(dst)
 		return fmt.Errorf("sync %s: %w", dst, err)
 	}
 
 	if err := out.Close(); err != nil {
-		os.Remove(dst)
+		_ = os.Remove(dst)
 		return fmt.Errorf("close %s: %w", dst, err)
 	}
 

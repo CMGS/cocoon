@@ -47,11 +47,11 @@ func ComputeOCIChecksum(configDigest string, layerDigests []string, arch string)
 // This is used for cloud images (qcow2/img files) and URL-downloaded images
 // where the content itself serves as the identity.
 func ComputeFileChecksum(path string) (fullDigest string, checksum string, err error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // G304: path is an internal image file path for checksum computation
 	if err != nil {
 		return "", "", fmt.Errorf("open file for checksum: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {

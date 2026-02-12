@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oklog/ulid/v2"
 	"github.com/CMGS/cocoon/config"
 	"github.com/CMGS/cocoon/hypervisor"
 	"github.com/CMGS/cocoon/image"
@@ -18,6 +17,7 @@ import (
 	"github.com/CMGS/cocoon/storage"
 	"github.com/CMGS/cocoon/types"
 	"github.com/CMGS/cocoon/utils"
+	"github.com/oklog/ulid/v2"
 )
 
 // Compile-time interface check.
@@ -261,7 +261,7 @@ func (m *manager) Create(ctx context.Context, opts *CreateOptions) (*types.VMCon
 
 	// Create VM persistent directory.
 	vmDir := m.cfg.VMPersistDir(vmID)
-	if err := os.MkdirAll(vmDir, 0755); err != nil {
+	if err := os.MkdirAll(vmDir, 0o755); err != nil { //nolint:gosec // G301: VM directory needs world-readable access for CH process
 		// Clean up overlay on failure.
 		_ = m.cowMgr.RemoveOverlay(vmID)
 		return nil, fmt.Errorf("create VM directory: %w", err)
@@ -271,7 +271,7 @@ func (m *manager) Create(ctx context.Context, opts *CreateOptions) (*types.VMCon
 	configPath := m.cfg.VMConfigPath(vmID)
 	if err := utils.AtomicWriteJSON(configPath, vmCfg); err != nil {
 		_ = m.cowMgr.RemoveOverlay(vmID)
-		os.RemoveAll(vmDir)
+		_ = os.RemoveAll(vmDir)
 		return nil, fmt.Errorf("write config.json: %w", err)
 	}
 
@@ -286,7 +286,7 @@ func (m *manager) Create(ctx context.Context, opts *CreateOptions) (*types.VMCon
 	metaPath := m.cfg.VMMetadataPath(vmID)
 	if err := utils.AtomicWriteJSON(metaPath, meta); err != nil {
 		_ = m.cowMgr.RemoveOverlay(vmID)
-		os.RemoveAll(vmDir)
+		_ = os.RemoveAll(vmDir)
 		return nil, fmt.Errorf("write metadata.json: %w", err)
 	}
 
@@ -294,7 +294,7 @@ func (m *manager) Create(ctx context.Context, opts *CreateOptions) (*types.VMCon
 	// so reconciliation can find the VM if we crash after pinning.
 	if err := m.refCounter.AddReference(baseKey, vmID, identity.FullDigest, opts.Image); err != nil {
 		_ = m.cowMgr.RemoveOverlay(vmID)
-		os.RemoveAll(vmDir)
+		_ = os.RemoveAll(vmDir)
 		return nil, fmt.Errorf("pin reference for %s: %w", vmID, err)
 	}
 
@@ -302,7 +302,7 @@ func (m *manager) Create(ctx context.Context, opts *CreateOptions) (*types.VMCon
 	if err := AddName(m.cfg, name, vmID); err != nil {
 		_ = m.refCounter.RemoveReference(baseKey, vmID)
 		_ = m.cowMgr.RemoveOverlay(vmID)
-		os.RemoveAll(vmDir)
+		_ = os.RemoveAll(vmDir)
 		return nil, fmt.Errorf("%w: %s", types.ErrVMAlreadyExists, err)
 	}
 
@@ -312,7 +312,7 @@ func (m *manager) Create(ctx context.Context, opts *CreateOptions) (*types.VMCon
 		_ = RemoveName(m.cfg, name)
 		_ = m.refCounter.RemoveReference(baseKey, vmID)
 		_ = m.cowMgr.RemoveOverlay(vmID)
-		os.RemoveAll(vmDir)
+		_ = os.RemoveAll(vmDir)
 		return nil, fmt.Errorf("transition to CREATED: %w", err)
 	}
 
@@ -352,8 +352,8 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 	}
 
 	// Transition to STARTING.
-	if err := m.TransitionState(vmID, types.VMStateStarting, "start requested"); err != nil {
-		return err
+	if transErr := m.TransitionState(vmID, types.VMStateStarting, "start requested"); transErr != nil {
+		return transErr
 	}
 
 	// Step 1: Launch Cloud Hypervisor process.
@@ -517,8 +517,8 @@ func (m *manager) Delete(ctx context.Context, vmID string, force bool) error {
 	// Remove VM directories.
 	vmDir := m.cfg.VMPersistDir(vmID)
 	runtimeDir := m.cfg.VMRuntimeDir(vmID)
-	os.RemoveAll(vmDir)
-	os.RemoveAll(runtimeDir)
+	_ = os.RemoveAll(vmDir)
+	_ = os.RemoveAll(runtimeDir)
 
 	return nil
 }

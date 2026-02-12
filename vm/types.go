@@ -28,12 +28,12 @@ type CreateOptions struct {
 type InconsistencyType string
 
 const (
-	InconsistencyStateMismatch    InconsistencyType = "state_mismatch"
-	InconsistencyMetadataCorrupt  InconsistencyType = "metadata_corrupted"
-	InconsistencyStalePIDFile     InconsistencyType = "stale_pid_file"
-	InconsistencyZombieSocket     InconsistencyType = "zombie_socket"
-	InconsistencyZombieProcess    InconsistencyType = "zombie_process"
-	InconsistencyMissingOverlay   InconsistencyType = "missing_overlay"
+	InconsistencyStateMismatch   InconsistencyType = "state_mismatch"
+	InconsistencyMetadataCorrupt InconsistencyType = "metadata_corrupted"
+	InconsistencyStalePIDFile    InconsistencyType = "stale_pid_file"
+	InconsistencyZombieSocket    InconsistencyType = "zombie_socket"
+	InconsistencyZombieProcess   InconsistencyType = "zombie_process"
+	InconsistencyMissingOverlay  InconsistencyType = "missing_overlay"
 )
 
 // InconsistencySeverity indicates how serious an inconsistency is.

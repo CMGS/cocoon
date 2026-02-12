@@ -45,12 +45,12 @@ func ForceKillProcess(pid int) error {
 
 // WritePIDFile writes a PID to a file.
 func WritePIDFile(path string, pid int) error {
-	return os.WriteFile(path, []byte(strconv.Itoa(pid)), 0644)
+	return os.WriteFile(path, []byte(strconv.Itoa(pid)), 0o644) //nolint:gosec // G306: PID file needs to be readable by other cocoon processes
 }
 
 // ReadPIDFile reads a PID from a file.
 func ReadPIDFile(path string) (int, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: PID file path is an internal runtime path
 	if err != nil {
 		return 0, err
 	}
