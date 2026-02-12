@@ -40,6 +40,13 @@ type CocoonConfig struct {
 	BootTimeoutSeconds int `json:"boot_timeout_seconds"`
 	// Stop timeout in seconds.
 	StopTimeoutSeconds int `json:"stop_timeout_seconds"`
+
+	// BootSuccessPatterns are regex patterns indicating successful boot.
+	// If empty, defaults are used.
+	BootSuccessPatterns []string `json:"boot_success_patterns,omitempty"`
+	// BootFailurePatterns are regex patterns indicating boot failure.
+	// If empty, defaults are used.
+	BootFailurePatterns []string `json:"boot_failure_patterns,omitempty"`
 }
 
 // DefaultConfig returns a CocoonConfig with default values.
@@ -104,6 +111,34 @@ func (c *CocoonConfig) RebaseRootDir(newRoot string) {
 	c.BuildahRoot = rebase(c.BuildahRoot)
 	c.PVHFirmwarePath = rebase(c.PVHFirmwarePath)
 	c.UEFIFirmwarePath = rebase(c.UEFIFirmwarePath)
+}
+
+// BootSuccessPatternsOrDefault returns the configured boot success patterns,
+// or sensible defaults if none are configured.
+func (c *CocoonConfig) BootSuccessPatternsOrDefault() []string {
+	if len(c.BootSuccessPatterns) > 0 {
+		return c.BootSuccessPatterns
+	}
+	return []string{
+		`login:`,
+		`Cloud-init .* finished`,
+		`Reached target .* Login`,
+		`systemd .* running`,
+	}
+}
+
+// BootFailurePatternsOrDefault returns the configured boot failure patterns,
+// or sensible defaults if none are configured.
+func (c *CocoonConfig) BootFailurePatternsOrDefault() []string {
+	if len(c.BootFailurePatterns) > 0 {
+		return c.BootFailurePatterns
+	}
+	return []string{
+		`Kernel panic`,
+		`not syncing`,
+		`No working init found`,
+		`Failed to execute /init`,
+	}
 }
 
 // Derived path helpers.

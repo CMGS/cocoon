@@ -46,7 +46,7 @@ func initApp(_ *cli.Context) (*appContext, error) {
 	refCtr := storage.NewReferenceCounter(cfg)
 	cowMgr := storage.NewCOWManager(cfg)
 	gc := storage.NewGarbageCollector(cfg)
-	imgMgr := image.NewManager(cfg)
+	imgMgr := image.NewManager(cfg, refCtr)
 	vmMgr := vm.NewManager(cfg, hyper, refCtr, cowMgr, imgMgr)
 
 	return &appContext{

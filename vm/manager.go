@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -224,6 +225,20 @@ func (m *manager) Create(ctx context.Context, opts *CreateOptions) (*types.VMCon
 		return nil, fmt.Errorf("prepare image %s: %w", opts.Image, err)
 	}
 
+	// Step 1b: Verify bootability (unless skipped).
+	if !opts.SkipVerify {
+		result, verifyErr := m.imgMgr.VerifyBootability(ctx, baseImagePath)
+		if verifyErr != nil {
+			return nil, fmt.Errorf("verify bootability for %s: %w", opts.Image, verifyErr)
+		}
+		if !result.Bootable {
+			return nil, fmt.Errorf("%w: %s - %v", types.ErrImageNotBootable, opts.Image, result.Errors)
+		}
+		for _, w := range result.Warnings {
+			log.Printf("image %s: bootability warning: %s", opts.Image, w)
+		}
+	}
+
 	baseKey := identity.BaseKey()
 
 	// Resolve firmware path based on boot strategy and arch.
@@ -320,9 +335,74 @@ func (m *manager) Create(ctx context.Context, opts *CreateOptions) (*types.VMCon
 	return vmCfg, nil
 }
 
+// bootResult holds the outcome of a successful boot attempt.
+type bootResult struct {
+	pid          int
+	bootMode     types.BootMode
+	firmwarePath string
+}
+
+// attemptBoot launches a Cloud Hypervisor process, configures the VM, and boots
+// the guest using the specified firmware and boot mode. It operates on a copy of
+// vmCfg so the on-disk config.json is never modified.
+//
+// On success it returns a bootResult with the CH process PID and the actual boot
+// parameters. On any failure after the CH process has been launched, it force-kills
+// the process before returning the error.
+func (m *manager) attemptBoot(ctx context.Context, vmID string, vmCfg *types.VMConfig, firmwarePath string, bootMode types.BootMode) (*bootResult, error) {
+	// Work on a shallow copy so we never mutate the caller's config.
+	cfgCopy := *vmCfg
+	cfgCopy.FirmwarePath = firmwarePath
+
+	// Map boot mode to the strategy the hypervisor client expects.
+	switch bootMode {
+	case types.BootModeUEFI:
+		cfgCopy.BootStrategy = types.BootStrategyUEFIOnly
+	default: // PVH
+		cfgCopy.BootStrategy = types.BootStrategyPVHOnly
+	}
+
+	// Step 1: Launch Cloud Hypervisor process.
+	pid, err := m.hyper.Launch(ctx, vmID, &cfgCopy)
+	if err != nil {
+		return nil, fmt.Errorf("launch CH for %s (%s): %w", vmID, bootMode, err)
+	}
+
+	// Record PID in metadata immediately after launch (no state change).
+	if err := m.updateMetadata(vmID, func(md *types.VMMetadataFile) {
+		md.ProcessPID = pid
+		md.StartedAt = time.Now().UTC().Format(time.RFC3339)
+	}); err != nil {
+		_ = m.hyper.ForceKill(vmID)
+		return nil, fmt.Errorf("record PID for %s: %w", vmID, err)
+	}
+
+	// Step 2: Configure the VM via CH REST API.
+	chVMCfg := buildCHVMConfig(&cfgCopy)
+	if err := m.hyper.CreateVM(ctx, cfgCopy.SocketPath, chVMCfg); err != nil {
+		_ = m.hyper.ForceKill(vmID)
+		return nil, fmt.Errorf("create VM config for %s (%s): %w", vmID, bootMode, err)
+	}
+
+	// Step 3: Boot the guest.
+	if err := m.hyper.BootVM(ctx, cfgCopy.SocketPath); err != nil {
+		_ = m.hyper.ForceKill(vmID)
+		return nil, fmt.Errorf("boot VM %s (%s): %w", vmID, bootMode, err)
+	}
+
+	return &bootResult{
+		pid:          pid,
+		bootMode:     bootMode,
+		firmwarePath: firmwarePath,
+	}, nil
+}
+
 // Start launches the Cloud Hypervisor process for a VM.
 // Follows the transition flow: CREATED/STOPPED -> STARTING -> RUNNING.
 // Idempotent: starting a RUNNING VM is a no-op.
+//
+// When BootStrategy is pvh_then_uefi and the PVH boot fails, Start
+// automatically retries with UEFI firmware before transitioning to ERROR.
 func (m *manager) Start(ctx context.Context, vmID string) error {
 	meta, err := m.LoadMetadata(vmID)
 	if err != nil {
@@ -357,49 +437,56 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 		return transErr
 	}
 
-	// Step 1: Launch Cloud Hypervisor process.
-	pid, err := m.hyper.Launch(ctx, vmID, vmCfg)
-	if err != nil {
-		_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("launch failed: %v", err))
-		return fmt.Errorf("launch CH for %s: %w", vmID, err)
+	// Attempt boot with fallback logic based on boot strategy.
+	var result *bootResult
+	var bootErr error
+
+	switch vmCfg.BootStrategy {
+	case types.BootStrategyPVHThenUEFI:
+		// First attempt: PVH boot using the firmware from config.
+		result, bootErr = m.attemptBoot(ctx, vmID, vmCfg, vmCfg.FirmwarePath, types.BootModePVH)
+		if bootErr != nil {
+			log.Printf("PVH boot failed for %s, falling back to UEFI: %v", vmID, bootErr)
+			// Second attempt: UEFI boot using the global UEFI firmware path.
+			result, bootErr = m.attemptBoot(ctx, vmID, vmCfg, m.cfg.UEFIFirmwarePath, types.BootModeUEFI)
+		}
+
+	case types.BootStrategyUEFIOnly:
+		result, bootErr = m.attemptBoot(ctx, vmID, vmCfg, vmCfg.FirmwarePath, types.BootModeUEFI)
+
+	case types.BootStrategyPVHOnly:
+		result, bootErr = m.attemptBoot(ctx, vmID, vmCfg, vmCfg.FirmwarePath, types.BootModePVH)
+
+	default:
+		// Unknown strategy: attempt PVH as the default.
+		result, bootErr = m.attemptBoot(ctx, vmID, vmCfg, vmCfg.FirmwarePath, types.BootModePVH)
 	}
 
-	// Record PID in metadata immediately after launch (no state change).
-	if err := m.updateMetadata(vmID, func(md *types.VMMetadataFile) {
-		md.ProcessPID = pid
-		md.StartedAt = time.Now().UTC().Format(time.RFC3339)
-	}); err != nil {
-		// PID recording failed but CH is running; try to kill it.
-		_ = m.hyper.ForceKill(vmID)
-		_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("PID recording failed: %v", err))
-		return fmt.Errorf("record PID for %s: %w", vmID, err)
+	if bootErr != nil {
+		_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("boot failed: %v", bootErr))
+		return fmt.Errorf("boot VM %s: %w", vmID, bootErr)
 	}
 
-	// Step 2: Configure the VM via CH REST API.
-	chVMCfg := buildCHVMConfig(vmCfg)
-	if err := m.hyper.CreateVM(ctx, vmCfg.SocketPath, chVMCfg); err != nil {
-		_ = m.hyper.ForceKill(vmID)
-		_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("vm.create failed: %v", err))
-		return fmt.Errorf("create VM config for %s: %w", vmID, err)
+	// Wait for the guest to finish booting by monitoring the serial log.
+	bootTimeout := time.Duration(m.cfg.BootTimeoutSeconds) * time.Second
+	if bootTimeout > 0 {
+		successPatterns := m.cfg.BootSuccessPatternsOrDefault()
+		failurePatterns := m.cfg.BootFailurePatternsOrDefault()
+		if err := waitForBoot(ctx, vmCfg.SerialLog, bootTimeout, successPatterns, failurePatterns); err != nil {
+			log.Printf("boot detection failed for %s: %v", vmID, err)
+			_ = m.hyper.ForceKill(vmID)
+			_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("boot detection: %v", err))
+			return fmt.Errorf("boot VM %s: %w", vmID, err)
+		}
 	}
 
-	// Step 3: Boot the guest.
-	if err := m.hyper.BootVM(ctx, vmCfg.SocketPath); err != nil {
-		_ = m.hyper.ForceKill(vmID)
-		_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("vm.boot failed: %v", err))
-		return fmt.Errorf("boot VM %s: %w", vmID, err)
-	}
-
-	// Step 4: Determine boot mode from config.
-	bootMode := resolveBootMode(vmCfg.BootStrategy)
-
-	// Step 5: Transition STARTING -> RUNNING with runtime metadata.
+	// Transition STARTING -> RUNNING with runtime metadata.
 	now := time.Now().UTC().Format(time.RFC3339)
 	if err := m.transitionStateWithUpdate(vmID, types.VMStateRunning, "boot completed", func(md *types.VMMetadataFile) {
-		md.ProcessPID = pid
+		md.ProcessPID = result.pid
 		md.BootTime = now
-		md.LastBootMode = string(bootMode)
-		md.LastFirmwarePath = vmCfg.FirmwarePath
+		md.LastBootMode = string(result.bootMode)
+		md.LastFirmwarePath = result.firmwarePath
 	}); err != nil {
 		// Transition failed but VM is running; force kill and go to ERROR.
 		_ = m.hyper.ForceKill(vmID)
@@ -497,6 +584,18 @@ func (m *manager) Delete(ctx context.Context, vmID string, force bool) error {
 	// Force kill if process might still be alive (e.g., stuck in STARTING/STOPPING/ERROR).
 	if m.hyper.IsAlive(vmID) {
 		_ = m.hyper.ForceKill(vmID)
+	}
+
+	// Transition to DELETED state before removing resources.
+	if transErr := m.TransitionState(vmID, types.VMStateDeleted, "delete requested"); transErr != nil {
+		if !force {
+			return fmt.Errorf("transition to DELETED: %w", transErr)
+		}
+		// Force: write DELETED state directly, bypassing validation.
+		_ = m.updateMetadata(vmID, func(md *types.VMMetadataFile) {
+			md.PreviousState = md.State
+			md.State = string(types.VMStateDeleted)
+		})
 	}
 
 	// Load config to get the name and baseKey for cleanup.
@@ -679,19 +778,6 @@ func resolveFirmwarePath(cfg *config.CocoonConfig, strategy types.BootStrategy, 
 			return "", fmt.Errorf("%w: PVH firmware path not configured", types.ErrFirmwareNotFound)
 		}
 		return cfg.PVHFirmwarePath, nil
-	}
-}
-
-// resolveBootMode maps a boot strategy to the actual boot mode recorded in
-// metadata. For pvh_then_uefi, the initial attempt is always PVH.
-func resolveBootMode(strategy types.BootStrategy) types.BootMode {
-	switch strategy {
-	case types.BootStrategyUEFIOnly:
-		return types.BootModeUEFI
-	case types.BootStrategyPVHOnly, types.BootStrategyPVHThenUEFI:
-		return types.BootModePVH
-	default:
-		return types.BootModePVH
 	}
 }
 

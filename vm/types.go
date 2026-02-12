@@ -22,6 +22,10 @@ type CreateOptions struct {
 
 	// BootStrategy is one of "pvh_then_uefi" (default), "uefi_only", "pvh_only".
 	BootStrategy types.BootStrategy `json:"boot_strategy,omitempty"`
+
+	// SkipVerify skips bootability verification during create.
+	// Useful for known-good images or when guestfish is unavailable.
+	SkipVerify bool `json:"skip_verify,omitempty"`
 }
 
 // InconsistencyType classifies the kind of reconciliation inconsistency.

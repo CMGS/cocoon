@@ -37,14 +37,11 @@ func startAction(c *cli.Context) error {
 		return fmt.Errorf("resolve VM ref %q: %w", ref, err)
 	}
 
-	// Boot timeout is accepted but currently informational; the Start method
-	// does not yet support a timeout parameter. When boot-detection is
-	// implemented, this value will be forwarded to the manager.
+	// Override config boot timeout if --boot-timeout flag is specified.
 	bootTimeout := c.Int("boot-timeout")
-	if bootTimeout == 0 {
-		bootTimeout = app.cfg.BootTimeoutSeconds
+	if bootTimeout > 0 {
+		app.cfg.BootTimeoutSeconds = bootTimeout
 	}
-	_ = bootTimeout // Reserved for future boot-detection integration.
 
 	if err := app.vmMgr.Start(c.Context, vmID); err != nil {
 		return fmt.Errorf("start VM: %w", err)

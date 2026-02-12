@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/CMGS/cocoon/config"
 	"github.com/CMGS/cocoon/lock"
+	"github.com/CMGS/cocoon/storage"
 	"github.com/CMGS/cocoon/types"
 )
 
@@ -27,13 +30,15 @@ var _ Manager = (*manager)(nil)
 // It coordinates image pulling, conversion, caching, and bootability
 // verification using external tools (Buildah, qemu-img, libguestfs).
 type manager struct {
-	cfg *config.CocoonConfig
+	cfg    *config.CocoonConfig
+	refCtr storage.ReferenceCounter
 }
 
 // NewManager creates a new image Manager backed by the given configuration.
 // The configuration determines cache directories, lock paths, and tool locations.
-func NewManager(cfg *config.CocoonConfig) Manager {
-	return &manager{cfg: cfg}
+// The ReferenceCounter is used to populate reference counts when listing cached images.
+func NewManager(cfg *config.CocoonConfig, refCtr storage.ReferenceCounter) Manager {
+	return &manager{cfg: cfg, refCtr: refCtr}
 }
 
 // Pull downloads an OCI image or cloud image based on the reference type.
@@ -121,7 +126,7 @@ func (m *manager) Convert(ctx context.Context, identity *ImageIdentity) (string,
 		// Already qcow2: atomic copy (temp + fsync + rename).
 		log.Printf("image %s: source is qcow2, performing atomic copy to cache", baseKey)
 		if err := atomicCopyFile(srcPath, tmpPath); err != nil {
-			return "", fmt.Errorf("convert %s: copy qcow2 to cache: %w", baseKey, err)
+			return "", types.NewPermanentError(fmt.Errorf("convert %s: copy qcow2 to cache: %w", baseKey, err))
 		}
 
 	case "raw":
@@ -129,11 +134,11 @@ func (m *manager) Convert(ctx context.Context, identity *ImageIdentity) (string,
 		log.Printf("image %s: converting raw -> qcow2", baseKey)
 		cmd := exec.CommandContext(ctx, "qemu-img", "convert", "-f", "raw", "-O", "qcow2", srcPath, tmpPath) //nolint:gosec // args are controlled internal paths, not user input
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return "", fmt.Errorf("convert %s: qemu-img convert: %s: %w", baseKey, string(out), err)
+			return "", types.NewPermanentError(fmt.Errorf("convert %s: qemu-img convert: %s: %w", baseKey, string(out), err))
 		}
 
 	default:
-		return "", fmt.Errorf("convert %s: unsupported source format %q (expected qcow2 or raw)", baseKey, format)
+		return "", types.NewPermanentError(fmt.Errorf("convert %s: unsupported source format %q (expected qcow2 or raw)", baseKey, format))
 	}
 
 	// Atomic rename into cache.
@@ -327,12 +332,19 @@ func (m *manager) ListCached(ctx context.Context) ([]*CachedImage, error) {
 			continue
 		}
 
+		refCount := 0
+		if m.refCtr != nil {
+			if refs, refErr := m.refCtr.GetReferences(baseKey); refErr == nil {
+				refCount = len(refs)
+			}
+		}
+
 		images = append(images, &CachedImage{
 			BaseKey:   baseKey,
 			Path:      filepath.Join(cacheDir, name),
 			Size:      info.Size(),
 			CreatedAt: info.ModTime(),
-			RefCount:  0, // Stub: actual ref count requires reading references.json.
+			RefCount:  refCount,
 		})
 	}
 
@@ -398,13 +410,13 @@ func (m *manager) pullURL(ctx context.Context, ref string) (*ImageIdentity, erro
 	// Ensure temp directory exists.
 	tempDir := m.cfg.TempDir()
 	if err := os.MkdirAll(tempDir, 0o755); err != nil { //nolint:gosec // G301: temp dir needs world-readable access for image operations
-		return nil, fmt.Errorf("create temp dir: %w", err)
+		return nil, types.NewPermanentError(fmt.Errorf("create temp dir: %w", err))
 	}
 
 	// Create temp file for download.
 	tmpFile, err := os.CreateTemp(tempDir, "pull-*.img")
 	if err != nil {
-		return nil, fmt.Errorf("create temp file for download: %w", err)
+		return nil, types.NewPermanentError(fmt.Errorf("create temp file for download: %w", err))
 	}
 	tmpPath := tmpFile.Name()
 
@@ -425,12 +437,25 @@ func (m *manager) pullURL(ctx context.Context, ref string) (*ImageIdentity, erro
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("HTTP GET %s: %w", ref, err)
+		// Classify network-level errors as transient.
+		httpErr := fmt.Errorf("HTTP GET %s: %w", ref, err)
+		var netErr net.Error
+		if errors.As(err, &netErr) {
+			return nil, types.NewTransientError(httpErr)
+		}
+		return nil, types.NewTransientError(httpErr)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP GET %s: unexpected status %d %s", ref, resp.StatusCode, resp.Status)
+		httpErr := fmt.Errorf("HTTP GET %s: unexpected status %d %s", ref, resp.StatusCode, resp.Status)
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			return nil, types.NewTransientError(httpErr)
+		}
+		if resp.StatusCode >= 400 {
+			return nil, types.NewPermanentError(httpErr)
+		}
+		return nil, httpErr
 	}
 
 	// Stream body to temp file while computing SHA-256 checksum.
@@ -446,7 +471,7 @@ func (m *manager) pullURL(ctx context.Context, ref string) (*ImageIdentity, erro
 		n, readErr := reader.Read(buf)
 		if n > 0 {
 			if _, writeErr := tmpFile.Write(buf[:n]); writeErr != nil {
-				return nil, fmt.Errorf("write to temp file %s: %w", tmpPath, writeErr)
+				return nil, types.NewPermanentError(fmt.Errorf("write to temp file %s: %w", tmpPath, writeErr))
 			}
 			written += int64(n)
 
@@ -506,7 +531,7 @@ func (m *manager) pullLocal(_ context.Context, ref string) (*ImageIdentity, erro
 	}
 
 	if _, statErr := os.Stat(absPath); statErr != nil {
-		return nil, fmt.Errorf("local image file not found: %w", statErr)
+		return nil, types.NewPermanentError(fmt.Errorf("local image file not found: %w", statErr))
 	}
 
 	fullDigest, checksum, err := ComputeFileChecksum(absPath)

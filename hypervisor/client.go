@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/CMGS/cocoon/config"
@@ -19,6 +23,12 @@ import (
 
 // Compile-time interface check.
 var _ Client = (*client)(nil)
+
+// Default retry parameters for CH REST API calls.
+const (
+	defaultMaxRetries  = 3
+	defaultBaseBackoff = 100 * time.Millisecond
+)
 
 // client implements the Client interface using HTTP over Unix socket for the
 // CH REST API and os/exec for process management.
@@ -30,6 +40,10 @@ type client struct {
 	// client uses a default dialer; per-socket clients are created on
 	// demand by newHTTPClient.
 	httpTimeout time.Duration
+
+	// Retry configuration for transient CH REST API errors.
+	maxRetries  int
+	baseBackoff time.Duration
 }
 
 // NewClient creates a new hypervisor client backed by the given Cocoon config.
@@ -37,12 +51,37 @@ func NewClient(cfg *config.CocoonConfig) Client {
 	return &client{
 		cfg:         cfg,
 		httpTimeout: 30 * time.Second,
+		maxRetries:  defaultMaxRetries,
+		baseBackoff: defaultBaseBackoff,
 	}
 }
 
 // ---------------------------------------------------------------------------
 // Process management
 // ---------------------------------------------------------------------------
+
+// buildLaunchArgs constructs the Cloud Hypervisor CLI arguments for a given
+// VM configuration. It selects the correct firmware flag based on the boot
+// strategy: --kernel for UEFI, --firmware for PVH (the default).
+func buildLaunchArgs(socketPath string, cfg *types.VMConfig) []string {
+	args := []string{
+		"--api-socket", socketPath,
+	}
+
+	firmwarePath := cfg.FirmwarePath
+	if firmwarePath != "" {
+		switch cfg.BootStrategy {
+		case types.BootStrategyUEFIOnly:
+			// Cloud Hypervisor uses --kernel for UEFI firmware (CLOUDHV.fd).
+			args = append(args, "--kernel", firmwarePath)
+		default:
+			// PVH and pvh_then_uefi both use --firmware for the initial attempt.
+			args = append(args, "--firmware", firmwarePath)
+		}
+	}
+
+	return args
+}
 
 // Launch starts a Cloud Hypervisor process for the given VM.
 func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (int, error) {
@@ -55,19 +94,11 @@ func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (
 	socketPath := c.cfg.VMSocketPath(vmID)
 
 	// Build CH command-line arguments.
-	// Only pass --api-socket and --firmware on the CLI. All VM resource
+	// Only pass --api-socket and firmware flag on the CLI. All VM resource
 	// configuration (cpus, memory, disks, serial, console) is sent via the
 	// PUT /api/v1/vm.create REST call so there is no conflict between CLI
 	// flags and the REST API.
-	args := []string{
-		"--api-socket", socketPath,
-	}
-
-	// Add firmware flag based on boot strategy.
-	firmwarePath := cfg.FirmwarePath
-	if firmwarePath != "" {
-		args = append(args, "--firmware", firmwarePath)
-	}
+	args := buildLaunchArgs(socketPath, cfg)
 
 	cmd := exec.CommandContext(ctx, c.cfg.CHBinary, args...) //nolint:gosec // CHBinary is a trusted config value, not user input
 
@@ -97,10 +128,11 @@ func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (
 		return 0, fmt.Errorf("wait for socket %s: %w", socketPath, err)
 	}
 
-	// Release the exec.Cmd's process handle; the CH process is intentionally
-	// orphaned (it outlives the cocoon CLI invocation).
-	// TODO: implement proper background-process release.
-	go func() { _ = cmd.Wait() }()
+	// Release the OS process handle. The CH process is intentionally
+	// orphaned -- it outlives the cocoon CLI invocation. Process.Release()
+	// detaches Go's handle so the process is not waited on. This avoids
+	// leaking a goroutine per Launch() call.
+	_ = cmd.Process.Release()
 
 	return pid, nil
 }
@@ -168,31 +200,52 @@ func (c *client) CreateVM(ctx context.Context, socketPath string, vmCfg *CHVMCon
 	if err != nil {
 		return fmt.Errorf("marshal vm config: %w", err)
 	}
-	return c.doPUT(ctx, socketPath, "/api/v1/vm.create", body)
+	return c.doWithRetry(ctx, func() error {
+		return c.doPUT(ctx, socketPath, "/api/v1/vm.create", body)
+	})
 }
 
 // BootVM sends PUT /api/v1/vm.boot.
 func (c *client) BootVM(ctx context.Context, socketPath string) error {
-	return c.doPUT(ctx, socketPath, "/api/v1/vm.boot", nil)
+	return c.doWithRetry(ctx, func() error {
+		return c.doPUT(ctx, socketPath, "/api/v1/vm.boot", nil)
+	})
 }
 
 // ShutdownVM sends PUT /api/v1/vm.shutdown.
 func (c *client) ShutdownVM(ctx context.Context, socketPath string) error {
-	return c.doPUT(ctx, socketPath, "/api/v1/vm.shutdown", nil)
+	return c.doWithRetry(ctx, func() error {
+		return c.doPUT(ctx, socketPath, "/api/v1/vm.shutdown", nil)
+	})
 }
 
 // PowerButton sends PUT /api/v1/vm.power-button.
 func (c *client) PowerButton(ctx context.Context, socketPath string) error {
-	return c.doPUT(ctx, socketPath, "/api/v1/vm.power-button", nil)
+	return c.doWithRetry(ctx, func() error {
+		return c.doPUT(ctx, socketPath, "/api/v1/vm.power-button", nil)
+	})
 }
 
 // DeleteVM sends PUT /api/v1/vm.delete.
 func (c *client) DeleteVM(ctx context.Context, socketPath string) error {
-	return c.doPUT(ctx, socketPath, "/api/v1/vm.delete", nil)
+	return c.doWithRetry(ctx, func() error {
+		return c.doPUT(ctx, socketPath, "/api/v1/vm.delete", nil)
+	})
 }
 
 // GetVMInfo sends GET /api/v1/vm.info and decodes the JSON response.
 func (c *client) GetVMInfo(ctx context.Context, socketPath string) (*CHVMInfo, error) {
+	var info *CHVMInfo
+	err := c.doWithRetry(ctx, func() error {
+		var innerErr error
+		info, innerErr = c.doGetVMInfo(ctx, socketPath)
+		return innerErr
+	})
+	return info, err
+}
+
+// doGetVMInfo is the single-attempt implementation of GetVMInfo.
+func (c *client) doGetVMInfo(ctx context.Context, socketPath string) (*CHVMInfo, error) {
 	hc := c.newHTTPClient(socketPath)
 
 	url := "http://localhost/api/v1/vm.info"
@@ -209,7 +262,10 @@ func (c *client) GetVMInfo(ctx context.Context, socketPath string) (*CHVMInfo, e
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("GET %s returned %d: %s", url, resp.StatusCode, string(respBody))
+		return nil, &apiError{
+			StatusCode: resp.StatusCode,
+			Message:    fmt.Sprintf("GET %s returned %d: %s", url, resp.StatusCode, string(respBody)),
+		}
 	}
 
 	var info CHVMInfo
@@ -217,6 +273,114 @@ func (c *client) GetVMInfo(ctx context.Context, socketPath string) (*CHVMInfo, e
 		return nil, fmt.Errorf("decode vm.info response: %w", err)
 	}
 	return &info, nil
+}
+
+// ---------------------------------------------------------------------------
+// Retry logic
+// ---------------------------------------------------------------------------
+
+// apiError represents an HTTP error response from the CH REST API.
+// It carries the status code so the retry logic can classify it.
+type apiError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *apiError) Error() string { return e.Message }
+
+// isRetryable determines whether an error is transient and should be retried.
+// Retryable: connection refused, HTTP 500, HTTP 503, net timeout.
+// Not retryable: HTTP 4xx (except 429), context.Canceled.
+func isRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Never retry on context cancellation.
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+
+	// Check for API errors with HTTP status codes.
+	var ae *apiError
+	if errors.As(err, &ae) {
+		switch {
+		case ae.StatusCode == http.StatusTooManyRequests: // 429
+			return true
+		case ae.StatusCode >= 400 && ae.StatusCode < 500:
+			return false // client errors are permanent
+		case ae.StatusCode == http.StatusInternalServerError,
+			ae.StatusCode == http.StatusServiceUnavailable:
+			return true
+		}
+		return false
+	}
+
+	// Connection refused (CH not yet accepting on socket).
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return true
+	}
+
+	// Check for net timeout.
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+
+	// context.DeadlineExceeded is transient (per-request timeout, not user cancel).
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	// Check for common transient error strings (connection refused wrapped
+	// in generic fmt.Errorf by the http client).
+	if strings.Contains(err.Error(), "connection refused") {
+		return true
+	}
+
+	return false
+}
+
+// doWithRetry executes fn with exponential backoff retry for transient errors.
+// It uses the client's configured maxRetries and baseBackoff.
+func (c *client) doWithRetry(ctx context.Context, fn func() error) error {
+	var lastErr error
+	backoff := c.baseBackoff
+
+	for attempt := 0; attempt <= c.maxRetries; attempt++ {
+		lastErr = fn()
+		if lastErr == nil {
+			return nil
+		}
+
+		// Do not retry non-retryable errors.
+		if !isRetryable(lastErr) {
+			return lastErr
+		}
+
+		// Do not retry if this was the last attempt.
+		if attempt == c.maxRetries {
+			break
+		}
+
+		// Log the retry attempt.
+		log.Printf("CH API transient error (attempt %d/%d): %v; retrying in %s",
+			attempt+1, c.maxRetries+1, lastErr, backoff)
+
+		// Wait with jitter: backoff +/- 25%.
+		jitter := time.Duration(rand.Int64N(int64(backoff/2))) - backoff/4 //nolint:gosec // G404: jitter does not need cryptographic randomness
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("retry canceled: %w", ctx.Err())
+		case <-time.After(backoff + jitter):
+		}
+
+		// Exponential backoff: 100ms -> 200ms -> 400ms.
+		backoff *= 2
+	}
+
+	return fmt.Errorf("after %d retries: %w", c.maxRetries, lastErr)
 }
 
 // ---------------------------------------------------------------------------
@@ -305,7 +469,10 @@ func (c *client) doPUT(ctx context.Context, socketPath, path string, body []byte
 
 	if resp.StatusCode != http.StatusNoContent {
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("PUT %s returned %d: %s", path, resp.StatusCode, string(respBody))
+		return &apiError{
+			StatusCode: resp.StatusCode,
+			Message:    fmt.Sprintf("PUT %s returned %d: %s", path, resp.StatusCode, string(respBody)),
+		}
 	}
 
 	return nil

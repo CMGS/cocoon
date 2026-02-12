@@ -41,6 +41,10 @@ func vmCreateFlags() []cli.Flag {
 			Value: string(types.DefaultBootStrategy),
 			Usage: "boot strategy: pvh_then_uefi, uefi_only, pvh_only",
 		},
+		&cli.BoolFlag{
+			Name:  "skip-verify",
+			Usage: "skip bootability verification of the image",
+		},
 	}
 }
 
@@ -73,6 +77,7 @@ func parseCreateOptions(c *cli.Context, cmdName string) (*vm.CreateOptions, erro
 		MemoryMB:     memoryMB,
 		DiskSize:     c.String("disk"),
 		BootStrategy: types.BootStrategy(c.String("boot-strategy")),
+		SkipVerify:   c.Bool("skip-verify"),
 	}, nil
 }
 

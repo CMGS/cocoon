@@ -14,6 +14,8 @@ func firmwareCommand() *cli.Command {
 		Subcommands: []*cli.Command{
 			firmwareListCommand(),
 			firmwareVerifyCommand(),
+			firmwareInstallCommand(),
+			firmwareUpdateCommand(),
 		},
 	}
 }
@@ -112,6 +114,79 @@ func firmwareVerifyAction(c *cli.Context) error {
 	}
 
 	fmt.Println("\nAll firmware files verified.")
+	return nil
+}
+
+func firmwareInstallCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "install",
+		Usage: "Download and install firmware files",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:  "pvh-url",
+				Usage: "download PVH firmware (hypervisor-fw) from `URL`",
+			},
+			&cli.StringFlag{
+				Name:  "uefi-url",
+				Usage: "download UEFI firmware (CLOUDHV.fd) from `URL`",
+			},
+			&cli.BoolFlag{
+				Name:  "force",
+				Usage: "re-download even if firmware files already exist",
+			},
+		},
+		Action: firmwareInstallAction,
+	}
+}
+
+func firmwareUpdateCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "update",
+		Usage: "Update firmware files (alias for install)",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:  "pvh-url",
+				Usage: "download PVH firmware (hypervisor-fw) from `URL`",
+			},
+			&cli.StringFlag{
+				Name:  "uefi-url",
+				Usage: "download UEFI firmware (CLOUDHV.fd) from `URL`",
+			},
+			&cli.BoolFlag{
+				Name:  "force",
+				Usage: "re-download even if firmware files already exist",
+			},
+		},
+		Action: firmwareInstallAction,
+	}
+}
+
+func firmwareInstallAction(c *cli.Context) error {
+	pvhURL := c.String("pvh-url")
+	uefiURL := c.String("uefi-url")
+	force := c.Bool("force")
+
+	if pvhURL == "" && uefiURL == "" {
+		return fmt.Errorf("at least one of --pvh-url or --uefi-url must be specified")
+	}
+
+	app, err := initApp(c)
+	if err != nil {
+		return err
+	}
+
+	if pvhURL != "" {
+		if err := downloadFirmware(pvhURL, app.cfg.PVHFirmwarePath, 0o755, force); err != nil {
+			return fmt.Errorf("download PVH firmware: %w", err)
+		}
+	}
+	if uefiURL != "" {
+		if err := downloadFirmware(uefiURL, app.cfg.UEFIFirmwarePath, 0o644, force); err != nil {
+			return fmt.Errorf("download UEFI firmware: %w", err)
+		}
+	}
+
+	fmt.Println("Firmware install complete.")
 	return nil
 }
 

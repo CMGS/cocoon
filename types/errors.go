@@ -1,6 +1,9 @@
 package types
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // ErrorType categorizes VM errors for structured error reporting.
 type ErrorType string
@@ -43,3 +46,50 @@ var (
 	ErrCHNotFound        = errors.New("cloud-hypervisor binary not found")
 	ErrFirmwareNotFound  = errors.New("firmware file not found")
 )
+
+// ErrorCategory distinguishes transient (retriable) errors from permanent ones.
+type ErrorCategory string
+
+const (
+	// ErrorCategoryTransient indicates an error that may succeed on retry
+	// (e.g., network timeout, HTTP 429/5xx).
+	ErrorCategoryTransient ErrorCategory = "transient"
+	// ErrorCategoryPermanent indicates an error that will not succeed on retry
+	// (e.g., HTTP 404, invalid image format, missing file).
+	ErrorCategoryPermanent ErrorCategory = "permanent"
+)
+
+// ClassifiedError wraps an error with a category (transient or permanent)
+// so callers can decide whether to retry.
+type ClassifiedError struct {
+	Category ErrorCategory
+	Err      error
+}
+
+func (e *ClassifiedError) Error() string {
+	return fmt.Sprintf("[%s] %s", e.Category, e.Err.Error())
+}
+
+func (e *ClassifiedError) Unwrap() error {
+	return e.Err
+}
+
+// IsTransient returns true if the error (or any error in its chain) is a
+// ClassifiedError with category transient.
+func IsTransient(err error) bool {
+	var ce *ClassifiedError
+	if errors.As(err, &ce) {
+		return ce.Category == ErrorCategoryTransient
+	}
+	return false
+}
+
+// NewTransientError wraps err as a transient (retriable) classified error.
+func NewTransientError(err error) *ClassifiedError {
+	return &ClassifiedError{Category: ErrorCategoryTransient, Err: err}
+}
+
+// NewPermanentError wraps err as a permanent (non-retriable) classified error.
+func NewPermanentError(err error) *ClassifiedError {
+	return &ClassifiedError{Category: ErrorCategoryPermanent, Err: err}
+}

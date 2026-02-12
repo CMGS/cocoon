@@ -71,16 +71,18 @@ func (m *fileCOWManager) CreateBaseImage(srcPath, baseKey string) error {
 		_ = tmpFile.Close()
 		return fmt.Errorf("sync base image: %w", err)
 	}
-	if err = tmpFile.Chmod(0o644); err != nil {
-		_ = tmpFile.Close()
-		return fmt.Errorf("chmod base image: %w", err)
-	}
 	if err = tmpFile.Close(); err != nil {
 		return fmt.Errorf("close temp base image: %w", err)
 	}
 
 	if err = os.Rename(tmpPath, dstPath); err != nil {
 		return fmt.Errorf("rename base image into cache: %w", err)
+	}
+
+	// Mark the base image as read-only for all users. Base images are
+	// immutable -- VMs use COW overlays, never write to the base.
+	if err = os.Chmod(dstPath, 0o444); err != nil { //nolint:gosec // G302: intentionally world-readable; base images are immutable, VMs use COW overlays
+		return fmt.Errorf("chmod base image read-only: %w", err)
 	}
 	return nil
 }
