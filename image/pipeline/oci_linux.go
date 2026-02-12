@@ -73,7 +73,7 @@ func pullOCIPlatform(ctx context.Context, cfg *config.CocoonConfig, ref string) 
 
 	// 5. Parse the single manifest.
 	var manifest ociManifest
-	if err := json.Unmarshal(rawManifest, &manifest); err != nil {
+	if err = json.Unmarshal(rawManifest, &manifest); err != nil {
 		return nil, types.NewPermanentError(fmt.Errorf("parse single manifest for %s: %w", ref, err))
 	}
 
@@ -87,7 +87,7 @@ func pullOCIPlatform(ctx context.Context, cfg *config.CocoonConfig, ref string) 
 	fullDigest, checksum := computeOCIChecksum(configDigest, layerDigests, arch)
 
 	// 7. Pull image with buildah.
-	if _, err := runCmd(ctx, "buildah", "--root", root, "pull", ref); err != nil {
+	if _, err = runCmd(ctx, "buildah", "--root", root, "pull", ref); err != nil {
 		return nil, classifyBuildahError(fmt.Errorf("buildah pull %s: %w", ref, err))
 	}
 
