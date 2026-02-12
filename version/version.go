@@ -4,9 +4,9 @@ import "fmt"
 
 // These variables are set at build time via ldflags.
 //
-//	go build -ldflags "-X github.com/projecteru2/cocoon/version.REVISION=$(git rev-parse HEAD) \
-//	  -X github.com/projecteru2/cocoon/version.VERSION=$(git describe --tags) \
-//	  -X github.com/projecteru2/cocoon/version.BUILTAT=$(date +%Y-%m-%dT%H:%M:%S)"
+//	go build -ldflags "-X github.com/CMGS/cocoon/version.REVISION=$(git rev-parse HEAD) \
+//	  -X github.com/CMGS/cocoon/version.VERSION=$(git describe --tags) \
+//	  -X github.com/CMGS/cocoon/version.BUILTAT=$(date +%Y-%m-%dT%H:%M:%S)"
 var (
 	NAME     = "Cocoon"
 	VERSION  = "unknown"

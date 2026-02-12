@@ -10,8 +10,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/projecteru2/cocoon/hypervisor"
-	"github.com/projecteru2/cocoon/types"
+	"github.com/CMGS/cocoon/hypervisor"
+	"github.com/CMGS/cocoon/types"
 )
 
 // MockClient is a test double for hypervisor.Client.

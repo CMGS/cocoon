@@ -11,13 +11,13 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
-	"github.com/projecteru2/cocoon/config"
-	"github.com/projecteru2/cocoon/hypervisor"
-	"github.com/projecteru2/cocoon/image"
-	"github.com/projecteru2/cocoon/lock"
-	"github.com/projecteru2/cocoon/storage"
-	"github.com/projecteru2/cocoon/types"
-	"github.com/projecteru2/cocoon/utils"
+	"github.com/CMGS/cocoon/config"
+	"github.com/CMGS/cocoon/hypervisor"
+	"github.com/CMGS/cocoon/image"
+	"github.com/CMGS/cocoon/lock"
+	"github.com/CMGS/cocoon/storage"
+	"github.com/CMGS/cocoon/types"
+	"github.com/CMGS/cocoon/utils"
 )
 
 // Compile-time interface check.

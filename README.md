@@ -1,8 +1,8 @@
 # Cocoon
 
-[![test](https://github.com/projecteru2/cocoon/actions/workflows/test.yml/badge.svg)](https://github.com/projecteru2/cocoon/actions/workflows/test.yml)
-[![golangci-lint](https://github.com/projecteru2/cocoon/actions/workflows/lint.yml/badge.svg)](https://github.com/projecteru2/cocoon/actions/workflows/lint.yml)
-[![build](https://github.com/projecteru2/cocoon/actions/workflows/build.yml/badge.svg)](https://github.com/projecteru2/cocoon/actions/workflows/build.yml)
+[![test](https://github.com/CMGS/cocoon/actions/workflows/test.yml/badge.svg)](https://github.com/CMGS/cocoon/actions/workflows/test.yml)
+[![golangci-lint](https://github.com/CMGS/cocoon/actions/workflows/lint.yml/badge.svg)](https://github.com/CMGS/cocoon/actions/workflows/lint.yml)
+[![build](https://github.com/CMGS/cocoon/actions/workflows/build.yml/badge.svg)](https://github.com/CMGS/cocoon/actions/workflows/build.yml)
 
 Lightweight VM manager built on [Cloud Hypervisor](https://www.cloudhypervisor.org/) for managing microVMs with fast boot times and minimal resource overhead. Part of the [Eru](https://github.com/projecteru2) ecosystem.
 
@@ -26,7 +26,7 @@ Lightweight VM manager built on [Cloud Hypervisor](https://www.cloudhypervisor.o
 
 ```bash
 # Clone
-git clone https://github.com/projecteru2/cocoon.git
+git clone https://github.com/CMGS/cocoon.git
 cd cocoon
 
 # Build

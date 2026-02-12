@@ -9,7 +9,7 @@ package mocks
 import (
 	"context"
 
-	"github.com/projecteru2/cocoon/image"
+	"github.com/CMGS/cocoon/image"
 )
 
 // MockManager is a test double for image.Manager. Each method field can be

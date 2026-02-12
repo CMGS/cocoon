@@ -1,7 +1,7 @@
 // Package mocks provides test doubles for the lock.Locker interface.
 package mocks
 
-import "github.com/projecteru2/cocoon/lock"
+import "github.com/CMGS/cocoon/lock"
 
 // MockLocker is a test double for lock.Locker.
 // Each method can be overridden by setting the corresponding Func field.

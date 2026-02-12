@@ -14,8 +14,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/projecteru2/cocoon/types"
-	"github.com/projecteru2/cocoon/vm"
+	"github.com/CMGS/cocoon/types"
+	"github.com/CMGS/cocoon/vm"
 )
 
 // MockManager is a test double for vm.Manager.

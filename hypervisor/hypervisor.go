@@ -12,7 +12,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/projecteru2/cocoon/types"
+	"github.com/CMGS/cocoon/types"
 )
 
 // Client is the interface for managing a Cloud Hypervisor instance.

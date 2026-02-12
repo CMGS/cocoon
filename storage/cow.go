@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/projecteru2/cocoon/config"
+	"github.com/CMGS/cocoon/config"
 )
 
 // Compile-time interface check.

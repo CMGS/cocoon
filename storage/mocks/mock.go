@@ -5,7 +5,7 @@ package mocks
 import (
 	"time"
 
-	"github.com/projecteru2/cocoon/storage"
+	"github.com/CMGS/cocoon/storage"
 )
 
 // ---------------------------------------------------------------------------

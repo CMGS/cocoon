@@ -1,7 +1,7 @@
 .PHONY: all build build-linux test test-race test-short lint vet fmt fmt-check \
        mock clean deps install setup-dev setup-ch check ci coverage cloc verify help
 
-REPO_PATH := github.com/projecteru2/cocoon
+REPO_PATH := github.com/CMGS/cocoon
 REVISION := $(shell git rev-parse HEAD || echo unknown)
 BUILTAT := $(shell date +%Y-%m-%dT%H:%M:%S)
 VERSION := $(shell git describe --tags $(shell git rev-list --tags --max-count=1) 2>/dev/null || echo dev)

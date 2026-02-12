@@ -1,6 +1,6 @@
 package vm
 
-import "github.com/projecteru2/cocoon/types"
+import "github.com/CMGS/cocoon/types"
 
 // CreateOptions holds parameters for creating a new VM.
 type CreateOptions struct {

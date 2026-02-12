@@ -12,9 +12,9 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/projecteru2/cocoon/config"
-	"github.com/projecteru2/cocoon/types"
-	"github.com/projecteru2/cocoon/utils"
+	"github.com/CMGS/cocoon/config"
+	"github.com/CMGS/cocoon/types"
+	"github.com/CMGS/cocoon/utils"
 )
 
 // Compile-time interface check.

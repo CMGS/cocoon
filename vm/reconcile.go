@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/projecteru2/cocoon/types"
-	"github.com/projecteru2/cocoon/utils"
+	"github.com/CMGS/cocoon/types"
+	"github.com/CMGS/cocoon/utils"
 )
 
 // Reconcile scans all VMs and detects inconsistencies between metadata and

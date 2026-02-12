@@ -16,7 +16,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/projecteru2/cocoon/types"
+	"github.com/CMGS/cocoon/types"
 )
 
 // Manager is the interface for VM lifecycle operations.

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/projecteru2/cocoon/config"
-	"github.com/projecteru2/cocoon/lock"
-	"github.com/projecteru2/cocoon/utils"
+	"github.com/CMGS/cocoon/config"
+	"github.com/CMGS/cocoon/lock"
+	"github.com/CMGS/cocoon/utils"
 )
 
 // LoadNameIndex reads the global name-index.json file.

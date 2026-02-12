@@ -8,9 +8,9 @@ builds:
     env:
       - CGO_ENABLED=0
     ldflags:
-      - -X github.com/projecteru2/cocoon/version.REVISION={{.Commit}}
-      - -X github.com/projecteru2/cocoon/version.VERSION={{.Env.VERSION}}
-      - -X github.com/projecteru2/cocoon/version.BUILTAT={{.Date}}
+      - -X github.com/CMGS/cocoon/version.REVISION={{.Commit}}
+      - -X github.com/CMGS/cocoon/version.VERSION={{.Env.VERSION}}
+      - -X github.com/CMGS/cocoon/version.BUILTAT={{.Date}}
     goos:
       - darwin
       - linux
@@ -24,9 +24,9 @@ builds:
       - CGO_ENABLED=0
     ldflags:
       - -s
-      - -X github.com/projecteru2/cocoon/version.REVISION={{.Commit}}
-      - -X github.com/projecteru2/cocoon/version.VERSION={{.Env.VERSION}}
-      - -X github.com/projecteru2/cocoon/version.BUILTAT={{.Date}}
+      - -X github.com/CMGS/cocoon/version.REVISION={{.Commit}}
+      - -X github.com/CMGS/cocoon/version.VERSION={{.Env.VERSION}}
+      - -X github.com/CMGS/cocoon/version.BUILTAT={{.Date}}
     goos:
       - linux
     goarch:
@@ -40,9 +40,9 @@ builds:
       - CGO_ENABLED=0
     ldflags:
       - -w -s
-      - -X github.com/projecteru2/cocoon/version.REVISION={{.Commit}}
-      - -X github.com/projecteru2/cocoon/version.VERSION={{.Env.VERSION}}
-      - -X github.com/projecteru2/cocoon/version.BUILTAT={{.Date}}
+      - -X github.com/CMGS/cocoon/version.REVISION={{.Commit}}
+      - -X github.com/CMGS/cocoon/version.VERSION={{.Env.VERSION}}
+      - -X github.com/CMGS/cocoon/version.BUILTAT={{.Date}}
     goos:
       - darwin
     goarch:
