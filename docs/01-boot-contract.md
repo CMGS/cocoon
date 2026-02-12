@@ -1066,8 +1066,8 @@ type VMConfig struct {
     Name        string `json:"name"`
 
     // Boot Configuration
-    BootMode    BootMode `json:"boot_mode"`    // "pvh" or "uefi"
-    Firmware    string   `json:"firmware"`     // hypervisor-fw path or ""
+    BootStrategy string `json:"boot_strategy"` // "pvh_then_uefi", "uefi_only", "pvh_only"
+    Firmware     string `json:"firmware"`      // Primary firmware path
 
     // Disk
     RootDisk    string `json:"root_disk"`     // Overlay qcow2 path
@@ -1096,7 +1096,7 @@ type VMConfig struct {
 {
   "vm_id": "vm-abc-123",
   "name": "ubuntu-vm-1",
-  "boot_mode": "pvh",
+  "boot_strategy": "pvh_then_uefi",
   "firmware": "/var/lib/cocoon/firmware/hypervisor-fw",
   "root_disk": "/var/lib/cocoon/vms/vm-abc-123/overlay.qcow2",
   "disk_size": "10G",

@@ -836,10 +836,11 @@ The inspect output merges data from `config.json` (immutable) and `metadata.json
   "previous_state": "STARTING",
   "image": {
     "ref": "ubuntu-22.04-cloudimg",
-    "base_checksum": "sha256:ef015678abcd1234..."
+    "base_key": "ef015678abcd_amd64"
   },
   "boot": {
-    "mode": "pvh",
+    "strategy": "pvh_then_uefi",
+    "last_mode": "pvh",
     "firmware_path": "/var/lib/cocoon/firmware/hypervisor-fw"
   },
   "resources": {
@@ -1906,9 +1907,10 @@ For the canonical schema definitions, see [07-vm-lifecycle.md § 5](./07-vm-life
   "vm_id": "vm-01HXYZ5A3B7C8D9E0F1G2H3J4K",
   "name": "myvm",
   "image_ref": "ubuntu-22.04-cloudimg",
-  "base_checksum": "sha256:ef015678abcd1234...",
-  "base_image_path": "/var/lib/cocoon/cache/images/ef015678abcd1234_amd64.qcow2",
-  "boot_mode": "pvh",
+  "base_key": "ef015678abcd_amd64",
+  "base_digest_full": "ef015678abcd1234567890abcdef1234567890abcdef1234567890abcdef1234",
+  "arch": "amd64",
+  "boot_strategy": "pvh_then_uefi",
   "firmware_path": "/var/lib/cocoon/firmware/hypervisor-fw",
   "cpus": 2,
   "memory_mb": 1024,

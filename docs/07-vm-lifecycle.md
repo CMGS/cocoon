@@ -46,7 +46,12 @@ const (
     // CREATED: Overlay exists, Cloud Hypervisor not started
     VMStateCreated   VMState = "CREATED"
 
-    // STARTING: Cloud Hypervisor process starting, VM booting
+    // STARTING: Cloud Hypervisor process starting, VM booting.
+    // boot_strategy determines firmware selection:
+    //   "pvh_then_uefi": Try PVH first, fallback to UEFI on failure
+    //   "uefi_only":     UEFI boot only
+    //   "pvh_only":      PVH boot only (fail on PVH error)
+    // Actual mode used is recorded in metadata.last_boot_mode.
     VMStateStarting  VMState = "STARTING"
 
     // RUNNING: VM is fully running, guest OS active
@@ -592,8 +597,8 @@ type ImageInfo struct {
     // Image digest (sha256)
     Digest string `json:"digest"`
 
-    // Base image checksum (for deduplication)
-    BaseChecksum string `json:"base_checksum"`
+    // Content-addressed base image key ({checksum_12}_{arch})
+    BaseKey string `json:"base_key"`
 
     // Image size in bytes
     Size int64 `json:"size"`
@@ -664,8 +669,8 @@ type BootConfig struct {
     // Memory in bytes
     Memory int64 `json:"memory"`
 
-    // Boot mode: "pvh" or "uefi"
-    BootMode string `json:"boot_mode"`
+    // Boot strategy: "pvh_then_uefi" (default), "uefi_only", "pvh_only"
+    BootStrategy string `json:"boot_strategy"`
 
     // Firmware path (required for both modes)
     // PVH: /var/lib/cocoon/firmware/hypervisor-fw (passed via --firmware)
@@ -673,10 +678,10 @@ type BootConfig struct {
     // Note: Cloud Hypervisor does NOT auto-detect firmware; explicit path required
     FirmwarePath string `json:"firmware_path"`
 
-    // Kernel path (if boot_mode == "direct-kernel")
+    // Kernel path (if boot_strategy uses direct-kernel boot)
     KernelPath string `json:"kernel_path,omitempty"`
 
-    // Initrd path (if boot_mode == "direct-kernel")
+    // Initrd path (if boot_strategy uses direct-kernel boot)
     InitrdPath string `json:"initrd_path,omitempty"`
 
     // Kernel command line
@@ -751,14 +756,14 @@ type ErrorInfo struct {
   "image": {
     "ref": "myorg/ubuntu-bootable:22.04",
     "digest": "sha256:abcd1234...",
-    "base_checksum": "sha256:ef015678...",
+    "base_key": "ef015678abcd_amd64",
     "size": 419430400,
     "pulled_at": "2026-02-11T20:00:00Z"
   },
 
   "storage": {
     "overlay_path": "/var/lib/cocoon/vms/vm-abc123/overlay.qcow2",
-    "base_path": "/var/lib/cocoon/cache/images/sha256:ef015678.qcow2",
+    "base_path": "/var/lib/cocoon/cache/images/ef015678abcd_amd64.qcow2",
     "size": "10G",
     "used_bytes": 2147483648,
     "filesystem": "ext4"
@@ -775,7 +780,7 @@ type ErrorInfo struct {
   "boot_config": {
     "cpus": 2,
     "memory": 1073741824,
-    "boot_mode": "pvh",
+    "boot_strategy": "pvh_then_uefi",
     "firmware_path": "/var/lib/cocoon/firmware/hypervisor-fw"
   },
 
@@ -845,23 +850,25 @@ type VMConfig struct {
     Name        string `json:"name"`          // User alias, globally unique
 
     // Image provenance (immutable after create)
-    ImageRef      string `json:"image_ref"`       // Original image reference (path/URL/OCI ref)
-    BaseChecksum  string `json:"base_checksum"`   // SHA256 of base qcow2 in cache
-    BaseImagePath string `json:"base_image_path"` // Path to cached base: /var/lib/cocoon/cache/images/{checksum}_{arch}.qcow2
+    ImageRef        string `json:"image_ref"`          // Original image reference (path/URL/OCI ref)
+    BaseKey         string `json:"base_key"`           // Content-addressed key: {checksum_12}_{arch} (e.g., "a1b2c3d4e5f6_amd64")
+    BaseDigestFull  string `json:"base_digest_full"`   // Full SHA-256 hex (64 chars) for collision audit
+    Arch            string `json:"arch"`               // Architecture: "amd64", "arm64", etc.
 
     // Boot configuration (immutable)
-    BootMode     string `json:"boot_mode"`      // "pvh" or "uefi"
-    FirmwarePath string `json:"firmware_path"`  // Resolved firmware path at creation
+    BootStrategy string `json:"boot_strategy"`  // "pvh_then_uefi" (default), "uefi_only", "pvh_only"
+    FirmwarePath string `json:"firmware_path"`  // Primary firmware path resolved at creation
 
     // Resources (immutable after create; Phase 2 may allow resize)
     CPUs     int    `json:"cpus"`
     MemoryMB int64  `json:"memory_mb"`        // Internal: always bytes-convertible
     DiskSize string `json:"disk_size"`         // Overlay size, e.g. "10G"
 
-    // Storage paths (derived, stored for fast lookup)
-    OverlayPath string `json:"overlay_path"`   // /var/lib/cocoon/vms/{vm-id}/overlay.qcow2
-    SerialLog   string `json:"serial_log"`     // /var/log/cocoon/{vm-id}-serial.log
-    SocketPath  string `json:"socket_path"`    // /run/cocoon/vms/{vm-id}/api.sock
+    // Storage paths (derived from base_key, stored for fast lookup)
+    BaseImagePath string `json:"base_image_path"` // Derived: /var/lib/cocoon/cache/images/{base_key}.qcow2
+    OverlayPath   string `json:"overlay_path"`    // /var/lib/cocoon/vms/{vm_id}/overlay.qcow2
+    SerialLog     string `json:"serial_log"`      // /var/log/cocoon/{vm_id}-serial.log
+    SocketPath    string `json:"socket_path"`     // /run/cocoon/vms/{vm_id}/api.sock
 
     // Timestamps
     CreatedAt string `json:"created_at"`       // RFC3339
@@ -877,13 +884,15 @@ type VMConfig struct {
   "vm_id": "vm-01HXYZ5A3B7C8D9E0F1G2H3J4K",
   "name": "myvm",
   "image_ref": "myorg/ubuntu-bootable:22.04",
-  "base_checksum": "sha256:ef015678abcd1234...",
-  "base_image_path": "/var/lib/cocoon/cache/images/ef015678abcd1234_amd64.qcow2",
-  "boot_mode": "pvh",
+  "base_key": "ef015678abcd_amd64",
+  "base_digest_full": "ef015678abcd1234567890abcdef1234567890abcdef1234567890abcdef1234",
+  "arch": "amd64",
+  "boot_strategy": "pvh_then_uefi",
   "firmware_path": "/var/lib/cocoon/firmware/hypervisor-fw",
   "cpus": 2,
   "memory_mb": 1024,
   "disk_size": "10G",
+  "base_image_path": "/var/lib/cocoon/cache/images/ef015678abcd_amd64.qcow2",
   "overlay_path": "/var/lib/cocoon/vms/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K/overlay.qcow2",
   "serial_log": "/var/log/cocoon/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K-serial.log",
   "socket_path": "/run/cocoon/vms/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K/api.sock",
@@ -904,8 +913,10 @@ type VMMetadata struct {
     PreviousState string `json:"previous_state"`   // For transition auditing
 
     // Runtime (changes with each start/stop cycle)
-    ProcessPID int    `json:"process_pid,omitempty"`  // CH process PID (0 if not running)
-    BootTime   string `json:"boot_time,omitempty"`    // Duration string, e.g. "2.3s"
+    ProcessPID       int    `json:"process_pid,omitempty"`       // CH process PID (0 if not running)
+    BootTime         string `json:"boot_time,omitempty"`         // Duration string, e.g. "2.3s"
+    LastBootMode     string `json:"last_boot_mode,omitempty"`    // Actual mode used: "pvh" or "uefi"
+    LastFirmwarePath string `json:"last_firmware_path,omitempty"` // Actual firmware path used this boot
 
     // Error tracking
     LastError  string `json:"last_error,omitempty"`
@@ -929,6 +940,8 @@ type VMMetadata struct {
   "previous_state": "STARTING",
   "process_pid": 12345,
   "boot_time": "2.3s",
+  "last_boot_mode": "pvh",
+  "last_firmware_path": "/var/lib/cocoon/firmware/hypervisor-fw",
   "last_error": "",
   "error_count": 0,
   "updated_at": "2026-02-11T20:01:08Z",
@@ -945,7 +958,7 @@ type VMMetadata struct {
 | What should this VM look like? | **config.json** | Immutable configuration: image, resources, paths |
 | What is this VM doing right now? | **metadata.json** | Mutable runtime state: current state, PID, errors |
 
-**config.json** is the source of truth for "what this VM should be." Reconcile uses it to reconstruct expected configuration — it knows the VM exists, what image it was created from, how many CPUs it should have, and where its files live.
+**config.json** is the source of truth for "what this VM should be." Reconcile uses it to reconstruct expected configuration — it knows the VM exists, what image it was created from (`base_key` links to `references.json` and cache), how many CPUs it should have, and where its files live. The `base_key` field is the same key used in `references.json` and cache filenames (see [05-storage-management.md § Canonical Filesystem Layout](./05-storage-management.md#canonical-filesystem-layout-normative)).
 
 **metadata.json** is the source of truth for "what this VM is doing now." It tracks runtime state, the Cloud Hypervisor process PID, error history, and timestamps for the current lifecycle.
 
@@ -993,7 +1006,9 @@ import (
     "syscall"
 )
 
-// SaveMetadata atomically updates VM metadata
+// SaveMetadata atomically updates VM metadata.
+// Locking uses flock (consistent with 06-concurrency.md § VM Metadata Lock).
+// The lock file is long-lived — never deleted after use.
 func SaveMetadata(meta *VMMetadata) error {
     // 1. Construct paths
     vmDir := filepath.Join("/var/lib/cocoon/vms", meta.VMID)
@@ -1001,18 +1016,20 @@ func SaveMetadata(meta *VMMetadata) error {
     lockPath := filepath.Join(vmDir, "metadata.lock")
     tempPath := metadataPath + ".tmp"
 
-    // 2. Acquire file lock
-    lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL, 0644)
+    // 2. Open lock file (create if missing, but do NOT use O_EXCL)
+    //    The lock file persists across operations — this is intentional.
+    lockFile, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0644)
     if err != nil {
-        return fmt.Errorf("failed to acquire lock: %w", err)
+        return fmt.Errorf("failed to open lock file: %w", err)
     }
-    defer os.Remove(lockPath)
     defer lockFile.Close()
 
-    // 3. Apply exclusive lock
+    // 3. Acquire exclusive flock (blocks if another process holds it)
     if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
-        return fmt.Errorf("failed to lock: %w", err)
+        return fmt.Errorf("failed to acquire lock: %w", err)
     }
+    defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+    // NOTE: Do NOT os.Remove(lockPath) — lock file is long-lived.
 
     // 4. Update timestamp
     meta.Timestamps.UpdatedAt = time.Now()

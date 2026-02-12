@@ -21,6 +21,8 @@ Level 1: GC Lock (global)
     ↓
 Level 2: Reference Counter Lock (global)
     ↓
+Level 2: Name Index Lock (global, same level as references — never held together)
+    ↓
 Level 3: Image Conversion Lock (per-checksum)
     ↓
 Level 4: VM Metadata Lock (per-VM)
@@ -29,8 +31,15 @@ Level 4: VM Metadata Lock (per-VM)
 **Lock File Locations**:
 - GC Lock: `/var/lib/cocoon/gc.lock`
 - Reference Counter Lock: `/var/lib/cocoon/references.lock`
+- Name Index Lock: `/var/lib/cocoon/name-index.lock`
 - Image Conversion Lock: `/var/lib/cocoon/cache/locks/{checksum}_{arch}.lock`
 - VM Metadata Lock: `/var/lib/cocoon/vms/{vm-id}/metadata.lock`
+
+**Name Index Lock Notes**:
+- `name-index.json` is a derived cache (can be rebuilt from scanning `config.json` files)
+- The lock is at Level 2 (same as references.lock); these two locks are NEVER held simultaneously
+- Updates use the same flock + atomic-write pattern as references.json
+- Operations: create (add name→vm_id), delete (remove mapping), reconcile (rebuild from scratch)
 
 **Rules**:
 - Never acquire a higher-level lock while holding a lower-level lock
@@ -232,11 +241,15 @@ content-addressed identity (`{checksum}_{arch}`), not by absolute path:
 {
   "abc123def456_amd64": {
     "path": "/var/lib/cocoon/cache/images/abc123def456_amd64.qcow2",
+    "digest_full": "abc123def456789012345678abcdef0123456789abcdef0123456789abcdef01",
+    "source_ref": "myorg/ubuntu-bootable:22.04",
     "refs": ["vm-001", "vm-002"],
     "created_at": "2026-02-12T10:00:00Z"
   },
   "f7e8d9c0b1a2_amd64": {
     "path": "/var/lib/cocoon/cache/images/f7e8d9c0b1a2_amd64.qcow2",
+    "digest_full": "f7e8d9c0b1a2345678901234abcdef5678901234abcdef5678901234abcdef56",
+    "source_ref": "myorg/fedora-bootable:39",
     "refs": ["vm-003"],
     "created_at": "2026-02-12T11:00:00Z"
   }
@@ -281,9 +294,11 @@ func NewReferenceCounter(storageDir string) *ReferenceCounter {
 
 // RefEntry represents a single image reference entry
 type RefEntry struct {
-    Path      string   `json:"path"`
-    Refs      []string `json:"refs"`
-    CreatedAt string   `json:"created_at"`
+    Path       string   `json:"path"`
+    DigestFull string   `json:"digest_full"`
+    SourceRef  string   `json:"source_ref"`
+    Refs       []string `json:"refs"`
+    CreatedAt  string   `json:"created_at"`
 }
 
 // RefData represents the reference data structure.
@@ -673,10 +688,10 @@ type Reconciler struct {
 }
 
 type Orphan struct {
-    Type       string   // "overlay", "config", "reference"
-    VMID       string
-    Path       string
-    BaseImage  string
+    Type    string // "overlay", "config", "reference"
+    VMID    string
+    Path    string
+    BaseKey string // Content-addressed key: {checksum_12}_{arch}
 }
 
 // ScanOrphans detects inconsistent state
@@ -719,19 +734,19 @@ func (r *Reconciler) ScanOrphans() ([]Orphan, error) {
             continue
         }
 
-        // Read config to get base image
+        // Read config to get base_key
         configData, err := os.ReadFile(configPath)
         if err != nil {
             continue
         }
 
         var config struct {
-            BaseImage string `json:"base_image"`
+            BaseKey string `json:"base_key"` // e.g., "a1b2c3d4e5f6_amd64"
         }
         json.Unmarshal(configData, &config)
 
-        // Check if VM is in references
-        refs, _ := r.refs.GetReferences(config.BaseImage)
+        // Check if VM is in references (keyed by base_key)
+        refs, _ := r.refs.GetReferencesByKey(config.BaseKey)
         found := false
         for _, ref := range refs {
             if ref == vmID {
@@ -742,9 +757,9 @@ func (r *Reconciler) ScanOrphans() ([]Orphan, error) {
 
         if !found {
             orphans = append(orphans, Orphan{
-                Type:      "reference",
-                VMID:      vmID,
-                BaseImage: config.BaseImage,
+                Type:    "reference",
+                VMID:    vmID,
+                BaseKey: config.BaseKey,
             })
         }
     }
@@ -775,7 +790,7 @@ func (r *Reconciler) Reconcile(orphans []Orphan) error {
         case "reference":
             // Config exists but no reference -> add missing reference
             // This completes the incomplete operation
-            err := r.refs.AddReference(orphan.BaseImage, orphan.VMID)
+            err := r.refs.AddReferenceByKey(orphan.BaseKey, orphan.VMID)
             if err != nil {
                 return err
             }
@@ -1200,7 +1215,7 @@ func deleteVM(vmID string) {
     refLock.Lock()        // Level 4 (lower)
     defer refLock.Unlock()
 
-    removeReference(config.BaseImage, vmID)
+    removeReference(config.BaseKey, vmID)
 }
 
 // CORRECT: Follows hierarchy
@@ -1212,7 +1227,7 @@ func deleteVM(vmID string) {
     defer vmLock.Unlock()
 
     config := readConfig(vmID)
-    removeReference(config.BaseImage, vmID)
+    removeReference(config.BaseKey, vmID)
 }
 ```
 
@@ -1256,6 +1271,7 @@ func lockWithTimeout(mu *sync.Mutex, timeout time.Duration) error {
 |--------------|-----------|------------|
 | GC operations | `/var/lib/cocoon/gc.lock` | Level 1 (highest) |
 | Reference counter | `/var/lib/cocoon/references.lock` | Level 2 |
+| Name index | `/var/lib/cocoon/name-index.lock` | Level 2 (never held with references.lock) |
 | Image conversion | `/var/lib/cocoon/cache/locks/{checksum}_{arch}.lock` | Level 3 |
 | VM metadata | `/var/lib/cocoon/vms/{vm-id}/metadata.lock` | Level 4 (lowest) |
 

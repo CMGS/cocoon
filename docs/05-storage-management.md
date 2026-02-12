@@ -31,7 +31,11 @@ Other documents MUST reference this section rather than defining their own paths
 ├── references.json                       # Base image reference counts
 ├── references.lock                       # flock for reference counter
 ├── gc.lock                               # Global GC lock
-├── name-index.json                       # name → vm_id mapping
+├── name-index.json                       # name → vm_id mapping (derived, can be rebuilt)
+├── name-index.lock                       # flock for name-index updates
+├── firmware/                             # Boot firmware binaries
+│   ├── hypervisor-fw                     # PVH firmware (rust-hypervisor-firmware)
+│   └── CLOUDHV.fd                        # UEFI firmware (OVMF for Cloud Hypervisor)
 ├── temp/                                 # Scratch space for conversions
 └── trash/                                # Soft-deleted images (for recovery)
 
@@ -42,7 +46,7 @@ Other documents MUST reference this section rather than defining their own paths
         └── ch.pid                        # CH process PID file
 
 /var/log/cocoon/                          # Logs (persistent)
-├── vm-{id}-serial.log                    # Serial console per VM
+├── {vm_id}-serial.log                    # Serial console per VM (e.g., vm-01HXYZ...-serial.log)
 └── cocoon.log                            # Main cocoon log (optional)
 ```
 
@@ -53,12 +57,78 @@ Other documents MUST reference this section rather than defining their own paths
 - Runtime sockets and PID files live under `/run/cocoon/` (ephemeral, cleared on reboot)
 - Logs are separate under `/var/log/cocoon/` (persistent)
 
+### JSON Schema Registry (Normative)
+
+**This section is the single source of truth for all JSON file schemas.**
+Other documents MUST reference these definitions rather than re-defining fields.
+
+#### config.json (Immutable — set at VM creation, never modified)
+
+| Field | Type | Example | Description |
+|-------|------|---------|-------------|
+| `vm_id` | string | `"vm-01HXYZ..."` | Internal primary key (`vm-{ulid}`), never reused |
+| `name` | string | `"myvm"` | User-facing alias, globally unique, immutable |
+| `image_ref` | string | `"myorg/ubuntu:22.04"` | Original image reference (path/URL/OCI ref) |
+| `base_key` | string | `"a1b2c3d4e5f6_amd64"` | Content-addressed key: `{checksum_12}_{arch}` |
+| `base_digest_full` | string | `"a1b2c3d4e5f6..."` (64 hex) | Full SHA-256 for collision audit |
+| `arch` | string | `"amd64"` | Architecture |
+| `boot_strategy` | string | `"pvh_then_uefi"` | `"pvh_then_uefi"` / `"uefi_only"` / `"pvh_only"` |
+| `firmware_path` | string | `"/var/lib/cocoon/firmware/hypervisor-fw"` | Primary firmware path |
+| `cpus` | int | `2` | vCPU count |
+| `memory_mb` | int | `1024` | Memory in MiB |
+| `disk_size` | string | `"10G"` | Overlay disk size (human-readable) |
+| `base_image_path` | string | `"/var/lib/cocoon/cache/images/..."` | Derived from `base_key` |
+| `overlay_path` | string | `"/var/lib/cocoon/vms/{vm_id}/overlay.qcow2"` | COW overlay path |
+| `serial_log` | string | `"/var/log/cocoon/{vm_id}-serial.log"` | Serial console log |
+| `socket_path` | string | `"/run/cocoon/vms/{vm_id}/api.sock"` | CH API socket |
+| `created_at` | string | `"2026-02-12T10:00:00Z"` | RFC 3339 creation timestamp |
+| `schema_version` | int | `1` | Schema version for migration |
+
+#### metadata.json (Mutable — updated at runtime)
+
+| Field | Type | Example | Description |
+|-------|------|---------|-------------|
+| `vm_id` | string | `"vm-01HXYZ..."` | Matches config.json (for crash recovery) |
+| `state` | string | `"RUNNING"` | Current VM state |
+| `previous_state` | string | `"STARTING"` | State before last transition |
+| `process_pid` | int | `12345` | CH process PID (0 if not running) |
+| `boot_time` | string | `"2.3s"` | Duration string |
+| `last_boot_mode` | string | `"pvh"` | Actual boot mode used (`"pvh"` / `"uefi"`) |
+| `last_firmware_path` | string | `"/var/lib/cocoon/firmware/hypervisor-fw"` | Actual firmware used |
+| `last_error` | string | `""` | Last error message (empty if none) |
+| `error_count` | int | `0` | Consecutive error count |
+| `updated_at` | string | `"2026-02-12T10:01:30Z"` | Last metadata write |
+| `started_at` | string | `"2026-02-12T10:01:00Z"` | Last start timestamp |
+| `stopped_at` | string | `null` | Last stop timestamp |
+| `schema_version` | int | `1` | Schema version for migration |
+
+#### references.json (Global — tracks base image usage)
+
+| Field | Type | Example | Description |
+|-------|------|---------|-------------|
+| *key* | string | `"a1b2c3d4e5f6_amd64"` | Content-addressed: `{checksum_12}_{arch}` |
+| `.path` | string | `"/var/lib/cocoon/cache/images/..."` | Cached qcow2 path |
+| `.digest_full` | string | `"a1b2c3d4e5f6..."` (64 hex) | Full SHA-256 for collision detection |
+| `.source_ref` | string | `"myorg/ubuntu:22.04"` | Original image ref (audit) |
+| `.refs` | []string | `["vm-001", "vm-002"]` | VM IDs using this base |
+| `.created_at` | string | `"2026-02-12T10:00:00Z"` | First cache timestamp |
+
+#### name-index.json (Global — derived, can be rebuilt)
+
+| Field | Type | Example | Description |
+|-------|------|---------|-------------|
+| *key* | string | `"myvm"` | User-assigned VM name |
+| *value* | string | `"vm-01HXYZ..."` | Corresponding vm_id |
+
+---
+
 ### Image Checksum Identity (Normative)
 
 The `{checksum}` component used in cache filenames, `references.json` keys, and
 conversion lock names is computed as follows. All checksums use **SHA-256**
-truncated to **12 hex characters** (48 bits) for path brevity, with the full
-64-character digest stored in `references.json` metadata for collision checks.
+truncated to **12 hex characters** (48 bits) for path brevity. The full
+64-character digest is stored in `references.json` as the `digest_full` field
+for collision detection (see [references.json Structure](#referencesjson-structure)).
 
 **For OCI images** (the primary path):
 
@@ -263,12 +333,15 @@ class ReferenceCounter:
         """Build the content-addressed key: {checksum}_{arch}."""
         return f"{checksum}_{arch}"
 
-    def add_reference(self, checksum: str, arch: str, vm_id: str):
+    def add_reference(self, checksum: str, arch: str, vm_id: str,
+                      digest_full: str = "", source_ref: str = ""):
         """Add VM reference to base image."""
         key = self._image_key(checksum, arch)
         if key not in self.refs:
             self.refs[key] = {
                 "path": str(self.storage.cache_dir / "images" / f"{key}.qcow2"),
+                "digest_full": digest_full,
+                "source_ref": source_ref,
                 "refs": [],
                 "created_at": datetime.now().isoformat() + "Z",
             }
@@ -316,16 +389,27 @@ reference metadata. Keys are content-addressed identifiers, NOT absolute paths.
 {
   "a1b2c3d4e5f6_amd64": {
     "path": "/var/lib/cocoon/cache/images/a1b2c3d4e5f6_amd64.qcow2",
+    "digest_full": "a1b2c3d4e5f6789012345678abcdef0123456789abcdef0123456789abcdef01",
+    "source_ref": "myorg/ubuntu-bootable:22.04",
     "refs": ["vm-001", "vm-002", "vm-003"],
     "created_at": "2026-02-12T10:00:00Z"
   },
   "f7e8d9c0b1a2_amd64": {
     "path": "/var/lib/cocoon/cache/images/f7e8d9c0b1a2_amd64.qcow2",
+    "digest_full": "f7e8d9c0b1a2345678901234abcdef5678901234abcdef5678901234abcdef56",
+    "source_ref": "https://cloud-images.ubuntu.com/.../ubuntu-22.04-cloudimg-amd64.img",
     "refs": ["vm-010", "vm-011"],
     "created_at": "2026-02-12T11:00:00Z"
   }
 }
 ```
+
+**Field definitions**:
+- `path`: Derived filesystem path to the cached qcow2 (for fast lookup)
+- `digest_full`: Full 64-character SHA-256 hex digest (for collision detection when two different images produce the same 12-char truncation)
+- `source_ref`: Original image reference (OCI ref / URL / file path) for audit and human readability
+- `refs`: List of vm_ids currently using this base image
+- `created_at`: RFC 3339 timestamp of first cache entry
 
 ### Add/Remove Operations
 
@@ -349,11 +433,10 @@ async def create_vm(image: str, vm_id: str) -> Path:
 def delete_vm(vm_id: str):
     # ... load config ...
     config = json.loads((vm_dir / "config.json").read_text())
-    checksum = config["base_image_checksum"]
-    arch = config["base_image_arch"]
+    base_key = config["base_key"]  # e.g., "a1b2c3d4e5f6_amd64"
 
     # Remove reference using content-addressed key
-    ref_counter.remove_reference(checksum, arch, vm_id)
+    ref_counter.remove_reference_by_key(base_key, vm_id)
 
     # ... cleanup overlay ...
 ```
@@ -618,12 +701,12 @@ async def create_vm(image: str, vm_id: str) -> Path:
     # 6. Save VM config
     config = {
         "vm_id": vm_id,
-        "image": image,
-        "base_image_checksum": image_info.checksum,
-        "base_image_arch": image_info.arch,
-        "base_image_path": str(image_info.path),
-        "overlay": str(overlay),
-        "created": datetime.now().isoformat()
+        "image_ref": image,
+        "base_key": f"{image_info.checksum}_{image_info.arch}",
+        "base_digest_full": image_info.full_hash,
+        "arch": image_info.arch,
+        "overlay_path": str(overlay),
+        "created_at": datetime.now().isoformat()
     }
     (vm_dir / "config.json").write_text(json.dumps(config, indent=2))
 
@@ -644,12 +727,11 @@ def delete_vm(vm_id: str):
 
     # 1. Load config
     config = json.loads((vm_dir / "config.json").read_text())
-    checksum = config["base_image_checksum"]
-    arch = config["base_image_arch"]
+    base_key = config["base_key"]  # e.g., "a1b2c3d4e5f6_amd64"
     overlay = vm_dir / "overlay.qcow2"
 
     # 2. Remove reference using content-addressed key
-    ref_counter.remove_reference(checksum, arch, vm_id)
+    ref_counter.remove_reference_by_key(base_key, vm_id)
 
     # 3. Move overlay to trash (soft delete)
     trash_overlay = storage.trash_dir / f"{vm_id}-overlay.qcow2"
@@ -664,8 +746,8 @@ def delete_vm(vm_id: str):
     print(f"Overlay moved to trash: {trash_overlay}")
 
     # 5. Check if base image can be garbage collected
-    if not ref_counter.is_referenced(checksum, arch):
-        print(f"Base image {checksum}_{arch} can be garbage collected")
+    if not ref_counter.is_referenced_by_key(base_key):
+        print(f"Base image {base_key} can be garbage collected")
 ```
 
 ### Workflow 3: High-Concurrency VM Pool
@@ -696,11 +778,11 @@ async def create_vm_pool(image: str, count: int) -> list[Path]:
 
         config = {
             "vm_id": vm_id,
-            "image": image,
-            "base_image_checksum": image_info.checksum,
-            "base_image_arch": image_info.arch,
-            "base_image_path": str(image_info.path),
-            "overlay": str(overlay)
+            "image_ref": image,
+            "base_key": f"{image_info.checksum}_{image_info.arch}",
+            "base_digest_full": image_info.full_hash,
+            "arch": image_info.arch,
+            "overlay_path": str(overlay)
         }
         (vm_dir / "config.json").write_text(json.dumps(config, indent=2))
 

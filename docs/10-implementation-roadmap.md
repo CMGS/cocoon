@@ -82,9 +82,9 @@ These must be implemented correctly from the start:
 
 **Checklist** (ALL must be checked before Phase 0 begins):
 
-- [ ] **config.json schema** finalized (docs/07-vm-lifecycle.md § 4.5)
-  - Immutable fields defined, source-of-truth rules documented
-- [ ] **VM identifier rules** finalized (docs/07-vm-lifecycle.md § 1.5)
+- [ ] **config.json schema** finalized (docs/07-vm-lifecycle.md § 5)
+  - Immutable fields defined (base_key, boot_strategy), source-of-truth rules documented
+- [ ] **VM identifier rules** finalized (docs/07-vm-lifecycle.md § 1.4)
   - vm_id format, name uniqueness, CLI resolution, name-index.json
 - [ ] **Canonical filesystem layout** finalized (docs/05-storage-management.md § 2.1)
   - Single source of truth for all paths, overlay naming, references.json key format
@@ -186,7 +186,7 @@ go run ./cmd/test-client/main.go
    ```go
    // pkg/storage/layout.go
    func InitializeStorage() error
-   func GetBaseImagePath(checksum string) string
+   func GetBaseImagePath(baseKey string) string  // baseKey = {checksum_12}_{arch}
    func GetOverlayPath(vmID string) string
    ```
 
@@ -195,8 +195,9 @@ go run ./cmd/test-client/main.go
    // pkg/storage/refcount.go
    type ReferenceCounter interface { ... }
    func NewReferenceCounter(path string) ReferenceCounter
-   func (r *ReferenceCounter) AddReference(checksum, vmID string) error
-   func (r *ReferenceCounter) RemoveReference(checksum, vmID string) error
+   // base_key = {checksum_12}_{arch}, e.g., "a1b2c3d4e5f6_amd64"
+   func (r *ReferenceCounter) AddReference(baseKey, vmID, digestFull, sourceRef string) error
+   func (r *ReferenceCounter) RemoveReference(baseKey, vmID string) error
    ```
 
 3. **COW Operations** (docs/05-storage-management.md §4)
