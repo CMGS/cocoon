@@ -646,7 +646,9 @@ Status: Ready to run in rootless mode with PVH boot
 
 Cocoon supports three permission models to balance security and functionality.
 
-### Option A: Rootless (Preferred)
+> **Phase 1 Scope**: Only rootful mode (Option B) is implemented. Rootless (Option A) and hybrid helper (Option C) are designed for Phase 2.
+
+### Option A: Rootless (Preferred) [Phase 2]
 
 **Description**: Run cocoon entirely as a regular user without sudo privileges.
 
@@ -703,7 +705,7 @@ EOF
 cocoon doctor
 ```
 
-### Option B: Rootful
+### Option B: Rootful [Phase 1 Default]
 
 **Description**: Run cocoon as root user (not recommended for production).
 
@@ -729,7 +731,7 @@ sudo cocoon create ubuntu-22.04-cloudimg --name myvm
 
 **Not Recommended**: Use Option C (Hybrid) instead.
 
-### Option C: Hybrid (Recommended for Production)
+### Option C: Hybrid (Recommended for Production) [Phase 2]
 
 **Description**: Run main cocoon binary as regular user, but use a privileged helper for operations requiring root.
 

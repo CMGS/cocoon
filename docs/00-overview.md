@@ -319,15 +319,17 @@ Cocoon is a general-purpose lightweight VM manager. Common use cases include:
 
 ### Rootless vs Rootful Mode
 
-Cocoon supports two deployment modes with different trade-offs:
+Cocoon supports three deployment modes with different trade-offs:
 
-**Recommended for Production: Hybrid Mode (Option C)**
+> **Phase 1 Scope**: Only rootful mode (Option B) is implemented. Rootless (Option A) and hybrid helper (Option C) are designed but deferred to Phase 2.
+
+**Recommended for Production: Hybrid Mode (Option C) [Phase 2]**
 - Main cocoon binary runs as regular user
 - Privileged helper (setuid or sudo) for operations requiring root
 - Best security with full feature support
 - See [08-dependencies.md § Option C: Hybrid](./08-dependencies.md#option-c-hybrid-recommended-for-production)
 
-**For Development: Rootless Mode (Option A)**
+**For Development: Rootless Mode (Option A) [Phase 2]**
 - Entire cocoon stack runs without sudo
 - **Important limitation**: libguestfs tools (virt-format, virt-copy-in) require root
   - **OCI image conversion is NOT available in rootless mode**

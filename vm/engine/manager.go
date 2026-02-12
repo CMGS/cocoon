@@ -153,30 +153,9 @@ func (m *manager) SaveMetadata(meta *types.VMMetadataFile) error {
 
 // TransitionState validates a state transition and persists it atomically.
 // The previous state is recorded in metadata for auditing.
+// When transitioning to ERROR, LastError and ErrorCount are automatically updated.
 func (m *manager) TransitionState(vmID string, to types.VMState, reason string) error {
-	lockPath := m.cfg.VMMetadataLock(vmID)
-	fl := flock.New(lockPath)
-	if err := fl.Lock(); err != nil {
-		return fmt.Errorf("acquire metadata lock for %s: %w", vmID, err)
-	}
-	defer fl.Unlock() //nolint:errcheck
-
-	metaPath := m.cfg.VMMetadataPath(vmID)
-	var meta types.VMMetadataFile
-	if err := utils.ReadJSON(metaPath, &meta); err != nil {
-		return fmt.Errorf("read metadata for %s: %w", vmID, err)
-	}
-
-	from := types.VMState(meta.State)
-	if err := types.ValidateTransition(from, to); err != nil {
-		return fmt.Errorf("%w: %s -> %s (%s)", types.ErrInvalidTransition, from, to, reason)
-	}
-
-	meta.PreviousState = meta.State
-	meta.State = string(to)
-	meta.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-
-	return utils.AtomicWriteJSON(metaPath, &meta)
+	return m.transitionStateWithUpdate(vmID, to, reason, nil)
 }
 
 // ---------------------------------------------------------------------------
@@ -269,25 +248,19 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 		SchemaVersion:  types.CurrentConfigSchemaVersion,
 	}
 
-	// Step 2: Create the COW overlay.
-	overlayPath, err := m.cowMgr.CreateOverlay(baseKey, vmID, diskSize)
-	if err != nil {
-		return nil, fmt.Errorf("create overlay for %s: %w", vmID, err)
-	}
-	vmCfg.OverlayPath = overlayPath
-
-	// Create VM persistent directory.
+	// Step 2: Create VM directory, write config + metadata, then pin reference.
+	// Pin MUST happen before overlay creation to prevent GC from collecting
+	// the base image during the (slow) overlay step (docs/09 "pin-first" flow).
+	// Metadata must exist before pin so reconciliation can find the VM if we
+	// crash after pinning.
 	vmDir := m.cfg.VMPersistDir(vmID)
 	if err := os.MkdirAll(vmDir, 0o755); err != nil { //nolint:gosec // G301: VM directory needs world-readable access for CH process
-		// Clean up overlay on failure.
-		_ = m.cowMgr.RemoveOverlay(vmID)
 		return nil, fmt.Errorf("create VM directory: %w", err)
 	}
 
 	// Write config.json (immutable, written once).
 	configPath := m.cfg.VMConfigPath(vmID)
 	if err := utils.AtomicWriteJSON(configPath, vmCfg); err != nil {
-		_ = m.cowMgr.RemoveOverlay(vmID)
 		_ = os.RemoveAll(vmDir)
 		return nil, fmt.Errorf("write config.json: %w", err)
 	}
@@ -302,17 +275,21 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 	}
 	metaPath := m.cfg.VMMetadataPath(vmID)
 	if err := utils.AtomicWriteJSON(metaPath, meta); err != nil {
-		_ = m.cowMgr.RemoveOverlay(vmID)
 		_ = os.RemoveAll(vmDir)
 		return nil, fmt.Errorf("write metadata.json: %w", err)
 	}
 
-	// Step 3: Pin reference (AddReference) - must happen after metadata exists
-	// so reconciliation can find the VM if we crash after pinning.
+	// Pin reference: protects base image from GC during subsequent slow steps.
 	if err := m.refCounter.AddReference(baseKey, vmID, identity.FullDigest, opts.Image); err != nil {
-		_ = m.cowMgr.RemoveOverlay(vmID)
 		_ = os.RemoveAll(vmDir)
 		return nil, fmt.Errorf("pin reference for %s: %w", vmID, err)
+	}
+
+	// Step 3: Create the COW overlay (slow, requires base image on disk).
+	if _, err := m.cowMgr.CreateOverlay(baseKey, vmID, diskSize); err != nil {
+		_ = m.refCounter.RemoveReference(baseKey, vmID)
+		_ = os.RemoveAll(vmDir)
+		return nil, fmt.Errorf("create overlay for %s: %w", vmID, err)
 	}
 
 	// Register name in the index (atomically checks uniqueness under lock).
@@ -549,10 +526,8 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 	// Graceful shutdown via CH API: sends ACPI shutdown + waits for process exit.
 	if err := m.hyper.Shutdown(ctx, vmID, timeout); err != nil {
 		// Shutdown failed (timeout or error); transition to ERROR.
-		_ = m.transitionStateWithUpdate(vmID, types.VMStateError, fmt.Sprintf("graceful stop failed: %v", err), func(md *types.VMMetadataFile) {
-			md.LastError = fmt.Sprintf("graceful stop failed: %v", err)
-			md.ErrorCount++
-		})
+		// LastError and ErrorCount are auto-tracked by TransitionState.
+		_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("graceful stop failed: %v", err))
 		return fmt.Errorf("shutdown VM %s: %w", vmID, err)
 	}
 
@@ -710,6 +685,12 @@ func (m *manager) transitionStateWithUpdate(vmID string, to types.VMState, reaso
 	meta.PreviousState = meta.State
 	meta.State = string(to)
 	meta.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+
+	// Auto-track errors: when entering ERROR, record reason and increment count.
+	if to == types.VMStateError {
+		meta.LastError = reason
+		meta.ErrorCount++
+	}
 
 	if mutate != nil {
 		mutate(&meta)
