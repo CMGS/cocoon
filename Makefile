@@ -13,6 +13,35 @@ ifneq ($(KEEP_SYMBOL), 1)
 	GO_LDFLAGS += -s
 endif
 
+## Location to install dependencies to
+LOCALBIN ?= $(shell pwd)/bin
+$(LOCALBIN):
+	mkdir -p $(LOCALBIN)
+
+## Tool versions
+GOLANGCILINT_VERSION ?= v2.9.0
+GOLANGCILINT_ROOT := $(LOCALBIN)/golangci-lint-$(GOLANGCILINT_VERSION)
+GOLANGCILINT := $(GOLANGCILINT_ROOT)/golangci-lint
+
+GOFMT := $(LOCALBIN)/gofumpt
+GOIMPORTS := $(LOCALBIN)/goimports
+
+## Tool download targets
+.PHONY: golangci-lint
+golangci-lint: $(GOLANGCILINT)
+$(GOLANGCILINT):
+	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(GOLANGCILINT_ROOT) $(GOLANGCILINT_VERSION)
+
+.PHONY: gofumpt
+gofumpt: $(GOFMT)
+$(GOFMT): | $(LOCALBIN)
+	GOBIN=$(LOCALBIN) go install mvdan.cc/gofumpt@latest
+
+.PHONY: goimports
+goimports: $(GOIMPORTS)
+$(GOIMPORTS): | $(LOCALBIN)
+	GOBIN=$(LOCALBIN) go install golang.org/x/tools/cmd/goimports@latest
+
 # --- Primary targets ---
 
 all: deps lint test build ## Run deps, lint, test, and build
@@ -20,7 +49,10 @@ all: deps lint test build ## Run deps, lint, test, and build
 ci: fmt-check vet lint test build ## Run all CI checks
 
 verify: lint fmt-check ## Verify code is lint-clean and formatted
-	@git diff --exit-code || { echo "Files modified after verify; run 'make fmt' and commit."; exit 1; }
+	@if ! git diff --quiet HEAD; then \
+		git diff; \
+		echo "files are out of date, run 'make fmt' and commit"; exit 1; \
+	fi
 
 # --- Dependencies ---
 
@@ -59,16 +91,16 @@ coverage: test ## Generate and display coverage report
 vet: ## Run go vet
 	go vet ./...
 
-lint: ## Run golangci-lint
-	golangci-lint run
+lint: golangci-lint ## Run golangci-lint
+	$(GOLANGCILINT) run
 
-fmt: ## Format code with gofumpt and goimports
-	gofumpt -l -w .
-	goimports -l -w .
+fmt: gofumpt goimports ## Format code with gofumpt and goimports
+	$(GOFMT) -l -w .
+	$(GOIMPORTS) -l -w --local 'github.com/CMGS/cocoon' .
 
-fmt-check: ## Check formatting (fails if files need formatting)
-	@test -z "$$(gofumpt -l .)" || { echo "Files need formatting (gofumpt):"; gofumpt -l .; exit 1; }
-	@test -z "$$(goimports -l .)" || { echo "Files need formatting (goimports):"; goimports -l .; exit 1; }
+fmt-check: gofumpt goimports ## Check formatting (fails if files need formatting)
+	@test -z "$$($(GOFMT) -l .)" || { echo "Files need formatting (gofumpt):"; $(GOFMT) -l .; exit 1; }
+	@test -z "$$($(GOIMPORTS) -l .)" || { echo "Files need formatting (goimports):"; $(GOIMPORTS) -l .; exit 1; }
 
 check: vet lint test ## Run vet, lint, and test
 

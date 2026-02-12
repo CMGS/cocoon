@@ -1,6 +1,9 @@
 package types
 
-import "fmt"
+import (
+	"fmt"
+	"slices"
+)
 
 // VMState represents the current state of a VM in its lifecycle.
 type VMState string
@@ -34,10 +37,8 @@ func ValidateTransition(from, to VMState) error {
 	if !exists {
 		return fmt.Errorf("unknown state: %s", from)
 	}
-	for _, valid := range allowed {
-		if valid == to {
-			return nil
-		}
+	if slices.Contains(allowed, to) {
+		return nil
 	}
 	return fmt.Errorf("invalid transition: %s -> %s", from, to)
 }

@@ -1,0 +1,49 @@
+package main
+
+import (
+	"fmt"
+
+	cli "github.com/urfave/cli/v2"
+)
+
+func rmCommand() *cli.Command {
+	return &cli.Command{
+		Name:      "rm",
+		Aliases:   []string{"delete"},
+		Usage:     "Remove a VM and cleanup storage",
+		ArgsUsage: "VM_REF",
+		Flags: []cli.Flag{
+			&cli.BoolFlag{
+				Name:    "force",
+				Aliases: []string{"f"},
+				Usage:   "force delete even if VM is running",
+			},
+		},
+		Action: rmAction,
+	}
+}
+
+func rmAction(c *cli.Context) error {
+	if c.NArg() < 1 {
+		return fmt.Errorf("VM_REF argument required\n\nUsage: cocoon rm VM_REF [flags]")
+	}
+
+	app, err := initApp(c)
+	if err != nil {
+		return err
+	}
+
+	ref := c.Args().Get(0)
+	vmID, err := app.vmMgr.ResolveVMRef(ref)
+	if err != nil {
+		return fmt.Errorf("resolve VM ref %q: %w", ref, err)
+	}
+
+	force := c.Bool("force")
+	if err := app.vmMgr.Delete(c.Context, vmID, force); err != nil {
+		return fmt.Errorf("delete VM: %w", err)
+	}
+
+	fmt.Println(vmID)
+	return nil
+}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -100,10 +101,8 @@ func (rc *fileReferenceCounter) AddReference(baseKey, vmID, digestFull, sourceRe
 		}
 
 		// Idempotent: skip if vmID is already present.
-		for _, existing := range entry.Refs {
-			if existing == vmID {
-				return rc.saveRefs(refs)
-			}
+		if slices.Contains(entry.Refs, vmID) {
+			return rc.saveRefs(refs)
 		}
 		entry.Refs = append(entry.Refs, vmID)
 

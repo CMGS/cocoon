@@ -5,7 +5,7 @@ docs/P0-VERIFICATION-SUMMARY.md
 docs/P1-TODO.md
 
 # Build artifacts
-cocoon
+/cocoon
 cocoon-linux
 cocoon-linux-*
 cocoon-darwin

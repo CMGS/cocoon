@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/oklog/ulid/v2"
+
 	"github.com/CMGS/cocoon/config"
 	"github.com/CMGS/cocoon/hypervisor"
 	"github.com/CMGS/cocoon/image"
@@ -17,7 +19,6 @@ import (
 	"github.com/CMGS/cocoon/storage"
 	"github.com/CMGS/cocoon/types"
 	"github.com/CMGS/cocoon/utils"
-	"github.com/oklog/ulid/v2"
 )
 
 // Compile-time interface check.
