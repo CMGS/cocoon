@@ -32,7 +32,7 @@ func initApp(_ *cli.Context) (*appContext, error) {
 
 	// Override directories if specified via CLI flags / env vars.
 	if rootDir != "" {
-		cfg.RootDir = rootDir
+		cfg.RebaseRootDir(rootDir)
 	}
 	if runtimeDir != "" {
 		cfg.RuntimeDir = runtimeDir

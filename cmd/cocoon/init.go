@@ -44,7 +44,7 @@ func initAction(c *cli.Context) error {
 	// Build config from defaults, then apply CLI overrides.
 	cfg := config.DefaultConfig()
 	if rootDir != "" {
-		cfg.RootDir = rootDir
+		cfg.RebaseRootDir(rootDir)
 	}
 	if runtimeDir != "" {
 		cfg.RuntimeDir = runtimeDir

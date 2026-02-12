@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // CocoonConfig holds global Cocoon configuration.
@@ -84,6 +85,25 @@ func LoadConfig(path string) (*CocoonConfig, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 	return cfg, nil
+}
+
+// RebaseRootDir updates RootDir and re-derives any config paths that were
+// relative to the old root. Paths explicitly set to non-default locations
+// (not under oldRoot) are left unchanged.
+func (c *CocoonConfig) RebaseRootDir(newRoot string) {
+	oldRoot := c.RootDir
+	c.RootDir = newRoot
+
+	rebase := func(path string) string {
+		if strings.HasPrefix(path, oldRoot+"/") {
+			return filepath.Join(newRoot, path[len(oldRoot):])
+		}
+		return path
+	}
+
+	c.BuildahRoot = rebase(c.BuildahRoot)
+	c.PVHFirmwarePath = rebase(c.PVHFirmwarePath)
+	c.UEFIFirmwarePath = rebase(c.UEFIFirmwarePath)
 }
 
 // Derived path helpers.
