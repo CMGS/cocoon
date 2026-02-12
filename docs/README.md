@@ -1,115 +1,40 @@
-# Cocoon Documentation
+# Cocoon Design Documents
 
-**Cocoon** is a lightweight VM manager built on Cloud Hypervisor for managing microVMs with fast boot times and minimal resource overhead.
+This directory contains design documents, specifications, and RFCs for Cocoon. These are living documents that evolve with the project.
 
-## ⚠️ Important: Supported Images
+## Specifications
 
-**Cocoon requires bootable VM images, NOT regular container images.**
+| File | Title | Description |
+|------|-------|-------------|
+| [00-overview.md](./00-overview.md) | Project Overview | High-level architecture, supported image contract, and deployment strategy |
+| [01-boot-contract.md](./01-boot-contract.md) | Boot Contract Specification | Defines boot modes (PVH/UEFI), guest initialization, I/O mechanisms, and image requirements |
+| [02-installation.md](./02-installation.md) | Installation | Cloud Hypervisor installation, KVM setup, and host prerequisites |
+| [03-hypervisor-integration.md](./03-hypervisor-integration.md) | Cloud Hypervisor Integration | Process model, socket management, HTTP API integration, and crash recovery |
+| [04-oci-conversion.md](./04-oci-conversion.md) | OCI to qcow2 Conversion | Pipeline for converting OCI images into bootable qcow2 disk images |
+| [05-storage-management.md](./05-storage-management.md) | Storage Management | Directory layout, copy-on-write optimization, reference counting, and garbage collection |
+| [06-concurrency.md](./06-concurrency.md) | Concurrency Design | Lock hierarchy, atomic operations, crash consistency, and deadlock prevention |
+| [07-vm-lifecycle.md](./07-vm-lifecycle.md) | VM Lifecycle Management | State machine, identifier rules, metadata schema, idempotency, and reconciliation |
+| [08-dependencies.md](./08-dependencies.md) | Dependencies and Requirements | External tools, version requirements, installation instructions, and permissions |
+| [09-cli-design.md](./09-cli-design.md) | CLI Design and Commands | Command structure, flags, output formats, and supported image types |
+| [10-implementation-roadmap.md](./10-implementation-roadmap.md) | Implementation Roadmap | Phase 1 development plan, critical path, testing strategy, and validation milestones |
+| [11-bootable-oci-build.md](./11-bootable-oci-build.md) | Building Bootable OCI Images | Guidance on building custom OCI images that satisfy the Boot Contract (planned) |
 
-✅ **Supported**:
-- Cloud Hypervisor native cloud images (Ubuntu Cloud, Fedora Cloud, qcow2 format) - **Recommended**
-- Bootable OCI images (custom-built with kernel, initrd, systemd, bootloader, GRUB)
+## Future
 
-❌ **NOT Supported**:
-- Regular container images (`ubuntu:latest`, `python:3.11`, `node:20`, etc.)
-- These are application filesystems without kernel/bootloader - **will fail bootability check**
+The `future/` directory contains specifications for features planned for Phase 2. These are explicitly deferred from Phase 1.
 
-See **[00-overview.md § Supported Image Contract](./00-overview.md#️-supported-image-contract)** for details.
+| File | Title | Description |
+|------|-------|-------------|
+| [future/networking.md](./future/networking.md) | Network Configuration | TAP/bridge networking, port forwarding, and network isolation |
+| [future/api-server.md](./future/api-server.md) | gRPC/REST API Server | Programmatic VM management, authentication, and multi-tenant support |
+| [future/observability.md](./future/observability.md) | Monitoring and Logging | Prometheus metrics, structured logging, and distributed tracing |
+| [future/storage-quotas.md](./future/storage-quotas.md) | Storage Quotas | Per-VM and global disk space limits for multi-tenant deployments |
 
----
+## RFCs
 
-## Quick Navigation
+The `rfc/` directory contains the RFC process for proposing significant architectural or design changes to Cocoon. Use RFCs for new subsystems, breaking changes, or decisions with significant trade-offs.
 
-### Phase 1: Core Functionality (Current)
+- [rfc/README.md](./rfc/README.md) -- RFC process and guidelines
+- [rfc/TEMPLATE.md](./rfc/TEMPLATE.md) -- Template for new RFC proposals
 
-Getting Cocoon up and running with OCI image support:
-
-| Doc | Title | Status | Priority |
-|-----|-------|--------|----------|
-| [00](./00-overview.md) | Project Overview | ✅ Draft | - |
-| [01](./01-boot-contract.md) | Boot Contract | ✅ Draft | **P0** |
-| [02](./02-installation.md) | Installation & Setup | ✅ Draft | P0 |
-| [03](./03-hypervisor-integration.md) | Hypervisor Integration | ✅ Draft | **P0** |
-| [04](./04-oci-conversion.md) | OCI to VM Conversion | ✅ Draft | P0 |
-| [05](./05-storage-management.md) | Storage Management | ✅ Draft | P0 |
-| [06](./06-concurrency.md) | Concurrency & Consistency | ✅ Draft | **P0** |
-| [07](./07-vm-lifecycle.md) | VM Lifecycle & State | ✅ Draft | **P0** |
-| [08](./08-dependencies.md) | Dependencies & Permissions | ✅ Draft | **P0** |
-| [09](./09-cli-design.md) | CLI Design | ✅ Draft | P1 |
-| [10](./10-implementation-roadmap.md) | Implementation Roadmap | ✅ Draft | P1 |
-| [11](./11-bootable-oci-build.md) | Bootable OCI Image Build | ✅ Draft | P1 |
-
-**P0 = Critical** - Must be resolved before implementation starts
-**P1 = Important** - Should be clarified during implementation
-**P2 = Nice to have** - Can be deferred
-
-### Phase 2: Production Features (Future)
-
-Service exposure, networking, and operational tooling:
-
-| Doc | Title | Status |
-|-----|-------|--------|
-| [future/networking](./future/networking.md) | Network Configuration | 📋 Planned |
-| [future/api-server](./future/api-server.md) | gRPC/REST API Server | 📋 Planned |
-| [future/observability](./future/observability.md) | Monitoring & Logging | 📋 Planned |
-| [future/storage-quotas](./future/storage-quotas.md) | Storage Quotas | 📋 Planned |
-
-## Reading Path
-
-### For Implementers
-
-Follow this order to understand the system:
-
-1. **[Overview](./00-overview.md)** - Understand the why and what
-2. **[Boot Contract](./01-boot-contract.md)** - Critical: How OCI images become bootable VMs
-3. **[Hypervisor Integration](./03-hypervisor-integration.md)** - Critical: How to manage Cloud Hypervisor processes
-4. **[VM Lifecycle](./07-vm-lifecycle.md)** - Critical: State machine and metadata schema
-5. **[Concurrency](./06-concurrency.md)** - Critical: Locking and consistency
-6. **[Dependencies](./08-dependencies.md)** - Critical: What needs to be installed and configured
-
-Then read the rest in any order.
-
-### For Operators
-
-Start here:
-
-1. **[Installation](./02-installation.md)** - Set up Cloud Hypervisor
-2. **[Dependencies](./08-dependencies.md)** - Install and configure prerequisites
-3. **[CLI Design](./09-cli-design.md)** - How to use Cocoon
-
-### For Architects
-
-Read these for design decisions:
-
-1. **[Overview](./00-overview.md)** - Architecture and trade-offs
-2. **[Boot Contract](./01-boot-contract.md)** - Core abstraction
-3. **[Storage Management](./05-storage-management.md)** - COW and caching strategy
-4. **[Concurrency](./06-concurrency.md)** - Consistency guarantees
-
-## Document Status Legend
-
-- ✅ **Draft** - Content written, under review
-- 🔄 **In Progress** - Being written
-- 📋 **Planned** - Not yet started
-- ⚠️ **Needs Update** - Outdated, requires revision
-- ✔️ **Stable** - Reviewed and approved
-
-## Contributing
-
-When adding new docs:
-
-1. Follow the numbering scheme (next available number)
-2. Add entry to this README
-3. Mark with appropriate priority (P0/P1/P2)
-4. Update reading paths if needed
-
-For Phase 2 docs, place in `future/` directory.
-
-## RFC Process
-
-For major architectural changes or feature proposals, use the RFC process:
-
-- See [rfc/README.md](./rfc/README.md) for the RFC process
-- Use [rfc/TEMPLATE.md](./rfc/TEMPLATE.md) to create new RFCs
-
-Currently, the Cocoon architecture is captured directly in the main docs (00-overview.md through 11-bootable-oci-build.md) rather than as formal RFCs.
+No formal RFCs have been created yet. The initial architecture is captured in the specification documents above (00 through 11).

@@ -25,23 +25,20 @@ type appContext struct {
 
 // initApp creates and initializes all managers from CLI context.
 func initApp(c *cli.Context) (*appContext, error) {
-	// Load config
-	configPath := c.String("config")
-	rootDir := c.String("root-dir")
-
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
 
-	// Override root dir if specified via CLI flag.
+	// Override directories if specified via CLI flags / env vars.
 	if rootDir != "" {
 		cfg.RootDir = rootDir
 	}
-
-	// Ensure all required directories exist.
-	if err := cfg.EnsureDirs(); err != nil {
-		return nil, fmt.Errorf("create directories: %w", err)
+	if runtimeDir != "" {
+		cfg.RuntimeDir = runtimeDir
+	}
+	if logDir != "" {
+		cfg.LogDir = logDir
 	}
 
 	// Initialize managers.

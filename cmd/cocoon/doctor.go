@@ -127,8 +127,10 @@ func runDependencyChecks(app *appContext) []checkResult {
 		"root-dir":     app.cfg.RootDir,
 		"runtime-dir":  app.cfg.RuntimeDir,
 		"log-dir":      app.cfg.LogDir,
+		"db-dir":       app.cfg.DBDir(),
 		"vm-dir":       app.cfg.VMDir(),
 		"cache-dir":    app.cfg.CacheDir(),
+		"buildah-dir":  app.cfg.BuildahRoot,
 		"firmware-dir": app.cfg.FirmwareDir(),
 	}
 	for name, dir := range dirs {

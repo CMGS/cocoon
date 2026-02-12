@@ -51,7 +51,7 @@ func DefaultConfig() *CocoonConfig {
 		CHBinary:         "cloud-hypervisor",
 		PVHFirmwarePath:  "/var/lib/cocoon/firmware/hypervisor-fw",
 		UEFIFirmwarePath: "/var/lib/cocoon/firmware/CLOUDHV.fd",
-		BuildahRoot:      "/var/lib/cocoon/cache/buildah",
+		BuildahRoot:      "/var/lib/cocoon/buildah",
 
 		DefaultCPUs:     2,
 		DefaultMemoryMB: 2048,
@@ -120,24 +120,28 @@ func (c *CocoonConfig) FirmwareDir() string {
 	return filepath.Join(c.RootDir, "firmware")
 }
 
+func (c *CocoonConfig) DBDir() string {
+	return filepath.Join(c.RootDir, "db")
+}
+
 func (c *CocoonConfig) ReferencesFile() string {
-	return filepath.Join(c.RootDir, "references.json")
+	return filepath.Join(c.RootDir, "db", "references.json")
 }
 
 func (c *CocoonConfig) ReferencesLock() string {
-	return filepath.Join(c.RootDir, "references.lock")
+	return filepath.Join(c.RootDir, "db", "references.lock")
 }
 
 func (c *CocoonConfig) GCLock() string {
-	return filepath.Join(c.RootDir, "gc.lock")
+	return filepath.Join(c.RootDir, "db", "gc.lock")
 }
 
 func (c *CocoonConfig) NameIndexFile() string {
-	return filepath.Join(c.RootDir, "name-index.json")
+	return filepath.Join(c.RootDir, "db", "name-index.json")
 }
 
 func (c *CocoonConfig) NameIndexLock() string {
-	return filepath.Join(c.RootDir, "name-index.lock")
+	return filepath.Join(c.RootDir, "db", "name-index.lock")
 }
 
 // Per-VM paths.
@@ -189,6 +193,7 @@ func (c *CocoonConfig) ConversionLockPath(baseKey string) string {
 // EnsureDirs creates all required directories.
 func (c *CocoonConfig) EnsureDirs() error {
 	dirs := []string{
+		c.DBDir(),
 		c.ImageCacheDir(),
 		c.ManifestCacheDir(),
 		c.ConversionLockDir(),
@@ -196,6 +201,7 @@ func (c *CocoonConfig) EnsureDirs() error {
 		c.TempDir(),
 		c.TrashDir(),
 		c.FirmwareDir(),
+		c.BuildahRoot,
 		filepath.Join(c.RuntimeDir, "vms"),
 		c.LogDir,
 	}

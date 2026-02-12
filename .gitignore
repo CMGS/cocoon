@@ -38,3 +38,6 @@ coverage/
 
 # Test cache
 .testcache/
+
+# Local dev environment (macOS)
+dev/

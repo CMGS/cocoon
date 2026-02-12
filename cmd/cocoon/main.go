@@ -15,6 +15,8 @@ import (
 var (
 	configPath string
 	rootDir    string
+	runtimeDir string
+	logDir     string
 	logLevel   string
 )
 
@@ -37,10 +39,21 @@ func main() {
 		},
 		&cli.StringFlag{
 			Name:        "root-dir",
-			Value:       "/var/lib/cocoon",
-			Usage:       "root directory for cocoon persistent data",
+			Usage:       "root directory for cocoon persistent data (overrides config)",
 			Destination: &rootDir,
 			EnvVars:     []string{"COCOON_ROOT_DIR"},
+		},
+		&cli.StringFlag{
+			Name:        "runtime-dir",
+			Usage:       "runtime directory for sockets and PIDs (overrides config)",
+			Destination: &runtimeDir,
+			EnvVars:     []string{"COCOON_RUNTIME_DIR"},
+		},
+		&cli.StringFlag{
+			Name:        "log-dir",
+			Usage:       "log directory for VM serial logs (overrides config)",
+			Destination: &logDir,
+			EnvVars:     []string{"COCOON_LOG_DIR"},
 		},
 		&cli.StringFlag{
 			Name:        "log-level",
@@ -52,6 +65,7 @@ func main() {
 	}
 
 	app.Commands = []*cli.Command{
+		initCommand(),
 		createCommand(),
 		runCommand(),
 		startCommand(),
