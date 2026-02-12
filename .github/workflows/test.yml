@@ -1,0 +1,44 @@
+name: test
+
+on:
+  push:
+    tags:
+      - '!v*'
+    branches:
+      - '*'
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        go-version: ['1.22.x']
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test with coverage
+        run: go test -race -timeout 120s -count=1 -cover -coverprofile=coverage.out ./...
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.go-version }}-${{ matrix.os }}
+          path: coverage.out
+          retention-days: 7
+
+      - name: Build binary
+        run: CGO_ENABLED=0 go build -o cocoon ./cmd/cocoon/

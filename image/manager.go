@@ -1,0 +1,563 @@
+package image
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"time"
+
+	"github.com/projecteru2/cocoon/config"
+	"github.com/projecteru2/cocoon/lock"
+	"github.com/projecteru2/cocoon/types"
+)
+
+// Compile-time interface check.
+var _ Manager = (*manager)(nil)
+
+// manager is the default implementation of the Manager interface.
+// It coordinates image pulling, conversion, caching, and bootability
+// verification using external tools (Buildah, qemu-img, libguestfs).
+type manager struct {
+	cfg *config.CocoonConfig
+}
+
+// NewManager creates a new image Manager backed by the given configuration.
+// The configuration determines cache directories, lock paths, and tool locations.
+func NewManager(cfg *config.CocoonConfig) Manager {
+	return &manager{cfg: cfg}
+}
+
+// Pull downloads an OCI image or cloud image based on the reference type.
+//
+// Reference classification:
+//   - OCI: contains "/" and no path separator at start (e.g., "docker.io/library/ubuntu:22.04")
+//   - URL: starts with "http://" or "https://"
+//   - Local file: starts with "/" or "./" or contains no "/" (existing file path)
+func (m *manager) Pull(ctx context.Context, ref string) (*ImageIdentity, error) {
+	imgType := classifyRef(ref)
+
+	switch imgType {
+	case ImageTypeOCI:
+		return m.pullOCI(ctx, ref)
+	case ImageTypeURL:
+		return m.pullURL(ctx, ref)
+	case ImageTypeLocalFile:
+		return m.pullLocal(ctx, ref)
+	default:
+		return nil, fmt.Errorf("unsupported image reference type: %q", ref)
+	}
+}
+
+// Convert transforms a pulled image into a qcow2 base image in the cache.
+// It acquires a per-image conversion lock (Level 3) to prevent duplicate work
+// when multiple callers request the same image concurrently.
+//
+// If the base image already exists in the cache (checked after acquiring the
+// lock), conversion is skipped.
+//
+// The source image path is taken from identity.TempPath. The source format is
+// auto-detected via qemu-img info. If the source is already qcow2, it is
+// atomically copied to cache. If raw, it is converted with qemu-img convert.
+func (m *manager) Convert(ctx context.Context, identity *ImageIdentity) (string, error) {
+	baseKey := identity.BaseKey()
+	basePath := m.cfg.BaseImagePath(baseKey)
+
+	// Acquire per-image conversion lock (Level 3 in lock hierarchy).
+	lockPath := m.cfg.ConversionLockPath(baseKey)
+	fl := lock.New(lockPath)
+	if err := fl.Lock(); err != nil {
+		return "", fmt.Errorf("acquire conversion lock for %s: %w", baseKey, err)
+	}
+	defer func() {
+		if err := fl.Unlock(); err != nil {
+			log.Printf("warning: failed to release conversion lock for %s: %v", baseKey, err)
+		}
+	}()
+
+	// Check cache after acquiring lock (another process may have completed
+	// conversion while we waited).
+	if _, err := os.Stat(basePath); err == nil {
+		log.Printf("image %s: cache hit after lock acquisition, skipping conversion", baseKey)
+		return basePath, nil
+	}
+
+	srcPath := identity.TempPath
+	if srcPath == "" {
+		return "", fmt.Errorf("convert %s: no source path (TempPath) set on identity", baseKey)
+	}
+
+	if _, err := os.Stat(srcPath); err != nil {
+		return "", fmt.Errorf("convert %s: source file not found at %s: %w", baseKey, srcPath, err)
+	}
+
+	// Detect source image format.
+	format, err := detectImageFormat(srcPath)
+	if err != nil {
+		return "", fmt.Errorf("convert %s: detect format: %w", baseKey, err)
+	}
+	log.Printf("image %s: detected source format: %s", baseKey, format)
+
+	// Ensure cache directory exists.
+	cacheDir := m.cfg.ImageCacheDir()
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		return "", fmt.Errorf("convert %s: create cache dir: %w", baseKey, err)
+	}
+
+	// Use a temp file in the cache directory for atomic placement.
+	tmpPath := basePath + ".tmp"
+	defer os.Remove(tmpPath) // clean up on any error path
+
+	switch format {
+	case "qcow2":
+		// Already qcow2: atomic copy (temp + fsync + rename).
+		log.Printf("image %s: source is qcow2, performing atomic copy to cache", baseKey)
+		if err := atomicCopyFile(srcPath, tmpPath); err != nil {
+			return "", fmt.Errorf("convert %s: copy qcow2 to cache: %w", baseKey, err)
+		}
+
+	case "raw":
+		// Convert raw to qcow2 using qemu-img.
+		log.Printf("image %s: converting raw -> qcow2", baseKey)
+		cmd := exec.CommandContext(ctx, "qemu-img", "convert", "-f", "raw", "-O", "qcow2", srcPath, tmpPath)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("convert %s: qemu-img convert: %s: %w", baseKey, string(out), err)
+		}
+
+	default:
+		return "", fmt.Errorf("convert %s: unsupported source format %q (expected qcow2 or raw)", baseKey, format)
+	}
+
+	// Atomic rename into cache.
+	if err := os.Rename(tmpPath, basePath); err != nil {
+		return "", fmt.Errorf("convert %s: rename to cache path: %w", baseKey, err)
+	}
+
+	// Clean up temp source if it was downloaded (not a user's local file).
+	if identity.ImageType == ImageTypeURL {
+		if err := os.Remove(srcPath); err != nil {
+			log.Printf("warning: failed to clean up temp source %s: %v", srcPath, err)
+		}
+	}
+
+	log.Printf("image %s: conversion complete -> %s", baseKey, basePath)
+	return basePath, nil
+}
+
+// Prepare is the combined pull+convert+cache pipeline. It first checks whether
+// a cached base image already exists for the given ref. If so, it skips pull
+// and convert entirely. Otherwise it runs Pull + Convert and caches the result.
+func (m *manager) Prepare(ctx context.Context, ref string) (*ImageIdentity, string, error) {
+	// Step 1: Pull to determine the image identity.
+	identity, err := m.Pull(ctx, ref)
+	if err != nil {
+		return nil, "", fmt.Errorf("pull %q: %w", ref, err)
+	}
+
+	baseKey := identity.BaseKey()
+	basePath := m.cfg.BaseImagePath(baseKey)
+
+	// Step 2: Check cache before converting.
+	if _, err := os.Stat(basePath); err == nil {
+		log.Printf("image %s: cache hit for %q, skipping conversion", baseKey, ref)
+		return identity, basePath, nil
+	}
+
+	// Step 3: Convert (includes its own per-image lock).
+	basePath, err = m.Convert(ctx, identity)
+	if err != nil {
+		return nil, "", fmt.Errorf("convert %q (key=%s): %w", ref, baseKey, err)
+	}
+
+	return identity, basePath, nil
+}
+
+// VerifyBootability checks if an image meets the Cocoon boot contract.
+// It uses a two-tier approach:
+//
+// Basic verification (always available):
+//   - File exists and has non-zero size
+//   - qemu-img check passes (image integrity)
+//   - qemu-img info confirms valid qcow2 format
+//   - Optimistically sets Bootable=true if qcow2 is valid
+//   - Assumes both PVH and UEFI boot modes are supported
+//
+// Deep verification (platform-dependent):
+//   - Linux: uses guestfish to inspect image contents (kernel, initrd, systemd, bootloader)
+//   - Darwin: stub that adds a warning (guestfish not available)
+func (m *manager) VerifyBootability(ctx context.Context, imagePath string) (*BootCheckResult, error) {
+	info, err := os.Stat(imagePath)
+	if err != nil {
+		return nil, fmt.Errorf("image path does not exist: %w", err)
+	}
+
+	result := &BootCheckResult{
+		Bootable:  false,
+		BootModes: []string{},
+		Errors:    []string{},
+		Warnings:  []string{},
+	}
+
+	// Basic check: file must have non-zero size.
+	if info.Size() == 0 {
+		result.Errors = append(result.Errors, "image file is empty (zero bytes)")
+		return result, nil
+	}
+
+	// Basic check: qemu-img check for image integrity.
+	checkCmd := exec.CommandContext(ctx, "qemu-img", "check", imagePath)
+	if out, err := checkCmd.CombinedOutput(); err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("qemu-img check failed: %s", strings.TrimSpace(string(out))))
+		log.Printf("image %s: qemu-img check failed: %v", imagePath, err)
+		return result, nil
+	}
+
+	// Basic check: verify format is qcow2.
+	format, err := detectImageFormat(imagePath)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("failed to detect image format: %v", err))
+		return result, nil
+	}
+	if format != "qcow2" {
+		result.Errors = append(result.Errors, fmt.Sprintf("unexpected image format %q, expected qcow2", format))
+		return result, nil
+	}
+
+	// Basic verification passed. Optimistically assume bootable.
+	result.Bootable = true
+	result.BootModes = []string{string(types.BootModePVH), string(types.BootModeUEFI)}
+
+	// Attempt deep verification (platform-specific).
+	if err := deepVerifyBoot(imagePath, result); err != nil {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("deep verification error: %v", err))
+	}
+
+	// After deep verification, re-evaluate bootability based on findings.
+	// If deep verification populated specific fields, use those to check.
+	// If deep verification was skipped (darwin or no guestfish), keep
+	// optimistic result and add a warning.
+	deepDone := result.KernelFound || result.InitrdFound || result.SystemdFound || result.BootloaderFound
+	if deepDone {
+		// Deep verification ran, evaluate results strictly.
+		result.Errors = nil // reset basic-level errors
+		if !result.KernelFound {
+			result.Errors = append(result.Errors, "kernel not found: no /boot/vmlinuz* detected")
+		}
+		if !result.InitrdFound {
+			result.Errors = append(result.Errors, "initrd/initramfs not found: no /boot/initrd* or /boot/initramfs* detected")
+		}
+		if !result.SystemdFound {
+			result.Errors = append(result.Errors, "systemd not found: /sbin/init must be systemd")
+		}
+		if !result.BootloaderFound {
+			result.Errors = append(result.Errors, "UEFI bootloader not found in ESP")
+		}
+		if !result.CloudInitFound {
+			result.Warnings = append(result.Warnings, "cloud-init not found: VM will boot but Cocoon metadata server integration will be disabled")
+		}
+
+		// Determine boot modes from deep findings.
+		result.BootModes = nil
+		if result.KernelFound && result.BootloaderFound {
+			result.BootModes = append(result.BootModes, string(types.BootModePVH))
+			result.BootModes = append(result.BootModes, string(types.BootModeUEFI))
+		}
+
+		result.Bootable = len(result.Errors) == 0
+	} else {
+		// Deep verification did not run; keep optimistic result.
+		result.Warnings = append(result.Warnings, "deep boot contract verification requires guestfish (not available)")
+	}
+
+	log.Printf("image %s: bootability check complete: bootable=%v, modes=%v, errors=%d, warnings=%d",
+		imagePath, result.Bootable, result.BootModes, len(result.Errors), len(result.Warnings))
+
+	return result, nil
+}
+
+// ListCached returns all cached base images found in the image cache directory.
+// Each cached image is identified by its filename pattern: {checksum_16}_{arch}.qcow2.
+func (m *manager) ListCached(ctx context.Context) ([]*CachedImage, error) {
+	cacheDir := m.cfg.ImageCacheDir()
+
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read cache directory: %w", err)
+	}
+
+	var images []*CachedImage
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".qcow2") {
+			continue
+		}
+
+		// Extract base_key from filename by removing .qcow2 suffix.
+		baseKey := strings.TrimSuffix(name, ".qcow2")
+
+		// Validate base_key format.
+		if _, _, err := types.ParseBaseKey(baseKey); err != nil {
+			log.Printf("warning: skipping invalid cache entry: %s (%v)", name, err)
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			log.Printf("warning: cannot stat cache entry %s: %v", name, err)
+			continue
+		}
+
+		images = append(images, &CachedImage{
+			BaseKey:   baseKey,
+			Path:      filepath.Join(cacheDir, name),
+			Size:      info.Size(),
+			CreatedAt: info.ModTime(),
+			RefCount:  0, // Stub: actual ref count requires reading references.json.
+		})
+	}
+
+	return images, nil
+}
+
+// RemoveCached removes a cached base image identified by its base_key.
+// The base_key format is {checksum_16}_{arch}.
+func (m *manager) RemoveCached(ctx context.Context, baseKey string) error {
+	if _, _, err := types.ParseBaseKey(baseKey); err != nil {
+		return fmt.Errorf("invalid base_key: %w", err)
+	}
+
+	basePath := m.cfg.BaseImagePath(baseKey)
+	if _, err := os.Stat(basePath); os.IsNotExist(err) {
+		return fmt.Errorf("cached image not found: %s", baseKey)
+	}
+
+	if err := os.Remove(basePath); err != nil {
+		return fmt.Errorf("remove cached image %s: %w", baseKey, err)
+	}
+
+	log.Printf("image cache: removed %s", baseKey)
+	return nil
+}
+
+// --- Internal helpers ---
+
+// classifyRef determines the ImageType for a given reference string.
+func classifyRef(ref string) ImageType {
+	if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
+		return ImageTypeURL
+	}
+
+	// Local file: check if path exists on disk.
+	if strings.HasPrefix(ref, "/") || strings.HasPrefix(ref, "./") || strings.HasPrefix(ref, "../") {
+		return ImageTypeLocalFile
+	}
+
+	// If the reference has no scheme and exists as a file, treat it as local.
+	if _, err := os.Stat(ref); err == nil {
+		return ImageTypeLocalFile
+	}
+
+	// Default: treat as OCI registry reference.
+	return ImageTypeOCI
+}
+
+// pullOCI handles pulling an OCI image from a container registry.
+// OCI registry pulls require Buildah and skopeo which are not yet integrated.
+func (m *manager) pullOCI(ctx context.Context, ref string) (*ImageIdentity, error) {
+	log.Printf("image pull (OCI): %s - not yet implemented", ref)
+	return nil, fmt.Errorf("OCI registry pull requires buildah; not yet implemented. Use a direct URL or local file path instead. (ref: %s)", ref)
+}
+
+// pullURL handles downloading an image from an HTTP/HTTPS URL.
+// It downloads the file to a temp directory, computes the SHA-256 checksum
+// during download using io.TeeReader, and returns the ImageIdentity with
+// the temp file path set for subsequent conversion.
+func (m *manager) pullURL(ctx context.Context, ref string) (*ImageIdentity, error) {
+	log.Printf("image pull (URL): %s", ref)
+
+	// Ensure temp directory exists.
+	tempDir := m.cfg.TempDir()
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		return nil, fmt.Errorf("create temp dir: %w", err)
+	}
+
+	// Create temp file for download.
+	tmpFile, err := os.CreateTemp(tempDir, "pull-*.img")
+	if err != nil {
+		return nil, fmt.Errorf("create temp file for download: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+
+	// Clean up temp file on error.
+	success := false
+	defer func() {
+		if !success {
+			tmpFile.Close()
+			os.Remove(tmpPath)
+		}
+	}()
+
+	// Create HTTP request with context for cancellation.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ref, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create HTTP request for %s: %w", ref, err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP GET %s: %w", ref, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP GET %s: unexpected status %d %s", ref, resp.StatusCode, resp.Status)
+	}
+
+	// Stream body to temp file while computing SHA-256 checksum.
+	h := sha256.New()
+	reader := io.TeeReader(resp.Body, h)
+
+	contentLength := resp.ContentLength
+	var written int64
+	buf := make([]byte, 32*1024) // 32KB buffer
+	lastLogPct := -1
+
+	for {
+		n, readErr := reader.Read(buf)
+		if n > 0 {
+			if _, writeErr := tmpFile.Write(buf[:n]); writeErr != nil {
+				return nil, fmt.Errorf("write to temp file %s: %w", tmpPath, writeErr)
+			}
+			written += int64(n)
+
+			// Log progress percentage if content length is known.
+			if contentLength > 0 {
+				pct := int(written * 100 / contentLength)
+				if pct/10 > lastLogPct/10 { // log every 10%
+					log.Printf("image pull (URL): %s - %d%% (%d / %d bytes)", ref, pct, written, contentLength)
+					lastLogPct = pct
+				}
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				break
+			}
+			return nil, fmt.Errorf("read HTTP response body from %s: %w", ref, readErr)
+		}
+	}
+
+	// Flush and sync temp file.
+	if err := tmpFile.Sync(); err != nil {
+		return nil, fmt.Errorf("sync temp file %s: %w", tmpPath, err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return nil, fmt.Errorf("close temp file %s: %w", tmpPath, err)
+	}
+
+	log.Printf("image pull (URL): %s - downloaded %d bytes to %s", ref, written, tmpPath)
+
+	// Compute identity from checksum.
+	fullDigest := hex.EncodeToString(h.Sum(nil))
+	checksum := fullDigest[:checksumHexLen]
+	arch := GOARCHToOCI(runtime.GOARCH)
+
+	identity := &ImageIdentity{
+		Checksum:   checksum,
+		Arch:       arch,
+		FullDigest: fullDigest,
+		SourceRef:  ref,
+		ImageType:  ImageTypeURL,
+		TempPath:   tmpPath,
+	}
+
+	success = true
+	log.Printf("image pull (URL): %s -> base_key=%s", ref, identity.BaseKey())
+	return identity, nil
+}
+
+// pullLocal handles a local file reference. It computes the file checksum to
+// determine the image identity and sets TempPath to the absolute path so
+// Convert can find the source file.
+func (m *manager) pullLocal(ctx context.Context, ref string) (*ImageIdentity, error) {
+	absPath, err := filepath.Abs(ref)
+	if err != nil {
+		return nil, fmt.Errorf("resolve absolute path for %q: %w", ref, err)
+	}
+
+	if _, err := os.Stat(absPath); err != nil {
+		return nil, fmt.Errorf("local image file not found: %w", err)
+	}
+
+	fullDigest, checksum, err := ComputeFileChecksum(absPath)
+	if err != nil {
+		return nil, fmt.Errorf("compute checksum for %q: %w", ref, err)
+	}
+
+	arch := DefaultArch()
+
+	identity := &ImageIdentity{
+		Checksum:   checksum,
+		Arch:       arch,
+		FullDigest: fullDigest,
+		SourceRef:  ref,
+		ImageType:  ImageTypeLocalFile,
+		TempPath:   absPath,
+	}
+
+	log.Printf("image pull (local): %s -> base_key=%s", ref, identity.BaseKey())
+	return identity, nil
+}
+
+// Ensure time import is used (referenced in CachedImage.CreatedAt via info.ModTime()).
+var _ = time.Now
+
+// atomicCopyFile copies src to dst using a write + fsync pattern.
+// The caller is responsible for the final rename if needed; this function
+// writes directly to dst.
+func atomicCopyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open source %s: %w", src, err)
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return fmt.Errorf("create destination %s: %w", dst, err)
+	}
+
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return fmt.Errorf("copy %s -> %s: %w", src, dst, err)
+	}
+
+	// Fsync to ensure data is flushed to disk before rename.
+	if err := out.Sync(); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return fmt.Errorf("sync %s: %w", dst, err)
+	}
+
+	if err := out.Close(); err != nil {
+		os.Remove(dst)
+		return fmt.Errorf("close %s: %w", dst, err)
+	}
+
+	return nil
+}

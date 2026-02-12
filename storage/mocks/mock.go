@@ -1,0 +1,160 @@
+// Package mocks provides test doubles for the storage interfaces
+// (ReferenceCounter, COWManager, GarbageCollector) for use in unit tests.
+package mocks
+
+import (
+	"time"
+
+	"github.com/projecteru2/cocoon/storage"
+)
+
+// ---------------------------------------------------------------------------
+// MockReferenceCounter
+// ---------------------------------------------------------------------------
+
+// MockReferenceCounter is a test double for storage.ReferenceCounter.
+// Each method can be overridden by setting the corresponding Func field.
+// If a Func field is nil, the method returns zero values.
+type MockReferenceCounter struct {
+	AddReferenceFunc         func(baseKey, vmID, digestFull, sourceRef string) error
+	RemoveReferenceFunc      func(baseKey, vmID string) error
+	GetReferencesFunc        func(baseKey string) ([]string, error)
+	IsReferencedFunc         func(baseKey string) (bool, error)
+	GetUnreferencedImagesFunc func() ([]string, error)
+}
+
+// Compile-time check that MockReferenceCounter implements storage.ReferenceCounter.
+var _ storage.ReferenceCounter = (*MockReferenceCounter)(nil)
+
+func (m *MockReferenceCounter) AddReference(baseKey, vmID, digestFull, sourceRef string) error {
+	if m.AddReferenceFunc != nil {
+		return m.AddReferenceFunc(baseKey, vmID, digestFull, sourceRef)
+	}
+	return nil
+}
+
+func (m *MockReferenceCounter) RemoveReference(baseKey, vmID string) error {
+	if m.RemoveReferenceFunc != nil {
+		return m.RemoveReferenceFunc(baseKey, vmID)
+	}
+	return nil
+}
+
+func (m *MockReferenceCounter) GetReferences(baseKey string) ([]string, error) {
+	if m.GetReferencesFunc != nil {
+		return m.GetReferencesFunc(baseKey)
+	}
+	return []string{}, nil
+}
+
+func (m *MockReferenceCounter) IsReferenced(baseKey string) (bool, error) {
+	if m.IsReferencedFunc != nil {
+		return m.IsReferencedFunc(baseKey)
+	}
+	return false, nil
+}
+
+func (m *MockReferenceCounter) GetUnreferencedImages() ([]string, error) {
+	if m.GetUnreferencedImagesFunc != nil {
+		return m.GetUnreferencedImagesFunc()
+	}
+	return []string{}, nil
+}
+
+// ---------------------------------------------------------------------------
+// MockCOWManager
+// ---------------------------------------------------------------------------
+
+// MockCOWManager is a test double for storage.COWManager.
+// Each method can be overridden by setting the corresponding Func field.
+// If a Func field is nil, the method returns zero values.
+type MockCOWManager struct {
+	CreateBaseImageFunc func(srcPath, baseKey string) error
+	CreateOverlayFunc   func(baseKey, vmID string) (string, error)
+	RemoveOverlayFunc   func(vmID string) error
+	GetOverlayInfoFunc  func(vmID string) (*storage.OverlayInfo, error)
+}
+
+// Compile-time check that MockCOWManager implements storage.COWManager.
+var _ storage.COWManager = (*MockCOWManager)(nil)
+
+func (m *MockCOWManager) CreateBaseImage(srcPath, baseKey string) error {
+	if m.CreateBaseImageFunc != nil {
+		return m.CreateBaseImageFunc(srcPath, baseKey)
+	}
+	return nil
+}
+
+func (m *MockCOWManager) CreateOverlay(baseKey, vmID string) (string, error) {
+	if m.CreateOverlayFunc != nil {
+		return m.CreateOverlayFunc(baseKey, vmID)
+	}
+	return "", nil
+}
+
+func (m *MockCOWManager) RemoveOverlay(vmID string) error {
+	if m.RemoveOverlayFunc != nil {
+		return m.RemoveOverlayFunc(vmID)
+	}
+	return nil
+}
+
+func (m *MockCOWManager) GetOverlayInfo(vmID string) (*storage.OverlayInfo, error) {
+	if m.GetOverlayInfoFunc != nil {
+		return m.GetOverlayInfoFunc(vmID)
+	}
+	return nil, nil
+}
+
+// ---------------------------------------------------------------------------
+// MockGarbageCollector
+// ---------------------------------------------------------------------------
+
+// MockGarbageCollector is a test double for storage.GarbageCollector.
+// Each method can be overridden by setting the corresponding Func field.
+// If a Func field is nil, the method returns zero values.
+type MockGarbageCollector struct {
+	CollectUnreferencedImagesFunc func(gracePeriod time.Duration) ([]string, error)
+	CollectOrphanedOverlaysFunc   func() ([]string, error)
+	CollectTempFilesFunc          func(maxAge time.Duration) ([]string, error)
+	EmptyTrashFunc                func(maxAge time.Duration) error
+	FullGCFunc                    func() error
+}
+
+// Compile-time check that MockGarbageCollector implements storage.GarbageCollector.
+var _ storage.GarbageCollector = (*MockGarbageCollector)(nil)
+
+func (m *MockGarbageCollector) CollectUnreferencedImages(gracePeriod time.Duration) ([]string, error) {
+	if m.CollectUnreferencedImagesFunc != nil {
+		return m.CollectUnreferencedImagesFunc(gracePeriod)
+	}
+	return []string{}, nil
+}
+
+func (m *MockGarbageCollector) CollectOrphanedOverlays() ([]string, error) {
+	if m.CollectOrphanedOverlaysFunc != nil {
+		return m.CollectOrphanedOverlaysFunc()
+	}
+	return []string{}, nil
+}
+
+func (m *MockGarbageCollector) CollectTempFiles(maxAge time.Duration) ([]string, error) {
+	if m.CollectTempFilesFunc != nil {
+		return m.CollectTempFilesFunc(maxAge)
+	}
+	return []string{}, nil
+}
+
+func (m *MockGarbageCollector) EmptyTrash(maxAge time.Duration) error {
+	if m.EmptyTrashFunc != nil {
+		return m.EmptyTrashFunc(maxAge)
+	}
+	return nil
+}
+
+func (m *MockGarbageCollector) FullGC() error {
+	if m.FullGCFunc != nil {
+		return m.FullGCFunc()
+	}
+	return nil
+}

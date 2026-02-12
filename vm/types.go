@@ -1,0 +1,72 @@
+package vm
+
+import "github.com/projecteru2/cocoon/types"
+
+// CreateOptions holds parameters for creating a new VM.
+type CreateOptions struct {
+	// Image is the OCI image reference (required).
+	Image string `json:"image"`
+
+	// Name is the optional user-facing alias.
+	// If empty, auto-generated as "cocoon-{random-8-chars}".
+	Name string `json:"name,omitempty"`
+
+	// CPUs is the number of vCPUs. Defaults to config default if zero.
+	CPUs int `json:"cpus,omitempty"`
+
+	// MemoryMB is the memory in megabytes. Defaults to config default if zero.
+	MemoryMB int64 `json:"memory_mb,omitempty"`
+
+	// DiskSize is the overlay disk size (e.g., "10G"). Defaults to config default if empty.
+	DiskSize string `json:"disk_size,omitempty"`
+
+	// BootStrategy is one of "pvh_then_uefi" (default), "uefi_only", "pvh_only".
+	BootStrategy types.BootStrategy `json:"boot_strategy,omitempty"`
+}
+
+// InconsistencyType classifies the kind of reconciliation inconsistency.
+type InconsistencyType string
+
+const (
+	InconsistencyStateMismatch    InconsistencyType = "state_mismatch"
+	InconsistencyMetadataCorrupt  InconsistencyType = "metadata_corrupted"
+	InconsistencyStalePIDFile     InconsistencyType = "stale_pid_file"
+	InconsistencyZombieSocket     InconsistencyType = "zombie_socket"
+	InconsistencyZombieProcess    InconsistencyType = "zombie_process"
+	InconsistencyMissingOverlay   InconsistencyType = "missing_overlay"
+)
+
+// InconsistencySeverity indicates how serious an inconsistency is.
+type InconsistencySeverity string
+
+const (
+	SeverityCritical InconsistencySeverity = "critical"
+	SeverityWarning  InconsistencySeverity = "warning"
+	SeverityInfo     InconsistencySeverity = "info"
+)
+
+// Inconsistency represents a detected discrepancy between expected and actual VM state.
+type Inconsistency struct {
+	// VMID is the VM that has the inconsistency.
+	VMID string `json:"vm_id"`
+
+	// Type classifies the inconsistency.
+	Type InconsistencyType `json:"type"`
+
+	// Severity indicates how serious the issue is.
+	Severity InconsistencySeverity `json:"severity"`
+
+	// Details is a human-readable description of the problem.
+	Details string `json:"details"`
+
+	// ExpectedState is the state recorded in metadata.json.
+	ExpectedState string `json:"expected_state,omitempty"`
+
+	// ActualState is the state determined by probing the system.
+	ActualState string `json:"actual_state,omitempty"`
+}
+
+// NameIndex is an alias for types.NameIndex.
+// Maps VM names to their vm_id values.
+// Stored at /var/lib/cocoon/name-index.json.
+type NameIndex = types.NameIndex

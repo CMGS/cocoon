@@ -1,0 +1,81 @@
+run:
+  timeout: 5m
+  tests: false
+  modules-download-mode: readonly
+  build-tags:
+    - linux
+    - darwin
+  skip-dirs:
+    - vendor
+    - tools
+    - mocks
+    - dist
+
+output:
+  formats:
+    - format: colored-line-number
+
+linters-settings:
+  gocritic:
+    disabled-checks:
+      - captLocal
+  govet:
+    enable-all: true
+    disable:
+      - fieldalignment
+  revive:
+    rules:
+      - name: exported
+        disabled: true
+  misspell:
+    locale: US
+  goconst:
+    min-len: 3
+    min-occurrences: 3
+  gocyclo:
+    min-complexity: 30
+  nakedret:
+    max-func-lines: 30
+  nestif:
+    min-complexity: 5
+
+issues:
+  exclude-dirs:
+    - vendor
+    - mocks
+    - dist
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gosec
+        - unparam
+        - goconst
+        - gocyclo
+
+linters:
+  disable-all: true
+  enable:
+    - asciicheck
+    - bodyclose
+    - dogsled
+    - errcheck
+    - gochecknoinits
+    - goconst
+    - gocritic
+    - gocyclo
+    - gofmt
+    - goimports
+    - goprintffuncname
+    - gosec
+    - gosimple
+    - govet
+    - ineffassign
+    - misspell
+    - nakedret
+    - nestif
+    - revive
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
