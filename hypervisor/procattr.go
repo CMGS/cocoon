@@ -1,5 +1,3 @@
-//go:build darwin
-
 package hypervisor
 
 import (
@@ -7,8 +5,8 @@ import (
 	"syscall"
 )
 
-// configureCHProcess sets macOS-specific process attributes.
-// Setpgid is also available on macOS.
+// configureCHProcess sets process attributes for the Cloud Hypervisor process.
+// Setpgid creates a new process group so CH survives if cocoon exits.
 func configureCHProcess(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,

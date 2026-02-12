@@ -2,9 +2,8 @@ package main
 
 import (
 	"fmt"
-	"strconv"
-	"strings"
 
+	"github.com/docker/go-units"
 	cli "github.com/urfave/cli/v2"
 
 	"github.com/CMGS/cocoon/types"
@@ -102,46 +101,24 @@ func createAction(c *cli.Context) error {
 }
 
 // parseMemory parses a human-readable memory string and returns the value in MB.
-// Accepted formats:
-//   - "512M" or "512m" -> 512
-//   - "1G" or "1g"     -> 1024
-//   - "2048"           -> 2048 (plain number = MB)
+// Delegates to docker/go-units for robust parsing (supports K, M, G, T, Ki, Mi, Gi, etc.).
+// Plain numbers without suffix are interpreted as MB for backwards compatibility.
 func parseMemory(s string) (int64, error) {
-	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0, fmt.Errorf("empty memory value")
 	}
 
-	// Check for suffix.
-	last := s[len(s)-1]
-	switch last {
-	case 'M', 'm':
-		n, err := strconv.ParseInt(s[:len(s)-1], 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("invalid memory value %q: %w", s, err)
-		}
-		if n <= 0 {
-			return 0, fmt.Errorf("memory must be positive, got %d", n)
-		}
-		return n, nil
-	case 'G', 'g':
-		n, err := strconv.ParseInt(s[:len(s)-1], 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("invalid memory value %q: %w", s, err)
-		}
-		if n <= 0 {
-			return 0, fmt.Errorf("memory must be positive, got %d", n)
-		}
-		return n * 1024, nil
-	default:
-		// Plain number: interpret as MB.
-		n, err := strconv.ParseInt(s, 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("invalid memory value %q: expected a number with optional M/G suffix", s)
-		}
-		if n <= 0 {
-			return 0, fmt.Errorf("memory must be positive, got %d", n)
-		}
-		return n, nil
+	bytes, err := units.RAMInBytes(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid memory value %q: %w", s, err)
 	}
+	if bytes <= 0 {
+		return 0, fmt.Errorf("memory must be positive, got %d bytes", bytes)
+	}
+
+	mb := bytes / (1024 * 1024)
+	if mb == 0 {
+		return 0, fmt.Errorf("memory value %q is less than 1MB", s)
+	}
+	return mb, nil
 }

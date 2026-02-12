@@ -3,6 +3,7 @@ module github.com/CMGS/cocoon
 go 1.25.0
 
 require (
+	github.com/docker/go-units v0.5.0
 	github.com/oklog/ulid/v2 v2.1.0
 	github.com/urfave/cli/v2 v2.27.5
 )
