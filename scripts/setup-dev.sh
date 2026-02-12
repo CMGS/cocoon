@@ -139,6 +139,16 @@ run_check_only() {
     echo -e "${BOLD}--- Runtime dependencies ---${NC}"
     check_tool "qemu-img" "qemu-img" "required for overlay creation"
     check_tool "cloud-hypervisor" "cloud-hypervisor" "VMM backend"
+    # Check cap_net_admin capability on cloud-hypervisor
+    if command -v cloud-hypervisor &>/dev/null && command -v getcap &>/dev/null; then
+        local caps
+        caps="$(getcap "$(command -v cloud-hypervisor)" 2>/dev/null || echo "")"
+        if echo "$caps" | grep -q "cap_net_admin"; then
+            check_result "cap_net_admin" "true" "(on cloud-hypervisor)"
+        else
+            check_result "cap_net_admin" "false" "(not set - run: sudo setcap cap_net_admin+ep $(command -v cloud-hypervisor))"
+        fi
+    fi
     check_tool "buildah" "buildah" "OCI image operations"
 
     echo ""
@@ -298,6 +308,14 @@ install_cloud_hypervisor() {
     mv "$tmp_dir/$CH_BINARY" /usr/local/bin/cloud-hypervisor
 
     rm -rf "$tmp_dir"
+
+    # Grant CAP_NET_ADMIN so CH can create TAP network devices without running as root.
+    if command -v setcap &>/dev/null; then
+        setcap cap_net_admin+ep /usr/local/bin/cloud-hypervisor
+        ok "Set cap_net_admin+ep on cloud-hypervisor"
+    else
+        warn "setcap not found; cloud-hypervisor may need root for networking (install libcap2-bin)"
+    fi
 
     local installed_version
     installed_version="$(cloud-hypervisor --version 2>/dev/null | head -1 || echo unknown)"
