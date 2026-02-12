@@ -229,7 +229,7 @@ type Manager interface {
     CloneVolume(ctx context.Context, source, dest string) error
 
     // CreateOverlay creates COW overlay with backing file
-    CreateOverlay(ctx context.Context, baseImage, vmID string) (*types.VolumeInfo, error)
+    CreateOverlay(ctx context.Context, baseKey, vmID string) (*types.VolumeInfo, error)
 }
 ```
 
@@ -1615,18 +1615,19 @@ log:
    - Create `ImageManager` with Buildah
    - Create `StorageManager` for qcow2 operations
    - Create `ReferenceCounter` for tracking
-4. **Resolve and fetch image** → `ImageManager.Resolve(image)` detects source type, then `ImageManager.Pull(image)` fetches/converts/caches to local qcow2
+4. **Resolve and fetch image** → `ImageManager.Resolve(image)` detects source type, then `ImageManager.Pull(image)` fetches/converts/caches to local qcow2 (acquires per-image conversion lock, Level 3 — see `06-concurrency.md § Lock Hierarchy`)
 5. **Verify bootability** → `ImageManager.VerifyBootable(image)` (Boot Contract §6)
    - qcow2 files: inspect partitions via guestfish
    - OCI images: validate rootfs components before conversion
-7. **Create COW overlay** → `StorageManager.CreateOverlay(baseImage, vmID)`
+6. **Acquire references.lock** (Level 2)
+7. **Create COW overlay** → `StorageManager.CreateOverlay(baseKey, vmID)`
 8. **Start metadata server** → Start HTTP server on 169.254.169.254 for cloud-init (Boot Contract §2.2)
 9. **Configure VM**:
    ```go
    config := &types.VMConfig{
        ID: vmID,
        Boot: types.BootConfig{
-           Mode: "pvh",
+           Strategy: "pvh_then_uefi", // config.json: boot_strategy (immutable)
            Firmware: "/var/lib/cocoon/firmware/hypervisor-fw",
        },
        Disk: types.DiskConfig{
@@ -1657,35 +1658,45 @@ log:
       --console off
     ```
 11. **Wait for boot** → Poll serial log for boot completion marker (timeout: 60s)
-12. **Update reference counter** → `refCounter.AddReference(baseImage, vmID)`
-13. **Save VM metadata** → Write `config.json`, `metadata.json` to VM directory
-14. **Stream output** → If not `--detach`, stream serial log to stdout
-15. **Auto-cleanup** → If `--rm`, delete VM when process exits
+12. **Update reference counter** → `refCounter.AddReference(baseKey, vmID, digestFull, sourceRef)`
+13. **Release references.lock**
+14. **Save VM metadata** → Write `config.json` (immutable) and `metadata.json` (mutable) to VM directory (acquires per-VM `metadata.lock`, Level 4)
+15. **Acquire name-index.lock** (Level 2) → Add `name → vm_id` to `name-index.json`, release lock
+16. **Stream output** → If not `--detach`, stream serial log to stdout
+17. **Auto-cleanup** → If `--rm`, delete VM when process exits
 
 ### 6.2 VM Stop Flow (`cocoon stop`)
 
-1. **Load VM config** → Read `config.json` from VM directory
-2. **Check VM state** → Verify VM is running
-3. **Send ACPI shutdown** → `PUT /api/v1/vm.power-button` (Boot Contract §4.3)
-4. **Wait for graceful shutdown** → Poll CH process exit (timeout: 30s default)
-5. **Force kill on timeout** → `syscall.Kill(chPid, syscall.SIGKILL)`
-6. **Verify shutdown** → Confirm CH process terminated
-7. **Update VM state** → Mark as `stopped` in metadata
+1. **Resolve vm-ref** → `ResolveVMRef(vmRef)` (see § 3 VM Identifier Resolution)
+2. **Load VM config** → Read `config.json` from VM directory
+3. **Acquire per-VM metadata.lock** (Level 4)
+4. **Check VM state** → Verify VM is running (read `metadata.json`)
+5. **Send ACPI shutdown** → `PUT /api/v1/vm.power-button` (Boot Contract §4.3)
+6. **Wait for graceful shutdown** → Poll CH process exit (timeout: 30s default)
+7. **Force kill on timeout** → `syscall.Kill(chPid, syscall.SIGKILL)`
+8. **Verify shutdown** → Confirm CH process terminated
+9. **Update VM state** → Write `metadata.json` with state=`STOPPED`, `last_boot_mode`, timestamps
+10. **Release metadata.lock**
 
 ### 6.3 VM Delete Flow (`cocoon delete`)
 
-1. **Load VM config** → Read `config.json`
-2. **Check VM state** → If running and no `--force`, error
-3. **Stop VM** (if needed) → Call `cocoon stop --timeout 10s`
-4. **Remove reference** → `refCounter.RemoveReference(baseImage, vmID)`
-5. **Delete resources**:
-   - Move overlay to trash: `mv overlay.qcow2 /var/lib/cocoon/trash/`
-   - Delete serial log: `rm /var/log/cocoon/vm-123-serial.log`
-   - Stop metadata server for this VM
-   - Delete API socket: `rm /run/cocoon/vms/vm-123/api.sock`
-   - Delete VM directory: `rm -rf /var/lib/cocoon/vms/vm-123/`
-6. **Mark as deleted** → Update VM state to `deleted`
-7. **Trigger GC** (optional) → If base image unreferenced, mark for collection
+1. **Resolve vm-ref** → `ResolveVMRef(vmRef)` (see § 3)
+2. **Load VM config** → Read `config.json` (get `base_key` for refcount)
+3. **Check VM state** → If running and no `--force`, error
+4. **Stop VM** (if needed) → Call stop flow with `--timeout 10s`
+5. **Acquire references.lock** (Level 2)
+6. **Remove reference** → `refCounter.RemoveReference(baseKey, vmID)`
+7. **Release references.lock**
+8. **Acquire name-index.lock** (Level 2 — never held with references.lock)
+9. **Remove name from name-index.json**
+10. **Release name-index.lock**
+11. **Delete resources**:
+    - Move overlay to trash: `mv overlay.qcow2 /var/lib/cocoon/trash/`
+    - Delete serial log: `rm /var/log/cocoon/{vm_id}-serial.log`
+    - Stop metadata server for this VM
+    - Delete API socket: `rm /run/cocoon/vms/{vm_id}/api.sock`
+    - Delete VM directory: `rm -rf /var/lib/cocoon/vms/{vm_id}/`
+12. **Trigger GC** (optional) → If base image unreferenced, mark for collection
 
 ---
 

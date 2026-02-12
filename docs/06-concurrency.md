@@ -1156,26 +1156,28 @@ type ReferenceCounterRW struct {
     cache      *RefData
 }
 
-// GetReferences uses read lock (multiple readers allowed)
-func (rc *ReferenceCounterRW) GetReferences(baseImage string) ([]string, error) {
+// GetReferences uses read lock (multiple readers allowed).
+// baseKey is the content-addressed key: {checksum_12}_{arch}.
+func (rc *ReferenceCounterRW) GetReferences(baseKey string) ([]string, error) {
     rc.rwLock.RLock()
     defer rc.rwLock.RUnlock()
 
-    refs := rc.cache.References[baseImage]
+    refs := rc.cache.References[baseKey]
     result := make([]string, len(refs))
     copy(result, refs)
     return result, nil
 }
 
-// AddReference uses write lock (exclusive)
-func (rc *ReferenceCounterRW) AddReference(baseImage, vmID string) error {
+// AddReference uses write lock (exclusive).
+// baseKey is the content-addressed key: {checksum_12}_{arch}.
+func (rc *ReferenceCounterRW) AddReference(baseKey, vmID string) error {
     rc.rwLock.Lock()
     defer rc.rwLock.Unlock()
 
     // Update cache and persist to disk
     return rc.updateReferencesLocked(func(refs *RefData) error {
-        vms := refs.References[baseImage]
-        refs.References[baseImage] = append(vms, vmID)
+        vms := refs.References[baseKey]
+        refs.References[baseKey] = append(vms, vmID)
         return nil
     })
 }
