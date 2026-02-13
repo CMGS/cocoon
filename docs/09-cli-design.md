@@ -433,11 +433,12 @@ func RunCommand() *cli.Command {
 
 **Behavior**:
 
-1. **Create VM Configuration**: Generate VM ID, convert OCI image to qcow2, prepare cloud-init
-2. **Start Cloud Hypervisor**: Launch CH process with configured resources
-3. **Wait for Boot**: Poll serial log for boot completion (timeout: 60s)
-4. **Monitor Boot**: Stream serial output to user (if not detached)
-5. **Auto-cleanup** (if `--rm`): Stop VM and delete resources on exit
+1. **Create VM Configuration**: Generate VM ID, resolve image, prepare COW overlay
+2. **Start Cloud Hypervisor**: Launch CH process, configure via REST, boot VM
+3. **Wait for Boot**: Poll serial log for boot completion (timeout: config default)
+4. **Print VM ID**: Output the created VM ID
+5. **Background behavior**: VM runs as a background CH process. Serial log is written to disk; use `cocoon logs --follow` to stream.
+6. **Auto-remove** (if `--rm`): The `AutoRemove` flag is recorded in metadata. When the VM is stopped (via `cocoon stop` or external signal), the delete flow is triggered automatically.
 
 **Example Usage**:
 
@@ -445,8 +446,8 @@ func RunCommand() *cli.Command {
 # Run Ubuntu VM with 4 CPUs and 4GB memory
 cocoon run ubuntu-22.04-cloudimg --name myvm --cpus 4 --memory 4G
 
-# Run VM in background with auto-cleanup
-cocoon run --rm -d ubuntu-22.04-cloudimg --name temp-vm
+# Run VM with auto-remove on stop
+cocoon run --rm ubuntu-22.04-cloudimg --name temp-vm
 
 # Run with PVH-only boot strategy (no UEFI fallback)
 cocoon run --boot-strategy pvh_only ubuntu-22.04-cloudimg
@@ -763,13 +764,13 @@ cocoon list --filter state=running
 **Output Example**:
 
 ```
-VM ID                              NAME     IMAGE                        STATE     CPU  MEMORY  UPTIME
-vm-01HXYZ5A3B7C8D9E0F1G2H3J4K     myvm     ubuntu-22.04-cloudimg        RUNNING   2    2G      5m30s
-vm-01HABC9D8E7F6G5H4J3K2L1M0N     devbox   myorg/ubuntu-bootable:22.04  STOPPED   4    4G      -
-vm-01H9ZZ8Y7X6W5V4U3T2S1R0Q9P     cocoon-a3f7b2c1  ubuntu-22.04-cloudimg  RUNNING   2    2G      1h12m
+VM ID                              NAME              STATE     CPUS  MEMORY  CREATED
+vm-01HXYZ5A3B7C8D9E0F1G2H3J4K     myvm              RUNNING   2     2048M   2026-02-11T10:30:00Z
+vm-01HABC9D8E7F6G5H4J3K2L1M0N     devbox            STOPPED   4     4096M   2026-02-10T14:20:00Z
+vm-01H9ZZ8Y7X6W5V4U3T2S1R0Q9P     cocoon-a3f7b2c1   RUNNING   2     2048M   2026-02-09T08:15:00Z
 ```
 
-Note: The `NAME` column shows the user-provided name or the auto-generated name (`cocoon-{random}` if `--name` was omitted at create time). Either the `VM ID` or `NAME` can be used as a `<vm-ref>` in subsequent commands.
+Note: The `NAME` column shows the user-provided name or the auto-generated name (`cocoon-{random}` if `--name` was omitted at create time). Either the `VM ID` or `NAME` can be used as a `<vm-ref>` in subsequent commands. The `MEMORY` column displays the value in megabytes. The `CREATED` column shows the creation timestamp in RFC 3339 format.
 
 ### 4.9 cocoon inspect (VM Details)
 
@@ -937,13 +938,6 @@ func ImageCommand() *cli.Command {
                 Aliases:   []string{"rm"},
                 Usage:     "Remove a cached image",
                 ArgsUsage: "<image-ref>",
-                Flags: []cli.Flag{
-                    &cli.BoolFlag{
-                        Name:    "force",
-                        Aliases: []string{"f"},
-                        Usage:   "Force removal",
-                    },
-                },
                 Action: imageRemoveAction,
             },
             {
@@ -1528,22 +1522,30 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
        },
    }
    ```
-10. **Start Cloud Hypervisor**:
+10. **Start Cloud Hypervisor** (REST-first):
     ```bash
+    # Launch CH process with API socket and firmware only:
     cloud-hypervisor \
-      --firmware /var/lib/cocoon/firmware/hypervisor-fw \
-      --api-socket /run/cocoon/vms/vm-123/api.sock \
-      --disk path=/var/lib/cocoon/vms/vm-123/overlay.qcow2 \
-      --cpus boot=2 \
-      --memory size=2G \
-      --serial file=/var/log/cocoon/vm-123-serial.log \
-      --console off
+      --api-socket /run/cocoon/vms/{vm_id}/api.sock \
+      --firmware /var/lib/cocoon/firmware/hypervisor-fw
     ```
+    Then configure the VM via CH REST API:
+    ```
+    PUT /api/v1/vm.create
+    {
+      "cpus": {"boot_vcpus": 2},
+      "memory": {"size": 2147483648},
+      "disks": [{"path": "/var/lib/cocoon/vms/{vm_id}/overlay.qcow2"}],
+      "serial": {"mode": "File", "file": "/var/log/cocoon/{vm_id}-serial.log"},
+      "console": {"mode": "Off"}
+    }
+    ```
+    Followed by `PUT /api/v1/vm.boot` to start the VM.
 11. **Wait for boot** → Poll serial log for boot completion marker (timeout: 60s)
 12. **Save VM metadata** → Write `config.json` (immutable) and `metadata.json` (mutable) to VM directory (acquires per-VM `metadata.lock`, Level 4)
 13. **Acquire name-index.lock** (Level 2) → Add `name → vm_id` to `name-index.json`, release lock
-14. **Stream output** → If not `--detach`, stream serial log to stdout
-15. **Auto-cleanup** → If `--rm`, delete VM when process exits
+14. **Print VM ID** → Output `vm_id` to stdout for scripting
+15. **Auto-remove bookkeeping** → If `--rm`, set `AutoRemove=true` in metadata; delete is triggered when the VM is later stopped
 
 **Failure cleanup**: If any step after 6 fails, the cleanup path must:
 - **Acquire references.lock** (Level 2)
@@ -1647,9 +1649,6 @@ cocoon image inspect myorg/ubuntu-bootable:22.04
 
 # Remove image (fails if VMs using it)
 cocoon image rm myorg/ubuntu-bootable:22.04
-
-# Force remove image
-cocoon image rm myorg/ubuntu-bootable:22.04 --force
 ```
 
 ### 7.4 Monitoring and Cleanup

@@ -75,13 +75,7 @@ func imagePullCommand() *cli.Command {
 		Name:      "pull",
 		Usage:     "Pull and cache an image without creating a VM",
 		ArgsUsage: "IMAGE_REF",
-		Flags: []cli.Flag{
-			&cli.StringFlag{
-				Name:  "type",
-				Usage: "force image source type: oci, url, local (auto-detected if omitted)",
-			},
-		},
-		Action: imagePullAction,
+		Action:    imagePullAction,
 	}
 }
 
@@ -96,10 +90,6 @@ func imagePullAction(c *cli.Context) error {
 	}
 
 	ref := c.Args().Get(0)
-
-	// TODO: --type flag is accepted but not yet plumbed into the Prepare pipeline.
-	// classifyRef auto-detects the source type internally; override support needs
-	// changes to the image.Manager interface.
 
 	// Use the Prepare pipeline to pull + convert + cache the image.
 	identity, basePath, err := app.imgMgr.Prepare(c.Context, ref)
