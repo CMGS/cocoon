@@ -196,7 +196,7 @@ cloud-hypervisor \
 
 ```bash
 # Install CLOUDHV.fd (Cloud Hypervisor's edk2 UEFI firmware)
-cocoon firmware install uefi
+cocoon firmware install --uefi-url https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v50.0/CLOUDHV.fd
 
 # Or manually download from CH releases:
 CH_VERSION="v50.0"
@@ -235,7 +235,7 @@ cloud-hypervisor \
 - UEFI boot requires passing the UEFI firmware file to `--kernel` parameter
 - Recommended: Use Cloud Hypervisor's edk2 firmware (`CLOUDHV.fd`) at `/var/lib/cocoon/firmware/CLOUDHV.fd`
   - Optimized for Cloud Hypervisor
-  - Installed via `cocoon firmware install uefi` or downloaded from CH releases
+  - Installed via `cocoon firmware install --uefi-url URL` or downloaded from CH releases
 - Deprecated fallback: Standard OVMF firmware (`OVMF_CODE.fd`) -- only used if CLOUDHV.fd is missing
   - Ubuntu/Debian: `/usr/share/OVMF/OVMF_CODE.fd` (from `ovmf` package)
   - Fedora: `/usr/share/edk2/ovmf/OVMF_CODE.fd` (from `edk2-ovmf` package)

@@ -107,6 +107,66 @@ func runDependencyChecks(app *appContext) []checkResult {
 		})
 	}
 
+	// 4b. Check ch-remote binary.
+	if chRemotePath, err := exec.LookPath("ch-remote"); err != nil {
+		results = append(results, checkResult{
+			Name:   "ch-remote",
+			Status: "fail",
+			Detail: "binary not found in PATH",
+		})
+	} else {
+		results = append(results, checkResult{
+			Name:   "ch-remote",
+			Status: "pass",
+			Detail: chRemotePath,
+		})
+	}
+
+	// 4c. Check buildah binary.
+	if buildahPath, err := exec.LookPath("buildah"); err != nil {
+		results = append(results, checkResult{
+			Name:   "buildah",
+			Status: "fail",
+			Detail: "binary not found in PATH (required for OCI image operations)",
+		})
+	} else {
+		results = append(results, checkResult{
+			Name:   "buildah",
+			Status: "pass",
+			Detail: buildahPath,
+		})
+	}
+
+	// 4d. Check skopeo binary.
+	if skopeoPath, err := exec.LookPath("skopeo"); err != nil {
+		results = append(results, checkResult{
+			Name:   "skopeo",
+			Status: "fail",
+			Detail: "binary not found in PATH (required for OCI manifest inspection)",
+		})
+	} else {
+		results = append(results, checkResult{
+			Name:   "skopeo",
+			Status: "pass",
+			Detail: skopeoPath,
+		})
+	}
+
+	// 4e. Check guestfish binary.
+	if guestfishPath, err := exec.LookPath("guestfish"); err != nil {
+		results = append(results, checkResult{
+			Name:   "guestfish",
+			Status: "fail",
+			Detail: "binary not found in PATH (required for OCI-to-qcow2 conversion)",
+		})
+	} else {
+		results = append(results, checkResult{
+			Name:   "guestfish",
+			Status: "pass",
+			Detail: guestfishPath,
+		})
+	}
+
 	// 5. Check KVM device.
 	if _, err := os.Stat("/dev/kvm"); err != nil {
 		results = append(results, checkResult{

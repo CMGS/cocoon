@@ -13,14 +13,20 @@ Other documents MUST reference this section rather than defining their own paths
 
 ```
 /var/lib/cocoon/                          # Persistent root (survives reboot)
+├── db/                                   # Database files (reference counts, indexes)
+│   ├── references.json                   # Base image reference counts
+│   ├── references.lock                   # flock for reference counter
+│   ├── gc.lock                           # Global GC lock
+│   ├── name-index.json                   # name → vm_id mapping (derived, can be rebuilt)
+│   └── name-index.lock                   # flock for name-index updates
 ├── cache/
 │   ├── images/                           # Base qcow2 images (content-addressed)
 │   │   ├── {checksum_16}_{arch}.qcow2    # e.g., a1b2c3d4e5f6a7b8_amd64.qcow2
 │   │   └── ...
 │   ├── manifests/                        # OCI manifest cache
-│   ├── buildah/                          # Buildah storage root
 │   └── locks/
 │       └── {checksum_16}_{arch}.lock     # Per-image conversion lock
+├── buildah/                              # Buildah storage root
 ├── vms/
 │   ├── {vm-id}/                          # e.g., vm-01HXYZ.../
 │   │   ├── config.json                   # Immutable VM configuration
@@ -28,11 +34,6 @@ Other documents MUST reference this section rather than defining their own paths
 │   │   ├── metadata.lock                 # flock for metadata writes
 │   │   └── overlay.qcow2                 # COW overlay (ALWAYS this name)
 │   └── ...
-├── references.json                       # Base image reference counts
-├── references.lock                       # flock for reference counter
-├── gc.lock                               # Global GC lock
-├── name-index.json                       # name → vm_id mapping (derived, can be rebuilt)
-├── name-index.lock                       # flock for name-index updates
 ├── firmware/                             # Boot firmware binaries
 │   ├── hypervisor-fw                     # PVH firmware (rust-hypervisor-firmware)
 │   └── CLOUDHV.fd                        # UEFI firmware (OVMF for Cloud Hypervisor)
@@ -349,7 +350,7 @@ class ReferenceCounter:
 
     def __init__(self, storage_config: StorageConfig):
         self.storage = storage_config
-        self.ref_file = self.storage.root / "references.json"
+        self.ref_file = self.storage.root / "db" / "references.json"
         self.refs: Dict[str, dict] = {}
         self.load()
 
@@ -504,7 +505,7 @@ def delete_vm(vm_id: str):
 
 Reference counting operations must be **cross-process safe**. See [06-concurrency.md](./06-concurrency.md) for details on:
 
-- File-based locking (flock) for `references.json` updates at `/var/lib/cocoon/references.lock`
+- File-based locking (flock) for `references.json` updates at `/var/lib/cocoon/db/references.lock`
 - Atomic read-modify-write operations using temp files and fsync
 - Race condition prevention during simultaneous VM creation/deletion across multiple processes
 - Crash recovery (locks auto-released by kernel on process crash)
@@ -636,7 +637,7 @@ class GarbageCollector:
 
 GC operations must coordinate with concurrent VM create/delete operations. See [06-concurrency.md](./06-concurrency.md) for details on:
 
-- Global GC lock at `/var/lib/cocoon/gc.lock` (Level 1 in lock hierarchy)
+- Global GC lock at `/var/lib/cocoon/db/gc.lock` (Level 1 in lock hierarchy)
 - Atomic check-and-delete using reference counter lock (Level 2)
 - Lock ordering to prevent deadlocks with VM operations
 - Crash recovery and lock auto-release

@@ -48,12 +48,11 @@ func runAction(c *cli.Context) error {
 
 	autoRemove := c.Bool("rm")
 
-	// If not --detach, also start the VM.
-	if !c.Bool("detach") {
-		if err := app.vmMgr.Start(c.Context, vmCfg.VMID); err != nil {
-			return fmt.Errorf("start VM: %w", err)
-		}
-		// Full attach mode (follow serial log) is Phase 2.
+	// Start the VM. In Phase 1, both detach and non-detach modes start
+	// the VM as a background CH process. Phase 2 will add attach mode
+	// (follow serial log) for non-detach runs.
+	if err := app.vmMgr.Start(c.Context, vmCfg.VMID); err != nil {
+		return fmt.Errorf("start VM: %w", err)
 	}
 
 	// If --rm is set, record it in metadata so the stop command (or a future

@@ -155,7 +155,7 @@ Instead, Cocoon **fails fast** with clear error messages when components are mis
 
 1. **Idempotent Operations**: Same input produces same output
 2. **Checksum-Based Caching**: Never convert the same image twice
-3. **Fail-Fast Validation**: Verify boot contract before VM creation
+3. **Fail-Fast Validation**: Verify boot contract compliance (on-demand via `cocoon image verify`)
 4. **Rootless-First**: Design for unprivileged operation
 5. **Shell-Out Strategy**: Use external tools via exec (Buildah, qemu-img, libguestfs)
 
@@ -264,11 +264,11 @@ func (b *BuildahClient) run(args ...string) (string, error) {
 
 ```
 /var/lib/cocoon/
+├── buildah/              # Buildah storage root
+│   ├── overlay/          # OCI image layers
+│   ├── vfs/
+│   └── storage.lock
 ├── cache/
-│   ├── buildah/          # Buildah storage root
-│   │   ├── overlay/      # OCI image layers
-│   │   ├── vfs/
-│   │   └── storage.lock
 │   └── images/           # Converted qcow2 base images
 └── vms/                  # Per-VM overlay disks
 ```
@@ -1352,7 +1352,8 @@ func PrepareBaseImage(image string, cache *ImageCache) (string, *ImageIdentity, 
     }
     defer mounted.Cleanup()
 
-    // 5. Validate bootability
+    // 5. Validate bootability (illustrative: actual implementation verifies
+    //    post-conversion via VerifyBootability on the qcow2 artifact)
     if err := mounted.ValidateBootability(); err != nil {
         return "", nil, fmt.Errorf("image is not bootable: %w", err)
     }

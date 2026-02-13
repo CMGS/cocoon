@@ -438,7 +438,7 @@ func RunCommand() *cli.Command {
 3. **Wait for Boot**: Poll serial log for boot completion (timeout: config default)
 4. **Print VM ID**: Output the created VM ID
 5. **Background behavior**: VM runs as a background CH process. Serial log is written to disk; use `cocoon logs --follow` to stream.
-6. **Auto-remove** (if `--rm`): The `AutoRemove` flag is recorded in metadata. When the VM is stopped (via `cocoon stop` or external signal), the delete flow is triggered automatically.
+6. **Auto-remove** (if `--rm`): The `AutoRemove` flag is recorded in metadata. When the VM is stopped via `cocoon stop`, the delete flow is triggered automatically. Note: if the VM crashes or is killed externally, auto-remove does not fire; use `cocoon doctor --fix` for orphan cleanup.
 
 **Example Usage**:
 
@@ -1241,17 +1241,20 @@ func FirmwareCommand() *cli.Command {
                 Action: firmwareListAction,
             },
             {
-                Name:      "install",
-                Usage:     "Install or update firmware",
-                ArgsUsage: "[TYPE]",
+                Name:   "install",
+                Usage:  "Install or update firmware from URL",
                 Flags: []cli.Flag{
                     &cli.StringFlag{
-                        Name:  "version",
-                        Usage: "Specific version to install (default: latest)",
+                        Name:  "pvh-url",
+                        Usage: "URL to download PVH firmware (hypervisor-fw)",
                     },
                     &cli.StringFlag{
-                        Name:  "source",
-                        Usage: "Custom source URL or path",
+                        Name:  "uefi-url",
+                        Usage: "URL to download UEFI firmware (CLOUDHV.fd)",
+                    },
+                    &cli.BoolFlag{
+                        Name:  "force",
+                        Usage: "Force re-download even if firmware already exists",
                     },
                 },
                 Action: firmwareInstallAction,
@@ -1282,35 +1285,34 @@ List all installed firmware files with versions and checksums.
 ```bash
 $ cocoon firmware list
 FIRMWARE TYPE   VERSION   PATH                                            SIZE    CHECKSUM
-pvh             0.4.2     /var/lib/cocoon/firmware/hypervisor-fw         89.2KB  3d7ae8c1...
-pvh (backup)    0.4.1     /var/lib/cocoon/firmware/hypervisor-fw-0.4.1   88.9KB  f1c3d8a2...
-uefi (x86_64)   v38.0     /var/lib/cocoon/firmware/CLOUDHV.fd             2.1MB   a8b2c4d6...
+pvh             0.5.0     /var/lib/cocoon/firmware/hypervisor-fw         89.2KB  3d7ae8c1...
+pvh (backup)    0.4.2     /var/lib/cocoon/firmware/hypervisor-fw-0.4.2   88.9KB  f1c3d8a2...
+uefi (x86_64)   v50.0     /var/lib/cocoon/firmware/CLOUDHV.fd             2.1MB   a8b2c4d6...
 uefi (fallback)  -         /usr/share/OVMF/OVMF_CODE.fd                   1.9MB   (system, deprecated)
 ```
 
 #### 4.14.2 cocoon firmware install
 
-Download and install firmware files.
+Download and install firmware files from explicit URLs using `--pvh-url` and `--uefi-url` flags.
 
 ```bash
-# Install latest PVH firmware (default)
-cocoon firmware install pvh
+# Install PVH firmware from URL
+cocoon firmware install --pvh-url https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw
 
-# Install specific version
-cocoon firmware install pvh --version 0.4.2
+# Install UEFI firmware from URL
+cocoon firmware install --uefi-url https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v50.0/CLOUDHV.fd
 
-# Install from custom source
-cocoon firmware install pvh --source /path/to/hypervisor-fw
+# Install both at once
+cocoon firmware install \
+  --pvh-url https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw \
+  --uefi-url https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v50.0/CLOUDHV.fd
 
-# Install UEFI firmware (CLOUDHV.fd)
-cocoon firmware install uefi
-
-# Install all firmware types
-cocoon firmware install
+# Force re-download
+cocoon firmware install --pvh-url URL --force
 ```
 
 **Installation Process**:
-1. Download firmware from GitHub releases (rust-hypervisor-firmware)
+1. Download firmware from the provided URL
 2. Verify checksum against published SHA256
 3. Back up existing firmware (if present)
 4. Install new firmware to `/var/lib/cocoon/firmware/`
@@ -1319,15 +1321,15 @@ cocoon firmware install
 **Example Output**:
 
 ```bash
-$ cocoon firmware install pvh
-Downloading rust-hypervisor-firmware v0.4.2...
-✅ Downloaded: hypervisor-fw (89.2KB)
+$ cocoon firmware install --pvh-url https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw
+Downloading rust-hypervisor-firmware v0.5.0...
+Downloaded: hypervisor-fw (89.2KB)
 Verifying checksum: 3d7ae8c1a45b2e9f...
-✅ Checksum verified
+Checksum verified
 Backing up existing firmware...
-✅ Backup created: hypervisor-fw-0.4.1
+Backup created: hypervisor-fw-0.4.2
 Installing firmware...
-✅ Installed: /var/lib/cocoon/firmware/hypervisor-fw
+Installed: /var/lib/cocoon/firmware/hypervisor-fw
 
 Firmware installation complete. Run 'cocoon doctor' to verify.
 ```
@@ -1394,20 +1396,20 @@ cocoon firmware remove pvh --confirm
 # List installed firmware
 cocoon firmware list
 
-# Install latest PVH firmware
-cocoon firmware install pvh
+# Install PVH firmware from URL
+cocoon firmware install --pvh-url https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw
+
+# Install UEFI firmware from URL
+cocoon firmware install --uefi-url https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v50.0/CLOUDHV.fd
 
 # Verify firmware integrity
 cocoon firmware verify
 
-# Update to specific version
-cocoon firmware install pvh --version 0.4.2
+# Force re-download
+cocoon firmware install --pvh-url https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw --force
 
-# Install from local file
-cocoon firmware install pvh --source ./hypervisor-fw
-
-# Remove old backup
-cocoon firmware remove pvh --version 0.4.1
+# Remove firmware
+cocoon firmware remove pvh
 ```
 
 ---
@@ -1545,7 +1547,7 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
 12. **Save VM metadata** → Write `config.json` (immutable) and `metadata.json` (mutable) to VM directory (acquires per-VM `metadata.lock`, Level 4)
 13. **Acquire name-index.lock** (Level 2) → Add `name → vm_id` to `name-index.json`, release lock
 14. **Print VM ID** → Output `vm_id` to stdout for scripting
-15. **Auto-remove bookkeeping** → If `--rm`, set `AutoRemove=true` in metadata; delete is triggered when the VM is later stopped
+15. **Auto-remove bookkeeping** → If `--rm`, set `AutoRemove=true` in metadata; delete is triggered when the VM is later stopped via `cocoon stop` (crash/external-kill cleanup deferred to `cocoon doctor --fix`)
 
 **Failure cleanup**: If any step after 6 fails, the cleanup path must:
 - **Acquire references.lock** (Level 2)

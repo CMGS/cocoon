@@ -386,6 +386,20 @@ func (m *manager) attemptBoot(ctx context.Context, vmID string, vmCfg *types.VMC
 	}, nil
 }
 
+// isBootFirmwareError returns true if the error is from the firmware/boot
+// stage (BootVM), where retrying with a different firmware mode may help.
+// Infrastructure errors (CH launch failure, VM config errors) are not
+// retryable with a different firmware.
+func isBootFirmwareError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	// Only the BootVM stage error prefix indicates a firmware-related failure.
+	// Launch and CreateVM failures are infrastructure errors.
+	return strings.Contains(msg, "boot VM")
+}
+
 // Start launches the Cloud Hypervisor process for a VM.
 // Follows the transition flow: CREATED/STOPPED -> STARTING -> RUNNING.
 // Idempotent: starting a RUNNING VM is a no-op.
@@ -436,7 +450,7 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 	case types.BootStrategyPVHThenUEFI:
 		// First attempt: PVH boot using the firmware from config.
 		result, bootErr = m.attemptBoot(ctx, vmID, vmCfg, vmCfg.FirmwarePath, types.BootModePVH)
-		if bootErr != nil {
+		if bootErr != nil && isBootFirmwareError(bootErr) {
 			log.Printf("PVH boot failed for %s, falling back to UEFI: %v", vmID, bootErr)
 			// Second attempt: UEFI boot using the global UEFI firmware path.
 			result, bootErr = m.attemptBoot(ctx, vmID, vmCfg, m.cfg.UEFIFirmwarePath, types.BootModeUEFI)
