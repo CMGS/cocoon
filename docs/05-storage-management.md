@@ -552,8 +552,8 @@ class GarbageCollector:
                 print(f"Skipping recent image: {image}")
                 continue
 
-            # Move to trash (soft delete)
-            trash_path = self.storage.trash_dir / image.name
+            # Move to trash (soft delete, timestamp prefix avoids collisions)
+            trash_path = self.storage.trash_dir / f"{int(time.time_ns())}_{image.name}"
             image.rename(trash_path)
             collected.append(image)
 
@@ -576,7 +576,7 @@ class GarbageCollector:
 
             # Overlay exists but config missing = orphaned
             if overlay.exists() and not config.exists():
-                trash_path = self.storage.trash_dir / f"{vm_dir.name}-overlay.qcow2"
+                trash_path = self.storage.trash_dir / f"{int(time.time_ns())}_{vm_dir.name}-orphan-overlay.qcow2"
                 overlay.rename(trash_path)
                 collected.append(overlay)
 
@@ -594,7 +594,7 @@ class GarbageCollector:
 
         for temp_file in self.storage.temp_dir.iterdir():
             if temp_file.stat().st_mtime < cutoff_time:
-                trash_path = self.storage.trash_dir / temp_file.name
+                trash_path = self.storage.trash_dir / f"{int(time.time_ns())}_{temp_file.name}"
                 temp_file.rename(trash_path)
                 collected.append(temp_file)
 

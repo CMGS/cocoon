@@ -16,11 +16,11 @@ var _ lock.Locker = (*Lock)(nil)
 //
 // Lock hierarchy (must acquire in order to prevent deadlocks):
 //
-//	Level 1: GC Lock              (/var/lib/cocoon/gc.lock)
-//	Level 2: References Lock      (/var/lib/cocoon/references.lock)
-//	Level 2: Name Index Lock      (/var/lib/cocoon/name-index.lock) — never held with references.lock
-//	Level 3: Image Conversion Lock (/var/lib/cocoon/cache/locks/{base_key}.lock)
-//	Level 4: VM Metadata Lock     (/var/lib/cocoon/vms/{vm-id}/metadata.lock)
+//	Level 1: GC Lock              ({RootDir}/db/gc.lock)
+//	Level 2: References Lock      ({RootDir}/db/references.lock)
+//	Level 2: Name Index Lock      ({RootDir}/db/name-index.lock) — never held with references.lock
+//	Level 3: Image Conversion Lock ({RootDir}/cache/locks/{base_key}.lock)
+//	Level 4: VM Metadata Lock     ({RootDir}/vms/{vm-id}/metadata.lock)
 type Lock struct {
 	path string
 	file *os.File

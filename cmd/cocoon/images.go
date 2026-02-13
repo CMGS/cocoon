@@ -210,15 +210,6 @@ func imageRemoveAction(c *cli.Context) error {
 		return err
 	}
 
-	// Check if the image is still referenced.
-	referenced, err := app.refCtr.IsReferenced(baseKey)
-	if err != nil {
-		return fmt.Errorf("check references for %s: %w", baseKey, err)
-	}
-	if referenced {
-		return fmt.Errorf("image %s is still referenced by VMs; remove referencing VMs first", baseKey)
-	}
-
 	if err := app.imgMgr.RemoveCached(c.Context, baseKey); err != nil {
 		return fmt.Errorf("remove cached image: %w", err)
 	}

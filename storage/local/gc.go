@@ -118,7 +118,9 @@ func (gc *fileGarbageCollector) CollectUnreferencedImages(gracePeriod time.Durat
 				}
 
 				// Move the image to trash while still holding the lock.
-				trashPath := filepath.Join(gc.cfg.TrashDir(), filepath.Base(imagePath))
+				// Prefix with UnixNano timestamp to avoid name collisions.
+				trashName := fmt.Sprintf("%d_%s", time.Now().UnixNano(), filepath.Base(imagePath))
+				trashPath := filepath.Join(gc.cfg.TrashDir(), trashName)
 				if err := os.Rename(imagePath, trashPath); err != nil {
 					return nil, nil // non-fatal: skip this image
 				}
@@ -179,7 +181,8 @@ func (gc *fileGarbageCollector) CollectOrphanedOverlays() ([]string, error) {
 
 			if overlayExists && !configExists {
 				// Orphaned overlay -- move to trash.
-				trashName := vmID + "-orphan-overlay.qcow2"
+				// Prefix with UnixNano timestamp to avoid name collisions.
+				trashName := fmt.Sprintf("%d_%s-orphan-overlay.qcow2", time.Now().UnixNano(), vmID)
 				trashPath := filepath.Join(gc.cfg.TrashDir(), trashName)
 				if err := os.Rename(overlayPath, trashPath); err != nil {
 					continue // non-fatal

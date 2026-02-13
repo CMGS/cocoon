@@ -194,21 +194,32 @@ func GetVMMetadataPath(vmID string) string {
 **Command Structure**:
 
 ```go
-func LaunchCloudHypervisor(vmID string, config *VMConfig) (*exec.Cmd, error) {
-    socketPath := GetVMSocketPath(vmID)
-    serialLog := GetVMSerialLogPath(vmID)
-
+// buildLaunchArgs constructs CLI arguments for cloud-hypervisor.
+// Only --api-socket and a firmware flag are passed on the CLI.
+// All VM resource configuration (cpus, memory, disks, serial, console)
+// is sent via PUT /api/v1/vm.create after the process starts.
+func buildLaunchArgs(socketPath string, config *VMConfig) []string {
     args := []string{
         "--api-socket", socketPath,
-        "--disk", fmt.Sprintf("path=%s", config.DiskPath),
-        "--cpus", fmt.Sprintf("boot=%d", config.CPUs),
-        "--memory", fmt.Sprintf("size=%dM", config.MemoryMB),
-        "--serial", fmt.Sprintf("file=%s", serialLog),
-        "--console", "off",
     }
 
-    // Cloud-init is served via metadata server (169.254.169.254), no ISO needed [Phase 2]
+    if config.FirmwarePath != "" {
+        switch config.BootStrategy {
+        case BootStrategyUEFIOnly:
+            // Cloud Hypervisor uses --kernel for UEFI firmware (CLOUDHV.fd).
+            args = append(args, "--kernel", config.FirmwarePath)
+        default:
+            // PVH and pvh_then_uefi both use --firmware.
+            args = append(args, "--firmware", config.FirmwarePath)
+        }
+    }
 
+    return args
+}
+
+func LaunchCloudHypervisor(vmID string, config *VMConfig) (*exec.Cmd, error) {
+    socketPath := GetVMSocketPath(vmID)
+    args := buildLaunchArgs(socketPath, config)
     cmd := exec.Command("cloud-hypervisor", args...)
     return cmd, nil
 }
@@ -1007,11 +1018,10 @@ func main() {
     }
 
     // Step 2: Launch Cloud Hypervisor process
+    // Only --api-socket and firmware flag are passed on the CLI.
     config := &VMConfig{
-        DiskPath:     "/var/lib/cocoon/vms/vm-example-001/overlay.qcow2",
-        CPUs:         2,
-        MemoryMB:     2048,
-        // Cloud-init data served via metadata server at 169.254.169.254 [Phase 2]
+        FirmwarePath: "/usr/share/cloud-hypervisor/hypervisor-fw",
+        BootStrategy: BootStrategyPVHThenUEFI,
     }
 
     cmd, err := LaunchCloudHypervisor(vmID, config)
@@ -1036,29 +1046,42 @@ func main() {
     }
     SaveMetadata(vmID, metadata)
 
-    // Step 5: Boot VM via API
+    // Step 5: Configure VM resources via REST API (cpus, memory, disks, serial, console)
     client := NewCHClient(socketPath)
+    vmCreateCfg := &CHVMConfig{
+        CPUs:    CPUConfig{BootVCPUs: 2},
+        Memory:  MemoryConfig{Size: 2048 * 1024 * 1024}, // 2 GiB in bytes
+        Disks:   []DiskConfig{{Path: "/var/lib/cocoon/vms/vm-example-001/overlay.qcow2"}},
+        Serial:  SerialConfig{Mode: "File", File: GetVMSerialLogPath(vmID)},
+        Console: ConsoleConfig{Mode: "Off"},
+    }
+    err = client.CreateVM(vmCreateCfg)
+    if err != nil {
+        log.Fatalf("Failed to create VM config: %v", err)
+    }
+
+    // Step 6: Boot VM via API
     err = client.BootVM()
     if err != nil {
         log.Fatalf("Failed to boot VM: %v", err)
     }
 
-    // Step 6: Update state
+    // Step 7: Update state
     metadata.State = "running"
     SaveMetadata(vmID, metadata)
 
     log.Printf("VM %s started successfully (PID %d)", vmID, cmd.Process.Pid)
 
-    // Step 7: Monitor VM
+    // Step 8: Monitor VM
     time.Sleep(60 * time.Second)
 
-    // Step 8: Shutdown VM
+    // Step 9: Shutdown VM
     err = ShutdownVM(vmID, 30*time.Second)
     if err != nil {
         log.Fatalf("Failed to shutdown VM: %v", err)
     }
 
-    // Step 9: Cleanup
+    // Step 10: Cleanup
     err = DeleteVM(vmID, false)
     if err != nil {
         log.Fatalf("Failed to delete VM: %v", err)

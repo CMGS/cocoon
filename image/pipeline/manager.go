@@ -386,9 +386,22 @@ func (m *manager) ListCached(ctx context.Context) ([]*image.CachedImage, error) 
 
 // RemoveCached removes a cached base image identified by its base_key.
 // The base_key format is {checksum_16}_{arch}.
+// It refuses to remove images that are still referenced by VMs.
 func (m *manager) RemoveCached(ctx context.Context, baseKey string) error {
 	if _, _, err := types.ParseBaseKey(baseKey); err != nil {
 		return fmt.Errorf("invalid base_key: %w", err)
+	}
+
+	// Refuse to remove images still referenced by VMs.
+	if m.refCtr != nil {
+		referenced, err := m.refCtr.IsReferenced(baseKey)
+		if err != nil {
+			return fmt.Errorf("check references for %s: %w", baseKey, err)
+		}
+		if referenced {
+			refs, _ := m.refCtr.GetReferences(baseKey)
+			return fmt.Errorf("image %s is still referenced by VMs: %v", baseKey, refs)
+		}
 	}
 
 	basePath := m.cfg.BaseImagePath(baseKey)

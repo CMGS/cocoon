@@ -1133,6 +1133,8 @@ An image is **bootable** if it satisfies these requirements:
      - **Mounted path**: `/boot/efi/EFI/BOOT/BOOTX64.EFI` (what rootfs sees after ESP mounted to /boot/efi)
 5. ✅ **GPT + ESP**: EFI System Partition with FAT32 filesystem
 
+> **Phase 1 implementation note**: `VerifyBootability()` checks each component independently and reports boolean results (`KernelFound`, `InitrdFound`, `SystemdFound`, `BootloaderFound`). It does NOT reject images with missing components — callers decide the policy. Strict enforcement is deferred to Phase 2.
+
 **SHOULD Have (Recommended for VM Initialization)**:
 - 🔵 **cloud-init**: `/usr/bin/cloud-init` + datasource config
   - **Purpose**: VM initialization (users, SSH keys, hostname, network)

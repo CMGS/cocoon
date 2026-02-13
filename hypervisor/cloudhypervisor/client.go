@@ -94,6 +94,11 @@ func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (
 
 	socketPath := c.cfg.VMSocketPath(vmID)
 
+	// Best-effort cleanup of stale runtime files from a previous crash.
+	// Prevents "Address already in use" if a stale socket remains.
+	_ = os.Remove(socketPath)
+	_ = os.Remove(c.cfg.VMPIDPath(vmID))
+
 	// Build CH command-line arguments.
 	// Only pass --api-socket and firmware flag on the CLI. All VM resource
 	// configuration (cpus, memory, disks, serial, console) is sent via the
@@ -158,6 +163,7 @@ func (c *client) Shutdown(ctx context.Context, vmID string, timeout time.Duratio
 			return fmt.Errorf("shutdown canceled for %s: %w", vmID, ctx.Err())
 		case <-ticker.C:
 			if !c.IsAlive(vmID) {
+				c.cleanupRuntimeFiles(vmID)
 				return nil
 			}
 			if time.Now().After(deadline) {
@@ -169,26 +175,42 @@ func (c *client) Shutdown(ctx context.Context, vmID string, timeout time.Duratio
 }
 
 // ForceKill sends SIGKILL to the CH process for the given VM.
+// It validates the PID identity before killing to prevent sending signals
+// to an unrelated process if the PID was reused by the OS.
 func (c *client) ForceKill(vmID string) error {
 	pidPath := c.cfg.VMPIDPath(vmID)
 	pid, err := utils.ReadPIDFile(pidPath)
 	if err != nil {
 		return fmt.Errorf("read PID for %s: %w", vmID, err)
 	}
+	if !utils.ValidateProcess(pid, "cloud-hypervisor") {
+		// PID reused or process already gone — clean up stale files.
+		c.cleanupRuntimeFiles(vmID)
+		return fmt.Errorf("PID %d for %s is not cloud-hypervisor (stale or reused)", pid, vmID)
+	}
 	if err := utils.ForceKillProcess(pid); err != nil {
 		return fmt.Errorf("force kill %s (pid %d): %w", vmID, pid, err)
 	}
+	c.cleanupRuntimeFiles(vmID)
 	return nil
 }
 
 // IsAlive returns true if the CH process for the VM is still running.
+// It validates the process name to guard against PID reuse.
 func (c *client) IsAlive(vmID string) bool {
 	pidPath := c.cfg.VMPIDPath(vmID)
 	pid, err := utils.ReadPIDFile(pidPath)
 	if err != nil {
 		return false
 	}
-	return utils.IsProcessAlive(pid)
+	return utils.ValidateProcess(pid, "cloud-hypervisor")
+}
+
+// cleanupRuntimeFiles removes the PID file and API socket for a VM.
+// Best-effort: errors are ignored since files may already be gone.
+func (c *client) cleanupRuntimeFiles(vmID string) {
+	_ = os.Remove(c.cfg.VMPIDPath(vmID))
+	_ = os.Remove(c.cfg.VMSocketPath(vmID))
 }
 
 // ---------------------------------------------------------------------------
