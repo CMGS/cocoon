@@ -262,7 +262,10 @@ func (m *manager) applyFix(inc *vm.Inconsistency, force bool) error {
 			return err
 		}
 		if meta.ProcessPID > 0 {
-			_ = syscall.Kill(meta.ProcessPID, syscall.SIGKILL)
+			// Only kill if it is actually cloud-hypervisor (guard against PID reuse).
+			if utils.ValidateProcess(meta.ProcessPID, "cloud-hypervisor") {
+				_ = syscall.Kill(meta.ProcessPID, syscall.SIGKILL)
+			}
 			meta.ProcessPID = 0
 			return m.SaveMetadata(meta)
 		}

@@ -4,8 +4,6 @@ import (
 	"fmt"
 
 	cli "github.com/urfave/cli/v2"
-
-	"github.com/CMGS/cocoon/types"
 )
 
 func killCommand() *cli.Command {
@@ -33,27 +31,10 @@ func killAction(c *cli.Context) error {
 		return fmt.Errorf("resolve VM ref %q: %w", ref, err)
 	}
 
-	// Force kill the CH process immediately via SIGKILL.
-	if err := app.hyper.ForceKill(vmID); err != nil {
-		return fmt.Errorf("force kill VM %s: %w", vmID, err)
-	}
-
-	// Transition state to STOPPED following the valid state machine.
-	// RUNNING  -> STOPPING -> STOPPED
-	// STOPPING -> STOPPED
-	// STARTING -> ERROR (cannot go to STOPPING)
-	meta, metaErr := app.vmMgr.LoadMetadata(vmID)
-	if metaErr == nil {
-		state := types.VMState(meta.State)
-		switch state {
-		case types.VMStateRunning:
-			_ = app.vmMgr.TransitionState(vmID, types.VMStateStopping, "force killed via cocoon kill")
-			_ = app.vmMgr.TransitionState(vmID, types.VMStateStopped, "force killed via cocoon kill")
-		case types.VMStateStopping:
-			_ = app.vmMgr.TransitionState(vmID, types.VMStateStopped, "force killed via cocoon kill")
-		case types.VMStateStarting:
-			_ = app.vmMgr.TransitionState(vmID, types.VMStateError, "force killed via cocoon kill")
-		}
+	// Force kill via Manager.Kill which handles state transitions,
+	// metadata cleanup (ProcessPID=0, StoppedAt), and the state machine.
+	if err := app.vmMgr.Kill(c.Context, vmID); err != nil {
+		return fmt.Errorf("kill VM %s: %w", vmID, err)
 	}
 
 	fmt.Println(vmID)

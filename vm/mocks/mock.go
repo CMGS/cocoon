@@ -25,6 +25,7 @@ type MockManager struct {
 	CreateFunc          func(ctx context.Context, opts *vm.CreateOptions) (*types.VMConfig, error)
 	StartFunc           func(ctx context.Context, vmID string) error
 	StopFunc            func(ctx context.Context, vmID string, timeout time.Duration) error
+	KillFunc            func(ctx context.Context, vmID string) error
 	DeleteFunc          func(ctx context.Context, vmID string, force bool) error
 	InspectFunc         func(ctx context.Context, vmID string) (*types.VMInspect, error)
 	ListFunc            func(ctx context.Context) ([]*types.VMInspect, error)
@@ -56,6 +57,13 @@ func (m *MockManager) Start(ctx context.Context, vmID string) error {
 func (m *MockManager) Stop(ctx context.Context, vmID string, timeout time.Duration) error {
 	if m.StopFunc != nil {
 		return m.StopFunc(ctx, vmID, timeout)
+	}
+	return nil
+}
+
+func (m *MockManager) Kill(ctx context.Context, vmID string) error {
+	if m.KillFunc != nil {
+		return m.KillFunc(ctx, vmID)
 	}
 	return nil
 }

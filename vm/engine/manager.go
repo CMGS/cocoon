@@ -569,6 +569,61 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 	return nil
 }
 
+// Kill force-terminates a VM via SIGKILL and updates metadata atomically.
+// Follows the transition flow:
+//   - RUNNING  -> STOPPING -> STOPPED
+//   - STOPPING -> STOPPED
+//   - STARTING -> ERROR (cannot go through STOPPING)
+//
+// Idempotent: killing a STOPPED VM is a no-op.
+func (m *manager) Kill(ctx context.Context, vmID string) error {
+	meta, err := m.LoadMetadata(vmID)
+	if err != nil {
+		return err
+	}
+
+	state := types.VMState(meta.State)
+
+	// Idempotent: already stopped -> no-op.
+	if state == types.VMStateStopped {
+		return nil
+	}
+
+	// Force kill the CH process.
+	if err := m.hyper.ForceKill(vmID); err != nil {
+		// If PID is stale/reused, process is already gone — continue cleanup.
+		if !m.hyper.IsAlive(vmID) {
+			log.Printf("kill %s: ForceKill error (process already gone): %v", vmID, err)
+		} else {
+			return fmt.Errorf("force kill %s: %w", vmID, err)
+		}
+	}
+
+	// Determine target state based on current state.
+	now := time.Now().UTC().Format(time.RFC3339)
+	switch state {
+	case types.VMStateRunning:
+		_ = m.TransitionState(vmID, types.VMStateStopping, "force killed")
+		return m.transitionStateWithUpdate(vmID, types.VMStateStopped, "force killed", func(md *types.VMMetadataFile) {
+			md.StoppedAt = now
+			md.ProcessPID = 0
+		})
+	case types.VMStateStopping:
+		return m.transitionStateWithUpdate(vmID, types.VMStateStopped, "force killed", func(md *types.VMMetadataFile) {
+			md.StoppedAt = now
+			md.ProcessPID = 0
+		})
+	case types.VMStateStarting:
+		// STARTING -> ERROR (cannot go through STOPPING).
+		return m.transitionStateWithUpdate(vmID, types.VMStateError, "force killed during start", func(md *types.VMMetadataFile) {
+			md.StoppedAt = now
+			md.ProcessPID = 0
+		})
+	default:
+		return fmt.Errorf("%w: cannot kill VM in state %s", types.ErrInvalidTransition, state)
+	}
+}
+
 // Delete removes a VM and all its resources.
 // Follows the transition flow: CREATED/STOPPED/ERROR -> DELETED.
 // Idempotent: deleting a non-existent or DELETED VM is a no-op.
@@ -636,6 +691,9 @@ func (m *manager) Delete(ctx context.Context, vmID string, force bool) error {
 	runtimeDir := m.cfg.VMRuntimeDir(vmID)
 	_ = os.RemoveAll(vmDir)
 	_ = os.RemoveAll(runtimeDir)
+
+	// Remove serial log (lives outside vmDir, under LogDir).
+	_ = os.Remove(m.cfg.VMSerialLogPath(vmID))
 
 	return nil
 }

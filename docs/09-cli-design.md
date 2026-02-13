@@ -1379,7 +1379,7 @@ All dependency checks passed.
 
 === VM Reconciliation ===
 VM ID             TYPE            SEVERITY  DETAILS
-vm-01HXYZ5A3B...  stale_running   warning   CH process not found, marked STOPPED
+vm-01HXYZ5A3B...  stale_running   warning   CH process not found, marked ERROR
 vm-01HABC9D8E...  name_index      info      rebuilt name index entry
 
 Attempted to fix 2 issue(s).

@@ -25,6 +25,7 @@ type Manager interface {
 	Create(ctx context.Context, opts *CreateOptions) (*types.VMConfig, error)
 	Start(ctx context.Context, vmID string) error
 	Stop(ctx context.Context, vmID string, timeout time.Duration) error
+	Kill(ctx context.Context, vmID string) error
 	Delete(ctx context.Context, vmID string, force bool) error
 	Inspect(ctx context.Context, vmID string) (*types.VMInspect, error)
 	List(ctx context.Context) ([]*types.VMInspect, error)
