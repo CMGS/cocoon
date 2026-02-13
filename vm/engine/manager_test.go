@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/CMGS/cocoon/config"
+	"github.com/CMGS/cocoon/hypervisor"
 	hypermocks "github.com/CMGS/cocoon/hypervisor/mocks"
 	"github.com/CMGS/cocoon/image"
 	imgmocks "github.com/CMGS/cocoon/image/mocks"
@@ -795,5 +796,153 @@ func TestCreate_DuplicateName(t *testing.T) {
 	}
 	if !errors.Is(err, types.ErrVMAlreadyExists) {
 		t.Errorf("expected ErrVMAlreadyExists, got: %v", err)
+	}
+}
+
+func TestShouldFallbackToUEFI(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "recoverable firmware missing",
+			err:  errors.New("launch CH for vm-x (pvh): failed to load firmware: no such file or directory"),
+			want: true,
+		},
+		{
+			name: "recoverable bootloader compatibility",
+			err:  errors.New("boot VM vm-x (pvh): failed to load boot loader"),
+			want: true,
+		},
+		{
+			name: "non-recoverable kvm access",
+			err:  errors.New("boot VM vm-x (pvh): failed to open /dev/kvm: permission denied"),
+			want: false,
+		},
+		{
+			name: "non-recoverable invalid config",
+			err:  errors.New("create VM config for vm-x (pvh): invalid parameter --cpus"),
+			want: false,
+		},
+		{
+			name: "unknown boot error",
+			err:  errors.New("boot VM vm-x (pvh): unexpected guest failure"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := shouldFallbackToUEFI(tt.err)
+			if got != tt.want {
+				t.Fatalf("shouldFallbackToUEFI() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStart_FallbackToUEFI_OnRecoverablePVHFailure(t *testing.T) {
+	t.Parallel()
+	td := setupTestManager(t)
+
+	td.cfg.BootTimeoutSeconds = 0
+
+	v := createTestVM(t, td, &vm.CreateOptions{
+		Image: "docker.io/library/ubuntu:22.04",
+		Name:  "start-fallback",
+	})
+
+	launchCalls := 0
+	bootCalls := 0
+
+	td.hyper.LaunchFunc = func(_ context.Context, _ string, _ *types.VMConfig) (int, error) {
+		launchCalls++
+		return 1000 + launchCalls, nil
+	}
+	td.hyper.CreateVMFunc = func(_ context.Context, _ string, _ *hypervisor.CHVMConfig) error {
+		return nil
+	}
+	td.hyper.BootVMFunc = func(_ context.Context, _ string) error {
+		bootCalls++
+		if bootCalls == 1 {
+			return errors.New("failed to load firmware")
+		}
+		return nil
+	}
+	td.hyper.ForceKillFunc = func(_ string) error { return nil }
+
+	if err := td.mgr.Start(t.Context(), v.VMID); err != nil {
+		t.Fatalf("Start() error = %v, want nil", err)
+	}
+
+	if launchCalls != 2 {
+		t.Fatalf("Launch calls = %d, want 2 (PVH then UEFI)", launchCalls)
+	}
+	if bootCalls != 2 {
+		t.Fatalf("BootVM calls = %d, want 2 (PVH then UEFI)", bootCalls)
+	}
+
+	meta, err := td.mgr.LoadMetadata(v.VMID)
+	if err != nil {
+		t.Fatalf("LoadMetadata: %v", err)
+	}
+	if meta.State != string(types.VMStateRunning) {
+		t.Fatalf("metadata state = %q, want %q", meta.State, types.VMStateRunning)
+	}
+	if meta.LastBootMode != string(types.BootModeUEFI) {
+		t.Fatalf("last_boot_mode = %q, want %q", meta.LastBootMode, types.BootModeUEFI)
+	}
+}
+
+func TestStart_NoFallback_OnNonRecoverablePVHFailure(t *testing.T) {
+	t.Parallel()
+	td := setupTestManager(t)
+
+	td.cfg.BootTimeoutSeconds = 0
+
+	v := createTestVM(t, td, &vm.CreateOptions{
+		Image: "docker.io/library/ubuntu:22.04",
+		Name:  "start-no-fallback",
+	})
+
+	launchCalls := 0
+	bootCalls := 0
+
+	td.hyper.LaunchFunc = func(_ context.Context, _ string, _ *types.VMConfig) (int, error) {
+		launchCalls++
+		return 2000 + launchCalls, nil
+	}
+	td.hyper.CreateVMFunc = func(_ context.Context, _ string, _ *hypervisor.CHVMConfig) error {
+		return nil
+	}
+	td.hyper.BootVMFunc = func(_ context.Context, _ string) error {
+		bootCalls++
+		return errors.New("failed to open /dev/kvm: permission denied")
+	}
+	td.hyper.ForceKillFunc = func(_ string) error { return nil }
+
+	err := td.mgr.Start(t.Context(), v.VMID)
+	if err == nil {
+		t.Fatal("Start() error = nil, want non-nil")
+	}
+
+	if launchCalls != 1 {
+		t.Fatalf("Launch calls = %d, want 1 (no fallback)", launchCalls)
+	}
+	if bootCalls != 1 {
+		t.Fatalf("BootVM calls = %d, want 1 (no fallback)", bootCalls)
+	}
+
+	meta, loadErr := td.mgr.LoadMetadata(v.VMID)
+	if loadErr != nil {
+		t.Fatalf("LoadMetadata: %v", loadErr)
+	}
+	if meta.State != string(types.VMStateError) {
+		t.Fatalf("metadata state = %q, want %q", meta.State, types.VMStateError)
 	}
 }

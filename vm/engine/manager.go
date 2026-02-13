@@ -386,26 +386,84 @@ func (m *manager) attemptBoot(ctx context.Context, vmID string, vmCfg *types.VMC
 	}, nil
 }
 
-// isBootFirmwareError returns true if the error is from the firmware/boot
-// stage (BootVM), where retrying with a different firmware mode may help.
-// Infrastructure errors (CH launch failure, VM config errors) are not
-// retryable with a different firmware.
-func isBootFirmwareError(err error) bool {
+type bootFailureReason int
+
+const (
+	bootFailureUnknown bootFailureReason = iota
+
+	// Recoverable: retry with UEFI may succeed.
+	bootFailureFirmwareNotFound
+	bootFailurePVHProtocol
+	bootFailureDiskDiscovery
+	bootFailureBootloaderCompat
+
+	// Non-recoverable: fallback won't help.
+	bootFailureKVMAccess
+	bootFailureResourceExhaustion
+	bootFailureDiskAccess
+	bootFailureSocketConflict
+	bootFailureInvalidConfig
+)
+
+// classifyBootFailure returns a normalized failure reason from wrapped error text.
+func classifyBootFailure(err error) bootFailureReason {
 	if err == nil {
+		return bootFailureUnknown
+	}
+
+	msg := strings.ToLower(err.Error())
+
+	// Recoverable conditions.
+	switch {
+	case strings.Contains(msg, "failed to load firmware"),
+		strings.Contains(msg, "firmware: no such file"):
+		return bootFailureFirmwareNotFound
+	case strings.Contains(msg, "pvh entry point not found"),
+		strings.Contains(msg, "invalid pvh header"):
+		return bootFailurePVHProtocol
+	case strings.Contains(msg, "no bootable device"),
+		strings.Contains(msg, "failed to find efi system partition"),
+		strings.Contains(msg, "virtio-blk: no bootable partitions"):
+		return bootFailureDiskDiscovery
+	case strings.Contains(msg, "failed to load boot loader"),
+		strings.Contains(msg, "unsupported boot loader format"):
+		return bootFailureBootloaderCompat
+	}
+
+	// Non-recoverable conditions.
+	switch {
+	case strings.Contains(msg, "failed to open /dev/kvm"),
+		strings.Contains(msg, "kvm not available"):
+		return bootFailureKVMAccess
+	case strings.Contains(msg, "cannot allocate memory"),
+		strings.Contains(msg, "out of memory"):
+		return bootFailureResourceExhaustion
+	case strings.Contains(msg, "failed to open disk"),
+		(strings.Contains(msg, "permission denied") && strings.Contains(msg, "disk")):
+		return bootFailureDiskAccess
+	case strings.Contains(msg, "failed to bind socket"),
+		strings.Contains(msg, "address already in use"):
+		return bootFailureSocketConflict
+	case strings.Contains(msg, "invalid parameter"),
+		strings.Contains(msg, "failed to parse"):
+		return bootFailureInvalidConfig
+	}
+
+	return bootFailureUnknown
+}
+
+// shouldFallbackToUEFI determines whether a PVH boot failure should trigger
+// automatic UEFI retry.
+func shouldFallbackToUEFI(err error) bool {
+	switch classifyBootFailure(err) {
+	case bootFailureFirmwareNotFound,
+		bootFailurePVHProtocol,
+		bootFailureDiskDiscovery,
+		bootFailureBootloaderCompat:
+		return true
+	default:
 		return false
 	}
-	msg := err.Error()
-	if strings.Contains(msg, "boot VM") {
-		return true
-	}
-	// Also catch firmware-related launch failures
-	if strings.Contains(msg, "launch CH") {
-		lower := strings.ToLower(msg)
-		return strings.Contains(lower, "firmware") ||
-			strings.Contains(lower, "no such file") ||
-			strings.Contains(lower, "permission denied")
-	}
-	return false
 }
 
 // Start launches the Cloud Hypervisor process for a VM.
@@ -458,7 +516,7 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 	case types.BootStrategyPVHThenUEFI:
 		// First attempt: PVH boot using the firmware from config.
 		result, bootErr = m.attemptBoot(ctx, vmID, vmCfg, vmCfg.FirmwarePath, types.BootModePVH)
-		if bootErr != nil && isBootFirmwareError(bootErr) {
+		if bootErr != nil && shouldFallbackToUEFI(bootErr) {
 			log.Printf("PVH boot failed for %s, falling back to UEFI: %v", vmID, bootErr)
 			// Second attempt: UEFI boot using the global UEFI firmware path.
 			result, bootErr = m.attemptBoot(ctx, vmID, vmCfg, m.cfg.UEFIFirmwarePath, types.BootModeUEFI)
