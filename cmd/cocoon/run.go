@@ -3,8 +3,9 @@ package main
 import (
 	"fmt"
 
-	"github.com/CMGS/cocoon/types"
 	cli "github.com/urfave/cli/v2"
+
+	"github.com/CMGS/cocoon/types"
 )
 
 func runCommand() *cli.Command {

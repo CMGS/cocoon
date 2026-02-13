@@ -109,7 +109,7 @@ func parseMemory(s string) (int64, error) {
 	}
 	// Plain numbers without suffix are interpreted as MB (docs/09 spec).
 	if isAllDigits(s) {
-		s = s + "M"
+		s += "M"
 	}
 
 	bytes, err := units.RAMInBytes(s)
