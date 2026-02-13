@@ -817,18 +817,18 @@ func (r *Reconciler) Reconcile(orphans []Orphan) error {
 
 ```bash
 # Detect orphans
-$ cocoon reconcile --check
+$ cocoon doctor
 Found 2 orphans:
 - vm-042: overlay exists but no config (incomplete creation)
 - vm-043: config exists but no reference (interrupted operation)
 
 # Fix automatically
-$ cocoon reconcile --fix
+$ cocoon doctor --fix
 Cleaned up orphaned overlay: vm-042
 Restored missing reference: vm-043
 
 # Verify
-$ cocoon reconcile --check
+$ cocoon doctor
 No orphans found. System is consistent.
 ```
 
@@ -1304,7 +1304,7 @@ cocoon gc --aggressive &
 wait
 
 # Verify no corruption
-cocoon reconcile --check
+cocoon doctor
 
 # Lock contention test: Many processes same image
 time parallel -j 100 cocoon create myorg/ubuntu-bootable:22.04 --name vm-{} ::: {001..100}

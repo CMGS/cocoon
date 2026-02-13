@@ -207,7 +207,7 @@ func LaunchCloudHypervisor(vmID string, config *VMConfig) (*exec.Cmd, error) {
         "--console", "off",
     }
 
-    // Cloud-init is served via metadata server (169.254.169.254), no ISO needed
+    // Cloud-init is served via metadata server (169.254.169.254), no ISO needed [Phase 2]
 
     cmd := exec.Command("cloud-hypervisor", args...)
     return cmd, nil
@@ -1011,7 +1011,7 @@ func main() {
         DiskPath:     "/var/lib/cocoon/vms/vm-example-001/overlay.qcow2",
         CPUs:         2,
         MemoryMB:     2048,
-        // Cloud-init data served via metadata server at 169.254.169.254
+        // Cloud-init data served via metadata server at 169.254.169.254 [Phase 2]
     }
 
     cmd, err := LaunchCloudHypervisor(vmID, config)

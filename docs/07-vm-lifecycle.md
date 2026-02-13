@@ -125,7 +125,7 @@ CREATING -----> CREATED -----> STARTING -----> RUNNING -----> STOPPING -----> ST
 **State**:
 - Overlay disk exists at `/var/lib/cocoon/vms/{vm-id}/overlay.qcow2`
 - Metadata stored in `/var/lib/cocoon/vms/{vm-id}/metadata.json`
-- Metadata server configuration prepared (no separate ISO needed)
+- [Phase 2] Metadata server configuration prepared (no separate ISO needed)
 - No Cloud Hypervisor process running
 
 **Allowed Operations**:
@@ -451,7 +451,7 @@ func TransitionState(vmID string, to VMState) error {
 **Postconditions**:
 - VM metadata created
 - Overlay disk created
-- Metadata server configuration prepared (guest datasource config embedded in image)
+- [Phase 2] Metadata server configuration prepared (guest datasource config embedded in image)
 - VM in CREATED state
 
 **Idempotency**:
@@ -548,6 +548,15 @@ func TransitionState(vmID string, to VMState) error {
 ## 4. Inspect Output Schema (Merged View)
 
 This section defines the **merged view** struct returned by `cocoon inspect`. It combines data from the immutable `config.json` and mutable `metadata.json` files (see Section 5 for the on-disk split). This struct is never persisted as a single file — it exists only in memory and in API/CLI output.
+
+> **Phase 1 note:** The actual implementation uses a lean `VMInspect` struct
+> (`types/inspect.go`) that groups fields into nested sub-structs: `image`,
+> `storage`, `hypervisor`, `boot_config`, `timestamps`, `runtime`, and `error`.
+> Fields like `state_history`, `cloud_init`, and extended storage/hypervisor
+> metadata (`used_bytes`, `filesystem`, `version`, `api_version`) are not
+> included in Phase 1. The full struct documented below represents the
+> aspirational merged view; refer to `types/inspect.go` for the current
+> implementation.
 
 ### 4.1 Complete Inspect Structure
 
@@ -646,9 +655,11 @@ type HypervisorInfo struct {
     APIVersion string `json:"api_version"`
 }
 
-// CloudInitConfig contains cloud-init metadata server configuration
+// CloudInitConfig contains cloud-init metadata server configuration.
+// NOTE: Phase 2 -- metadata server (169.254.169.254) is not yet implemented.
+// Phase 1 relies on pre-baked cloud-init configuration in the image.
 type CloudInitConfig struct {
-    // Metadata server address (e.g., "http://169.254.169.254")
+    // [Phase 2] Metadata server address (e.g., "http://169.254.169.254")
     MetadataServerAddr string `json:"metadata_server_addr"`
 
     // Instance ID for this VM
@@ -925,6 +936,9 @@ type VMMetadata struct {
     LastError  string `json:"last_error,omitempty"`
     ErrorCount int    `json:"error_count"`
 
+    // Lifecycle flags
+    AutoRemove bool `json:"auto_remove,omitempty"` // Auto-delete on stop (set by --rm)
+
     // Timestamps
     UpdatedAt string `json:"updated_at"`          // RFC3339, updated on every state change
     StartedAt string `json:"started_at,omitempty"`
@@ -947,6 +961,7 @@ type VMMetadata struct {
   "last_firmware_path": "/var/lib/cocoon/firmware/hypervisor-fw",
   "last_error": "",
   "error_count": 0,
+  "auto_remove": false,
   "updated_at": "2026-02-11T20:01:08Z",
   "started_at": "2026-02-11T20:01:06Z",
   "stopped_at": "",
@@ -1247,22 +1262,25 @@ const (
     ErrorOCIConversion    ErrorType = "oci_conversion_failed"
     ErrorDiskCreation     ErrorType = "disk_creation_failed"
     ErrorInsufficientDisk ErrorType = "insufficient_disk_space"
+    ErrorImageNotBootable ErrorType = "image_not_bootable"
 
     // Boot errors
-    ErrorBootTimeout      ErrorType = "boot_timeout"
-    ErrorKernelPanic      ErrorType = "kernel_panic"
+    ErrorBootTimeout       ErrorType = "boot_timeout"
+    ErrorKernelPanic       ErrorType = "kernel_panic"
     ErrorMissingBootloader ErrorType = "missing_bootloader"
-    ErrorMissingKernel    ErrorType = "missing_kernel"
+    ErrorMissingKernel     ErrorType = "missing_kernel"
 
     // Runtime errors
-    ErrorCHCrash          ErrorType = "cloud_hypervisor_crash"
-    ErrorTaskTimeout      ErrorType = "task_timeout"
-    ErrorGuestCrash       ErrorType = "guest_crash"
+    ErrorCHCrash            ErrorType = "cloud_hypervisor_crash"
+    ErrorGuestCrash         ErrorType = "guest_crash"
     ErrorResourceExhaustion ErrorType = "resource_exhaustion"
 
     // Shutdown errors
-    ErrorStopTimeout      ErrorType = "stop_timeout"
-    ErrorForceKillFailed  ErrorType = "force_kill_failed"
+    ErrorStopTimeout     ErrorType = "stop_timeout"
+    ErrorForceKillFailed ErrorType = "force_kill_failed"
+
+    // Reference errors
+    ErrorChecksumCollision ErrorType = "checksum_collision"
 )
 ```
 
@@ -1393,7 +1411,7 @@ When reconciling VM state after crashes (kill -9, power loss, partial state), so
 
 #### 9.2.3 Reconciliation Algorithm
 
-**On Startup (cocoon daemon start or cocoon reconcile)**:
+**On Startup (cocoon daemon start or cocoon doctor)**:
 
 ```go
 func ReconcileAll() error {
@@ -1762,9 +1780,8 @@ cocoon doctor --reconcile --fix
 cocoon doctor --reconcile --fix --force
 ```
 
-**Aliases**:
-- `cocoon reconcile` → `cocoon doctor --reconcile`
-- `cocoon doctor` → runs reconciliation by default
+**Note**: There is no separate `cocoon reconcile` command. Use `cocoon doctor` with
+the appropriate flags. `cocoon doctor` runs reconciliation by default.
 
 **Flags**:
 - `--fix`: Automatically fix inconsistencies (default: dry-run)
@@ -1942,7 +1959,7 @@ func detectOrphanedCHProcesses(knownVMs []string) []int {
 **When to Run**:
 1. **On daemon startup** (if running as daemon)
 2. **Periodically** (every 5 minutes in daemon mode)
-3. **Manually** (user runs `cocoon reconcile`)
+3. **Manually** (user runs `cocoon doctor --fix`)
 4. **After crashes** (detect on next CLI invocation)
 
 **Dry-run by Default**:
@@ -2099,13 +2116,13 @@ cocoon ps -a
 
 ```bash
 # Dry-run (report only)
-cocoon reconcile
+cocoon doctor
 
 # Fix inconsistencies
-cocoon reconcile --fix
+cocoon doctor --fix
 
 # Force cleanup stuck VMs
-cocoon reconcile --fix --force
+cocoon doctor --fix --force
 ```
 
 ---

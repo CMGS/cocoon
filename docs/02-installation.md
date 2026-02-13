@@ -318,7 +318,7 @@ Recommended directory structure for Cocoon deployment:
 /run/cocoon/                       # Runtime sockets
 └── vms/
     ├── vm-abc-123/
-    │   ├── ch.sock                # Cloud Hypervisor API socket
+    │   ├── api.sock               # Cloud Hypervisor API socket
     │   └── ch.pid                 # Process ID file
     └── vm-def-456/
 

@@ -70,13 +70,13 @@ func ValidateBootability(rootfs string) error {
 
 **Cocoon's Role**:
 - ✅ **Validate**: Check if image has required components (kernel, bootloader)
-- ✅ **Warn**: Alert if cloud-init missing (VM will boot but metadata server disabled)
+- ✅ **Warn**: Alert if cloud-init missing (VM will boot but metadata server disabled) [Phase 2]
 - ✅ **Configure**: Modify GRUB config, inject cloud-init datasource settings (if cloud-init present)
 - ❌ **Install**: Does NOT install missing packages (kernel, GRUB, cloud-init)
 
 **User's Role** (Image Provider):
 - **MUST provide**: kernel, bootloader **pre-installed**
-- **SHOULD provide**: cloud-init **pre-installed** (required for metadata server integration)
+- **SHOULD provide**: cloud-init **pre-installed** (required for metadata server integration) [Phase 2]
 - Cocoon only verifies and configures existing components
 
 **Rationale**: Installing packages during conversion would require:
@@ -569,11 +569,11 @@ func (m *MountedContainer) ValidateBootability() error {
 
     // SHOULD have components (recommended, not mandatory)
     // cloud-init: CONDITIONAL
-    // - REQUIRED: For Cocoon metadata server integration (SSH/user setup)
+    // - REQUIRED: For Cocoon metadata server integration (SSH/user setup) [Phase 2]
     // - OPTIONAL: VM will boot without it (standalone use case)
     cloudInitPath := filepath.Join(m.mountPoint, "/usr/bin/cloud-init")
     if _, err := os.Stat(cloudInitPath); os.IsNotExist(err) {
-        log.Warn("cloud-init not found - VM will boot but Cocoon metadata server integration disabled")
+        log.Warn("cloud-init not found - VM will boot but Cocoon metadata server integration disabled") // [Phase 2]
     }
 
     return nil
@@ -1017,12 +1017,12 @@ func VerifyBootContract(imagePath string) error {
 
     // SHOULD check (recommended, not mandatory)
     // cloud-init: CONDITIONAL (warning if missing, but don't fail)
-    // - REQUIRED: For metadata server integration
+    // - REQUIRED: For metadata server integration [Phase 2]
     // - OPTIONAL: VM will boot without it
     cloudInitCmd := exec.Command("guestfish", "-a", imagePath, "-i",
         "sh", "test -x /usr/bin/cloud-init")
     if err := cloudInitCmd.Run(); err != nil {
-        log.Warn("cloud-init not found in image - VM will boot but Cocoon metadata server integration disabled")
+        log.Warn("cloud-init not found in image - VM will boot but Cocoon metadata server integration disabled") // [Phase 2]
     }
 
     return nil
@@ -1744,7 +1744,7 @@ sha256sum -c test/fixtures/verified-images.sha256
 
 # Full lifecycle pipeline
 cocoon create test-image.img --name ci-boot-test --cpus 1 --memory 1G --disk 5G
-cocoon start ci-boot-test --boot-timeout 120s
+cocoon start ci-boot-test --boot-timeout 120
 cocoon logs ci-boot-test --tail 20  # Verify boot markers
 cocoon inspect ci-boot-test         # Verify state == RUNNING
 cocoon stop ci-boot-test
@@ -1774,7 +1774,7 @@ cocoon image verify "ghcr.io/CMGS/cocoon-test-images/ubuntu-bootable@sha256:${PI
 # Full conversion + boot + lifecycle pipeline
 cocoon create "ghcr.io/CMGS/cocoon-test-images/ubuntu-bootable@sha256:${PINNED_DIGEST}" \
   --name ci-oci-test --cpus 1 --memory 1G --disk 5G
-cocoon start ci-oci-test --boot-timeout 180s
+cocoon start ci-oci-test --boot-timeout 180
 cocoon logs ci-oci-test --tail 20     # Verify systemd + cloud-init markers
 cocoon inspect ci-oci-test            # Verify state == RUNNING
 cocoon stop ci-oci-test

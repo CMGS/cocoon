@@ -278,7 +278,7 @@ For the full identifier rules (format, uniqueness, mutability), see [07-vm-lifec
 ### 3.1 Resolution Algorithm
 
 1. If `<vm-ref>` starts with `vm-`: treat as exact `vm_id` lookup in `/var/lib/cocoon/vms/{vm_id}/config.json`.
-2. Otherwise: look up `<vm-ref>` in the name index (`/var/lib/cocoon/name-index.json`).
+2. Otherwise: look up `<vm-ref>` in the name index (`/var/lib/cocoon/db/name-index.json`).
 3. If no match: exit with error `"VM not found: <vm-ref>"`.
 
 No prefix-matching, substring matching, or fuzzy matching is supported.
@@ -322,24 +322,33 @@ Using `urfave/cli/v2` (same as core project):
 package main
 
 import (
+    "context"
     "fmt"
     "os"
+    "os/signal"
+    "syscall"
 
-    "github.com/CMGS/cocoon/commands"
+    cli "github.com/urfave/cli/v2"
+
     "github.com/CMGS/cocoon/version"
-    "github.com/urfave/cli/v2"
 )
 
-var configPath string
+var (
+    configPath string
+    rootDir    string
+    runtimeDir string
+    logDir     string
+    logLevel   string
+)
 
 func main() {
-    cli.VersionPrinter = func(c *cli.Context) {
+    cli.VersionPrinter = func(_ *cli.Context) {
         fmt.Print(version.String())
     }
 
     app := cli.NewApp()
     app.Name = version.NAME
-    app.Usage = "Lightweight VM management built on Cloud Hypervisor"
+    app.Usage = "Lightweight VM manager built on Cloud Hypervisor"
     app.Version = version.VERSION
     app.Flags = []cli.Flag{
         &cli.StringFlag{
@@ -349,28 +358,63 @@ func main() {
             Destination: &configPath,
             EnvVars:     []string{"COCOON_CONFIG_PATH"},
         },
+        &cli.StringFlag{
+            Name:        "root-dir",
+            Usage:       "root directory for cocoon persistent data (overrides config)",
+            Destination: &rootDir,
+            EnvVars:     []string{"COCOON_ROOT_DIR"},
+        },
+        &cli.StringFlag{
+            Name:        "runtime-dir",
+            Usage:       "runtime directory for sockets and PIDs (overrides config)",
+            Destination: &runtimeDir,
+            EnvVars:     []string{"COCOON_RUNTIME_DIR"},
+        },
+        &cli.StringFlag{
+            Name:        "log-dir",
+            Usage:       "log directory for VM serial logs (overrides config)",
+            Destination: &logDir,
+            EnvVars:     []string{"COCOON_LOG_DIR"},
+        },
+        &cli.StringFlag{
+            Name:        "log-level",
+            Value:       "info",
+            Usage:       "log level (debug, info, warn, error)",
+            Destination: &logLevel,
+            EnvVars:     []string{"COCOON_LOG_LEVEL"},
+        },
     }
 
     app.Commands = []*cli.Command{
-        commands.RunCommand(),
-        commands.CreateCommand(),
-        commands.StartCommand(),
-        commands.StopCommand(),
-        commands.DeleteCommand(),
-        commands.KillCommand(),
-        commands.ListCommand(),
-        commands.InspectCommand(),
-        commands.ImageCommand(),
-        commands.LogsCommand(),
-        commands.GCCommand(),
-        commands.DoctorCommand(),
-        commands.FirmwareCommand(),
+        initCommand(),
+        createCommand(),
+        runCommand(),
+        startCommand(),
+        stopCommand(),
+        killCommand(),
+        rmCommand(),
+        psCommand(),
+        inspectCommand(),
+        logsCommand(),
+        imagesCommand(),
+        gcCommand(),
+        firmwareCommand(),
+        doctorCommand(),
+        versionCommand(),
     }
 
-    if err := app.Run(os.Args); err != nil {
+    os.Exit(run(app))
+}
+
+func run(app *cli.App) int {
+    ctx, stop := signal.NotifyContext(context.TODO(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+    defer stop()
+
+    if err := app.RunContext(ctx, os.Args); err != nil {
         fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-        os.Exit(1)
+        return 1
     }
+    return 0
 }
 ```
 
@@ -383,50 +427,62 @@ func main() {
 **Implementation**: Based on [Boot Contract §4.2](./01-boot-contract.md#42-cocoon-run-create-and-start)
 
 ```go
-func RunCommand() *cli.Command {
+// vmCreateFlags returns the common flags shared by both create and run commands.
+func vmCreateFlags() []cli.Flag {
+    return []cli.Flag{
+        &cli.StringFlag{
+            Name:    "name",
+            Aliases: []string{"n"},
+            Usage:   "VM name (globally unique; auto-generated if omitted)",
+        },
+        &cli.IntFlag{
+            Name:    "cpus",
+            Aliases: []string{"c"},
+            Value:   types.DefaultCPUs,
+            Usage:   "number of vCPUs",
+        },
+        &cli.StringFlag{
+            Name:    "memory",
+            Aliases: []string{"m"},
+            Value:   fmt.Sprintf("%dM", types.DefaultMemoryMB), // "2048M"
+            Usage:   "memory size (e.g., 512M, 1G, 2G, 2048)",
+        },
+        &cli.StringFlag{
+            Name:  "disk",
+            Value: types.DefaultDiskSize,
+            Usage: "root disk overlay size (e.g., 10G, 20G)",
+        },
+        &cli.StringFlag{
+            Name:  "boot-strategy",
+            Value: string(types.DefaultBootStrategy),
+            Usage: "boot strategy: pvh_then_uefi, uefi_only, pvh_only",
+        },
+        &cli.BoolFlag{
+            Name:  "skip-verify",
+            Usage: "skip bootability verification of the image",
+        },
+    }
+}
+
+func runCommand() *cli.Command {
+    flags := vmCreateFlags()
+    flags = append(flags,
+        &cli.BoolFlag{
+            Name:    "detach",
+            Aliases: []string{"d"},
+            Usage:   "run VM in background",
+        },
+        &cli.BoolFlag{
+            Name:  "rm",
+            Usage: "automatically delete the VM when it stops",
+        },
+    )
     return &cli.Command{
         Name:      "run",
         Usage:     "Create and start a VM from an image",
         ArgsUsage: "IMAGE",
-        Flags: []cli.Flag{
-            &cli.StringFlag{
-                Name:    "name",
-                Aliases: []string{"n"},
-                Usage:   "VM name (globally unique; auto-generated as cocoon-{random} if omitted)",
-            },
-            &cli.IntFlag{
-                Name:    "cpus",
-                Aliases: []string{"c"},
-                Usage:   "Number of vCPUs",
-                Value:   2,
-            },
-            &cli.StringFlag{
-                Name:    "memory",
-                Aliases: []string{"m"},
-                Usage:   "Memory size (e.g., 512M, 1G, 2G)",
-                Value:   "2G",
-            },
-            &cli.StringFlag{
-                Name:  "disk",
-                Usage: "Root disk overlay size (e.g., 10G, 20G)",
-                Value: "10G",
-            },
-            &cli.BoolFlag{
-                Name:  "rm",
-                Usage: "Automatically remove VM when it exits",
-            },
-            &cli.BoolFlag{
-                Name:    "detach",
-                Aliases: []string{"d"},
-                Usage:   "Run VM in background",
-            },
-            &cli.StringFlag{
-                Name:  "boot-strategy",
-                Usage: "Boot strategy: pvh_then_uefi (default), uefi_only, pvh_only",
-                Value: "pvh_then_uefi",
-            },
-        },
-        Action: runAction,
+        Flags:     flags,
+        Action:    runAction,
     }
 }
 ```
@@ -471,67 +527,39 @@ cocoon run --boot-strategy pvh_only ubuntu-22.04-cloudimg
   - Auto-fix non-bootable OCI images during conversion
 
 ```go
-func CreateCommand() *cli.Command {
+func createCommand() *cli.Command {
     return &cli.Command{
         Name:      "create",
-        Usage:     "Create a new VM from an image",
+        Usage:     "Create a VM from an image without starting it",
         ArgsUsage: "IMAGE",
-        Flags: []cli.Flag{
-            &cli.StringFlag{
-                Name:    "name",
-                Aliases: []string{"n"},
-                Usage:   "VM name (globally unique; auto-generated as cocoon-{random} if omitted)",
-            },
-            &cli.IntFlag{
-                Name:    "cpus",
-                Aliases: []string{"c"},
-                Usage:   "Number of vCPUs",
-                Value:   2,
-            },
-            &cli.StringFlag{
-                Name:    "memory",
-                Aliases: []string{"m"},
-                Usage:   "Memory size (e.g., 512M, 1G)",
-                Value:   "2G",
-            },
-            &cli.StringFlag{
-                Name:  "disk",
-                Usage: "Root disk overlay size (e.g., 10G, 20G)",
-                Value: "10G",
-            },
-        },
-        Action: createAction,
+        Flags:     vmCreateFlags(),
+        Action:    createAction,
     }
 }
 
 // createAction implementation (illustrative)
 func createAction(c *cli.Context) error {
-    // IMAGE is positional parameter
-    if c.NArg() < 1 {
-        return fmt.Errorf("IMAGE argument required")
-    }
-    image := c.Args().Get(0)
-    name := c.String("name")
-    if name == "" {
-        name = fmt.Sprintf("cocoon-%s", randomHex(8)) // e.g., "cocoon-a3f7b2c1"
+    opts, err := parseCreateOptions(c, "create")
+    if err != nil {
+        return err
     }
 
-    // Detect image type
-    imageType := detectImageType(image)
-    switch imageType {
-    case "qcow2":
-        // Direct use of cloud image
-    case "url":
-        // Download cloud image
-    case "oci":
-        // Phase 1: OCI→qcow2 conversion with STRICT validation
-        // - Bootable OCI: Convert and proceed
-        // - Non-bootable OCI: Fail with clear error
-        // Phase 2: Auto-fix non-bootable OCI images
+    app, err := initApp(c)
+    if err != nil {
+        return err
     }
-    // ...
+
+    vmCfg, err := app.vmMgr.Create(c.Context, opts)
+    if err != nil {
+        return fmt.Errorf("create VM: %w", err)
+    }
+
+    fmt.Printf("%s\n", vmCfg.VMID)
+    return nil
 }
 ```
+
+The `createCommand` uses the same `vmCreateFlags()` as `runCommand`, which includes `--name`, `--cpus`, `--memory` (default "2048M"), `--disk`, `--boot-strategy`, and `--skip-verify`.
 
 **Example Usage**:
 
@@ -719,28 +747,33 @@ cocoon kill myvm
 **Purpose**: List all VMs
 
 ```go
-func ListCommand() *cli.Command {
+func psCommand() *cli.Command {
     return &cli.Command{
         Name:    "list",
-        Aliases: []string{"ls"},
-        Usage:   "List all VMs",
+        Aliases: []string{"ps", "ls"},
+        Usage:   "List VMs",
         Flags: []cli.Flag{
             &cli.BoolFlag{
                 Name:    "all",
                 Aliases: []string{"a"},
-                Usage:   "Show all VMs (including stopped)",
+                Usage:   "show all VMs (including stopped)",
             },
             &cli.StringFlag{
                 Name:  "format",
-                Usage: "Output format (table, json)",
                 Value: "table",
+                Usage: "output format (table, json)",
+            },
+            &cli.BoolFlag{
+                Name:    "quiet",
+                Aliases: []string{"q"},
+                Usage:   "only display VM IDs",
             },
             &cli.StringFlag{
                 Name:  "filter",
-                Usage: "Filter by field (e.g., state=running, name=myvm)",
+                Usage: "filter by field (e.g., state=running)",
             },
         },
-        Action: listAction,
+        Action: psAction,
     }
 }
 ```
@@ -812,35 +845,37 @@ The inspect output merges data from `config.json` (immutable) and `metadata.json
   "vm_id": "vm-01HXYZ5A3B7C8D9E0F1G2H3J4K",
   "name": "myvm",
   "state": "RUNNING",
-  "previous_state": "STARTING",
   "image": {
     "ref": "ubuntu-22.04-cloudimg",
+    "digest": "ef015678abcd1234567890abcdef1234567890abcdef1234567890abcdef1234",
     "base_key": "ef015678abcd1234_amd64"
-  },
-  "boot": {
-    "strategy": "pvh_then_uefi",
-    "last_mode": "pvh",
-    "firmware_path": "/var/lib/cocoon/firmware/hypervisor-fw"
-  },
-  "resources": {
-    "cpus": 2,
-    "memory_mb": 1024,
-    "disk_size": "10G"
   },
   "storage": {
     "overlay_path": "/var/lib/cocoon/vms/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K/overlay.qcow2",
-    "base_image_path": "/var/lib/cocoon/cache/images/ef015678abcd1234_amd64.qcow2",
-    "serial_log": "/var/log/cocoon/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K-serial.log",
-    "socket_path": "/run/cocoon/vms/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K/api.sock"
+    "base_path": "/var/lib/cocoon/cache/images/ef015678abcd1234_amd64.qcow2",
+    "size": "10G"
+  },
+  "hypervisor": {
+    "ch_socket": "/run/cocoon/vms/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K/api.sock",
+    "ch_pid": 12345,
+    "serial_log": "/var/log/cocoon/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K-serial.log"
+  },
+  "boot_config": {
+    "cpus": 2,
+    "memory_mb": 2048,
+    "boot_strategy": "pvh_then_uefi",
+    "firmware_path": "/var/lib/cocoon/firmware/hypervisor-fw"
+  },
+  "timestamps": {
+    "created_at": "2026-02-11T10:30:00Z",
+    "updated_at": "2026-02-11T10:30:07Z",
+    "started_at": "2026-02-11T10:30:05Z"
   },
   "runtime": {
-    "process_pid": 12345,
     "boot_time": "2.3s",
+    "last_boot_mode": "pvh",
     "error_count": 0
-  },
-  "created_at": "2026-02-11T10:30:00Z",
-  "started_at": "2026-02-11T10:30:05Z",
-  "updated_at": "2026-02-11T10:30:07Z"
+  }
 }
 ```
 
@@ -851,25 +886,26 @@ The inspect output merges data from `config.json` (immutable) and `metadata.json
 **Purpose**: View VM serial console logs. `<vm-ref>` is resolved via [Section 3](#3-vm-identifier-resolution).
 
 ```go
-func LogsCommand() *cli.Command {
+func logsCommand() *cli.Command {
     return &cli.Command{
         Name:      "logs",
         Usage:     "View VM serial console logs",
-        ArgsUsage: "<vm-ref>",
+        ArgsUsage: "VM_REF",
         Flags: []cli.Flag{
             &cli.BoolFlag{
                 Name:    "follow",
                 Aliases: []string{"f"},
-                Usage:   "Follow log output",
+                Usage:   "follow log output",
             },
             &cli.IntFlag{
                 Name:  "tail",
-                Usage: "Number of lines to show from the end",
                 Value: 100,
+                Usage: "number of lines to show from the end",
             },
             &cli.BoolFlag{
-                Name:  "timestamps",
-                Usage: "Show timestamps",
+                Name:    "timestamps",
+                Aliases: []string{"t"},
+                Usage:   "prefix each line with a timestamp",
             },
         },
         Action: logsAction,
@@ -897,54 +933,62 @@ cocoon logs myvm --tail 50 --timestamps
 **Purpose**: Manage VM images (multi-source: qcow2 files, cloud image URLs, OCI references)
 
 ```go
-func ImageCommand() *cli.Command {
+func imagesCommand() *cli.Command {
     return &cli.Command{
         Name:  "image",
-        Usage: "Manage VM images (qcow2, cloud image URLs, OCI references)",
+        Usage: "Manage VM images",
         Subcommands: []*cli.Command{
-            {
-                Name:      "pull",
-                Usage:     "Fetch and cache a VM image from any supported source",
-                ArgsUsage: "<image-ref>",
-                Flags: []cli.Flag{
-                    &cli.StringFlag{
-                        Name:  "type",
-                        Usage: "Force source type: qcow2, url, oci (auto-detected if omitted)",
-                    },
-                },
-                Action: imagePullAction,
-            },
             {
                 Name:    "list",
                 Aliases: []string{"ls"},
-                Usage:   "List cached base images",
+                Usage:   "List cached VM images",
                 Flags: []cli.Flag{
                     &cli.StringFlag{
                         Name:  "format",
-                        Usage: "Output format (table, json)",
                         Value: "table",
+                        Usage: "output format (table, json)",
                     },
                 },
-                Action: imageListAction,
+                Action: imagesAction,
+            },
+            {
+                Name:      "pull",
+                Usage:     "Pull and cache an image without creating a VM",
+                ArgsUsage: "IMAGE_REF",
+                Action:    imagePullAction,
             },
             {
                 Name:      "inspect",
-                Usage:     "Display detailed image information",
-                ArgsUsage: "<image-ref>",
-                Action:    imageInspectAction,
+                Usage:     "Show details of a cached image (size, checksum, ref count)",
+                ArgsUsage: "IMAGE_REF",
+                Flags: []cli.Flag{
+                    &cli.StringFlag{
+                        Name:  "format",
+                        Value: "json",
+                        Usage: "output format (json)",
+                    },
+                },
+                Action: imageInspectAction,
             },
             {
                 Name:      "remove",
                 Aliases:   []string{"rm"},
-                Usage:     "Remove a cached image",
-                ArgsUsage: "<image-ref>",
-                Action: imageRemoveAction,
+                Usage:     "Remove a cached image (only if unreferenced)",
+                ArgsUsage: "IMAGE_REF",
+                Action:    imageRemoveAction,
             },
             {
                 Name:      "verify",
-                Usage:     "Verify image meets boot contract",
-                ArgsUsage: "<image-ref>",
-                Action:    imageVerifyAction,
+                Usage:     "Check if an image is bootable",
+                ArgsUsage: "IMAGE_REF",
+                Flags: []cli.Flag{
+                    &cli.StringFlag{
+                        Name:  "format",
+                        Value: "table",
+                        Usage: "output format (table, json)",
+                    },
+                },
+                Action: imageVerifyAction,
             },
         },
     }
@@ -970,9 +1014,6 @@ cocoon image pull /tmp/ubuntu-22.04-cloudimg.qcow2
 
 # Pull bootable OCI image (custom-built, requires root for conversion)
 cocoon image pull myorg/ubuntu-bootable:22.04
-
-# Force source type (override auto-detection)
-cocoon image pull --type oci myorg/ubuntu-bootable:22.04
 
 # List cached images
 cocoon image list
@@ -1074,23 +1115,23 @@ cocoon gc --grace-period 12
 **Implementation**: Based on [08-dependencies.md § Startup Dependency Detection](./08-dependencies.md#startup-dependency-detection-cocoon-doctor) and [Boot Contract § 1.1](./01-boot-contract.md#11-primary-boot-mode-pvh--hypervisor-fw)
 
 ```go
-func DoctorCommand() *cli.Command {
+func doctorCommand() *cli.Command {
     return &cli.Command{
         Name:  "doctor",
         Usage: "Check system health and dependencies",
         Flags: []cli.Flag{
             &cli.BoolFlag{
-                Name:  "verbose",
-                Aliases: []string{"v"},
-                Usage: "Show detailed check results",
-            },
-            &cli.BoolFlag{
                 Name:  "fix",
-                Usage: "Attempt to fix VM state issues via reconciliation",
+                Usage: "attempt to fix issues automatically",
             },
             &cli.BoolFlag{
                 Name:  "force",
-                Usage: "Force re-check even if cached results exist",
+                Usage: "force re-check even if cached results exist",
+            },
+            &cli.StringFlag{
+                Name:  "format",
+                Value: "table",
+                Usage: "output format (table, json)",
             },
         },
         Action: doctorAction,
@@ -1098,17 +1139,22 @@ func DoctorCommand() *cli.Command {
 }
 
 func doctorAction(c *cli.Context) error {
-    app := initApp(c)
+    app, err := initApp(c)
+    if err != nil {
+        return err
+    }
+
     fix := c.Bool("fix")
     force := c.Bool("force")
+    format := c.String("format")
 
     // Phase 1: Dependency checks (binary existence, firmware, directories).
     checks := runDependencyChecks(app)  // exec.LookPath + os.Stat
 
     // Phase 2: VM reconciliation (state consistency, orphan cleanup).
-    issues := app.vmMgr.Reconcile(ctx, fix, force)
+    issues, reconcileErr := app.vmMgr.Reconcile(ctx, fix, force)
 
-    // Print results.
+    // Print results in table or JSON format.
     // --fix attempts VM state repairs (not dependency installation).
 }
 ```
@@ -1139,52 +1185,56 @@ func doctorAction(c *cli.Context) error {
 **Example Usage**:
 
 ```bash
-# Quick health check (shows only failures)
+# Quick health check
 cocoon doctor
 
-# Verbose output (shows all checks)
-cocoon doctor --verbose
-
-# Auto-fix issues (download firmware, create directories)
+# Fix VM state issues (reconcile stale states, rebuild name index)
 cocoon doctor --fix
 ```
 
 **Example Output**:
 
-```bash
+```
 $ cocoon doctor
-✅ cloud-hypervisor binary: /usr/bin/cloud-hypervisor (v39.0)
-✅ PVH firmware: /var/lib/cocoon/firmware/hypervisor-fw (v0.4.2)
-⚠️  UEFI firmware: Not found (optional - only needed for UEFI fallback)
-✅ storage paths: /var/lib/cocoon/ structure valid
-✅ storage permissions: All directories writable
-✅ qemu-img tool: /usr/bin/qemu-img (v8.2.0)
-⚠️  guestfish tool: Not found (optional - only needed for advanced image inspection)
-✅ /run/cocoon directory: Exists and writable
-✅ /var/log/cocoon directory: Exists and writable
+=== Dependency Checks ===
+CHECK              STATUS  DETAIL
+cloud-hypervisor   pass    /usr/bin/cloud-hypervisor
+pvh-firmware       pass    /var/lib/cocoon/firmware/hypervisor-fw
+uefi-firmware      fail    not found at /var/lib/cocoon/firmware/CLOUDHV.fd
+qemu-img           pass    /usr/bin/qemu-img
+ch-remote          pass    /usr/bin/ch-remote
+buildah            pass    /usr/bin/buildah
+skopeo             pass    /usr/bin/skopeo
+guestfish          fail    binary not found in PATH (required for OCI-to-qcow2 conversion)
+kvm                pass    /dev/kvm
+dir/root-dir       pass    /var/lib/cocoon
+dir/runtime-dir    pass    /run/cocoon
+dir/log-dir        pass    /var/log/cocoon
 
-✅ All checks passed - Cocoon is ready to use
+2 dependency check(s) failed.
+
+=== VM Reconciliation ===
+No VM issues found.
 ```
 
-**Example Output (with failures)**:
+**Example Output (with --fix)**:
 
-```bash
-$ cocoon doctor
-✅ cloud-hypervisor binary: /usr/bin/cloud-hypervisor (v39.0)
-❌ PVH firmware: Not found at /var/lib/cocoon/firmware/hypervisor-fw
-   Expected: rust-hypervisor-firmware v0.4.2+
-   Fix: Run 'cocoon doctor --fix' or 'cocoon firmware install'
-✅ storage paths: /var/lib/cocoon/ structure valid
-❌ storage permissions: /var/lib/cocoon/vms not writable
-   Fix: sudo chown -R $USER:$USER /var/lib/cocoon
-❌ qemu-img tool: Not found
-   Fix: sudo apt install qemu-utils (Ubuntu/Debian)
-        sudo dnf install qemu-img (Fedora)
+```
+$ cocoon doctor --fix
+=== Dependency Checks ===
+CHECK              STATUS  DETAIL
+cloud-hypervisor   pass    /usr/bin/cloud-hypervisor
+pvh-firmware       pass    /var/lib/cocoon/firmware/hypervisor-fw
+...
 
-❌ Some checks failed - see errors above
-Run 'cocoon doctor --fix' to attempt automatic fixes
+All dependency checks passed.
 
-Exit code: 1
+=== VM Reconciliation ===
+VM ID             TYPE            SEVERITY  DETAILS
+vm-01HXYZ5A3B...  stale_running   warning   CH process not found, marked STOPPED
+vm-01HABC9D8E...  name_index      info      rebuilt name index entry
+
+Attempted to fix 2 issue(s).
 ```
 
 ---
@@ -1198,39 +1248,66 @@ Exit code: 1
 **Implementation**: Based on [Boot Contract § 1.1](./01-boot-contract.md#11-primary-boot-mode-pvh--hypervisor-fw)
 
 ```go
-func FirmwareCommand() *cli.Command {
+func firmwareCommand() *cli.Command {
     return &cli.Command{
         Name:  "firmware",
-        Usage: "Manage hypervisor firmware",
+        Usage: "Manage firmware files",
         Subcommands: []*cli.Command{
             {
-                Name:  "list",
-                Usage: "List installed firmware files",
+                Name:    "list",
+                Aliases: []string{"ls"},
+                Usage:   "List installed firmware files with paths and sizes",
+                Flags: []cli.Flag{
+                    &cli.StringFlag{
+                        Name:  "format",
+                        Value: "table",
+                        Usage: "output format (table, json)",
+                    },
+                },
                 Action: firmwareListAction,
             },
             {
-                Name:   "install",
-                Usage:  "Install or update firmware from URL",
+                Name:  "verify",
+                Usage: "Check firmware files exist and are accessible",
+                Action: firmwareVerifyAction,
+            },
+            {
+                Name:  "install",
+                Usage: "Download and install firmware files",
                 Flags: []cli.Flag{
                     &cli.StringFlag{
                         Name:  "pvh-url",
-                        Usage: "URL to download PVH firmware (hypervisor-fw)",
+                        Usage: "download PVH firmware (hypervisor-fw) from URL",
                     },
                     &cli.StringFlag{
                         Name:  "uefi-url",
-                        Usage: "URL to download UEFI firmware (CLOUDHV.fd)",
+                        Usage: "download UEFI firmware (CLOUDHV.fd) from URL",
                     },
                     &cli.BoolFlag{
                         Name:  "force",
-                        Usage: "Force re-download even if firmware already exists",
+                        Usage: "re-download even if firmware files already exist",
                     },
                 },
                 Action: firmwareInstallAction,
             },
             {
-                Name:   "verify",
-                Usage:  "Verify firmware integrity",
-                Action: firmwareVerifyAction,
+                Name:  "update",
+                Usage: "Update firmware files (alias for install)",
+                Flags: []cli.Flag{
+                    &cli.StringFlag{
+                        Name:  "pvh-url",
+                        Usage: "download PVH firmware (hypervisor-fw) from URL",
+                    },
+                    &cli.StringFlag{
+                        Name:  "uefi-url",
+                        Usage: "download UEFI firmware (CLOUDHV.fd) from URL",
+                    },
+                    &cli.BoolFlag{
+                        Name:  "force",
+                        Usage: "re-download even if firmware files already exist",
+                    },
+                },
+                Action: firmwareInstallAction,
             },
         },
     }
@@ -1241,15 +1318,13 @@ func FirmwareCommand() *cli.Command {
 
 #### 4.14.1 cocoon firmware list
 
-List all installed firmware files with versions and checksums.
+List all installed firmware files with paths and sizes.
 
-```bash
+```
 $ cocoon firmware list
-FIRMWARE TYPE   VERSION   PATH                                            SIZE    CHECKSUM
-pvh             0.5.0     /var/lib/cocoon/firmware/hypervisor-fw         89.2KB  3d7ae8c1...
-pvh (backup)    0.4.2     /var/lib/cocoon/firmware/hypervisor-fw-0.4.2   88.9KB  f1c3d8a2...
-uefi (x86_64)   v50.0     /var/lib/cocoon/firmware/CLOUDHV.fd             2.1MB   a8b2c4d6...
-uefi (fallback)  -         /usr/share/OVMF/OVMF_CODE.fd                   1.9MB   (system, deprecated)
+NAME             TYPE  PATH                                       SIZE     EXISTS
+hypervisor-fw    PVH   /var/lib/cocoon/firmware/hypervisor-fw     89.2KB   true
+CLOUDHV.fd       UEFI  /var/lib/cocoon/firmware/CLOUDHV.fd        2.1MB    true
 ```
 
 #### 4.14.2 cocoon firmware install
@@ -1526,7 +1601,7 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
 11. **Delete resources**:
     - Move overlay to trash: `mv overlay.qcow2 /var/lib/cocoon/trash/`
     - Delete serial log: `rm /var/log/cocoon/{vm_id}-serial.log`
-    - Stop metadata server for this VM
+    - [Phase 2] Stop metadata server for this VM (not yet implemented)
     - Delete API socket: `rm /run/cocoon/vms/{vm_id}/api.sock`
     - Delete VM directory: `rm -rf /var/lib/cocoon/vms/{vm_id}/`
 12. **Trigger GC** (optional) → If base image unreferenced, mark for collection
@@ -1654,8 +1729,8 @@ This CLI design implements the Boot Contract specification:
 | Boot Contract Section | CLI Implementation |
 |----------------------|-------------------|
 | §1 Boot Path Decision | `--boot-strategy` flag (default: pvh_then_uefi), config-level firmware paths, automatic UEFI fallback |
-| §2 Guest Init Model | Metadata server startup in `cocoon run` |
-| §3 I/O Mechanisms | Serial console via `--serial-log`, `cocoon logs` command |
+| §2 Guest Init Model | [Phase 2] Metadata server for cloud-init (not yet implemented) |
+| §3 I/O Mechanisms | Serial console via `--serial file=...` (CH flag), `cocoon logs` command |
 | §4 Lifecycle Semantics | `run`, `stop`, `delete`, `kill` commands |
 | §5 VM Configuration Schema | `types.VMConfig` in Go code |
 | §6 OCI to Bootable Bridge | `ImageManager.VerifyBootable()` and conversion logic |
