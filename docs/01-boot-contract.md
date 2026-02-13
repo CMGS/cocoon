@@ -549,6 +549,8 @@ ls -la /sbin/init  # Should be symlink to systemd
 
 ### 2.2 VM Initialization: cloud-init via Metadata Server
 
+> **Note**: The metadata server (169.254.169.254) is a Phase 2 feature and is not yet implemented in the current codebase. Phase 1 relies on pre-baked cloud-init configuration in the image or NoCloud seed files.
+
 **Purpose**: cloud-init is used for **VM initialization only** - setting up users, SSH keys, hostname, and network configuration. It is NOT used for task orchestration or command execution.
 
 **Architecture**:
@@ -616,7 +618,7 @@ GET http://169.254.169.254/user-data
 
 **Implementation Strategy**:
 
-**Phase 1: Stub Metadata Server (MVP)**
+**Phase 1: Stub Metadata Server (MVP)** — **[Not Yet Implemented]**
 - Lightweight HTTP server listening on 169.254.169.254:80
 - Per-VM metadata isolation (keyed by VM IP or request context)
 - EC2-compatible endpoints:
@@ -641,8 +643,10 @@ GET http://169.254.169.254/user-data
 
 ### 2.3 VM Boot Sequence
 
+> **Note**: Steps 1, 2, and 4 below describe the Phase 2 metadata server flow. In Phase 1, cloud-init is configured via pre-baked NoCloud seed files or image-embedded configuration.
+
 ```
-1. Cocoon starts metadata server
+1. Cocoon starts metadata server [Phase 2]
    └─ Listens on 169.254.169.254:80
 
 2. Cocoon launches VM with modified cmdline
@@ -1082,8 +1086,8 @@ type VMConfig struct {
     SerialLog   string `json:"serial_log"`    // /var/log/cocoon/vm-{id}-serial.log
     PIDFile     string `json:"pid_file"`      // /run/cocoon/vms/{vm-id}/ch.pid
 
-    // Initialization
-    MetadataServer string `json:"metadata_server"` // http://169.254.169.254
+    // Initialization [Phase 2]
+    MetadataServer string `json:"metadata_server"` // http://169.254.169.254 (Phase 2 — not yet implemented)
 
     // Timeouts
     BootTimeout time.Duration `json:"boot_timeout"` // Default: 60s
@@ -1272,7 +1276,7 @@ virt-customize -a image.qcow2 \
   - [ ] Launch CH with `--kernel /var/lib/cocoon/firmware/CLOUDHV.fd` (CH does NOT auto-detect firmware)
   - [ ] Automatic fallback on PVH failure
 
-- [ ] **Metadata Server (Stub Implementation)**:
+- [ ] **Metadata Server (Stub Implementation)** — **[Not Yet Implemented — Phase 2]**:
   - [ ] Implement lightweight HTTP server listening on 169.254.169.254:80
   - [ ] EC2-compatible endpoints:
     - [ ] `/meta-data/instance-id` → return VM ID

@@ -171,7 +171,7 @@ cloud-hypervisor \
     --disk path=/var/lib/cocoon/vms/vm-123/overlay.qcow2 \
     --cpus boot=2 \
     --memory size=2G \
-    --serial file=/var/log/cocoon/vm-123.log \
+    --serial file=/var/log/cocoon/vm-123-serial.log \
     --console off
 ```
 
@@ -227,7 +227,7 @@ cloud-hypervisor \
     --disk path=/var/lib/cocoon/vms/vm-123/overlay.qcow2 \
     --cpus boot=2 \
     --memory size=2G \
-    --serial file=/var/log/cocoon/vm-123.log \
+    --serial file=/var/log/cocoon/vm-123-serial.log \
     --console off
 ```
 

@@ -273,7 +273,7 @@ CREATING -----> CREATED -----> STARTING -----> RUNNING -----> STOPPING -----> ST
 
 #### 1.4.3 Name Index
 
-- **File**: `/var/lib/cocoon/name-index.json`
+- **File**: `/var/lib/cocoon/db/name-index.json`
 - **Format**:
   ```json
   {
@@ -281,7 +281,7 @@ CREATING -----> CREATED -----> STARTING -----> RUNNING -----> STOPPING -----> ST
     "devbox": "vm-01HABC9D8E7F6G5H4J3K2L1M0N"
   }
   ```
-- Protected by `/var/lib/cocoon/name-index.lock` (flock, Level 2 — see [06-concurrency.md § Lock Hierarchy](./06-concurrency.md#lock-hierarchy) and [05-storage-management.md § Canonical Layout](./05-storage-management.md#canonical-filesystem-layout-normative)).
+- Protected by `/var/lib/cocoon/db/name-index.lock` (flock, Level 2 — see [06-concurrency.md § Lock Hierarchy](./06-concurrency.md#lock-hierarchy) and [05-storage-management.md § Canonical Layout](./05-storage-management.md#canonical-filesystem-layout-normative)).
 - **Rebuilt from config.json files during reconcile** — the name index is a derived cache, not the source of truth.
 
 #### 1.4.4 CLI Resolution
@@ -981,7 +981,8 @@ Section 4 defines the `VMMetadata` struct as a **merged view** — it represents
 
 ```
 /var/lib/cocoon/
-├── name-index.json            # Global name → vm_id mapping (see Section 1.4.3)
+├── db/
+│   └── name-index.json        # Global name → vm_id mapping (see Section 1.4.3)
 └── vms/{vm-id}/
     ├── config.json            # Immutable VM configuration (see Section 5.1)
     ├── metadata.json          # Mutable runtime state (see Section 5.2)

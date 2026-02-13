@@ -98,9 +98,8 @@ See [04-oci-conversion.md § 10 Verified Images](./04-oci-conversion.md#10-verif
 
 **Resource Units**:
 - CLI accepts human-readable units: `512M`, `1G`, `2G`, `10G`
-- Internal representation: bytes (int64)
-- config.json stores human-readable strings for readability
-- metadata.json stores duration as strings ("2.3s") for readability
+- config.json stores: `memory_mb` as integer (megabytes), `disk_size` as string (`"10G"`), `cpus` as integer
+- metadata.json stores timestamps as RFC 3339 strings, durations as strings
 
 ---
 

@@ -438,7 +438,7 @@ func RunCommand() *cli.Command {
 3. **Wait for Boot**: Poll serial log for boot completion (timeout: config default)
 4. **Print VM ID**: Output the created VM ID
 5. **Background behavior**: VM runs as a background CH process. Serial log is written to disk; use `cocoon logs --follow` to stream.
-6. **Auto-remove** (if `--rm`): The `AutoRemove` flag is recorded in metadata. When the VM is stopped via `cocoon stop`, the delete flow is triggered automatically. Note: if the VM crashes or is killed externally, auto-remove does not fire; use `cocoon doctor --fix` for orphan cleanup.
+6. **Auto-remove** (if `--rm`): The `AutoRemove` flag is recorded in metadata. When the VM is stopped via `cocoon stop`, the delete flow is triggered automatically. Note: if the VM crashes or is killed externally, auto-remove does not fire. Use `cocoon doctor --fix` for state reconciliation; automatic deletion of crashed `auto_remove` VMs is a future enhancement.
 
 **Example Usage**:
 
@@ -1038,10 +1038,9 @@ func GCCommand() *cli.Command {
         Name:  "gc",
         Usage: "Run garbage collection",
         Flags: []cli.Flag{
-            &cli.DurationFlag{
+            &cli.IntFlag{
                 Name:  "grace-period",
-                Usage: "Grace period before deleting unreferenced images",
-                Value: 24 * time.Hour,
+                Usage: "hours before unreferenced images are collected (0 = use config default)",
             },
             &cli.BoolFlag{
                 Name:  "dry-run",
@@ -1062,8 +1061,8 @@ cocoon gc
 # Dry run to see what would be collected
 cocoon gc --dry-run
 
-# Run GC with custom grace period
-cocoon gc --grace-period 12h
+# Run GC with custom grace period (12 hours)
+cocoon gc --grace-period 12
 ```
 
 ### 4.13 cocoon doctor (System Health Check)
@@ -1087,7 +1086,11 @@ func DoctorCommand() *cli.Command {
             },
             &cli.BoolFlag{
                 Name:  "fix",
-                Usage: "Attempt to fix issues (e.g., download missing firmware)",
+                Usage: "Attempt to fix VM state issues via reconciliation",
+            },
+            &cli.BoolFlag{
+                Name:  "force",
+                Usage: "Force re-check even if cached results exist",
             },
         },
         Action: doctorAction,
@@ -1095,73 +1098,38 @@ func DoctorCommand() *cli.Command {
 }
 
 func doctorAction(c *cli.Context) error {
-    verbose := c.Bool("verbose")
-    autoFix := c.Bool("fix")
+    app := initApp(c)
+    fix := c.Bool("fix")
+    force := c.Bool("force")
 
-    checks := []HealthCheck{
-        // Hypervisor checks
-        {Name: "cloud-hypervisor binary", Check: checkCloudHypervisorBinary},
-        {Name: "cloud-hypervisor version", Check: checkCloudHypervisorVersion},
+    // Phase 1: Dependency checks (binary existence, firmware, directories).
+    checks := runDependencyChecks(app)  // exec.LookPath + os.Stat
 
-        // Firmware checks
-        {Name: "PVH firmware (hypervisor-fw)", Check: checkPVHFirmware, AutoFix: downloadPVHFirmware},
-        {Name: "UEFI firmware (OVMF)", Check: checkUEFIFirmware, Optional: true},
+    // Phase 2: VM reconciliation (state consistency, orphan cleanup).
+    issues := app.vmMgr.Reconcile(ctx, fix, force)
 
-        // Storage paths and permissions
-        {Name: "storage paths", Check: checkStoragePaths, AutoFix: createStoragePaths},
-        {Name: "storage permissions", Check: checkStoragePermissions},
-
-        // System dependencies
-        {Name: "qemu-img tool", Check: checkQemuImg},
-        {Name: "guestfish tool", Check: checkGuestfish, Optional: true},
-
-        // Runtime paths
-        {Name: "/run/cocoon directory", Check: checkRuntimeDir, AutoFix: createRuntimeDir},
-        {Name: "/var/log/cocoon directory", Check: checkLogDir, AutoFix: createLogDir},
-    }
-
-    allPassed := true
-    for _, check := range checks {
-        result := check.Check()
-        if !result.Passed {
-            if check.Optional {
-                fmt.Printf("⚠️  %s: %s (optional)\n", check.Name, result.Message)
-            } else {
-                fmt.Printf("❌ %s: %s\n", check.Name, result.Message)
-                allPassed = false
-
-                if autoFix && check.AutoFix != nil {
-                    fmt.Printf("   Attempting to fix...\n")
-                    if err := check.AutoFix(); err == nil {
-                        fmt.Printf("   ✅ Fixed\n")
-                    } else {
-                        fmt.Printf("   ❌ Fix failed: %v\n", err)
-                    }
-                }
-            }
-        } else if verbose {
-            fmt.Printf("✅ %s: %s\n", check.Name, result.Message)
-        }
-    }
-
-    if allPassed {
-        fmt.Println("\n✅ All checks passed - Cocoon is ready to use")
-        return nil
-    }
-
-    fmt.Println("\n❌ Some checks failed - see errors above")
-    fmt.Println("Run 'cocoon doctor --fix' to attempt automatic fixes")
-    return fmt.Errorf("health check failed")
+    // Print results.
+    // --fix attempts VM state repairs (not dependency installation).
 }
 ```
 
-**Check Categories**:
+**Dependency Checks** (informational, --fix does not install missing tools):
+- cloud-hypervisor binary
+- ch-remote binary
+- PVH firmware file
+- UEFI firmware file
+- qemu-img binary
+- buildah binary
+- skopeo binary
+- guestfish binary
+- /dev/kvm device
+- Directory structure (root, runtime, log, db, vm, cache, buildah, firmware)
 
-1. **Hypervisor**: Cloud Hypervisor binary and version compatibility
-2. **Firmware**: PVH firmware (required), UEFI firmware (optional)
-3. **Storage**: Directory structure and permissions
-4. **Dependencies**: qemu-img (required), guestfish (optional)
-5. **Runtime**: Socket and log directories
+**VM Reconciliation** (--fix repairs these):
+- Stale RUNNING state (CH process not found → mark STOPPED)
+- Missing runtime directories → recreate
+- Name index inconsistencies → rebuild from config.json files
+- Orphaned VM directories → report (manual cleanup required)
 
 **Exit Codes**:
 - `0`: All required checks passed
@@ -1260,16 +1228,9 @@ func FirmwareCommand() *cli.Command {
                 Action: firmwareInstallAction,
             },
             {
-                Name:      "verify",
-                Usage:     "Verify firmware integrity",
-                ArgsUsage: "[TYPE]",
+                Name:   "verify",
+                Usage:  "Verify firmware integrity",
                 Action: firmwareVerifyAction,
-            },
-            {
-                Name:      "remove",
-                Usage:     "Remove firmware file",
-                ArgsUsage: "TYPE",
-                Action: firmwareRemoveAction,
             },
         },
     }
@@ -1339,11 +1300,8 @@ Firmware installation complete. Run 'cocoon doctor' to verify.
 Verify firmware file integrity using SHA256 checksums.
 
 ```bash
-# Verify all firmware
+# Verify all firmware files
 cocoon firmware verify
-
-# Verify specific firmware type
-cocoon firmware verify pvh
 ```
 
 **Example Output**:
@@ -1356,18 +1314,6 @@ Verifying UEFI firmware...
 ⚠️  OVMF: No checksum file (system-managed firmware)
 
 All firmware files verified successfully.
-```
-
-#### 4.14.4 cocoon firmware remove
-
-Remove firmware files (with backup preservation).
-
-```bash
-# Remove specific firmware
-cocoon firmware remove pvh
-
-# Remove with confirmation prompt
-cocoon firmware remove pvh --confirm
 ```
 
 **Firmware Types**:
@@ -1407,9 +1353,6 @@ cocoon firmware verify
 
 # Force re-download
 cocoon firmware install --pvh-url https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw --force
-
-# Remove firmware
-cocoon firmware remove pvh
 ```
 
 ---
@@ -1499,7 +1442,7 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
    - **Release references.lock**
    - This "pin" ensures the base image survives even if GC runs during the subsequent (slow) steps. On failure in later steps, the cleanup path removes this reference.
 7. **Create COW overlay** → `StorageManager.CreateOverlay(baseKey, vmID)`
-8. **Start metadata server** → Start HTTP server on 169.254.169.254 for cloud-init (Boot Contract §2.2)
+8. **[Phase 2] Metadata server** → HTTP server on 169.254.169.254 for cloud-init is not yet implemented. Phase 1 relies on NoCloud seed files or pre-baked cloud-init config in the image.
 9. **Configure VM**:
    ```go
    config := &types.VMConfig{
@@ -1547,7 +1490,7 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
 12. **Save VM metadata** → Write `config.json` (immutable) and `metadata.json` (mutable) to VM directory (acquires per-VM `metadata.lock`, Level 4)
 13. **Acquire name-index.lock** (Level 2) → Add `name → vm_id` to `name-index.json`, release lock
 14. **Print VM ID** → Output `vm_id` to stdout for scripting
-15. **Auto-remove bookkeeping** → If `--rm`, set `AutoRemove=true` in metadata; delete is triggered when the VM is later stopped via `cocoon stop` (crash/external-kill cleanup deferred to `cocoon doctor --fix`)
+15. **Auto-remove bookkeeping** → If `--rm`, set `AutoRemove=true` in metadata; delete is triggered when the VM is later stopped via `cocoon stop` (crash/external-kill: `cocoon doctor --fix` performs state reconciliation; automatic deletion of crashed `auto_remove` VMs is a future enhancement)
 
 **Failure cleanup**: If any step after 6 fails, the cleanup path must:
 - **Acquire references.lock** (Level 2)

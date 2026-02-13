@@ -29,9 +29,9 @@ Level 4: VM Metadata Lock (per-VM)
 ```
 
 **Lock File Locations**:
-- GC Lock: `/var/lib/cocoon/gc.lock`
-- Reference Counter Lock: `/var/lib/cocoon/references.lock`
-- Name Index Lock: `/var/lib/cocoon/name-index.lock`
+- GC Lock: `/var/lib/cocoon/db/gc.lock`
+- Reference Counter Lock: `/var/lib/cocoon/db/references.lock`
+- Name Index Lock: `/var/lib/cocoon/db/name-index.lock`
 - Image Conversion Lock: `/var/lib/cocoon/cache/locks/{checksum}_{arch}.lock`
 - VM Metadata Lock: `/var/lib/cocoon/vms/{vm-id}/metadata.lock`
 
@@ -287,8 +287,8 @@ type ReferenceCounter struct {
 func NewReferenceCounter(storageDir string) *ReferenceCounter {
     return &ReferenceCounter{
         storageDir: storageDir,
-        lockFile:   filepath.Join(storageDir, "references.lock"),
-        dataFile:   filepath.Join(storageDir, "references.json"),
+        lockFile:   filepath.Join(storageDir, "db", "references.lock"),
+        dataFile:   filepath.Join(storageDir, "db", "references.json"),
     }
 }
 
@@ -525,7 +525,7 @@ parallel -j 50 cocoon create myorg/ubuntu-bootable:22.04 --name vm-{} ::: {001..
 **Verification**:
 ```bash
 # Check references
-$ cat /var/lib/cocoon/references.json
+$ cat /var/lib/cocoon/db/references.json
 {
   "abc123def456a7b8_amd64": {
     "path": "/var/lib/cocoon/cache/images/abc123def456a7b8_amd64.qcow2",
@@ -1251,9 +1251,9 @@ func lockWithTimeout(mu *sync.Mutex, timeout time.Duration) error {
 
 | Lock Purpose | File Path | Lock Level |
 |--------------|-----------|------------|
-| GC operations | `/var/lib/cocoon/gc.lock` | Level 1 (highest) |
-| Reference counter | `/var/lib/cocoon/references.lock` | Level 2 |
-| Name index | `/var/lib/cocoon/name-index.lock` | Level 2 (never held with references.lock) |
+| GC operations | `/var/lib/cocoon/db/gc.lock` | Level 1 (highest) |
+| Reference counter | `/var/lib/cocoon/db/references.lock` | Level 2 |
+| Name index | `/var/lib/cocoon/db/name-index.lock` | Level 2 (never held with references.lock) |
 | Image conversion | `/var/lib/cocoon/cache/locks/{checksum}_{arch}.lock` | Level 3 |
 | VM metadata | `/var/lib/cocoon/vms/{vm-id}/metadata.lock` | Level 4 (lowest) |
 
@@ -1285,7 +1285,7 @@ parallel -j 20 cocoon create myorg/ubuntu-bootable:22.04 --name vm-{} ::: {001..
 ls -lh /var/lib/cocoon/cache/images/
 
 # Verify all references recorded
-cat /var/lib/cocoon/references.json | jq 'keys | length'
+cat /var/lib/cocoon/db/references.json | jq 'keys | length'
 
 # Crash test: Kill process mid-create
 cocoon create myorg/ubuntu-bootable:22.04 --name vm-test &
