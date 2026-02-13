@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"runtime"
 
 	cli "github.com/urfave/cli/v2"
 
@@ -28,7 +30,12 @@ type appContext struct {
 }
 
 // initApp creates and initializes all managers from CLI context.
+// On Linux, it requires root (euid 0) because Phase 1 operates in rootful mode.
 func initApp(_ *cli.Context) (*appContext, error) {
+	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+		return nil, fmt.Errorf("cocoon requires root privileges (Phase 1 rootful mode). Run with sudo or as root")
+	}
+
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)

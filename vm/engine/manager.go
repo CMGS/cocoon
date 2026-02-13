@@ -91,11 +91,22 @@ func (m *manager) ResolveVMRef(ref string) (string, error) {
 	return vmID, nil
 }
 
-// validateVMID ensures a vm_id contains no path traversal characters.
-// Valid vm_ids match: vm-{ULID} where ULID is 26 uppercase alphanumeric chars.
+// validateVMID verifies that a vm_id matches the canonical format vm-{ULID}.
+// ULID is exactly 26 characters from the Crockford Base32 alphabet.
 func validateVMID(id string) error {
-	if strings.Contains(id, "/") || strings.Contains(id, "\\") || strings.Contains(id, "..") {
-		return fmt.Errorf("invalid vm_id: contains path traversal characters")
+	const ulidLen = 26
+	if !strings.HasPrefix(id, "vm-") {
+		return fmt.Errorf("invalid vm_id: must start with vm-")
+	}
+	ulidPart := id[3:]
+	if len(ulidPart) != ulidLen {
+		return fmt.Errorf("invalid vm_id: ULID part must be %d characters, got %d", ulidLen, len(ulidPart))
+	}
+	// Validate against ULID's Crockford Base32 character set (0-9, A-Z).
+	// oklog/ulid encodes using uppercase; we accept both cases.
+	_, err := ulid.ParseStrict(ulidPart)
+	if err != nil {
+		return fmt.Errorf("invalid vm_id: %w", err)
 	}
 	return nil
 }

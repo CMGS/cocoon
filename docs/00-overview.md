@@ -266,7 +266,7 @@ VM overlays:    vm-001-overlay.qcow2 (200KB, writable)
 5. **Space Optimization**: qcow2 COW allows hundreds of VMs from single base image
 6. **Automatic Cleanup**: Garbage collection removes unused base images and orphaned overlays
 7. **Firmware Automation**: Download, configure, and manage PVH/UEFI firmware automatically
-8. **Production Architecture**: Follow proven patterns from core project (interfaces, factories, YAML config)
+8. **Production Architecture**: Follow proven patterns from core project (interfaces, factories, JSON config)
 9. **Intuitive CLI**: Docker-like commands (run, create, start, stop, delete, doctor, firmware)
 
 ### Non-Goals (Phase 1)
@@ -313,7 +313,7 @@ Cocoon is a general-purpose lightweight VM manager. Common use cases include:
 - **Storage**: qcow2 via qemu-img and libguestfs
 - **Firmware**: OVMF (UEFI) or rust-hypervisor-firmware (PVH)
 - **CLI Framework**: urfave/cli/v2
-- **Configuration**: YAML with sensible defaults
+- **Configuration**: JSON with sensible defaults
 
 ## Deployment Strategy
 

@@ -92,7 +92,7 @@ Using pre-built binaries is the fastest and most reliable installation method.
 
 ```bash
 # Set desired version (check https://github.com/cloud-hypervisor/cloud-hypervisor/releases)
-CH_VERSION="v38.0"
+CH_VERSION="v50.0"
 
 # Download for x86_64
 curl -LO https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/${CH_VERSION}/cloud-hypervisor-static
@@ -151,7 +151,7 @@ Cloud Hypervisor requires firmware to boot virtual machines. Cocoon supports two
 sudo mkdir -p /var/lib/cocoon/firmware
 
 # Download rust-hypervisor-firmware (x86_64)
-curl -L https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.4.2/hypervisor-fw \
+curl -L https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw \
     -o /tmp/hypervisor-fw
 
 # Install
@@ -199,7 +199,7 @@ cloud-hypervisor \
 cocoon firmware install uefi
 
 # Or manually download from CH releases:
-CH_VERSION="v38.0"
+CH_VERSION="v50.0"
 curl -L https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/${CH_VERSION}/CLOUDHV.fd \
     -o /tmp/CLOUDHV.fd
 sudo mv /tmp/CLOUDHV.fd /var/lib/cocoon/firmware/CLOUDHV.fd
@@ -262,7 +262,7 @@ cloud-hypervisor \
 ls -lh /var/lib/cocoon/firmware/
 
 # Download latest release
-LATEST_VERSION="0.4.2"  # Check GitHub for latest
+LATEST_VERSION="0.5.0"  # Check GitHub for latest
 curl -L https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/${LATEST_VERSION}/hypervisor-fw \
     -o /tmp/hypervisor-fw-${LATEST_VERSION}
 
@@ -323,7 +323,7 @@ Recommended directory structure for Cocoon deployment:
     └── vm-def-456/
 
 /etc/cocoon/                       # Configuration (optional)
-└── config.yaml                    # Global Cocoon config
+└── config.json                    # Global Cocoon config
 ```
 
 **Setup commands:**
@@ -356,7 +356,7 @@ sudo chmod -R 755 /run/cocoon
 
 ```bash
 cloud-hypervisor --version
-# Expected output: cloud-hypervisor v38.0
+# Expected output: cloud-hypervisor v50.0
 ```
 
 **2. Check KVM access:**
@@ -527,7 +527,7 @@ Error: Failed to load firmware
 ls -l /var/lib/cocoon/firmware/hypervisor-fw
 
 # If missing, download it
-curl -L https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.4.2/hypervisor-fw \
+curl -L https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw \
     -o /tmp/hypervisor-fw
 sudo mv /tmp/hypervisor-fw /var/lib/cocoon/firmware/
 sudo chmod +x /var/lib/cocoon/firmware/hypervisor-fw

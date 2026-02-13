@@ -344,8 +344,8 @@ func main() {
     app.Flags = []cli.Flag{
         &cli.StringFlag{
             Name:        "config",
-            Value:       "/etc/cocoon/config.yaml",
-            Usage:       "config file path for cocoon, in yaml",
+            Value:       "/etc/cocoon/config.json",
+            Usage:       "config file path for cocoon",
             Destination: &configPath,
             EnvVars:     []string{"COCOON_CONFIG_PATH"},
         },
@@ -571,18 +571,12 @@ Error: VM name 'myvm' already exists (used by vm-01HXYZ5A3B7C8D9E0F1G2H3J4K)
 func StartCommand() *cli.Command {
     return &cli.Command{
         Name:      "start",
-        Usage:     "Start a VM",
+        Usage:     "Start a stopped VM",
         ArgsUsage: "<vm-ref>",
         Flags: []cli.Flag{
-            &cli.DurationFlag{
+            &cli.IntFlag{
                 Name:  "boot-timeout",
-                Usage: "Boot timeout",
-                Value: 60 * time.Second,
-            },
-            &cli.BoolFlag{
-                Name:    "attach",
-                Aliases: []string{"a"},
-                Usage:   "Attach to VM console",
+                Usage: "seconds to wait for VM to boot (0 = use config default)",
             },
         },
         Action: startAction,
@@ -593,11 +587,11 @@ func StartCommand() *cli.Command {
 **Example Usage**:
 
 ```bash
-# Start VM and attach to console
-cocoon start myvm --attach
+# Start VM
+cocoon start myvm
 
-# Start with custom boot timeout
-cocoon start myvm --boot-timeout 120s
+# Start with custom boot timeout (seconds)
+cocoon start myvm --boot-timeout 120
 ```
 
 ### 4.5 cocoon stop (Graceful Shutdown)
@@ -620,10 +614,6 @@ func StopCommand() *cli.Command {
                 Usage: "Graceful shutdown timeout",
                 Value: 30 * time.Second,
             },
-            &cli.BoolFlag{
-                Name:  "force",
-                Usage: "Force stop VM (SIGKILL)",
-            },
         },
         Action: stopAction,
     }
@@ -634,21 +624,23 @@ func StopCommand() *cli.Command {
 
 1. **Check VM State**: Verify VM is running
 2. **Send ACPI Shutdown**: Trigger graceful shutdown via Cloud Hypervisor API
-3. **Wait for Graceful Shutdown**: Wait up to `--timeout` seconds
+3. **Wait for Graceful Shutdown**: Wait up to `--timeout` duration
 4. **Force Kill on Timeout**: If timeout reached, send SIGKILL
 5. **Verify Shutdown**: Confirm Cloud Hypervisor process exited
+
+For immediate force termination (SIGKILL without waiting), use `cocoon kill` instead.
 
 **Example Usage**:
 
 ```bash
-# Graceful stop with 30s timeout
+# Graceful stop with 30s timeout (default)
 cocoon stop myvm
-
-# Force stop immediately
-cocoon stop myvm --force
 
 # Custom timeout
 cocoon stop myvm --timeout 60s
+
+# Immediate force kill (no graceful period) — use kill command
+cocoon kill myvm
 ```
 
 ### 4.6 cocoon delete (Remove VM)
@@ -672,11 +664,6 @@ func DeleteCommand() *cli.Command {
                 Aliases: []string{"f"},
                 Usage:   "Force delete even if VM is running",
             },
-            &cli.BoolFlag{
-                Name:  "volumes",
-                Usage: "Remove associated volumes",
-                Value: true,
-            },
         },
         Action: deleteAction,
     }
@@ -688,8 +675,10 @@ func DeleteCommand() *cli.Command {
 1. **Check VM State**: If running and no `--force`, error
 2. **Stop VM** (if `--force`): Call stop with 10s timeout
 3. **Remove References**: Update reference counter ([05-storage-management.md](./05-storage-management.md))
-4. **Delete Resources**: Remove overlay, serial log, config files
-5. **Mark as Deleted**: Update VM state
+4. **Delete Resources**: Remove overlay, serial log, config files, VM directory
+5. **Remove from Name Index**: Remove `name → vm_id` mapping
+
+Delete always removes all VM resources (overlay, config, metadata, serial log). There is no separate "volumes" concept in Phase 1 — each VM has exactly one overlay disk that is always cleaned up.
 
 **Example Usage**:
 
@@ -699,9 +688,6 @@ cocoon delete myvm
 
 # Force delete running VM
 cocoon delete myvm --force
-
-# Delete but keep volumes
-cocoon delete myvm --volumes=false
 ```
 
 ### 4.7 cocoon kill (Force Terminate)
@@ -1442,165 +1428,64 @@ cocoon firmware remove pvh --version 0.4.1
 
 ## 5. Configuration
 
-Following core's YAML-based configuration pattern:
+Cocoon uses JSON configuration with sensible defaults. See `config/config.go` for the canonical struct definition.
 
 ### 5.1 Configuration Structure
 
+The actual configuration struct is `config.CocoonConfig` (flat structure):
+
 ```go
-package types
+package config
 
-import (
-    "time"
-)
+// CocoonConfig holds global Cocoon configuration.
+type CocoonConfig struct {
+    RootDir    string `json:"root_dir"`     // Persistent data directory
+    RuntimeDir string `json:"runtime_dir"`  // Runtime directory (tmpfs)
+    LogDir     string `json:"log_dir"`      // Log directory
 
-// Config holds cocoon configuration
-type Config struct {
-    // Storage configuration
-    Storage StorageConfig `yaml:"storage" required:"true"`
+    CHBinary         string `json:"ch_binary"`           // Cloud Hypervisor binary path
+    PVHFirmwarePath  string `json:"pvh_firmware_path"`   // PVH firmware path
+    UEFIFirmwarePath string `json:"uefi_firmware_path"`  // UEFI firmware path
+    BuildahRoot      string `json:"buildah_root"`        // Buildah storage root
 
-    // Hypervisor configuration
-    Hypervisor HypervisorConfig `yaml:"hypervisor" required:"true"`
+    DefaultCPUs     int    `json:"default_cpus"`      // Default vCPUs per VM
+    DefaultMemoryMB int64  `json:"default_memory_mb"` // Default memory in MB
+    DefaultDiskSize string `json:"default_disk_size"`  // Default overlay disk size
 
-    // Image configuration
-    Image ImageConfig `yaml:"image" required:"true"`
+    GCGracePeriodHours int `json:"gc_grace_period_hours"`  // GC grace period
+    GCTrashRetentDays  int `json:"gc_trash_retention_days"` // Trash retention
 
-    // Boot configuration
-    Boot BootConfig `yaml:"boot"`
+    BootTimeoutSeconds int `json:"boot_timeout_seconds"` // Boot timeout (seconds)
+    StopTimeoutSeconds int `json:"stop_timeout_seconds"` // Stop timeout (seconds)
 
-    // Global timeouts
-    GlobalTimeout     time.Duration `yaml:"global_timeout" default:"300s"`
-    ConnectionTimeout time.Duration `yaml:"connection_timeout" default:"10s"`
-
-    // Logging
-    Log LogConfig `yaml:"log"`
-}
-
-// StorageConfig defines storage settings
-type StorageConfig struct {
-    // Root directory for VM storage
-    Root string `yaml:"root" default:"/var/lib/cocoon"`
-
-    // Images directory (base qcow2 cache)
-    ImagesDir string `yaml:"images_dir" default:"/var/lib/cocoon/cache/images"`
-
-    // Volumes directory (VM overlays)
-    VolumesDir string `yaml:"volumes_dir" default:"/var/lib/cocoon/vms"`
-
-    // Temp directory
-    TempDir string `yaml:"temp_dir" default:"/var/lib/cocoon/temp"`
-
-    // Trash directory (soft delete)
-    TrashDir string `yaml:"trash_dir" default:"/var/lib/cocoon/trash"`
-
-    // Default volume size
-    DefaultVolumeSize string `yaml:"default_volume_size" default:"10G"`
-}
-
-// HypervisorConfig defines hypervisor settings
-type HypervisorConfig struct {
-    // Type of hypervisor (cloud-hypervisor, firecracker, qemu)
-    Type string `yaml:"type" default:"cloud-hypervisor"`
-
-    // Binary path (for process-based hypervisors)
-    BinaryPath string `yaml:"binary_path" default:"/usr/local/bin/cloud-hypervisor"`
-
-    // Socket path for communication
-    SocketPath string `yaml:"socket_path" default:"/run/cocoon"`
-
-    // Default CPU count
-    DefaultCPUs int `yaml:"default_cpus" default:"2"`
-
-    // Default memory size
-    DefaultMemory string `yaml:"default_memory" default:"2G"`
-}
-
-// ImageConfig defines image management settings
-type ImageConfig struct {
-    // Registry credentials
-    Registries map[string]RegistryConfig `yaml:"registries"`
-
-    // Image cache directory
-    CacheDir string `yaml:"cache_dir" default:"/var/lib/cocoon/cache"`
-
-    // Buildah storage root
-    BuildahRoot string `yaml:"buildah_root" default:"/var/lib/cocoon/cache/buildah"`
-}
-
-// RegistryConfig defines registry credentials
-type RegistryConfig struct {
-    Username string `yaml:"username"`
-    Password string `yaml:"password"`
-    Insecure bool   `yaml:"insecure"`
-}
-
-// BootConfig defines boot configuration
-type BootConfig struct {
-    // Default boot mode (pvh or uefi)
-    DefaultMode string `yaml:"default_mode" default:"pvh"`
-
-    // PVH firmware path
-    PVHFirmware string `yaml:"pvh_firmware" default:"/var/lib/cocoon/firmware/hypervisor-fw"`
-
-    // UEFI firmware path (CLOUDHV.fd managed by cocoon firmware install)
-    UEFIFirmware string `yaml:"uefi_firmware" default:"/var/lib/cocoon/firmware/CLOUDHV.fd"`
-
-    // Boot timeout
-    BootTimeout time.Duration `yaml:"boot_timeout" default:"60s"`
-}
-
-// LogConfig defines logging configuration
-type LogConfig struct {
-    Level   string `yaml:"level" default:"info"`
-    UseJSON bool   `yaml:"use_json"`
-    File    string `yaml:"file"`
+    BootSuccessPatterns []string `json:"boot_success_patterns,omitempty"` // Boot success regex
+    BootFailurePatterns []string `json:"boot_failure_patterns,omitempty"` // Boot failure regex
 }
 ```
 
 ### 5.2 Example Configuration File
 
-```yaml
-# /etc/cocoon/config.yaml
-
-storage:
-  root: /var/lib/cocoon
-  images_dir: /var/lib/cocoon/cache/images
-  volumes_dir: /var/lib/cocoon/vms
-  temp_dir: /var/lib/cocoon/temp
-  trash_dir: /var/lib/cocoon/trash
-  default_volume_size: 20G
-
-hypervisor:
-  type: cloud-hypervisor
-  binary_path: /usr/local/bin/cloud-hypervisor
-  socket_path: /run/cocoon
-  default_cpus: 2
-  default_memory: 2G
-
-image:
-  cache_dir: /var/lib/cocoon/cache
-  buildah_root: /var/lib/cocoon/cache/buildah
-  registries:
-    docker.io:
-      username: ""
-      password: ""
-    ghcr.io:
-      username: myuser
-      password: mytoken
-
-boot:
-  default_mode: pvh
-  pvh_firmware: /var/lib/cocoon/firmware/hypervisor-fw
-  uefi_firmware: /var/lib/cocoon/firmware/CLOUDHV.fd
-  boot_timeout: 60s
-
-global_timeout: 300s
-connection_timeout: 10s
-
-log:
-  level: info
-  use_json: false
-  file: /var/log/cocoon.log
+```json
+// /etc/cocoon/config.json
+{
+  "root_dir": "/var/lib/cocoon",
+  "runtime_dir": "/run/cocoon",
+  "log_dir": "/var/log/cocoon",
+  "ch_binary": "cloud-hypervisor",
+  "pvh_firmware_path": "/var/lib/cocoon/firmware/hypervisor-fw",
+  "uefi_firmware_path": "/var/lib/cocoon/firmware/CLOUDHV.fd",
+  "buildah_root": "/var/lib/cocoon/buildah",
+  "default_cpus": 2,
+  "default_memory_mb": 2048,
+  "default_disk_size": "10G",
+  "gc_grace_period_hours": 24,
+  "gc_trash_retention_days": 7,
+  "boot_timeout_seconds": 60,
+  "stop_timeout_seconds": 30
+}
 ```
+
+All fields are optional — `config.DefaultConfig()` provides sensible defaults. If the config file is missing, defaults are used.
 
 ---
 
@@ -1609,11 +1494,11 @@ log:
 ### 6.1 VM Creation Flow (`cocoon run`)
 
 1. **Parse CLI flags** → Validate inputs
-2. **Load configuration** → Read YAML config from `/etc/cocoon/config.yaml`
-3. **Initialize managers**:
-   - Create `HypervisorAPI` via factory
-   - Create `ImageManager` with Buildah
-   - Create `StorageManager` for qcow2 operations
+2. **Load configuration** → Read JSON config from `/etc/cocoon/config.json`
+3. **Initialize managers** (via `initApp`, which also verifies root privileges on Linux):
+   - Create `HypervisorClient`
+   - Create `ImageManager` via pipeline
+   - Create `COWManager` for qcow2 operations
    - Create `ReferenceCounter` for tracking
 4. **Resolve and fetch image** → `ImageManager.Resolve(image)` detects source type, then `ImageManager.Pull(image)` fetches/converts/caches to local qcow2 (acquires per-image conversion lock, Level 3 — see `06-concurrency.md § Lock Hierarchy`)
    - **Rootless constraint** *(Phase 2 — Phase 1 requires root)*: In rootless mode without a helper, OCI image conversion and libguestfs-based verification are unavailable (see [08-dependencies.md § Rootless Limitations](./08-dependencies.md)). If the image source is an OCI reference, fail fast with: `"OCI conversion requires root privileges. Use a qcow2 cloud image, pre-convert with a rootful environment, or enable the hybrid helper (08-dependencies.md § Option C)."`
@@ -1743,8 +1628,8 @@ cocoon logs myvm --follow
 # Stop VM gracefully
 cocoon stop myvm
 
-# Force stop
-cocoon stop myvm --force
+# Force kill (immediate SIGKILL, no graceful period)
+cocoon kill myvm
 
 # Delete VM
 cocoon delete myvm
@@ -1846,7 +1731,7 @@ This CLI design implements the Boot Contract specification:
 | COW Strategy | `StorageManager.CreateOverlay()` in VM creation flow |
 | Reference Counting | Automatic in `create` and `delete` flows |
 | Garbage Collection | `cocoon gc` command |
-| Storage Layout | Configured via `storage.*` in YAML config |
+| Storage Layout | Configured via `root_dir` / `runtime_dir` / `log_dir` in JSON config |
 
 ### 8.4 External References
 
@@ -1854,6 +1739,18 @@ This CLI design implements the Boot Contract specification:
 - **cloud-init NoCloud**: https://cloudinit.readthedocs.io/en/latest/topics/datasources/nocloud.html
 - **urfave/cli/v2**: https://cli.urfave.org/v2/
 - **qemu-img**: https://www.qemu.org/docs/master/tools/qemu-img.html
+
+### Reconcile Strategy
+
+**Policy**: Regular CLI commands (`start`, `stop`, `delete`, `list`, `inspect`, etc.) do **not** perform automatic reconciliation. They operate on the recorded state in `metadata.json` and trust that state reflects reality.
+
+**`cocoon doctor`** is the sole entry point for reconciliation:
+- Scans all VM directories for stale state (e.g., metadata says RUNNING but CH process is dead)
+- Cleans up orphaned sockets, PID files, and runtime directories
+- Fixes metadata inconsistencies (transitions stale RUNNING → STOPPED)
+- Rebuilds the name index if needed
+
+**Rationale**: Auto-reconcile on every command adds latency and complexity. Users who suspect state drift run `cocoon doctor` explicitly. This is the same pattern used by containerd and other container runtimes.
 
 ---
 

@@ -24,11 +24,11 @@ func initCommand() *cli.Command {
 			},
 			&cli.StringFlag{
 				Name:  "with-pvh-firmware",
-				Usage: "download PVH firmware from `URL` (e.g. https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.4.2/hypervisor-fw)",
+				Usage: "download PVH firmware from `URL` (e.g. https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw)",
 			},
 			&cli.StringFlag{
 				Name:  "with-uefi-firmware",
-				Usage: "download UEFI firmware from `URL` (e.g. https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v41.0/CLOUDHV.fd)",
+				Usage: "download UEFI firmware from `URL` (e.g. https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v50.0/CLOUDHV.fd)",
 			},
 		},
 		Action: initAction,
