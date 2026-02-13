@@ -1793,7 +1793,7 @@ The following pipeline stages MUST pass for every PR:
 | **PVH boot** | Boot with `hypervisor-fw` | Boot with `hypervisor-fw` |
 | **Boot detection** | Serial log → systemd markers | Serial log → systemd + cloud-init markers |
 | **Lifecycle** | create → start → inspect → stop → delete | create → start → inspect → stop → delete |
-| **Crash recovery** | kill -9 CH → `cocoon doctor --reconcile` | kill -9 CH → `cocoon doctor --reconcile` |
+| **Crash recovery** | kill -9 CH → `cocoon doctor --fix` | kill -9 CH → `cocoon doctor --fix` |
 | **GC** | Delete VM → `cocoon gc --dry-run` | Delete VM → `cocoon gc --dry-run` |
 
 ### 10.4 Maintaining Verified Images

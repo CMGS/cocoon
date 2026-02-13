@@ -1770,26 +1770,27 @@ Reconciliation:
 ### 9.3 Reconciliation Command
 
 ```bash
-# Dry-run: Report inconsistencies only
-cocoon doctor --reconcile
+# Dry-run: Report inconsistencies only (default behavior)
+cocoon doctor
 
 # Fix inconsistencies automatically
-cocoon doctor --reconcile --fix
+cocoon doctor --fix
 
-# Force cleanup of stuck VMs and zombie processes
-cocoon doctor --reconcile --fix --force
+# Force cleanup of stuck VMs and kill zombie processes
+cocoon doctor --fix --force
 ```
 
-**Note**: There is no separate `cocoon reconcile` command. Use `cocoon doctor` with
-the appropriate flags. `cocoon doctor` runs reconciliation by default.
+**Note**: There is no separate `cocoon reconcile` command. `cocoon doctor` runs
+reconciliation by default (dry-run mode). Use `--fix` to apply repairs.
 
 **Flags**:
 - `--fix`: Automatically fix inconsistencies (default: dry-run)
 - `--force`: Force cleanup of stuck VMs and kill zombie processes
+- `--format`: Output format (`table`, `json`)
 
 **Output**:
 ```bash
-$ cocoon doctor --reconcile
+$ cocoon doctor
 Scanning VMs in /var/lib/cocoon/vms/...
 
 [CRITICAL] vm-abc123: state_mismatch
@@ -1808,7 +1809,7 @@ Summary:
   Clean: 1
   Issues: 2 (1 critical, 1 warning)
 
-Run 'cocoon doctor --reconcile --fix' to repair inconsistencies.
+Run 'cocoon doctor --fix' to repair inconsistencies.
 ```
 
 ### 9.5 Legacy Reconciliation Logic (Simple Version)

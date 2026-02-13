@@ -448,7 +448,7 @@ go test -race ./pkg/storage -run TestReferenceConcurrency
 4. **Utility Commands** (docs/09-cli-design.md §5)
    - `cocoon logs`
    - `cocoon doctor`
-   - `cocoon reconcile`
+   - `cocoon gc`
 
 **Validation**:
 ```bash
@@ -468,7 +468,7 @@ cocoon image rm myorg/ubuntu-bootable:22.04   # Remove image
 **Exit Criteria**:
 - All commands documented in `cocoon help`
 - Error messages provide actionable guidance
-- JSON output mode works (`--output json`)
+- JSON output mode works (`--format json`)
 - `cocoon doctor` validates all dependencies
 
 ---
@@ -796,7 +796,7 @@ app := &cli.App{
 - image pull, list, rm
 
 **Day 5: Utility Commands**
-- logs, doctor, reconcile
+- logs, doctor, gc, firmware
 
 **Milestone**: All CLI commands functional, help text complete
 
@@ -1088,8 +1088,8 @@ cocoon inspect myvm | jq .state
 # Kill CH process manually
 kill -9 $(cat /run/cocoon/vms/myvm/ch.pid)
 
-# Reconcile
-cocoon reconcile --fix
+# Doctor (reconcile + fix)
+cocoon doctor --fix
 cocoon inspect myvm | jq .state
 # Output: "ERROR" (crash detected)
 
@@ -1123,7 +1123,7 @@ cocoon stop demo
 cocoon delete demo
 
 # JSON output
-cocoon list --output json | jq .
+cocoon list --format json | jq .
 ```
 
 ---
@@ -1296,7 +1296,7 @@ qemu-img >= 8.0
 **CLI**:
 - [ ] All core commands functional (create, start, stop, delete)
 - [ ] Image commands working (pull, list, rm)
-- [ ] Utility commands complete (logs, doctor, reconcile)
+- [ ] Utility commands complete (logs, doctor, gc, firmware)
 - [ ] Help text comprehensive
 - [ ] JSON output mode available
 
