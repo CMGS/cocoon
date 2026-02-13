@@ -72,5 +72,5 @@ type Inconsistency struct {
 
 // NameIndex is an alias for types.NameIndex.
 // Maps VM names to their vm_id values.
-// Stored at /var/lib/cocoon/name-index.json.
+// Stored at /var/lib/cocoon/db/name-index.json.
 type NameIndex = types.NameIndex

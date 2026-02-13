@@ -50,222 +50,308 @@ The design integrates the [Boot Contract](./01-boot-contract.md) decisions, incl
 
 ## 1. Project Structure
 
-Cocoon follows the flat package organization pattern from the core project, emphasizing interface-driven design for testability and modularity.
+Cocoon uses an interface-per-package pattern with concrete implementations in sub-packages. CLI commands live under `cmd/cocoon/`, each in its own file. Mock implementations live alongside their interfaces in `mocks/` sub-packages.
 
 ```
 cocoon/
-├── main.go                    # CLI entry point using urfave/cli/v2
-├── go.mod                     # Go 1.25+ module definition
+├── cmd/cocoon/
+│   ├── main.go               # CLI entry point (urfave/cli/v2, signal handling)
+│   ├── app.go                # appContext: manager initialization, root check
+│   ├── output.go             # Table/JSON output helpers (printTable, printJSON)
+│   ├── init.go               # cocoon init (dirs + config + firmware download)
+│   ├── create.go             # cocoon create + shared vmCreateFlags()
+│   ├── run.go                # cocoon run (create + start)
+│   ├── start.go              # cocoon start
+│   ├── stop.go               # cocoon stop
+│   ├── kill.go               # cocoon kill
+│   ├── rm.go                 # cocoon delete/rm
+│   ├── ps.go                 # cocoon list/ps/ls
+│   ├── inspect.go            # cocoon inspect
+│   ├── logs.go               # cocoon logs
+│   ├── images.go             # cocoon image (list/pull/inspect/remove/verify)
+│   ├── gc.go                 # cocoon gc
+│   ├── firmware.go           # cocoon firmware (list/verify/install/update)
+│   ├── doctor.go             # cocoon doctor (deps + reconciliation)
+│   └── version.go            # cocoon version
 ├── config/
-│   ├── config.go             # Configuration types and loading
-│   └── defaults.go           # Default configuration values
-├── vm/
-│   ├── vm.go                 # VM lifecycle management interface and implementation
-│   ├── create.go             # VM creation logic
-│   ├── lifecycle.go          # Start/stop/delete operations
-│   └── list.go               # List and inspect operations
-├── image/
-│   ├── image.go              # ImageManager interface (multi-source)
-│   ├── resolve.go            # Image source auto-detection (qcow2/URL/OCI)
-│   ├── buildah.go            # Buildah implementation for OCI image handling
-│   └── convert.go            # OCI to qcow2 conversion logic
-├── storage/
-│   ├── storage.go            # StorageManager interface
-│   ├── qcow2.go              # qcow2 operations implementation
-│   └── layout.go             # Storage layout and path management
+│   ├── config.go             # CocoonConfig, LoadConfig, RebaseRootDir, EnsureDirs, path helpers
+│   └── config_test.go
 ├── hypervisor/
-│   ├── hypervisor.go         # Hypervisor interface (engine pattern from core)
-│   ├── cloudhypervisor.go   # Cloud Hypervisor implementation
-│   └── factory/
-│       └── factory.go        # Factory for hypervisor selection
+│   ├── hypervisor.go         # Client interface (process mgmt + CH REST API)
+│   ├── types.go              # CHVMConfig, CHVMInfo, CHDiskConfig, etc.
+│   ├── cloudhypervisor/
+│   │   ├── client.go         # Client implementation (launch, retry, buildLaunchArgs)
+│   │   ├── client_test.go
+│   │   └── procattr.go       # Platform-specific SysProcAttr
+│   └── mocks/
+│       └── mock.go
+├── image/
+│   ├── image.go              # Manager interface (Pull, Convert, Prepare, Verify, List, Remove)
+│   ├── types.go              # ImageIdentity, ImageType, BootCheckResult, CachedImage
+│   ├── pipeline/
+│   │   ├── manager.go        # Pipeline implementation (pull → convert → cache)
+│   │   ├── checksum.go       # Content-addressed checksum generation
+│   │   ├── format.go         # Image format detection (qcow2/URL/OCI)
+│   │   ├── oci_linux.go      # OCI pull via skopeo + buildah (Linux only)
+│   │   ├── oci_darwin.go     # Stub: returns "Linux only" error
+│   │   ├── convert_linux.go  # OCI→qcow2 via qemu-img + guestfish (Linux only)
+│   │   ├── convert_darwin.go # Stub: returns "Linux only" error
+│   │   ├── verify_linux.go   # Bootability verification via guestfish
+│   │   ├── verify_darwin.go  # Stub: returns "Linux only" error
+│   │   ├── cleanup_linux.go  # buildah umount + rm
+│   │   └── cleanup_darwin.go # No-op
+│   └── mocks/
+│       └── mock.go
+├── storage/
+│   ├── storage.go            # ReferenceCounter, COWManager, GarbageCollector interfaces
+│   ├── types.go              # OverlayInfo, GCResult
+│   ├── local/
+│   │   ├── refcount.go       # ReferenceCounter impl (references.json + flock)
+│   │   ├── cow.go            # COWManager impl (qemu-img create/resize)
+│   │   └── gc.go             # GarbageCollector impl (sweep + trash)
+│   └── mocks/
+│       └── mock.go
+├── vm/
+│   ├── vm.go                 # Manager interface (CRUD, state, reconcile)
+│   ├── types.go              # CreateOptions, Inconsistency, InconsistencyType
+│   ├── engine/
+│   │   ├── manager.go        # Manager impl (lifecycle, boot fallback, state machine)
+│   │   ├── manager_test.go
+│   │   ├── boot_detect.go    # waitForBoot: serial log polling for boot patterns
+│   │   ├── boot_detect_test.go
+│   │   ├── name_index.go     # Name ↔ vm_id resolution
+│   │   └── reconcile.go      # VM state reconciliation logic
+│   └── mocks/
+│       └── mock.go
 ├── types/
-│   ├── vm.go                 # VM types and specifications
-│   ├── image.go              # Image types
-│   ├── config.go             # Configuration types
-│   └── errors.go             # Error definitions
-├── client/
-│   ├── client.go             # Cloud Hypervisor REST API client
-│   └── types.go              # API request/response types
+│   ├── boot.go               # BootStrategy, BootConfig, DefaultBootStrategy
+│   ├── config.go             # VMConfig (immutable, written at create)
+│   ├── errors.go             # ErrorType (14 constants), ClassifiedError
+│   ├── inspect.go            # VMInspect (merged config + metadata view)
+│   ├── metadata.go           # VMMetadataFile (mutable runtime state)
+│   ├── reference.go          # NameIndex, Reference types
+│   ├── state.go              # VMState (8 states), ValidateTransition
+│   └── state_test.go
+├── lock/
+│   ├── interface.go          # Locker interface (Lock, TryLock, Unlock, Path)
+│   ├── flock/
+│   │   ├── flock.go          # flock(2) implementation
+│   │   └── flock_test.go
+│   └── mocks/
+│       └── mock.go
 ├── utils/
-│   ├── fs.go                 # Filesystem utilities
-│   └── validation.go         # Input validation
-└── version/
-    └── version.go            # Version information
+│   ├── atomic.go             # AtomicWriteJSON, AtomicReadJSON (temp + fsync + rename)
+│   ├── atomic_test.go
+│   ├── id.go                 # ULID-based VM ID generation
+│   ├── process.go            # Process liveness helpers
+│   ├── process_linux.go      # Linux-specific SysProcAttr
+│   └── process_darwin.go     # Darwin stub
+├── version/
+│   └── version.go            # NAME, VERSION, REVISION, BUILTAT (ldflags)
+├── go.mod                    # Go 1.25.0
+├── Makefile
+├── scripts/                  # Setup, teardown, update scripts
+└── docs/                     # Design specifications
 ```
 
 ---
 
 ## 2. Core Interfaces
 
-### 2.1 Hypervisor Interface
+### 2.1 Hypervisor Client Interface
 
-Following the core project's engine pattern, the hypervisor interface abstracts VM operations:
+The `hypervisor.Client` interface covers two concerns: CH process management (launch, kill, liveness) and the CH REST API over Unix sockets. One CH process per VM for strong isolation.
 
 ```go
 package hypervisor
 
 import (
     "context"
-    "io"
     "time"
 
     "github.com/CMGS/cocoon/types"
 )
 
-// API defines the hypervisor interface (similar to core's engine.API)
-type API interface {
-    // Info returns hypervisor information
-    Info(ctx context.Context) (*types.HypervisorInfo, error)
+// Client is the interface for managing a Cloud Hypervisor instance.
+type Client interface {
+    // --- Process management ---
+    Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (pid int, err error)
+    Shutdown(ctx context.Context, vmID string, timeout time.Duration) error
+    ForceKill(vmID string) error
+    IsAlive(vmID string) bool
 
-    // Ping checks hypervisor connectivity
-    Ping(ctx context.Context) error
+    // --- CH REST API over Unix socket ---
+    CreateVM(ctx context.Context, socketPath string, vmCfg *CHVMConfig) error
+    BootVM(ctx context.Context, socketPath string) error
+    ShutdownVM(ctx context.Context, socketPath string) error
+    PowerButton(ctx context.Context, socketPath string) error
+    DeleteVM(ctx context.Context, socketPath string) error
+    GetVMInfo(ctx context.Context, socketPath string) (*CHVMInfo, error)
 
-    // CloseConn closes the connection
-    CloseConn() error
-
-    // VM lifecycle operations
-    VMCreate(ctx context.Context, opts *types.VMCreateOptions) (*types.VMInfo, error)
-    VMStart(ctx context.Context, id string) error
-    VMStop(ctx context.Context, id string, gracefulTimeout time.Duration) error
-    VMDelete(ctx context.Context, id string, force bool) error
-    VMPause(ctx context.Context, id string) error
-    VMResume(ctx context.Context, id string) error
-
-    // VM information
-    VMInspect(ctx context.Context, id string) (*types.VMInfo, error)
-    VMList(ctx context.Context) ([]*types.VMInfo, error)
-
-    // VM resource management
-    VMResize(ctx context.Context, id string, cpus int, memory int64) error
-
-    // Console access
-    VMAttach(ctx context.Context, id string) (io.ReadWriteCloser, error)
+    // --- Utilities ---
+    WaitForSocket(ctx context.Context, socketPath string, timeout time.Duration) error
+    CheckSocketConnectivity(socketPath string) error
 }
 ```
 
-### 2.2 ImageManager Interface
+The concrete implementation lives in `hypervisor/cloudhypervisor/client.go`. Key implementation details:
+- `Launch()` starts the CH binary with `--api-socket` + firmware flag only; all VM config goes via REST API.
+- `buildLaunchArgs()` selects `--kernel` for UEFI or `--firmware` for PVH based on `BootStrategy`.
+- REST API calls use `doWithRetry()` with exponential backoff (100ms/200ms/400ms + jitter).
+- `isRetryable()`: retry on 500/503/429/connection-refused; no retry on 4xx/context.Canceled.
 
-The ImageManager handles **multi-source image references**, not just OCI images.
-Cocoon accepts three image source types:
-1. **Local qcow2 file**: `/path/to/ubuntu-22.04-cloudimg.qcow2`
-2. **Cloud image URL**: `https://cloud-images.ubuntu.com/.../ubuntu-22.04.img`
-3. **OCI registry reference**: `myorg/ubuntu-bootable:22.04` (converted to qcow2 with bootability validation)
+### 2.2 Image Manager Interface
+
+The `image.Manager` handles multi-source image references (local qcow2 files, cloud image URLs, OCI registry references). Images are identified by content-addressed keys (`{checksum_16}_{arch}`).
 
 ```go
 package image
 
-import (
-    "context"
-    "io"
+import "context"
 
-    "github.com/CMGS/cocoon/types"
-)
-
-// SourceType identifies how an image reference should be resolved
-type SourceType string
-
-const (
-    SourceQcow2 SourceType = "qcow2" // Local qcow2 file path
-    SourceURL   SourceType = "url"   // Remote cloud image URL (downloaded + cached)
-    SourceOCI   SourceType = "oci"   // OCI registry reference (pulled + converted + validated)
-)
-
-// Manager defines the image management interface (multi-source)
 type Manager interface {
-    // Resolve detects the source type of an image reference
-    Resolve(ctx context.Context, ref string) (SourceType, error)
+    // Pull downloads an image (OCI ref, HTTP URL, or local file path).
+    // Returns the ImageIdentity describing the content-addressed identity.
+    Pull(ctx context.Context, ref string) (*ImageIdentity, error)
 
-    // Pull fetches an image from any supported source and returns a cached qcow2 path
-    // - qcow2 file: validates and returns path directly
-    // - URL: downloads, caches, returns local path
-    // - OCI ref: pulls via Buildah, converts to qcow2, validates bootability, caches
-    Pull(ctx context.Context, ref string) (string, error)
+    // Convert transforms a pulled image into a qcow2 base image.
+    // Uses per-image conversion lock (Level 3) to prevent duplicate work.
+    Convert(ctx context.Context, identity *ImageIdentity) (baseImagePath string, err error)
 
-    // List returns all cached images (qcow2 base images in cache)
-    List(ctx context.Context, filter string) ([]*types.ImageInfo, error)
+    // Prepare is the combined pull+convert+cache pipeline.
+    // Skips pull/convert if cached base image already exists.
+    Prepare(ctx context.Context, ref string) (*ImageIdentity, string, error)
 
-    // Inspect returns detailed image information
-    Inspect(ctx context.Context, ref string) (*types.ImageInfo, error)
+    // VerifyBootability checks if an image meets the boot contract
+    // (kernel + initrd/bootloader + systemd).
+    VerifyBootability(ctx context.Context, imagePath string) (*BootCheckResult, error)
 
-    // Remove deletes a cached image
-    Remove(ctx context.Context, ref string, force bool) error
+    // ListCached returns all cached base images.
+    ListCached(ctx context.Context) ([]*CachedImage, error)
 
-    // VerifyBootable checks if image meets boot contract requirements
-    // For qcow2: inspects partitions via guestfish
-    // For OCI: validates rootfs components before conversion
-    VerifyBootable(ctx context.Context, ref string) error
+    // RemoveCached removes a cached base image by base_key.
+    RemoveCached(ctx context.Context, baseKey string) error
 }
 ```
 
-### 2.3 StorageManager Interface
+Key types: `ImageIdentity` (checksum, arch, full digest, source ref, image type), `ImageType` (OCI/URL/LocalFile), `BootCheckResult`, `CachedImage`. The concrete implementation is `image/pipeline/manager.go`.
+
+### 2.3 Storage Interfaces
+
+Storage is split into three focused interfaces rather than one monolithic `StorageManager`:
 
 ```go
 package storage
 
+import "time"
+
+// ReferenceCounter manages base image reference counts.
+// All mutations hold references.lock (flock, Level 2).
+type ReferenceCounter interface {
+    AddReference(baseKey, vmID, digestFull, sourceRef string) error
+    RemoveReference(baseKey, vmID string) error
+    GetReferences(baseKey string) ([]string, error)
+    IsReferenced(baseKey string) (bool, error)
+    GetUnreferencedImages() ([]string, error)
+}
+
+// COWManager manages copy-on-write overlay images backed by qcow2.
+type COWManager interface {
+    CreateBaseImage(srcPath, baseKey string) error
+    CreateOverlay(baseKey, vmID, diskSize string) (overlayPath string, err error)
+    RemoveOverlay(vmID string) error
+    GetOverlayInfo(vmID string) (*OverlayInfo, error)
+}
+
+// GarbageCollector reclaims unreferenced storage resources.
+// Locking order: gc.lock (Level 1) → references.lock (Level 2).
+type GarbageCollector interface {
+    CollectUnreferencedImages(gracePeriod time.Duration) ([]string, error)
+    CollectOrphanedOverlays() ([]string, error)
+    CollectTempFiles(maxAge time.Duration) ([]string, error)
+    EmptyTrash(maxAge time.Duration) error
+    FullGC() error
+}
+```
+
+Concrete implementations live in `storage/local/` (refcount.go, cow.go, gc.go).
+
+### 2.4 VM Manager Interface
+
+The `vm.Manager` interface handles the full VM lifecycle including creation, state transitions, name resolution, and reconciliation:
+
+```go
+package vm
+
 import (
     "context"
+    "time"
 
     "github.com/CMGS/cocoon/types"
 )
 
-// Manager defines the storage management interface
 type Manager interface {
-    // CreateVolume creates a new qcow2 volume
-    CreateVolume(ctx context.Context, opts *types.VolumeCreateOptions) (*types.VolumeInfo, error)
+    // CRUD operations.
+    Create(ctx context.Context, opts *CreateOptions) (*types.VMConfig, error)
+    Start(ctx context.Context, vmID string) error
+    Stop(ctx context.Context, vmID string, timeout time.Duration) error
+    Delete(ctx context.Context, vmID string, force bool) error
+    Inspect(ctx context.Context, vmID string) (*types.VMInspect, error)
+    List(ctx context.Context) ([]*types.VMInspect, error)
 
-    // DeleteVolume removes a qcow2 volume
-    DeleteVolume(ctx context.Context, path string) error
+    // Name resolution: "vm-" prefix → vm_id lookup, otherwise → name-index.json.
+    ResolveVMRef(ref string) (string, error)
 
-    // ListVolumes returns all volumes for a VM
-    ListVolumes(ctx context.Context, vmID string) ([]*types.VolumeInfo, error)
+    // State management.
+    TransitionState(vmID string, to types.VMState, reason string) error
+    LoadConfig(vmID string) (*types.VMConfig, error)
+    LoadMetadata(vmID string) (*types.VMMetadataFile, error)
+    SaveMetadata(meta *types.VMMetadataFile) error
 
-    // ResizeVolume resizes a qcow2 volume
-    ResizeVolume(ctx context.Context, path string, size int64) error
-
-    // GetVolumeInfo returns volume information
-    GetVolumeInfo(ctx context.Context, path string) (*types.VolumeInfo, error)
-
-    // CloneVolume creates a copy-on-write clone
-    CloneVolume(ctx context.Context, source, dest string) error
-
-    // CreateOverlay creates COW overlay with backing file
-    CreateOverlay(ctx context.Context, baseKey, vmID string) (*types.VolumeInfo, error)
+    // Reconciliation (used by cocoon doctor).
+    Reconcile(ctx context.Context, fix bool, force bool) ([]Inconsistency, error)
 }
 ```
 
-### 2.4 Factory Pattern
+The concrete implementation is `vm/engine/manager.go`. `Start()` implements the boot fallback strategy: `pvh_then_uefi` attempts PVH first, logs a warning, then falls back to UEFI only for firmware-related errors.
 
-Following core's factory pattern for hypervisor selection:
+### 2.5 Manager Initialization
+
+Cocoon does not use a factory pattern. All managers are constructed directly in `cmd/cocoon/app.go`:
 
 ```go
-package factory
-
-import (
-    "context"
-    "fmt"
-
-    "github.com/CMGS/cocoon/config"
-    "github.com/CMGS/cocoon/hypervisor"
-    "github.com/CMGS/cocoon/hypervisor/cloudhypervisor"
-)
-
-type factory func(ctx context.Context, config *config.Config, endpoint string) (hypervisor.API, error)
-
-var hypervisors = map[string]factory{
-    "cloud-hypervisor": cloudhypervisor.New,
-    // Future: "firecracker": firecracker.New,
-    // Future: "qemu": qemu.New,
+// appContext holds initialized managers for CLI commands.
+type appContext struct {
+    cfg    *config.CocoonConfig
+    vmMgr  vm.Manager
+    imgMgr image.Manager
+    hyper  hypervisor.Client
+    refCtr storage.ReferenceCounter
+    cowMgr storage.COWManager
+    gc     storage.GarbageCollector
 }
 
-// NewHypervisor creates a hypervisor instance based on configuration
-func NewHypervisor(ctx context.Context, cfg *config.Config, hypervisorType string) (hypervisor.API, error) {
-    fn, ok := hypervisors[hypervisorType]
-    if !ok {
-        return nil, fmt.Errorf("unsupported hypervisor type: %s", hypervisorType)
+func initApp(_ *cli.Context) (*appContext, error) {
+    // Phase 1: require root on Linux.
+    if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+        return nil, fmt.Errorf("cocoon requires root privileges (Phase 1 rootful mode)")
     }
-    return fn(ctx, cfg, cfg.Hypervisor.Endpoint)
+
+    cfg, err := config.LoadConfig(configPath)
+    // ... apply --root-dir, --runtime-dir, --log-dir overrides ...
+
+    hyper := cloudhypervisor.New(cfg)
+    refCtr := local.NewReferenceCounter(cfg)
+    cowMgr := local.NewCOWManager(cfg)
+    gc := local.NewGarbageCollector(cfg)
+    imgMgr := pipeline.New(cfg, refCtr)
+    vmMgr := engine.New(cfg, hyper, refCtr, cowMgr, imgMgr)
+
+    return &appContext{cfg, vmMgr, imgMgr, hyper, refCtr, cowMgr, gc}, nil
 }
 ```
+
+The `initApp()` function is called by every CLI command that needs manager access (all commands except `init` and `version`).
 
 ---
 
@@ -418,7 +504,70 @@ func run(app *cli.App) int {
 }
 ```
 
-### 4.2 cocoon run (Create and Start)
+### 4.2 cocoon init (Initialize Environment)
+
+**Command**: `cocoon init [FLAGS]`
+
+**Purpose**: Initialize the Cocoon directory tree, write a default config file, and optionally download firmware. This is typically the first command run after installing Cocoon.
+
+**Note**: `cocoon init` does NOT call `initApp()` — it builds a config from `DefaultConfig()` and applies CLI overrides directly. This means it works without an existing config file or directories.
+
+```go
+func initCommand() *cli.Command {
+    return &cli.Command{
+        Name:  "init",
+        Usage: "Initialize cocoon directories and default config",
+        Flags: []cli.Flag{
+            &cli.BoolFlag{
+                Name:  "force",
+                Usage: "overwrite existing config file and re-download firmware",
+            },
+            &cli.StringFlag{
+                Name:  "with-pvh-firmware",
+                Usage: "download PVH firmware from `URL`",
+            },
+            &cli.StringFlag{
+                Name:  "with-uefi-firmware",
+                Usage: "download UEFI firmware from `URL`",
+            },
+        },
+        Action: initAction,
+    }
+}
+```
+
+**Behavior**:
+
+1. Build config from `config.DefaultConfig()`, apply `--root-dir`, `--runtime-dir`, `--log-dir` overrides
+2. Create all directories via `cfg.EnsureDirs()` (db/, cache/images/, cache/manifests/, cache/locks/, vms/, temp/, trash/, firmware/, buildah/, runtime/vms/, log/)
+3. If `--with-pvh-firmware URL`: download to `firmware/hypervisor-fw` (0755), atomic rename
+4. If `--with-uefi-firmware URL`: download to `firmware/CLOUDHV.fd` (0644), atomic rename
+5. Write `config.json` to `--config` path (default `/etc/cocoon/config.json`); skip if exists unless `--force`
+6. Print "Done. Run 'cocoon doctor' to verify system dependencies."
+
+**Example Usage**:
+
+```bash
+# Basic initialization
+sudo cocoon init
+
+# Initialize with firmware download
+sudo cocoon init \
+  --with-pvh-firmware https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw \
+  --with-uefi-firmware https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v50.0/CLOUDHV.fd
+
+# Force re-initialization
+sudo cocoon init --force
+
+# Development setup with custom paths
+COCOON_CONFIG_PATH=./dev/config.json \
+COCOON_ROOT_DIR=./dev/lib \
+COCOON_RUNTIME_DIR=./dev/run \
+COCOON_LOG_DIR=./dev/log \
+cocoon init
+```
+
+### 4.3 cocoon run (Create and Start)
 
 **Command**: `cocoon run IMAGE [FLAGS]`
 
@@ -509,7 +658,7 @@ cocoon run --rm ubuntu-22.04-cloudimg --name temp-vm
 cocoon run --boot-strategy pvh_only ubuntu-22.04-cloudimg
 ```
 
-### 4.3 cocoon create (Prepare VM)
+### 4.4 cocoon create (Prepare VM)
 
 **Command**: `cocoon create IMAGE [FLAGS]`
 
@@ -583,7 +732,7 @@ $ cocoon create ubuntu-22.04-cloudimg --name myvm
 Error: VM name 'myvm' already exists (used by vm-01HXYZ5A3B7C8D9E0F1G2H3J4K)
 ```
 
-### 4.4 cocoon start (Boot VM)
+### 4.5 cocoon start (Boot VM)
 
 **Command**: `cocoon start <vm-ref> [FLAGS]`
 
@@ -592,11 +741,11 @@ Error: VM name 'myvm' already exists (used by vm-01HXYZ5A3B7C8D9E0F1G2H3J4K)
 **Implementation**: Based on [Boot Contract §4.2](./01-boot-contract.md#42-cocoon-run-create-and-start)
 
 ```go
-func StartCommand() *cli.Command {
+func startCommand() *cli.Command {
     return &cli.Command{
         Name:      "start",
         Usage:     "Start a stopped VM",
-        ArgsUsage: "<vm-ref>",
+        ArgsUsage: "VM_REF",
         Flags: []cli.Flag{
             &cli.IntFlag{
                 Name:  "boot-timeout",
@@ -618,7 +767,7 @@ cocoon start myvm
 cocoon start myvm --boot-timeout 120
 ```
 
-### 4.5 cocoon stop (Graceful Shutdown)
+### 4.6 cocoon stop (Graceful Shutdown)
 
 **Command**: `cocoon stop <vm-ref> [FLAGS]`
 
@@ -627,15 +776,15 @@ cocoon start myvm --boot-timeout 120
 **Implementation**: Based on [Boot Contract §4.3](./01-boot-contract.md#43-cocoon-stop-graceful-shutdown)
 
 ```go
-func StopCommand() *cli.Command {
+func stopCommand() *cli.Command {
     return &cli.Command{
         Name:      "stop",
         Usage:     "Stop a running VM",
-        ArgsUsage: "<vm-ref>",
+        ArgsUsage: "VM_REF",
         Flags: []cli.Flag{
             &cli.DurationFlag{
                 Name:  "timeout",
-                Usage: "Graceful shutdown timeout",
+                Usage: "graceful shutdown timeout",
                 Value: 30 * time.Second,
             },
         },
@@ -667,7 +816,7 @@ cocoon stop myvm --timeout 60s
 cocoon kill myvm
 ```
 
-### 4.6 cocoon delete (Remove VM)
+### 4.7 cocoon delete (Remove VM)
 
 **Command**: `cocoon delete <vm-ref> [FLAGS]`
 
@@ -676,20 +825,20 @@ cocoon kill myvm
 **Implementation**: Based on [Boot Contract §4.4](./01-boot-contract.md#44-cocoon-delete-remove-resources)
 
 ```go
-func DeleteCommand() *cli.Command {
+func rmCommand() *cli.Command {
     return &cli.Command{
         Name:      "delete",
         Aliases:   []string{"rm"},
-        Usage:     "Delete a VM and cleanup storage",
-        ArgsUsage: "<vm-ref>",
+        Usage:     "Remove a VM and cleanup storage",
+        ArgsUsage: "VM_REF",
         Flags: []cli.Flag{
             &cli.BoolFlag{
                 Name:    "force",
                 Aliases: []string{"f"},
-                Usage:   "Force delete even if VM is running",
+                Usage:   "force delete even if VM is running",
             },
         },
-        Action: deleteAction,
+        Action: rmAction,
     }
 }
 ```
@@ -714,7 +863,7 @@ cocoon delete myvm
 cocoon delete myvm --force
 ```
 
-### 4.7 cocoon kill (Force Terminate)
+### 4.8 cocoon kill (Force Terminate)
 
 **Command**: `cocoon kill <vm-ref>`
 
@@ -723,11 +872,11 @@ cocoon delete myvm --force
 **Implementation**: Based on [Boot Contract §4.5](./01-boot-contract.md#45-cocoon-kill-force-terminate)
 
 ```go
-func KillCommand() *cli.Command {
+func killCommand() *cli.Command {
     return &cli.Command{
         Name:      "kill",
-        Usage:     "Force terminate a VM",
-        ArgsUsage: "<vm-ref>",
+        Usage:     "Force-terminate a VM immediately (SIGKILL)",
+        ArgsUsage: "VM_REF",
         Action:    killAction,
     }
 }
@@ -740,7 +889,7 @@ func KillCommand() *cli.Command {
 cocoon kill myvm
 ```
 
-### 4.8 cocoon list (List VMs)
+### 4.9 cocoon list (List VMs)
 
 **Command**: `cocoon list [FLAGS]`
 
@@ -798,29 +947,29 @@ cocoon list --filter state=running
 
 ```
 VM ID                              NAME              STATE     CPUS  MEMORY  CREATED
-vm-01HXYZ5A3B7C8D9E0F1G2H3J4K     myvm              RUNNING   2     2048M   2026-02-11T10:30:00Z
-vm-01HABC9D8E7F6G5H4J3K2L1M0N     devbox            STOPPED   4     4096M   2026-02-10T14:20:00Z
-vm-01H9ZZ8Y7X6W5V4U3T2S1R0Q9P     cocoon-a3f7b2c1   RUNNING   2     2048M   2026-02-09T08:15:00Z
+vm-01HXYZ5A3B7C8D9E0F1G2H3J4K     myvm              RUNNING   2     2048MB  2026-02-11T10:30:00Z
+vm-01HABC9D8E7F6G5H4J3K2L1M0N     devbox            STOPPED   4     4096MB  2026-02-10T14:20:00Z
+vm-01H9ZZ8Y7X6W5V4U3T2S1R0Q9P     cocoon-a3f7b2c1   RUNNING   2     2048MB  2026-02-09T08:15:00Z
 ```
 
-Note: The `NAME` column shows the user-provided name or the auto-generated name (`cocoon-{random}` if `--name` was omitted at create time). Either the `VM ID` or `NAME` can be used as a `<vm-ref>` in subsequent commands. The `MEMORY` column displays the value in megabytes. The `CREATED` column shows the creation timestamp in RFC 3339 format.
+Note: The `NAME` column shows the user-provided name or the auto-generated name (`cocoon-{random}` if `--name` was omitted at create time). Either the `VM ID` or `NAME` can be used as a `<vm-ref>` in subsequent commands. The `MEMORY` column displays the value with an `MB` suffix (e.g., `2048MB`). The `CREATED` column shows the creation timestamp in RFC 3339 format.
 
-### 4.9 cocoon inspect (VM Details)
+### 4.10 cocoon inspect (VM Details)
 
 **Command**: `cocoon inspect <vm-ref> [FLAGS]`
 
 **Purpose**: Display detailed VM information. `<vm-ref>` is resolved via [Section 3](#3-vm-identifier-resolution).
 
 ```go
-func InspectCommand() *cli.Command {
+func inspectCommand() *cli.Command {
     return &cli.Command{
         Name:      "inspect",
         Usage:     "Display detailed VM information",
-        ArgsUsage: "<vm-ref>",
+        ArgsUsage: "VM_REF",
         Flags: []cli.Flag{
             &cli.StringFlag{
                 Name:  "format",
-                Usage: "Output format (json)",
+                Usage: "output format (json)",
                 Value: "json",
             },
         },
@@ -879,7 +1028,7 @@ The inspect output merges data from `config.json` (immutable) and `metadata.json
 }
 ```
 
-### 4.10 cocoon logs (Serial Console Output)
+### 4.11 cocoon logs (Serial Console Output)
 
 **Command**: `cocoon logs <vm-ref> [FLAGS]`
 
@@ -926,7 +1075,7 @@ cocoon logs myvm --follow
 cocoon logs myvm --tail 50 --timestamps
 ```
 
-### 4.11 cocoon image (Image Management)
+### 4.12 cocoon image (Image Management)
 
 **Command**: `cocoon image SUBCOMMAND [FLAGS]`
 
@@ -1057,7 +1206,7 @@ Solutions:
   1. Use Cloud Hypervisor native cloud images (recommended):
      cocoon image pull https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img
 
-  2. Build a bootable OCI image with:
+  2. [Phase 2] Build a bootable OCI image with:
      cocoon image build-bootable --base ubuntu:22.04 --output myorg/ubuntu-bootable:22.04
 
   3. See docs/00-overview.md#supported-image-contract for details
@@ -1065,7 +1214,7 @@ Solutions:
 Exit code: 1
 ```
 
-### 4.12 cocoon gc (Garbage Collection)
+### 4.13 cocoon gc (Garbage Collection)
 
 **Command**: `cocoon gc [FLAGS]`
 
@@ -1074,10 +1223,10 @@ Exit code: 1
 **Implementation**: Based on [05-storage-management.md](./05-storage-management.md)
 
 ```go
-func GCCommand() *cli.Command {
+func gcCommand() *cli.Command {
     return &cli.Command{
         Name:  "gc",
-        Usage: "Run garbage collection",
+        Usage: "Run garbage collection on unreferenced images and orphaned resources",
         Flags: []cli.Flag{
             &cli.IntFlag{
                 Name:  "grace-period",
@@ -1085,7 +1234,7 @@ func GCCommand() *cli.Command {
             },
             &cli.BoolFlag{
                 Name:  "dry-run",
-                Usage: "Show what would be collected without deleting",
+                Usage: "only report what would be collected, don't actually delete",
             },
         },
         Action: gcAction,
@@ -1106,7 +1255,7 @@ cocoon gc --dry-run
 cocoon gc --grace-period 12
 ```
 
-### 4.13 cocoon doctor (System Health Check)
+### 4.14 cocoon doctor (System Health Check)
 
 **Command**: `cocoon doctor [FLAGS]`
 
@@ -1152,7 +1301,7 @@ func doctorAction(c *cli.Context) error {
     checks := runDependencyChecks(app)  // exec.LookPath + os.Stat
 
     // Phase 2: VM reconciliation (state consistency, orphan cleanup).
-    issues, reconcileErr := app.vmMgr.Reconcile(ctx, fix, force)
+    issues, reconcileErr := app.vmMgr.Reconcile(c.Context, fix, force)
 
     // Print results in table or JSON format.
     // --fix attempts VM state repairs (not dependency installation).
@@ -1178,9 +1327,8 @@ func doctorAction(c *cli.Context) error {
 - Orphaned VM directories → report (manual cleanup required)
 
 **Exit Codes**:
-- `0`: All required checks passed
-- `1`: One or more required checks failed
-- `2`: Dependency missing (with fix suggestions)
+- `0`: All checks passed (returns nil)
+- `1`: One or more checks failed or error occurred (returns error)
 
 **Example Usage**:
 
@@ -1239,7 +1387,7 @@ Attempted to fix 2 issue(s).
 
 ---
 
-### 4.14 cocoon firmware (Firmware Management)
+### 4.15 cocoon firmware (Firmware Management)
 
 **Command**: `cocoon firmware <subcommand> [FLAGS]`
 
@@ -1316,7 +1464,7 @@ func firmwareCommand() *cli.Command {
 
 **Subcommands**:
 
-#### 4.14.1 cocoon firmware list
+#### 4.15.1 cocoon firmware list
 
 List all installed firmware files with paths and sizes.
 
@@ -1327,7 +1475,7 @@ hypervisor-fw    PVH   /var/lib/cocoon/firmware/hypervisor-fw     89.2KB   true
 CLOUDHV.fd       UEFI  /var/lib/cocoon/firmware/CLOUDHV.fd        2.1MB    true
 ```
 
-#### 4.14.2 cocoon firmware install
+#### 4.15.2 cocoon firmware install
 
 Download and install firmware files from explicit URLs using `--pvh-url` and `--uefi-url` flags.
 
@@ -1348,31 +1496,20 @@ cocoon firmware install --pvh-url URL --force
 ```
 
 **Installation Process**:
-1. Download firmware from the provided URL
-2. Verify checksum against published SHA256
-3. Back up existing firmware (if present)
-4. Install new firmware to `/var/lib/cocoon/firmware/`
-5. Update checksums.txt
+1. HTTP GET the firmware from the provided URL to a temporary file
+2. Atomic rename the temporary file to the target path (`/var/lib/cocoon/firmware/`)
+3. No checksum verification, no backup of existing files
 
 **Example Output**:
 
 ```bash
 $ cocoon firmware install --pvh-url https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw
-Downloading rust-hypervisor-firmware v0.5.0...
-Downloaded: hypervisor-fw (89.2KB)
-Verifying checksum: 3d7ae8c1a45b2e9f...
-Checksum verified
-Backing up existing firmware...
-Backup created: hypervisor-fw-0.4.2
-Installing firmware...
-Installed: /var/lib/cocoon/firmware/hypervisor-fw
-
-Firmware installation complete. Run 'cocoon doctor' to verify.
+Firmware install complete.
 ```
 
-#### 4.14.3 cocoon firmware verify
+#### 4.15.3 cocoon firmware verify
 
-Verify firmware file integrity using SHA256 checksums.
+Check that firmware files exist and are accessible (via `os.Stat`). No checksum verification is performed.
 
 ```bash
 # Verify all firmware files
@@ -1383,12 +1520,10 @@ cocoon firmware verify
 
 ```bash
 $ cocoon firmware verify
-Verifying PVH firmware...
-✅ hypervisor-fw: checksum matched (3d7ae8c1a45b2e9f...)
-Verifying UEFI firmware...
-⚠️  OVMF: No checksum file (system-managed firmware)
+OK    hypervisor-fw (PVH): /var/lib/cocoon/firmware/hypervisor-fw [89.2KB]
+OK    CLOUDHV.fd (UEFI): /var/lib/cocoon/firmware/CLOUDHV.fd [2.1MB]
 
-All firmware files verified successfully.
+All firmware files verified.
 ```
 
 **Firmware Types**:
@@ -1400,16 +1535,12 @@ All firmware files verified successfully.
 ```
 /var/lib/cocoon/firmware/
 ├── hypervisor-fw           # Current PVH firmware (x86_64)
-├── hypervisor-fw-0.4.2     # Versioned backup
-├── hypervisor-fw-0.4.1     # Older backup
-├── CLOUDHV.fd              # UEFI firmware (Cloud Hypervisor edk2)
-└── checksums.txt           # SHA256 verification
+└── CLOUDHV.fd              # UEFI firmware (Cloud Hypervisor edk2)
 ```
 
 **Exit Codes**:
 - `0`: Success
-- `1`: Command failed (download error, checksum mismatch, etc.)
-- `2`: Firmware not found
+- `1`: Command failed (download error, firmware not found, etc.)
 
 **Example Usage**:
 
@@ -1423,7 +1554,7 @@ cocoon firmware install --pvh-url https://github.com/cloud-hypervisor/rust-hyper
 # Install UEFI firmware from URL
 cocoon firmware install --uefi-url https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v50.0/CLOUDHV.fd
 
-# Verify firmware integrity
+# Verify firmware files exist
 cocoon firmware verify
 
 # Force re-download
@@ -1521,25 +1652,23 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
 9. **Configure VM**:
    ```go
    config := &types.VMConfig{
-       ID: vmID,
-       Boot: types.BootConfig{
-           Strategy: "pvh_then_uefi", // config.json: boot_strategy (immutable)
-           Firmware: "/var/lib/cocoon/firmware/hypervisor-fw",
-       },
-       Disk: types.DiskConfig{
-           RootDiskPath: overlayPath,         // auto-created in /var/lib/cocoon/vms/{vm-id}/
-           Size:         c.String("disk"), // from --disk flag
-       },
-       Resources: types.ResourceConfig{
-           CPUs:     cpus,
-           MemoryMB: memoryMB,
-       },
-       IO: types.IOConfig{
-           Serial: types.SerialConfig{
-               Mode:    "file",
-               LogFile: serialLogPath,
-           },
-       },
+       VMID:          vmID,
+       Name:          name,
+       ImageRef:      imageRef,
+       BaseKey:       identity.BaseKey,
+       BaseDigestFull: identity.DigestFull,
+       Arch:          identity.Arch,
+       BootStrategy:  types.BootStrategy(bootStrategy),
+       FirmwarePath:  firmwarePath,
+       CPUs:          cpus,
+       MemoryMB:      memoryMB,
+       DiskSize:      c.String("disk"),
+       BaseImagePath: baseImagePath,
+       OverlayPath:   overlayPath,
+       SerialLog:     serialLogPath,
+       SocketPath:    socketPath,
+       CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+       SchemaVersion: types.CurrentConfigSchemaVersion,
    }
    ```
 10. **Start Cloud Hypervisor** (REST-first):
@@ -1843,6 +1972,7 @@ For the canonical schema definitions, see [07-vm-lifecycle.md § 5](./07-vm-life
   "cpus": 2,
   "memory_mb": 1024,
   "disk_size": "10G",
+  "base_image_path": "/var/lib/cocoon/cache/images/ef015678abcd1234_amd64.qcow2",
   "overlay_path": "/var/lib/cocoon/vms/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K/overlay.qcow2",
   "serial_log": "/var/log/cocoon/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K-serial.log",
   "socket_path": "/run/cocoon/vms/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K/api.sock",
@@ -1859,8 +1989,11 @@ For the canonical schema definitions, see [07-vm-lifecycle.md § 5](./07-vm-life
   "previous_state": "STARTING",
   "process_pid": 12345,
   "boot_time": "2.3s",
+  "last_boot_mode": "pvh",
+  "last_firmware_path": "/var/lib/cocoon/firmware/hypervisor-fw",
   "last_error": "",
   "error_count": 0,
+  "auto_remove": false,
   "updated_at": "2026-02-11T10:30:07Z",
   "started_at": "2026-02-11T10:30:05Z",
   "stopped_at": "",

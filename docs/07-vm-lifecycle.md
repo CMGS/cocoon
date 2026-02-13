@@ -99,7 +99,6 @@ CREATING -----> CREATED -----> STARTING -----> RUNNING -----> STOPPING -----> ST
 - Guest kernel panic
 - Cloud Hypervisor crash
 - Resource exhaustion
-- User-initiated kill (SIGKILL)
 
 ### 1.3 State Descriptions
 
@@ -174,7 +173,7 @@ CREATING -----> CREATED -----> STARTING -----> RUNNING -----> STOPPING -----> ST
 
 **Exit Conditions**:
 - User calls `stop` → `STOPPING`
-- User calls `kill` → `ERROR`
+- User calls `kill` → `STOPPING` → `STOPPED` (two-step: force kill triggers graceful path)
 - Cloud Hypervisor crash → `ERROR`
 
 #### STOPPING
@@ -222,7 +221,7 @@ CREATING -----> CREATED -----> STARTING -----> RUNNING -----> STOPPING -----> ST
 **State**:
 - Cloud Hypervisor process may or may not be running
 - Resources in inconsistent state
-- Error message and stack trace captured in metadata
+- Error message captured in metadata (`last_error` field)
 
 **Common Errors**:
 - Boot timeout
@@ -369,13 +368,9 @@ func ValidateTransition(from, to VMState) error {
     if !exists {
         return fmt.Errorf("unknown state: %s", from)
     }
-
-    for _, valid := range allowed {
-        if valid == to {
-            return nil
-        }
+    if slices.Contains(allowed, to) {
+        return nil
     }
-
     return fmt.Errorf("invalid transition: %s -> %s", from, to)
 }
 
@@ -388,26 +383,19 @@ func TransitionState(vmID string, to VMState) error {
     }
 
     // 2. Validate transition
-    if err := ValidateTransition(metadata.State, to); err != nil {
+    if err := ValidateTransition(VMState(metadata.State), to); err != nil {
         return err
     }
 
-    // 3. Save old state before updating (CRITICAL: must save before update)
-    oldState := metadata.State
+    // 3. Update state fields
+    metadata.PreviousState = metadata.State
+    metadata.State = string(to)
+    metadata.UpdatedAt = time.Now().Format(time.RFC3339)
 
-    // 4. Update state
-    metadata.State = to
-    metadata.UpdatedAt = time.Now()
+    // NOTE: State history tracking ([]StateTransition) is not implemented
+    // in Phase 1. The PreviousState field provides single-step auditing.
 
-    // 5. Add transition to history
-    metadata.StateHistory = append(metadata.StateHistory, StateTransition{
-        From:      oldState,  // Use saved old state, not metadata.State
-        To:        to,
-        Timestamp: time.Now(),
-        Reason:    "", // Set by caller
-    })
-
-    // 6. Persist atomically
+    // 4. Persist atomically
     return SaveMetadata(metadata)
 }
 ```
@@ -528,7 +516,7 @@ func TransitionState(vmID string, to VMState) error {
 
 #### inspect
 
-**Signature**: `cocoon inspect VM_ID [--format json|yaml]`
+**Signature**: `cocoon inspect VM_ID [--format json]`
 
 **Preconditions**:
 - VM exists (any state except DELETED)
@@ -554,208 +542,79 @@ This section defines the **merged view** struct returned by `cocoon inspect`. It
 > `storage`, `hypervisor`, `boot_config`, `timestamps`, `runtime`, and `error`.
 > Fields like `state_history`, `cloud_init`, and extended storage/hypervisor
 > metadata (`used_bytes`, `filesystem`, `version`, `api_version`) are not
-> included in Phase 1. The full struct documented below represents the
-> aspirational merged view; refer to `types/inspect.go` for the current
-> implementation.
+> included in Phase 1.
 
 ### 4.1 Complete Inspect Structure
 
 ```go
-package metadata
+package types
 
-import "time"
+// VMInspect is the merged view returned by "cocoon inspect".
+// Combines data from config.json (immutable) and metadata.json (mutable).
+// This struct is never persisted as a single file.
+type VMInspect struct {
+    VMID  string  `json:"vm_id"`
+    Name  string  `json:"name"`
+    State VMState `json:"state"`
 
-// VMMetadata is the merged inspect view combining config.json + metadata.json.
-// This struct is NOT written to disk as a single file.
-type VMMetadata struct {
-    // ===== Identity =====
-    VMID      string    `json:"vm_id"`
-    Name      string    `json:"name"`
-    State     VMState   `json:"state"`
-
-    // ===== Image Information =====
-    Image     ImageInfo `json:"image"`
-
-    // ===== Storage =====
-    Storage   StorageInfo `json:"storage"`
-
-    // ===== Hypervisor =====
-    Hypervisor HypervisorInfo `json:"hypervisor"`
-
-    // ===== Boot Configuration =====
-    BootConfig BootConfig `json:"boot_config"`
-
-    // ===== Cloud-Init Configuration =====
-    CloudInit CloudInitConfig `json:"cloud_init"`
-
-    // ===== Timestamps =====
-    Timestamps Timestamps `json:"timestamps"`
-
-    // ===== Runtime Status =====
-    Runtime    RuntimeStatus `json:"runtime"`
-
-    // ===== State History =====
-    StateHistory []StateTransition `json:"state_history"`
-
-    // ===== Error Information =====
-    Error *ErrorInfo `json:"error,omitempty"`
+    Image      InspectImageInfo      `json:"image"`
+    Storage    InspectStorageInfo    `json:"storage"`
+    Hypervisor InspectHypervisorInfo `json:"hypervisor"`
+    BootConfig InspectBootConfig     `json:"boot_config"`
+    Timestamps InspectTimestamps     `json:"timestamps"`
+    Runtime    InspectRuntimeStatus  `json:"runtime"`
+    Error      *InspectErrorInfo     `json:"error,omitempty"`
 }
 
-// ImageInfo contains OCI image details
-type ImageInfo struct {
-    // Original OCI image reference
-    Ref string `json:"ref"`
-
-    // Image digest (sha256)
-    Digest string `json:"digest"`
-
-    // Content-addressed base image key ({checksum_16}_{arch})
+// InspectImageInfo contains OCI image details.
+type InspectImageInfo struct {
+    Ref     string `json:"ref"`
+    Digest  string `json:"digest"`
     BaseKey string `json:"base_key"`
-
-    // Image size in bytes
-    Size int64 `json:"size"`
-
-    // Image pulled timestamp
-    PulledAt time.Time `json:"pulled_at"`
 }
 
-// StorageInfo contains disk information
-type StorageInfo struct {
-    // Path to overlay disk
+// InspectStorageInfo contains disk information.
+type InspectStorageInfo struct {
     OverlayPath string `json:"overlay_path"`
-
-    // Path to base image (shared, read-only)
-    BasePath string `json:"base_path"`
-
-    // Disk size (e.g., "10G")
-    Size string `json:"size"`
-
-    // Actual disk usage in bytes
-    UsedBytes int64 `json:"used_bytes"`
-
-    // Filesystem type
-    Filesystem string `json:"filesystem"` // "ext4", "xfs", etc.
+    BasePath    string `json:"base_path"`
+    Size        string `json:"size"`
 }
 
-// HypervisorInfo contains Cloud Hypervisor details
-type HypervisorInfo struct {
-    // Cloud Hypervisor API socket path
-    CHSocket string `json:"ch_socket"`
-
-    // Cloud Hypervisor process ID (0 if not running)
-    CHPID int `json:"ch_pid"`
-
-    // Serial console log path
+// InspectHypervisorInfo contains Cloud Hypervisor details.
+type InspectHypervisorInfo struct {
+    CHSocket  string `json:"ch_socket"`
+    CHPID     int    `json:"ch_pid"`
     SerialLog string `json:"serial_log"`
-
-    // Cloud Hypervisor version
-    Version string `json:"version"`
-
-    // API version
-    APIVersion string `json:"api_version"`
 }
 
-// CloudInitConfig contains cloud-init metadata server configuration.
-// NOTE: Phase 2 -- metadata server (169.254.169.254) is not yet implemented.
-// Phase 1 relies on pre-baked cloud-init configuration in the image.
-type CloudInitConfig struct {
-    // [Phase 2] Metadata server address (e.g., "http://169.254.169.254")
-    MetadataServerAddr string `json:"metadata_server_addr"`
-
-    // Instance ID for this VM
-    InstanceID string `json:"instance_id"`
-
-    // Hostname
-    Hostname string `json:"hostname"`
-
-    // Public keys for SSH access
-    PublicKeys []string `json:"public_keys,omitempty"`
-
-    // User-data (cloud-config format)
-    UserData string `json:"user_data,omitempty"`
+// InspectBootConfig contains boot configuration.
+type InspectBootConfig struct {
+    CPUs         int          `json:"cpus"`
+    MemoryMB     int64        `json:"memory_mb"`
+    BootStrategy BootStrategy `json:"boot_strategy"`
+    FirmwarePath string       `json:"firmware_path"`
 }
 
-// BootConfig contains boot configuration
-type BootConfig struct {
-    // Number of vCPUs
-    CPUs int `json:"cpus"`
-
-    // Memory in bytes
-    Memory int64 `json:"memory"`
-
-    // Boot strategy: "pvh_then_uefi" (default), "uefi_only", "pvh_only"
-    BootStrategy string `json:"boot_strategy"`
-
-    // Firmware path (required for both modes)
-    // PVH: /var/lib/cocoon/firmware/hypervisor-fw (passed via --firmware)
-    // UEFI: /var/lib/cocoon/firmware/CLOUDHV.fd (passed via --kernel)
-    // Note: Cloud Hypervisor does NOT auto-detect firmware; explicit path required
-    FirmwarePath string `json:"firmware_path"`
-
-    // Kernel path (if boot_strategy uses direct-kernel boot)
-    KernelPath string `json:"kernel_path,omitempty"`
-
-    // Initrd path (if boot_strategy uses direct-kernel boot)
-    InitrdPath string `json:"initrd_path,omitempty"`
-
-    // Kernel command line
-    KernelCmdline string `json:"kernel_cmdline,omitempty"`
+// InspectTimestamps tracks VM lifecycle events.
+type InspectTimestamps struct {
+    CreatedAt string `json:"created_at"`
+    UpdatedAt string `json:"updated_at"`
+    StartedAt string `json:"started_at,omitempty"`
+    StoppedAt string `json:"stopped_at,omitempty"`
 }
 
-// Timestamps tracks VM lifecycle events
-type Timestamps struct {
-    // VM created timestamp
-    CreatedAt time.Time `json:"created_at"`
-
-    // Last updated timestamp
-    UpdatedAt time.Time `json:"updated_at"`
-
-    // VM started timestamp (nil if never started)
-    StartedAt *time.Time `json:"started_at,omitempty"`
-
-    // VM stopped timestamp (nil if not stopped)
-    StoppedAt *time.Time `json:"stopped_at,omitempty"`
-
-    // VM deleted timestamp
-    DeletedAt *time.Time `json:"deleted_at,omitempty"`
+// InspectRuntimeStatus contains runtime execution information.
+type InspectRuntimeStatus struct {
+    BootTime     string `json:"boot_time,omitempty"`
+    LastBootMode string `json:"last_boot_mode,omitempty"`
+    ErrorCount   int    `json:"error_count"`
 }
 
-// RuntimeStatus contains runtime execution information
-type RuntimeStatus struct {
-    // Exit code (nil if not exited)
-    ExitCode *int `json:"exit_code,omitempty"`
-
-    // Boot time in milliseconds
-    BootTimeMs int64 `json:"boot_time_ms"`
-
-    // Runtime duration in seconds (0 if not stopped)
-    RuntimeSeconds float64 `json:"runtime_seconds"`
-}
-
-// StateTransition records a state change
-type StateTransition struct {
-    From      VMState   `json:"from"`
-    To        VMState   `json:"to"`
-    Timestamp time.Time `json:"timestamp"`
-    Reason    string    `json:"reason"`
-}
-
-// ErrorInfo contains error details
-type ErrorInfo struct {
-    // Error message
-    Message string `json:"message"`
-
-    // Error type: "boot_timeout", "crash", "panic", etc.
-    Type string `json:"type"`
-
-    // Error timestamp
-    Timestamp time.Time `json:"timestamp"`
-
-    // Stack trace (if available)
-    StackTrace string `json:"stack_trace,omitempty"`
-
-    // Serial log excerpt at error time
-    SerialExcerpt string `json:"serial_excerpt,omitempty"`
+// InspectErrorInfo contains error details.
+type InspectErrorInfo struct {
+    Message   string `json:"message"`
+    Type      string `json:"type"`
+    Timestamp string `json:"timestamp"`
 }
 ```
 
@@ -770,30 +629,24 @@ type ErrorInfo struct {
   "image": {
     "ref": "myorg/ubuntu-bootable:22.04",
     "digest": "sha256:abcd1234...",
-    "base_key": "ef015678abcd1234_amd64",
-    "size": 419430400,
-    "pulled_at": "2026-02-11T20:00:00Z"
+    "base_key": "ef015678abcd1234_amd64"
   },
 
   "storage": {
     "overlay_path": "/var/lib/cocoon/vms/vm-abc123/overlay.qcow2",
     "base_path": "/var/lib/cocoon/cache/images/ef015678abcd1234_amd64.qcow2",
-    "size": "10G",
-    "used_bytes": 2147483648,
-    "filesystem": "ext4"
+    "size": "10G"
   },
 
   "hypervisor": {
     "ch_socket": "/run/cocoon/vms/vm-abc123/api.sock",
     "ch_pid": 12345,
-    "serial_log": "/var/log/cocoon/vm-abc123-serial.log",
-    "version": "v38.0",
-    "api_version": "v1"
+    "serial_log": "/var/log/cocoon/vm-abc123-serial.log"
   },
 
   "boot_config": {
     "cpus": 2,
-    "memory": 1073741824,
+    "memory_mb": 1024,
     "boot_strategy": "pvh_then_uefi",
     "firmware_path": "/var/lib/cocoon/firmware/hypervisor-fw"
   },
@@ -801,44 +654,14 @@ type ErrorInfo struct {
   "timestamps": {
     "created_at": "2026-02-11T20:00:00Z",
     "updated_at": "2026-02-11T20:01:30Z",
-    "started_at": "2026-02-11T20:01:00Z",
-    "stopped_at": null
+    "started_at": "2026-02-11T20:01:00Z"
   },
 
   "runtime": {
-    "exit_code": null,
-    "boot_time_ms": 8500,
-    "runtime_seconds": 30.5
-  },
-
-  "state_history": [
-    {
-      "from": "",
-      "to": "CREATING",
-      "timestamp": "2026-02-11T20:00:00Z",
-      "reason": "cocoon create myorg/ubuntu-bootable:22.04"
-    },
-    {
-      "from": "CREATING",
-      "to": "CREATED",
-      "timestamp": "2026-02-11T20:00:15Z",
-      "reason": "Overlay created successfully"
-    },
-    {
-      "from": "CREATED",
-      "to": "STARTING",
-      "timestamp": "2026-02-11T20:01:00Z",
-      "reason": "cocoon start vm-abc123"
-    },
-    {
-      "from": "STARTING",
-      "to": "RUNNING",
-      "timestamp": "2026-02-11T20:01:08Z",
-      "reason": "Guest OS booted successfully"
-    }
-  ],
-
-  "error": null
+    "boot_time": "2.3s",
+    "last_boot_mode": "pvh",
+    "error_count": 0
+  }
 }
 ```
 
@@ -870,8 +693,8 @@ type VMConfig struct {
     Arch            string `json:"arch"`               // Architecture: "amd64", "arm64", etc.
 
     // Boot configuration (immutable)
-    BootStrategy string `json:"boot_strategy"`  // "pvh_then_uefi" (default), "uefi_only", "pvh_only"
-    FirmwarePath string `json:"firmware_path"`  // Primary firmware path resolved at creation
+    BootStrategy BootStrategy `json:"boot_strategy"` // "pvh_then_uefi" (default), "uefi_only", "pvh_only"
+    FirmwarePath string       `json:"firmware_path"`  // Primary firmware path resolved at creation
 
     // Resources (immutable after create; Phase 2 may allow resize)
     CPUs     int    `json:"cpus"`
@@ -921,7 +744,7 @@ type VMConfig struct {
 
 ```go
 // metadata.json — mutable, updated on every state transition
-type VMMetadata struct {
+type VMMetadataFile struct {
     VMID          string `json:"vm_id"`            // Must match config.json
     State         string `json:"state"`            // Current state: CREATING/CREATED/STARTING/RUNNING/STOPPING/STOPPED/ERROR/DELETED
     PreviousState string `json:"previous_state"`   // For transition auditing
@@ -986,7 +809,7 @@ type VMMetadata struct {
 
 ### 5.4 Relationship to Section 4
 
-Section 4 defines the `VMMetadata` struct as a **merged view** — it represents the combined data returned by `cocoon inspect`, which reads from both `config.json` and `metadata.json` and assembles a unified JSON response. **The on-disk format is always split** into `config.json` (immutable) and `metadata.json` (mutable) from Phase 1 onwards. There is no "combined file" phase; the Section 4 struct is purely an API/display model.
+Section 4 defines the `VMInspect` struct as a **merged view** — it represents the combined data returned by `cocoon inspect`, which reads from both `config.json` and `metadata.json` and assembles a unified JSON response. **The on-disk format is always split** into `config.json` (immutable) and `metadata.json` (mutable) from Phase 1 onwards. There is no "combined file" phase; the Section 4 struct is purely an API/display model.
 
 ---
 
@@ -1016,19 +839,20 @@ Section 4 defines the `VMMetadata` struct as a **merged view** — it represents
 Metadata updates use atomic write with temporary file + rename:
 
 ```go
-package metadata
+package types
 
 import (
     "encoding/json"
     "os"
     "path/filepath"
     "syscall"
+    "time"
 )
 
 // SaveMetadata atomically updates VM metadata.
 // Locking uses flock (consistent with 06-concurrency.md § VM Metadata Lock).
 // The lock file is long-lived — never deleted after use.
-func SaveMetadata(meta *VMMetadata) error {
+func SaveMetadata(meta *VMMetadataFile) error {
     // 1. Construct paths
     vmDir := filepath.Join("/var/lib/cocoon/vms", meta.VMID)
     metadataPath := filepath.Join(vmDir, "metadata.json")
@@ -1050,8 +874,8 @@ func SaveMetadata(meta *VMMetadata) error {
     defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
     // NOTE: Do NOT os.Remove(lockPath) — lock file is long-lived.
 
-    // 4. Update timestamp
-    meta.Timestamps.UpdatedAt = time.Now()
+    // 4. Update timestamp (flat field, RFC 3339 string)
+    meta.UpdatedAt = time.Now().Format(time.RFC3339)
 
     // 5. Serialize to JSON
     data, err := json.MarshalIndent(meta, "", "  ")
@@ -1082,7 +906,7 @@ func SaveMetadata(meta *VMMetadata) error {
 }
 
 // LoadMetadata reads VM metadata from disk
-func LoadMetadata(vmID string) (*VMMetadata, error) {
+func LoadMetadata(vmID string) (*VMMetadataFile, error) {
     metadataPath := filepath.Join("/var/lib/cocoon/vms", vmID, "metadata.json")
 
     data, err := os.ReadFile(metadataPath)
@@ -1090,7 +914,7 @@ func LoadMetadata(vmID string) (*VMMetadata, error) {
         return nil, fmt.Errorf("failed to read metadata: %w", err)
     }
 
-    var meta VMMetadata
+    var meta VMMetadataFile
     if err := json.Unmarshal(data, &meta); err != nil {
         return nil, fmt.Errorf("failed to parse metadata: %w", err)
     }
@@ -1158,7 +982,7 @@ func Start(vmID string) error {
     }
 
     // Idempotent: already running → no-op
-    if meta.State == VMStateRunning {
+    if VMState(meta.State) == VMStateRunning {
         log.Info("VM already running")
         return nil
     }
@@ -1183,13 +1007,13 @@ func Stop(vmID string, timeout time.Duration) error {
     }
 
     // Idempotent: already stopped → no-op
-    if meta.State == VMStateStopped {
+    if VMState(meta.State) == VMStateStopped {
         log.Info("VM already stopped")
         return nil
     }
 
     // Wait if stopping
-    if meta.State == VMStateStopping {
+    if VMState(meta.State) == VMStateStopping {
         return waitForStop(vmID, timeout)
     }
 
@@ -1218,7 +1042,7 @@ func Delete(vmID string, force bool) error {
     }
 
     // Stop if running and --force
-    if meta.State == VMStateRunning {
+    if VMState(meta.State) == VMStateRunning {
         if !force {
             return fmt.Errorf("VM is running, use --force to delete")
         }
@@ -1291,31 +1115,26 @@ When a VM enters ERROR state:
 ```go
 func HandleError(vmID string, errType ErrorType, err error) {
     meta, _ := LoadMetadata(vmID)
+    cfg, _ := LoadConfig(vmID)
 
-    // Capture error details
-    meta.Error = &ErrorInfo{
-        Type:      string(errType),
-        Message:   err.Error(),
-        Timestamp: time.Now(),
-    }
-
-    // Capture serial log excerpt
-    if serialLog := readLastLines(meta.Hypervisor.SerialLog, 50); serialLog != "" {
-        meta.Error.SerialExcerpt = serialLog
-    }
+    // Capture error details (flat fields on VMMetadataFile)
+    meta.LastError = fmt.Sprintf("[%s] %s", errType, err.Error())
+    meta.ErrorCount++
 
     // Transition to ERROR state
-    meta.State = VMStateError
+    meta.PreviousState = meta.State
+    meta.State = string(VMStateError)
+    meta.UpdatedAt = time.Now().Format(time.RFC3339)
     SaveMetadata(meta)
 
     // Cleanup running processes
-    if meta.Hypervisor.CHPID > 0 {
-        syscall.Kill(meta.Hypervisor.CHPID, syscall.SIGKILL)
-        meta.Hypervisor.CHPID = 0
+    if meta.ProcessPID > 0 {
+        syscall.Kill(meta.ProcessPID, syscall.SIGKILL)
+        meta.ProcessPID = 0
     }
 
-    // Log error
-    log.Error("VM %s entered ERROR state: %s - %s", vmID, errType, err)
+    // Log error (serial log path from config.json)
+    log.Error("VM %s entered ERROR state: %s - %s (serial: %s)", vmID, errType, err, cfg.SerialLog)
 }
 ```
 
@@ -1427,7 +1246,19 @@ func ReconcileAll() error {
     for _, vmDir := range vmDirs {
         vmID := vmDir.Name()
 
-        // 2a. Load metadata
+        // 2a. Load config (source of truth for VM existence and paths)
+        cfg, err := LoadConfig(vmID)
+        if err != nil {
+            inconsistencies = append(inconsistencies, Inconsistency{
+                VMID:     vmID,
+                Type:     "config_corrupted",
+                Severity: "critical",
+                Details:  err.Error(),
+            })
+            continue
+        }
+
+        // 2b. Load metadata
         meta, err := LoadMetadata(vmID)
         if err != nil {
             inconsistencies = append(inconsistencies, Inconsistency{
@@ -1439,23 +1270,23 @@ func ReconcileAll() error {
             continue
         }
 
-        // 2b. Check PID and process
-        actualState := DetermineActualState(meta)
+        // 2c. Check PID and process
+        actualState := DetermineActualState(meta, cfg)
 
-        // 2c. Compare metadata state vs actual state
-        if meta.State != actualState {
+        // 2d. Compare metadata state vs actual state
+        if VMState(meta.State) != actualState {
             inconsistencies = append(inconsistencies, Inconsistency{
                 VMID:           vmID,
                 Type:           "state_mismatch",
-                Severity:       getSeverity(meta.State, actualState),
-                ExpectedState:  meta.State,
+                Severity:       getSeverity(VMState(meta.State), actualState),
+                ExpectedState:  VMState(meta.State),
                 ActualState:    actualState,
                 Details:        fmt.Sprintf("metadata=%s, actual=%s", meta.State, actualState),
             })
         }
 
-        // 2d. Check for zombie resources
-        zombies := DetectZombieResources(vmID, meta)
+        // 2e. Check for zombie resources
+        zombies := DetectZombieResources(vmID, meta, cfg)
         inconsistencies = append(inconsistencies, zombies...)
     }
 
@@ -1478,9 +1309,9 @@ func ReconcileAll() error {
     return nil
 }
 
-func DetermineActualState(meta *VMMetadata) VMState {
-    pid := meta.Hypervisor.CHPID
-    socket := meta.Hypervisor.CHSocket
+func DetermineActualState(meta *VMMetadataFile, cfg *VMConfig) VMState {
+    pid := meta.ProcessPID
+    socket := cfg.SocketPath
 
     // Check process
     processRunning := isProcessRunning(pid)
@@ -1497,7 +1328,7 @@ func DetermineActualState(meta *VMMetadata) VMState {
     }
 
     // Determine actual state based on evidence
-    switch meta.State {
+    switch VMState(meta.State) {
     case VMStateRunning:
         if processValid && socketConnectable {
             return VMStateRunning // Genuinely running
@@ -1510,7 +1341,8 @@ func DetermineActualState(meta *VMMetadata) VMState {
     case VMStateStarting:
         if processValid {
             // Check how long in STARTING state
-            elapsed := time.Since(meta.Timestamps.UpdatedAt)
+            updatedAt, _ := time.Parse(time.RFC3339, meta.UpdatedAt)
+            elapsed := time.Since(updatedAt)
             if elapsed > 5*time.Minute {
                 return VMStateError // Stuck in STARTING
             }
@@ -1521,7 +1353,8 @@ func DetermineActualState(meta *VMMetadata) VMState {
 
     case VMStateStopping:
         if processValid {
-            elapsed := time.Since(meta.Timestamps.UpdatedAt)
+            updatedAt, _ := time.Parse(time.RFC3339, meta.UpdatedAt)
+            elapsed := time.Since(updatedAt)
             if elapsed > 2*time.Minute {
                 return VMStateError // Stuck in STOPPING
             }
@@ -1552,11 +1385,11 @@ func DetermineActualState(meta *VMMetadata) VMState {
         return VMStateError
 
     default:
-        return meta.State
+        return VMState(meta.State)
     }
 }
 
-func DetectZombieResources(vmID string, meta *VMMetadata) []Inconsistency {
+func DetectZombieResources(vmID string, meta *VMMetadataFile, cfg *VMConfig) []Inconsistency {
     var zombies []Inconsistency
 
     // Check for zombie PID file
@@ -1565,24 +1398,24 @@ func DetectZombieResources(vmID string, meta *VMMetadata) []Inconsistency {
         pidFileContent, _ := os.ReadFile(pidFilePath)
         pidFromFile, _ := strconv.Atoi(string(pidFileContent))
 
-        if pidFromFile != meta.Hypervisor.CHPID {
+        if pidFromFile != meta.ProcessPID {
             zombies = append(zombies, Inconsistency{
                 VMID:     vmID,
                 Type:     "stale_pid_file",
                 Severity: "warning",
-                Details:  fmt.Sprintf("PID file has %d, metadata has %d", pidFromFile, meta.Hypervisor.CHPID),
+                Details:  fmt.Sprintf("PID file has %d, metadata has %d", pidFromFile, meta.ProcessPID),
             })
         }
     }
 
-    // Check for zombie socket
-    if fileExists(meta.Hypervisor.CHSocket) {
-        if !isProcessRunning(meta.Hypervisor.CHPID) {
+    // Check for zombie socket (socket path comes from config.json)
+    if fileExists(cfg.SocketPath) {
+        if !isProcessRunning(meta.ProcessPID) {
             zombies = append(zombies, Inconsistency{
                 VMID:     vmID,
                 Type:     "zombie_socket",
                 Severity: "warning",
-                Details:  fmt.Sprintf("Socket exists at %s but process %d not running", meta.Hypervisor.CHSocket, meta.Hypervisor.CHPID),
+                Details:  fmt.Sprintf("Socket exists at %s but process %d not running", cfg.SocketPath, meta.ProcessPID),
             })
         }
     }
@@ -1595,6 +1428,10 @@ func ApplyFix(inc Inconsistency) error {
     if err != nil {
         return err
     }
+    cfg, err := LoadConfig(inc.VMID)
+    if err != nil {
+        return err
+    }
 
     switch inc.Type {
     case "state_mismatch":
@@ -1604,39 +1441,31 @@ func ApplyFix(inc Inconsistency) error {
 
         if newState == VMStateError || newState == VMStateInconsistent {
             // Crashed or inconsistent → ERROR state
-            meta.State = VMStateError
-            meta.Error = &ErrorInfo{
-                Type:      "reconciliation_detected_crash",
-                Message:   fmt.Sprintf("VM was %s but process not running (likely crashed)", oldState),
-                Timestamp: time.Now(),
-            }
+            meta.PreviousState = meta.State
+            meta.State = string(VMStateError)
+            meta.LastError = fmt.Sprintf("VM was %s but process not running (likely crashed)", oldState)
+            meta.ErrorCount++
 
             // Cleanup zombie process if any
-            if meta.Hypervisor.CHPID > 0 && isProcessRunning(meta.Hypervisor.CHPID) {
-                syscall.Kill(meta.Hypervisor.CHPID, syscall.SIGKILL)
+            if meta.ProcessPID > 0 && isProcessRunning(meta.ProcessPID) {
+                syscall.Kill(meta.ProcessPID, syscall.SIGKILL)
             }
-            meta.Hypervisor.CHPID = 0
+            meta.ProcessPID = 0
 
         } else if newState == VMStateStopped {
             // Was STOPPING or RUNNING but process exited
-            meta.State = VMStateStopped
-            meta.Hypervisor.CHPID = 0
-            now := time.Now()
-            meta.Timestamps.StoppedAt = &now
+            meta.PreviousState = meta.State
+            meta.State = string(VMStateStopped)
+            meta.ProcessPID = 0
+            meta.StoppedAt = time.Now().Format(time.RFC3339)
         }
 
-        meta.StateHistory = append(meta.StateHistory, StateTransition{
-            From:      oldState,
-            To:        meta.State,
-            Timestamp: time.Now(),
-            Reason:    fmt.Sprintf("Reconciliation: %s", inc.Details),
-        })
-
+        meta.UpdatedAt = time.Now().Format(time.RFC3339)
         return SaveMetadata(meta)
 
     case "zombie_socket":
-        // Remove stale socket
-        return os.Remove(meta.Hypervisor.CHSocket)
+        // Remove stale socket (path from config.json)
+        return os.Remove(cfg.SocketPath)
 
     case "stale_pid_file":
         // Remove stale PID file
@@ -1645,9 +1474,9 @@ func ApplyFix(inc Inconsistency) error {
 
     case "zombie_process":
         // Kill orphaned process
-        if meta.Hypervisor.CHPID > 0 {
-            syscall.Kill(meta.Hypervisor.CHPID, syscall.SIGKILL)
-            meta.Hypervisor.CHPID = 0
+        if meta.ProcessPID > 0 {
+            syscall.Kill(meta.ProcessPID, syscall.SIGKILL)
+            meta.ProcessPID = 0
             return SaveMetadata(meta)
         }
 
@@ -1833,7 +1662,7 @@ func Reconcile(fix, force bool) error {
         }
 
         // 3. Check process state
-        processRunning := isProcessRunning(meta.Hypervisor.CHPID)
+        processRunning := isProcessRunning(meta.ProcessPID)
 
         // 4. Detect inconsistencies
         inconsistency := detectInconsistency(meta, processRunning)
@@ -1860,8 +1689,8 @@ func Reconcile(fix, force bool) error {
     return nil
 }
 
-func detectInconsistency(meta *VMMetadata, processRunning bool) string {
-    switch meta.State {
+func detectInconsistency(meta *VMMetadataFile, processRunning bool) string {
+    switch VMState(meta.State) {
     case VMStateRunning:
         if !processRunning {
             return "State is RUNNING but Cloud Hypervisor process not found"
@@ -1874,14 +1703,16 @@ func detectInconsistency(meta *VMMetadata, processRunning bool) string {
 
     case VMStateStarting:
         // Check if stuck in STARTING for too long
-        elapsed := time.Since(meta.Timestamps.UpdatedAt)
+        updatedAt, _ := time.Parse(time.RFC3339, meta.UpdatedAt)
+        elapsed := time.Since(updatedAt)
         if elapsed > 5*time.Minute {
             return fmt.Sprintf("Stuck in STARTING for %v", elapsed)
         }
 
     case VMStateStopping:
         // Check if stuck in STOPPING for too long
-        elapsed := time.Since(meta.Timestamps.UpdatedAt)
+        updatedAt, _ := time.Parse(time.RFC3339, meta.UpdatedAt)
+        elapsed := time.Since(updatedAt)
         if elapsed > 2*time.Minute {
             return fmt.Sprintf("Stuck in STOPPING for %v", elapsed)
         }
@@ -1890,24 +1721,23 @@ func detectInconsistency(meta *VMMetadata, processRunning bool) string {
     return ""
 }
 
-func fixInconsistency(meta *VMMetadata, inconsistency string, force bool) {
-    switch meta.State {
+func fixInconsistency(meta *VMMetadataFile, inconsistency string, force bool) {
+    switch VMState(meta.State) {
     case VMStateRunning:
         // Process not running → mark as ERROR
-        meta.State = VMStateError
-        meta.Error = &ErrorInfo{
-            Type:      "cloud_hypervisor_disappeared",
-            Message:   inconsistency,
-            Timestamp: time.Now(),
-        }
+        meta.PreviousState = meta.State
+        meta.State = string(VMStateError)
+        meta.LastError = inconsistency
+        meta.ErrorCount++
+        meta.UpdatedAt = time.Now().Format(time.RFC3339)
         SaveMetadata(meta)
         log.Info("Fixed: Marked VM %s as ERROR", meta.VMID)
 
     case VMStateStopped:
         // Process still running → kill it
         if force {
-            syscall.Kill(meta.Hypervisor.CHPID, syscall.SIGKILL)
-            meta.Hypervisor.CHPID = 0
+            syscall.Kill(meta.ProcessPID, syscall.SIGKILL)
+            meta.ProcessPID = 0
             SaveMetadata(meta)
             log.Info("Fixed: Killed orphaned process for VM %s", meta.VMID)
         }
@@ -1915,15 +1745,14 @@ func fixInconsistency(meta *VMMetadata, inconsistency string, force bool) {
     case VMStateStarting, VMStateStopping:
         // Stuck in transient state → force to ERROR
         if force {
-            if meta.Hypervisor.CHPID > 0 {
-                syscall.Kill(meta.Hypervisor.CHPID, syscall.SIGKILL)
+            if meta.ProcessPID > 0 {
+                syscall.Kill(meta.ProcessPID, syscall.SIGKILL)
             }
-            meta.State = VMStateError
-            meta.Error = &ErrorInfo{
-                Type:      "stuck_in_transient_state",
-                Message:   inconsistency,
-                Timestamp: time.Now(),
-            }
+            meta.PreviousState = meta.State
+            meta.State = string(VMStateError)
+            meta.LastError = inconsistency
+            meta.ErrorCount++
+            meta.UpdatedAt = time.Now().Format(time.RFC3339)
             SaveMetadata(meta)
             log.Info("Fixed: Moved VM %s to ERROR state", meta.VMID)
         }
@@ -1938,8 +1767,8 @@ func detectOrphanedCHProcesses(knownVMs []string) []int {
     knownPIDs := make(map[int]bool)
     for _, vmID := range knownVMs {
         meta, err := LoadMetadata(vmID)
-        if err == nil && meta.Hypervisor.CHPID > 0 {
-            knownPIDs[meta.Hypervisor.CHPID] = true
+        if err == nil && meta.ProcessPID > 0 {
+            knownPIDs[meta.ProcessPID] = true
         }
     }
 
@@ -1977,7 +1806,7 @@ func detectOrphanedCHProcesses(knownVMs []string) []int {
 **Tasks**:
 - [ ] Implement `VMState` enum and validation
 - [ ] Implement `TransitionState()` with validation
-- [ ] Implement `VMMetadata` struct
+- [ ] Implement `VMMetadataFile` struct
 - [ ] Implement atomic metadata persistence
 - [ ] Add state checks to all operations
 
@@ -2102,9 +1931,6 @@ cocoon delete vm-abc123
 ```bash
 # View current state
 cocoon inspect vm-abc123
-
-# View state history
-cocoon inspect vm-abc123 --history
 
 # View error details
 cocoon inspect vm-abc123 --error
