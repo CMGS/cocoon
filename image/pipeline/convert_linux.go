@@ -36,7 +36,7 @@ mkfs ext4 /dev/sda2
 mount /dev/sda2 /
 mkdir-p /boot/efi
 mount /dev/sda1 /boot/efi
-copy-in %s/ /
+copy-in %s/* /
 sync
 umount-all
 `, outputPath, mountPath)

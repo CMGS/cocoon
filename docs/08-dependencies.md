@@ -8,14 +8,14 @@ Cocoon relies on several external tools and libraries to provide VM management w
 
 | Tool | Purpose | Min Version | Rootless Support | Installation Method |
 |------|---------|-------------|------------------|---------------------|
-| cloud-hypervisor | Virtual Machine Monitor (VMM) | v38.0 | N/A (requires KVM) | Binary or source |
-| rust-hypervisor-firmware | PVH firmware (primary boot mode) | 0.4.2 | N/A | Manual download from GitHub |
+| cloud-hypervisor | Virtual Machine Monitor (VMM) | v50.0 | N/A (requires KVM) | Binary or source |
+| ch-remote | CH remote control (REST API client) | v50.0 | N/A | Binary (ships with CH release) |
+| rust-hypervisor-firmware | PVH firmware (primary boot mode) | 0.5.0 | N/A | Manual download from GitHub |
 | edk2-cloudhv | UEFI firmware for CH (fallback) | Latest | N/A | Download from CH releases or edk2-ovmf |
 | buildah | OCI image pull/extract | 1.35.0 | ✅ Yes | apt/dnf |
 | skopeo | OCI image inspection | 1.14.0 | ✅ Yes | apt/dnf |
 | qemu-img | qcow2 operations | 8.0 | ✅ Yes | apt/dnf (qemu-utils) |
-| virt-format | Format disk images | libguestfs 1.50 | ❌ Needs root | apt/dnf (libguestfs-tools) |
-| virt-copy-in | Copy files into disk | libguestfs 1.50 | ❌ Needs root | apt/dnf (libguestfs-tools) |
+| guestfish | OCI-to-qcow2 conversion (partition, copy rootfs) | libguestfs 1.50 | ❌ Needs root | apt/dnf (libguestfs-tools) |
 | /dev/kvm | KVM device access | kernel 5.6+ | N/A (user in kvm group) | Built-in (kernel module) |
 
 ## Core Dependencies

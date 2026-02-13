@@ -1029,7 +1029,7 @@ func NewGarbageCollector(storageDir string, refs *ReferenceCounter) *GarbageColl
     return &GarbageCollector{
         storageDir: storageDir,
         trashDir:   filepath.Join(storageDir, "trash"),
-        gcLockFile: filepath.Join(storageDir, "gc.lock"),
+        gcLockFile: filepath.Join(storageDir, "db", "gc.lock"),
         refs:       refs,
     }
 }
@@ -1123,7 +1123,7 @@ VM create and delete operations must prevent GC from running concurrently:
 // VM operations should check if GC is running
 func (vm *VMManager) CreateVM(image string, vmID string) error {
     // Acquire GC lock (blocking — waits if GC is running)
-    gcLockPath := filepath.Join(vm.storageDir, "gc.lock")
+    gcLockPath := filepath.Join(vm.storageDir, "db", "gc.lock")
     gcLock, err := os.OpenFile(gcLockPath, os.O_RDWR|os.O_CREATE, 0644)
     if err != nil {
         return err
