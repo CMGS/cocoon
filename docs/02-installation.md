@@ -1,5 +1,10 @@
 # Installation
 
+**Version**: 1.0
+**Status**: Implemented
+**Phase**: Phase 1
+**Last Updated**: 2026-02-14
+
 ## Overview
 
 Cloud Hypervisor is a production-grade Virtual Machine Monitor (VMM) built in Rust, designed for modern cloud workloads. This guide covers installing Cloud Hypervisor for Cocoon AI Agent sandbox environments.

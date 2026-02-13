@@ -395,9 +395,17 @@ func isBootFirmwareError(err error) bool {
 		return false
 	}
 	msg := err.Error()
-	// Only the BootVM stage error prefix indicates a firmware-related failure.
-	// Launch and CreateVM failures are infrastructure errors.
-	return strings.Contains(msg, "boot VM")
+	if strings.Contains(msg, "boot VM") {
+		return true
+	}
+	// Also catch firmware-related launch failures
+	if strings.Contains(msg, "launch CH") {
+		lower := strings.ToLower(msg)
+		return strings.Contains(lower, "firmware") ||
+			strings.Contains(lower, "no such file") ||
+			strings.Contains(lower, "permission denied")
+	}
+	return false
 }
 
 // Start launches the Cloud Hypervisor process for a VM.
@@ -619,6 +627,15 @@ func (m *manager) Kill(ctx context.Context, vmID string) error {
 			md.StoppedAt = now
 			md.ProcessPID = 0
 		})
+	case types.VMStateError:
+		// Clean up any zombie process
+		if m.hyper.IsAlive(vmID) {
+			_ = m.hyper.ForceKill(vmID)
+		}
+		return m.transitionStateWithUpdate(vmID, types.VMStateStopped, "force killed from error state", func(md *types.VMMetadataFile) {
+			md.StoppedAt = now
+			md.ProcessPID = 0
+		})
 	default:
 		return fmt.Errorf("%w: cannot kill VM in state %s", types.ErrInvalidTransition, state)
 	}
@@ -772,6 +789,7 @@ func (m *manager) transitionStateWithUpdate(vmID string, to types.VMState, reaso
 	// Auto-track errors: when entering ERROR, record reason and increment count.
 	if to == types.VMStateError {
 		meta.LastError = reason
+		meta.LastErrorAt = time.Now().UTC().Format(time.RFC3339)
 		meta.ErrorCount++
 	}
 
@@ -780,6 +798,12 @@ func (m *manager) transitionStateWithUpdate(vmID string, to types.VMState, reaso
 	}
 
 	return utils.AtomicWriteJSON(metaPath, &meta)
+}
+
+// UpdateMetadata applies a mutation function to metadata without performing
+// a state transition, atomically under flock. Implements the vm.Manager interface.
+func (m *manager) UpdateMetadata(vmID string, mutate func(*types.VMMetadataFile)) error {
+	return m.updateMetadata(vmID, mutate)
 }
 
 // updateMetadata applies a mutation function to metadata without performing

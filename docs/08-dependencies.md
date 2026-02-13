@@ -1,5 +1,10 @@
 # Dependencies and Requirements
 
+**Version**: 1.0
+**Status**: Implemented
+**Phase**: Phase 1
+**Last Updated**: 2026-02-14
+
 ## Overview
 
 Cocoon relies on several external tools and libraries to provide VM management with OCI image support. This guide covers all dependencies, their purposes, installation instructions, version requirements, and troubleshooting.

@@ -107,6 +107,10 @@ func parseMemory(s string) (int64, error) {
 	if s == "" {
 		return 0, fmt.Errorf("empty memory value")
 	}
+	// Plain numbers without suffix are interpreted as MB (docs/09 spec).
+	if isAllDigits(s) {
+		s = s + "M"
+	}
 
 	bytes, err := units.RAMInBytes(s)
 	if err != nil {
@@ -121,4 +125,13 @@ func parseMemory(s string) (int64, error) {
 		return 0, fmt.Errorf("memory value %q is less than 1MB", s)
 	}
 	return mb, nil
+}
+
+func isAllDigits(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return len(s) > 0
 }

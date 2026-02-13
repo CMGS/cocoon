@@ -193,8 +193,21 @@ func (m *manager) Convert(ctx context.Context, identity *image.ImageIdentity) (s
 // Prepare is the combined pull+convert+cache pipeline. It first checks whether
 // a cached base image already exists for the given ref. If so, it skips pull
 // and convert entirely. Otherwise it runs Pull + Convert and caches the result.
+//
+// For OCI images, the expensive pull+mount (buildah) steps are performed inside
+// the per-image conversion lock so that concurrent creates for the same image
+// result in only one pull. See docs/06-concurrency.md Section 1 for details.
 func (m *manager) Prepare(ctx context.Context, ref string) (*image.ImageIdentity, string, error) {
-	// Step 1: Pull to determine the image identity.
+	imgType := classifyRef(ref)
+
+	// OCI images use a special two-phase flow: identify outside lock,
+	// pull+mount+convert inside lock.
+	if imgType == image.ImageTypeOCI {
+		return m.prepareOCI(ctx, ref)
+	}
+
+	// Non-OCI path (URL, local file): Pull determines identity and provides
+	// the source file path. Convert acquires its own lock.
 	identity, err := m.Pull(ctx, ref)
 	if err != nil {
 		return nil, "", fmt.Errorf("pull %q: %w", ref, err)
@@ -203,18 +216,109 @@ func (m *manager) Prepare(ctx context.Context, ref string) (*image.ImageIdentity
 	baseKey := identity.BaseKey()
 	basePath := m.cfg.BaseImagePath(baseKey)
 
-	// Step 2: Check cache before converting.
+	// Fast path: check cache before converting.
 	if _, statErr := os.Stat(basePath); statErr == nil {
 		log.Printf("image %s: cache hit for %q, skipping conversion", baseKey, ref)
 		return identity, basePath, nil
 	}
 
-	// Step 3: Convert (includes its own per-image lock).
+	// Convert (includes its own per-image lock).
 	basePath, err = m.Convert(ctx, identity)
 	if err != nil {
 		return nil, "", fmt.Errorf("convert %q (key=%s): %w", ref, baseKey, err)
 	}
 
+	return identity, basePath, nil
+}
+
+// prepareOCI implements the OCI-specific Prepare pipeline where the pull+mount
+// happens inside the conversion lock to prevent parallel pulls of the same image.
+//
+// Flow:
+//  1. Identify (skopeo inspect) — cheap, outside lock
+//  2. Fast-path cache check — outside lock
+//  3. Acquire per-image conversion lock (Level 3)
+//  4. Double-check cache — inside lock
+//  5. Pull + mount + convert — inside lock
+//  6. Release lock
+func (m *manager) prepareOCI(ctx context.Context, ref string) (*image.ImageIdentity, string, error) {
+	// Phase 1: Identify — skopeo inspect only, no lock needed.
+	identity, err := identifyOCIPlatform(ctx, ref)
+	if err != nil {
+		return nil, "", fmt.Errorf("identify OCI %q: %w", ref, err)
+	}
+
+	baseKey := identity.BaseKey()
+	basePath := m.cfg.BaseImagePath(baseKey)
+
+	// Phase 2: Fast-path cache check (no lock).
+	if _, statErr := os.Stat(basePath); statErr == nil {
+		log.Printf("image %s: cache hit for %q, skipping pull and conversion", baseKey, ref)
+		return identity, basePath, nil
+	}
+
+	// Phase 3: Acquire per-image conversion lock (Level 3 in lock hierarchy).
+	lockPath := m.cfg.ConversionLockPath(baseKey)
+	fl := flock.New(lockPath)
+	if err := fl.Lock(); err != nil {
+		return nil, "", fmt.Errorf("acquire conversion lock for %s: %w", baseKey, err)
+	}
+	defer func() {
+		if err := fl.Unlock(); err != nil {
+			log.Printf("warning: failed to release conversion lock for %s: %v", baseKey, err)
+		}
+	}()
+
+	// Phase 4: Double-check cache after acquiring lock (another process may
+	// have completed the pull+convert while we waited).
+	if _, statErr := os.Stat(basePath); statErr == nil {
+		log.Printf("image %s: cache hit after lock acquisition for %q, skipping pull and conversion", baseKey, ref)
+		return identity, basePath, nil
+	}
+
+	// Phase 5: Pull + mount (buildah) — inside lock.
+	log.Printf("image %s: pulling OCI image %q", baseKey, ref)
+	if err := pullAndMountOCIPlatform(ctx, m.cfg, identity); err != nil {
+		return nil, "", fmt.Errorf("pull OCI %q: %w", ref, err)
+	}
+
+	// Phase 6: Convert OCI rootfs -> qcow2 — inside lock.
+	log.Printf("image %s: converting OCI rootfs -> qcow2", baseKey)
+
+	srcPath := identity.TempPath
+	if srcPath == "" {
+		return nil, "", fmt.Errorf("convert %s: no source path (TempPath) set after pull", baseKey)
+	}
+
+	if _, statErr := os.Stat(srcPath); statErr != nil {
+		return nil, "", fmt.Errorf("convert %s: source rootfs not found at %s: %w", baseKey, srcPath, statErr)
+	}
+
+	// Ensure cache directory exists.
+	cacheDir := m.cfg.ImageCacheDir()
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil { //nolint:gosec // G301: cache dir needs world-readable access for VM processes
+		return nil, "", fmt.Errorf("convert %s: create cache dir: %w", baseKey, err)
+	}
+
+	tmpPath := basePath + ".tmp"
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	diskSize := "10G" // Default size for OCI conversion
+	if err := convertOCI(ctx, srcPath, tmpPath, diskSize); err != nil {
+		return nil, "", types.NewPermanentError(fmt.Errorf("convert OCI %s: %w", baseKey, err))
+	}
+
+	// Atomic rename into cache.
+	if err := os.Rename(tmpPath, basePath); err != nil {
+		return nil, "", fmt.Errorf("convert %s: rename to cache: %w", baseKey, err)
+	}
+
+	// Cleanup buildah container.
+	if identity.ContainerID != "" {
+		cleanupBuildahContainer(identity.ContainerID, m.cfg)
+	}
+
+	log.Printf("image %s: OCI pull+conversion complete -> %s", baseKey, basePath)
 	return identity, basePath, nil
 }
 
@@ -440,9 +544,13 @@ func classifyRef(ref string) image.ImageType {
 }
 
 // pullOCI handles pulling an OCI image from a container registry.
-// Delegates to the platform-specific pullOCIPlatform function.
+// It only performs the identify phase (skopeo inspect) to compute the
+// content-addressed identity. The expensive pull+mount steps are deferred
+// to inside the conversion lock in Prepare(). For callers using Pull()
+// directly (outside the Prepare pipeline), the identity will not have
+// TempPath or ContainerID set.
 func (m *manager) pullOCI(ctx context.Context, ref string) (*image.ImageIdentity, error) {
-	return pullOCIPlatform(ctx, m.cfg, ref)
+	return identifyOCIPlatform(ctx, ref)
 }
 
 // pullURL handles downloading an image from an HTTP/HTTPS URL.

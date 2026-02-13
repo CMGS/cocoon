@@ -133,16 +133,27 @@ func (m *fileCOWManager) CreateOverlay(baseKey, vmID, diskSize string) (string, 
 	return overlayPath, nil
 }
 
-// RemoveOverlay removes the entire VM persistent directory
-// (/var/lib/cocoon/vms/{vmID}), which contains overlay.qcow2, config.json,
-// metadata.json, etc.
+// RemoveOverlay moves the entire VM persistent directory
+// (/var/lib/cocoon/vms/{vmID}) to the trash directory for potential recovery,
+// as specified in docs/09. The trash entry is named {unixnano}_{vmID} to
+// avoid collisions. If the rename fails (e.g. cross-filesystem), it falls
+// back to a hard delete.
 func (m *fileCOWManager) RemoveOverlay(vmID string) error {
 	vmDir := m.cfg.VMPersistDir(vmID)
 	if _, err := os.Stat(vmDir); os.IsNotExist(err) {
 		return nil // already gone
 	}
-	if err := os.RemoveAll(vmDir); err != nil {
-		return fmt.Errorf("remove VM directory %s: %w", vmDir, err)
+
+	// Move to trash for potential recovery (docs/09 spec).
+	trashDir := m.cfg.TrashDir()
+	if err := os.MkdirAll(trashDir, 0o755); err != nil { //nolint:gosec // G301: trash dir needs same permissions as other cocoon dirs
+		return fmt.Errorf("ensure trash dir: %w", err)
+	}
+	trashName := fmt.Sprintf("%d_%s", time.Now().UnixNano(), vmID)
+	trashPath := filepath.Join(trashDir, trashName)
+	if err := os.Rename(vmDir, trashPath); err != nil {
+		// Cross-filesystem rename fails; fall back to hard delete.
+		return os.RemoveAll(vmDir)
 	}
 	return nil
 }

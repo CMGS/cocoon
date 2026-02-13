@@ -35,18 +35,16 @@ type ociIndex struct {
 	SchemaVersion int    `json:"schemaVersion"`
 }
 
-// pullOCIPlatform pulls an OCI image on Linux using skopeo and buildah.
-func pullOCIPlatform(ctx context.Context, cfg *config.CocoonConfig, ref string) (*image.ImageIdentity, error) {
-	// 1. Check required tools are available.
+// identifyOCIPlatform inspects an OCI image manifest using skopeo to compute
+// the content-addressed identity without pulling the image layers. This is
+// cheap and idempotent, suitable for running outside the conversion lock.
+func identifyOCIPlatform(ctx context.Context, ref string) (*image.ImageIdentity, error) {
+	// 1. Check that skopeo is available.
 	if _, err := exec.LookPath("skopeo"); err != nil {
 		return nil, types.NewPermanentError(fmt.Errorf("skopeo not found in PATH: %w", err))
 	}
-	if _, err := exec.LookPath("buildah"); err != nil {
-		return nil, types.NewPermanentError(fmt.Errorf("buildah not found in PATH: %w", err))
-	}
 
 	arch := goarchToOCI(runtime.GOARCH)
-	root := cfg.BuildahRoot
 
 	// 2. Inspect the raw manifest to determine if it's a manifest list or single manifest.
 	rawManifest, err := runCmd(ctx, "skopeo", "inspect", "--raw", "docker://"+ref)
@@ -86,35 +84,52 @@ func pullOCIPlatform(ctx context.Context, cfg *config.CocoonConfig, ref string) 
 	// 6. Compute content-addressed identity.
 	fullDigest, checksum := computeOCIChecksum(configDigest, layerDigests, arch)
 
-	// 7. Pull image with buildah.
-	if _, err = runCmd(ctx, "buildah", "--root", root, "pull", ref); err != nil {
-		return nil, classifyBuildahError(fmt.Errorf("buildah pull %s: %w", ref, err))
+	// 7. Return identity without TempPath or ContainerID (layers not pulled yet).
+	return &image.ImageIdentity{
+		Checksum:   checksum,
+		Arch:       arch,
+		FullDigest: fullDigest,
+		SourceRef:  ref,
+		ImageType:  image.ImageTypeOCI,
+	}, nil
+}
+
+// pullAndMountOCIPlatform pulls an OCI image and mounts it using buildah.
+// This must be called inside the conversion lock since it performs the expensive
+// pull + container creation + mount operations.
+// On success it populates identity.TempPath and identity.ContainerID.
+func pullAndMountOCIPlatform(ctx context.Context, cfg *config.CocoonConfig, identity *image.ImageIdentity) error {
+	// 1. Check that buildah is available.
+	if _, err := exec.LookPath("buildah"); err != nil {
+		return types.NewPermanentError(fmt.Errorf("buildah not found in PATH: %w", err))
 	}
 
-	// 8. Create working container.
+	ref := identity.SourceRef
+	root := cfg.BuildahRoot
+
+	// 2. Pull image with buildah.
+	if _, err := runCmd(ctx, "buildah", "--root", root, "pull", ref); err != nil {
+		return classifyBuildahError(fmt.Errorf("buildah pull %s: %w", ref, err))
+	}
+
+	// 3. Create working container.
 	containerOut, err := runCmd(ctx, "buildah", "--root", root, "from", ref)
 	if err != nil {
-		return nil, classifyBuildahError(fmt.Errorf("buildah from %s: %w", ref, err))
+		return classifyBuildahError(fmt.Errorf("buildah from %s: %w", ref, err))
 	}
 	containerID := strings.TrimSpace(string(containerOut))
 
-	// 9. Mount container to get rootfs path.
+	// 4. Mount container to get rootfs path.
 	mountOut, err := runCmd(ctx, "buildah", "--root", root, "mount", containerID)
 	if err != nil {
-		return nil, classifyBuildahError(fmt.Errorf("buildah mount %s: %w", containerID, err))
+		return classifyBuildahError(fmt.Errorf("buildah mount %s: %w", containerID, err))
 	}
 	mountPath := strings.TrimSpace(string(mountOut))
 
-	// 10. Return identity.
-	return &image.ImageIdentity{
-		Checksum:    checksum,
-		Arch:        arch,
-		FullDigest:  fullDigest,
-		SourceRef:   ref,
-		ImageType:   image.ImageTypeOCI,
-		TempPath:    mountPath,
-		ContainerID: containerID,
-	}, nil
+	// 5. Populate the identity with transient paths.
+	identity.TempPath = mountPath
+	identity.ContainerID = containerID
+	return nil
 }
 
 // runCmd executes a command and returns its combined stdout output.

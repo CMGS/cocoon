@@ -27,7 +27,7 @@ var ValidTransitions = map[VMState][]VMState{
 	VMStateRunning:  {VMStateStopping, VMStateError},
 	VMStateStopping: {VMStateStopped, VMStateError},
 	VMStateStopped:  {VMStateStarting, VMStateDeleted},
-	VMStateError:    {VMStateDeleted},
+	VMStateError:    {VMStateStopped, VMStateDeleted},
 	VMStateDeleted:  {},
 }
 

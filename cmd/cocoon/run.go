@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	"github.com/CMGS/cocoon/types"
 	cli "github.com/urfave/cli/v2"
 )
 
@@ -58,10 +59,10 @@ func runAction(c *cli.Context) error {
 	// If --rm is set, record it in metadata so the stop command (or a future
 	// lifecycle hook) can auto-delete the VM after it stops.
 	if autoRemove {
-		meta, metaErr := app.vmMgr.LoadMetadata(vmCfg.VMID)
-		if metaErr == nil {
-			meta.AutoRemove = true
-			_ = app.vmMgr.SaveMetadata(meta)
+		if err := app.vmMgr.UpdateMetadata(vmCfg.VMID, func(md *types.VMMetadataFile) {
+			md.AutoRemove = true
+		}); err != nil {
+			return fmt.Errorf("set auto-remove for %s: %w", vmCfg.VMID, err)
 		}
 	}
 

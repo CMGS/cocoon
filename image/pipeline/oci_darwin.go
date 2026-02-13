@@ -10,6 +10,10 @@ import (
 	"github.com/CMGS/cocoon/image"
 )
 
-func pullOCIPlatform(_ context.Context, _ *config.CocoonConfig, ref string) (*image.ImageIdentity, error) {
+func identifyOCIPlatform(_ context.Context, ref string) (*image.ImageIdentity, error) {
 	return nil, fmt.Errorf("OCI registry pull requires buildah and skopeo (Linux only); use a direct URL or local file path instead (ref: %s)", ref)
+}
+
+func pullAndMountOCIPlatform(_ context.Context, _ *config.CocoonConfig, _ *image.ImageIdentity) error {
+	return fmt.Errorf("OCI registry pull requires buildah and skopeo (Linux only)")
 }

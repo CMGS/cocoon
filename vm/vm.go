@@ -39,6 +39,7 @@ type Manager interface {
 	LoadConfig(vmID string) (*types.VMConfig, error)
 	LoadMetadata(vmID string) (*types.VMMetadataFile, error)
 	SaveMetadata(meta *types.VMMetadataFile) error
+	UpdateMetadata(vmID string, mutate func(*types.VMMetadataFile)) error
 
 	// Reconciliation.
 	Reconcile(ctx context.Context, fix bool, force bool) ([]Inconsistency, error)

@@ -1,7 +1,9 @@
 # Building Bootable OCI Images
 
-**Status**: 📋 Planned - Phase 2
-**Priority**: P1 (Important for user onboarding)
+**Version**: 1.0
+**Status**: Implemented
+**Phase**: Phase 1
+**Last Updated**: 2026-02-14
 
 ## Overview
 

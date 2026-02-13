@@ -19,7 +19,7 @@ func doctorCommand() *cli.Command {
 			},
 			&cli.BoolFlag{
 				Name:  "force",
-				Usage: "force re-check even if cached results exist",
+				Usage: "kill zombie processes and force-fix stuck states (requires --fix)",
 			},
 			&cli.StringFlag{
 				Name:  "format",
@@ -243,10 +243,23 @@ func doctorAction(c *cli.Context) error {
 			return fmt.Errorf("reconcile: %w", reconcileErr)
 		}
 
-		return printJSON(doctorOutput{
+		if err := printJSON(doctorOutput{
 			Dependencies: checks,
 			Issues:       issues,
-		})
+		}); err != nil {
+			return err
+		}
+
+		failCount := 0
+		for _, chk := range checks {
+			if chk.Status == "fail" {
+				failCount++
+			}
+		}
+		if failCount > 0 || len(issues) > 0 {
+			return cli.Exit("", 1)
+		}
+		return nil
 	}
 
 	// Table mode: print dependency check results.
@@ -299,5 +312,8 @@ func doctorAction(c *cli.Context) error {
 		fmt.Printf("\nFound %d issue(s). Run with --fix to attempt automatic repair.\n", len(issues))
 	}
 
+	if failCount > 0 || len(issues) > 0 {
+		return cli.Exit("", 1)
+	}
 	return nil
 }

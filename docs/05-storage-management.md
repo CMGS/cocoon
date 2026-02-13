@@ -1,5 +1,10 @@
 # Storage Management
 
+**Version**: 1.0
+**Status**: Implemented
+**Phase**: Phase 1
+**Last Updated**: 2026-02-14
+
 ## Overview
 
 This document describes the storage management strategy for the Cocoon AI Agent Sandbox, focusing on directory layout, copy-on-write (COW) optimization, reference counting, and garbage collection. The design enables efficient disk space usage while supporting high-concurrency VM operations.

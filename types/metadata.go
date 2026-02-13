@@ -14,8 +14,10 @@ type VMMetadataFile struct {
 	LastFirmwarePath string `json:"last_firmware_path,omitempty"`
 
 	// Error tracking
-	LastError  string `json:"last_error,omitempty"`
-	ErrorCount int    `json:"error_count"`
+	LastError     string `json:"last_error,omitempty"`
+	LastErrorType string `json:"last_error_type,omitempty"`
+	LastErrorAt   string `json:"last_error_at,omitempty"`
+	ErrorCount    int    `json:"error_count"`
 
 	// Lifecycle flags
 	AutoRemove bool `json:"auto_remove,omitempty"`

@@ -1,5 +1,10 @@
 # Concurrency Design
 
+**Version**: 1.0
+**Status**: Implemented
+**Phase**: Phase 1
+**Last Updated**: 2026-02-14
+
 ## Overview
 
 This document describes the concurrency control mechanisms for the Cocoon AI Agent Sandbox. The design ensures safe concurrent operations across VM creation, deletion, garbage collection, and base image updates while maintaining data integrity and preventing deadlocks.

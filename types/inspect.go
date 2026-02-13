@@ -109,7 +109,9 @@ func BuildInspect(cfg *VMConfig, meta *VMMetadataFile) *VMInspect {
 	}
 	if meta.LastError != "" {
 		inspect.Error = &InspectErrorInfo{
-			Message: meta.LastError,
+			Message:   meta.LastError,
+			Type:      meta.LastErrorType,
+			Timestamp: meta.LastErrorAt,
 		}
 	}
 	return inspect

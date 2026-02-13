@@ -1,9 +1,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 
 	cli "github.com/urfave/cli/v2"
+
+	"github.com/CMGS/cocoon/types"
 )
 
 func rmCommand() *cli.Command {
@@ -36,6 +39,9 @@ func rmAction(c *cli.Context) error {
 	ref := c.Args().Get(0)
 	vmID, err := app.vmMgr.ResolveVMRef(ref)
 	if err != nil {
+		if errors.Is(err, types.ErrVMNotFound) {
+			return nil // idempotent: VM already gone
+		}
 		return fmt.Errorf("resolve VM ref %q: %w", ref, err)
 	}
 

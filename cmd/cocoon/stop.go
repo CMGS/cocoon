@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	cli "github.com/urfave/cli/v2"
@@ -53,7 +54,7 @@ func stopAction(c *cli.Context) error {
 		if delErr := app.vmMgr.Delete(c.Context, vmID, false); delErr != nil {
 			return fmt.Errorf("auto-remove VM %s: %w", vmID, delErr)
 		}
-		fmt.Printf("Auto-removed: %s\n", vmID)
+		fmt.Fprintf(os.Stderr, "Auto-removed: %s\n", vmID)
 	}
 
 	return nil

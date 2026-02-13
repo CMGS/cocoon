@@ -32,6 +32,7 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inc
 	}
 
 	var inconsistencies []vm.Inconsistency
+	knownPIDs := make(map[int]string) // pid -> vmID
 
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -61,6 +62,11 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inc
 				Details:  fmt.Sprintf("failed to load metadata.json: %v", metaErr),
 			})
 			continue
+		}
+
+		// Track known PIDs for orphan detection.
+		if meta.ProcessPID > 0 {
+			knownPIDs[meta.ProcessPID] = vmID
 		}
 
 		// Load config for path information.
@@ -110,6 +116,10 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inc
 		}
 	}
 
+	// Detect orphaned cloud-hypervisor processes not tracked by any VM.
+	orphans := detectOrphanedCHProcesses(knownPIDs)
+	inconsistencies = append(inconsistencies, orphans...)
+
 	// Rebuild the name index (it is a derived cache).
 	if _, err := RebuildNameIndex(m.cfg); err != nil {
 		inconsistencies = append(inconsistencies, vm.Inconsistency{
@@ -140,18 +150,16 @@ func (m *manager) determineActualState(meta *types.VMMetadataFile, vmCfg *types.
 		processValid = utils.ValidateProcess(pid, "cloud-hypervisor")
 	}
 
-	socketExists := false
 	socketConnectable := false
 	if socketPath != "" {
 		if _, err := os.Stat(socketPath); err == nil {
-			socketExists = true
 			socketConnectable = canConnectToSocket(socketPath)
 		}
 	}
 
 	switch metaState {
 	case types.VMStateRunning:
-		if processValid && (socketConnectable || socketExists) {
+		if processValid && socketConnectable {
 			return types.VMStateRunning
 		}
 		// Process dead or PID reused -> crashed.
@@ -159,6 +167,9 @@ func (m *manager) determineActualState(meta *types.VMMetadataFile, vmCfg *types.
 
 	case types.VMStateStarting:
 		if processValid {
+			if isStuckInState(meta.UpdatedAt, 5*time.Minute) {
+				return types.VMStateError
+			}
 			return types.VMStateStarting // still booting
 		}
 		// Process died during start.
@@ -166,6 +177,9 @@ func (m *manager) determineActualState(meta *types.VMMetadataFile, vmCfg *types.
 
 	case types.VMStateStopping:
 		if processValid {
+			if isStuckInState(meta.UpdatedAt, 2*time.Minute) {
+				return types.VMStateError
+			}
 			return types.VMStateStopping // still shutting down
 		}
 		// Process exited -> actually stopped.
@@ -183,6 +197,10 @@ func (m *manager) determineActualState(meta *types.VMMetadataFile, vmCfg *types.
 			return types.VMStateError // unexpected process
 		}
 		return types.VMStateCreated
+
+	case types.VMStateDeleted:
+		// Directory should not exist for DELETED VMs.
+		return types.VMStateError
 
 	case types.VMStateError:
 		return types.VMStateError
@@ -221,7 +239,7 @@ func (m *manager) detectZombieResources(vmID string, meta *types.VMMetadataFile,
 	}
 	if socketPath != "" {
 		if _, err := os.Stat(socketPath); err == nil {
-			if !utils.IsProcessAlive(meta.ProcessPID) {
+			if !utils.ValidateProcess(meta.ProcessPID, "cloud-hypervisor") {
 				zombies = append(zombies, vm.Inconsistency{
 					VMID:     vmID,
 					Type:     vm.InconsistencyZombieSocket,
@@ -339,6 +357,46 @@ func canConnectToSocket(socketPath string) bool {
 	}
 	_ = conn.Close()
 	return true
+}
+
+// isStuckInState returns true if the VM has been in its current state longer
+// than the given timeout, based on the UpdatedAt timestamp.
+func isStuckInState(updatedAt string, timeout time.Duration) bool {
+	if updatedAt == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, updatedAt)
+	if err != nil {
+		return false
+	}
+	return time.Since(t) > timeout
+}
+
+// detectOrphanedCHProcesses scans /proc for cloud-hypervisor processes that
+// are not tracked by any VM's metadata.
+func detectOrphanedCHProcesses(knownPIDs map[int]string) []vm.Inconsistency {
+	var orphans []vm.Inconsistency
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil // Not on Linux or /proc unavailable
+	}
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		if _, known := knownPIDs[pid]; known {
+			continue
+		}
+		if utils.ValidateProcess(pid, "cloud-hypervisor") {
+			orphans = append(orphans, vm.Inconsistency{
+				Type:     vm.InconsistencyZombieProcess,
+				Severity: vm.SeverityWarning,
+				Details:  fmt.Sprintf("orphaned cloud-hypervisor process PID=%d not tracked by any VM", pid),
+			})
+		}
+	}
+	return orphans
 }
 
 // reconcileSeverity returns the severity based on the state mismatch.

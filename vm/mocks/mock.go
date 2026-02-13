@@ -34,6 +34,7 @@ type MockManager struct {
 	LoadConfigFunc      func(vmID string) (*types.VMConfig, error)
 	LoadMetadataFunc    func(vmID string) (*types.VMMetadataFile, error)
 	SaveMetadataFunc    func(meta *types.VMMetadataFile) error
+	UpdateMetadataFunc  func(vmID string, mutate func(*types.VMMetadataFile)) error
 	ReconcileFunc       func(ctx context.Context, fix bool, force bool) ([]vm.Inconsistency, error)
 }
 
@@ -120,6 +121,13 @@ func (m *MockManager) LoadMetadata(vmID string) (*types.VMMetadataFile, error) {
 func (m *MockManager) SaveMetadata(meta *types.VMMetadataFile) error {
 	if m.SaveMetadataFunc != nil {
 		return m.SaveMetadataFunc(meta)
+	}
+	return nil
+}
+
+func (m *MockManager) UpdateMetadata(vmID string, mutate func(*types.VMMetadataFile)) error {
+	if m.UpdateMetadataFunc != nil {
+		return m.UpdateMetadataFunc(vmID, mutate)
 	}
 	return nil
 }

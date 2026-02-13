@@ -1,8 +1,9 @@
 # CLI Design and Commands
 
 **Version**: 1.0
-**Status**: Draft
-**Last Updated**: 2026-02-11
+**Status**: Implemented
+**Phase**: Phase 1
+**Last Updated**: 2026-02-14
 
 ## ⚠️ Supported Image Contract
 

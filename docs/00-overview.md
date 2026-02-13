@@ -1,5 +1,10 @@
 # Cocoon Overview
 
+**Version**: 1.0
+**Status**: Implemented
+**Phase**: Phase 1
+**Last Updated**: 2026-02-14
+
 ## ⚠️ Supported Image Contract
 
 **IMPORTANT**: Cocoon does NOT support regular container images (e.g., `ubuntu:latest`, `python:3.11`, `node:20`).
@@ -120,45 +125,35 @@ Modern VM workloads and development environments face a challenging trade-off be
 
 ## Architecture Overview
 
-Cocoon's architecture integrates several components to provide seamless OCI-to-VM conversion:
-
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     Cocoon CLI                               │
-│          (create/start/stop/delete/inspect)                  │
-└──────────────────┬──────────────────────────────────────────┘
-                   │
-        ┌──────────┴──────────┐
-        │                     │
-        v                     v
-┌───────────────┐     ┌──────────────────────────┐
-│   Buildah     │     │   Cloud Hypervisor       │
-│  (OCI Pull &  │     │   (VMM with REST API)    │
-│   Extract)    │     │                          │
-└───────┬───────┘     └────────┬─────────────────┘
-        │                      │
-        v                      │
-┌───────────────────┐          │
-│  qemu-img +       │          │
-│  libguestfs       │          │
-│  (OCI → qcow2)    │          │
-└─────────┬─────────┘          │
-          │                    │
-          v                    v
-┌─────────────────────────────────────────────┐
-│         qcow2 Storage Layer                  │
-│  ┌──────────────┐    ┌──────────────────┐  │
-│  │ Base Images  │───▶│  VM Overlays     │  │
-│  │ (checksum-   │    │  (COW per-VM)    │  │
-│  │  cached)     │    │                  │  │
-│  └──────────────┘    └──────────────────┘  │
-└─────────────────────────────────────────────┘
-          │
-          v
-┌─────────────────────────────────────────────┐
-│      Reference Counter + GC                  │
-│   (Automatic cleanup of unused images)       │
-└─────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                          Cocoon CLI                               │
+│   create/start/stop/kill/delete/inspect/ps/logs/console/doctor   │
+└───────────────────────────┬──────────────────────────────────────┘
+                            │
+          ┌─────────────────┼─────────────────────┐
+          │                 │                     │
+          v                 v                     v
+┌─────────────────┐ ┌──────────────────┐ ┌──────────────────────┐
+│  Image Pipeline │ │   VM Manager     │ │  CNI Network Mgr [2] │
+│  (Pull/Convert) │ │  (State Machine) │ │  (TAP/Bridge/IPAM)   │
+└────────┬────────┘ └────────┬─────────┘ └──────────┬───────────┘
+         │                   │                      │
+         v                   v                      v
+┌─────────────────┐ ┌──────────────────┐ ┌──────────────────────┐
+│  Buildah/Skopeo │ │ Cloud Hypervisor │ │  CNI Plugins         │
+│  qemu-img       │ │ (per-VM process) │ │  (bridge/macvlan/    │
+│  libguestfs     │ │  REST API        │ │   host-local/dhcp)   │
+└────────┬────────┘ └────────┬─────────┘ └──────────────────────┘
+         │                   │
+         v                   v
+┌──────────────────────────────────────────────────────────────────┐
+│                     qcow2 Storage Layer                          │
+│  Base Images (checksum-cached) ──▶ VM Overlays (COW per-VM)      │
+│  Reference Counter + GC + Trash                                  │
+└──────────────────────────────────────────────────────────────────┘
+
+[2] = Phase 2 planned feature
 ```
 
 ### Component Flow
@@ -224,35 +219,41 @@ VM overlays:    vm-001-overlay.qcow2 (200KB, writable)
 2. Store qcow2 as `{checksum}_{arch}.qcow2` in cache directory
 3. Reference counter tracks VM usage of each base image
 
-## Phase 1 vs Phase 2 Scope
+## Phased Roadmap
 
-### Phase 1: Core Functionality (Current Focus)
+### Phase 1: Core VM Management (Implemented)
 
-**In Scope**:
-- ✅ Cloud Hypervisor installation and setup documentation
-- ✅ OCI image pull, cache, and qcow2 conversion
-- ✅ VM lifecycle management (create/start/stop/delete)
-- ✅ Copy-on-write storage with backing files
+Phase 1 delivers a complete, production-ready VM lifecycle management system.
+
+- ✅ Cloud Hypervisor installation, setup, and firmware management
+- ✅ OCI image pull, cache, and qcow2 conversion pipeline
+- ✅ VM lifecycle (create/start/stop/kill/delete) with state machine
+- ✅ Copy-on-write storage with qcow2 backing files
 - ✅ Reference counting and garbage collection
-- ✅ UEFI firmware handling and configuration
-- ✅ CLI tool with Docker-like interface
-- ✅ Interface-driven Go architecture (following core project patterns)
+- ✅ PVH/UEFI dual boot with automatic fallback
+- ✅ Reconciliation and crash recovery (`cocoon doctor`)
+- ✅ CLI tool with Docker-like interface (`cocoon run/ps/logs/inspect`)
+- ✅ Concurrency control with file-based lock hierarchy
 
-**Implementation Timeline**: 10 weeks
+Design docs: [00-overview](./00-overview.md) through [11-bootable-oci-build](./11-bootable-oci-build.md)
 
-### Phase 2: Advanced Features (Future Work)
+### Phase 2: Advanced Features (Planned)
 
-**Explicitly Deferred**:
-- ❌ Network configuration (TAP devices, bridges, network policies)
-- ❌ Live migration between hosts
-- ❌ GPU passthrough for AI workloads
-- ❌ Kubernetes integration (CRI plugin)
-- ❌ Multi-host orchestration
+Phase 2 adds interactive access, VM state management, fast provisioning, and networking.
 
-**Why Deferred**:
-- Phase 1 delivers complete, production-ready VM lifecycle management
-- Network configuration adds significant complexity and testing burden
-- Advanced features can be added incrementally without breaking existing functionality
+- **Console** ([docs/12](./12-console.md)): Interactive bidirectional PTY console via `cocoon console`, dual-port strategy (serial for logs, virtio-console for interactive access), SSH-style escape sequences
+- **Pause/Resume** ([docs/13](./13-pause-resume.md)): New PAUSED state in the VM state machine, vCPU freeze/unfreeze via Cloud Hypervisor `vm.pause`/`vm.resume` API, prerequisite for checkpoint/restore
+- **Warm Start** ([docs/15](./15-warm-start.md)): VM checkpoint and restore for sub-second creation (~200ms vs 5-30s cold boot), golden checkpoint workflow, snapshot management with GC integration
+- **CNI Networking** ([docs/16](./16-networking.md)): CNI plugin integration for VM network attachment, TAP device bridging into VMs, IPAM (host-local/dhcp), port forwarding via portmap plugin, DNS injection
+
+### Phase 3: Hardware and Ecosystem (Future)
+
+Phase 3 extends Cocoon to hardware-accelerated workloads and broader ecosystem integration.
+
+- **Device Passthrough** ([docs/14](./14-device-passthrough.md)): VFIO PCI device passthrough, IOMMU group validation, GPU convenience flags, hotplug support
+- **Kubernetes Integration**: CRI plugin for using Cocoon VMs as Pod sandboxes (not yet designed)
+- **Live Migration**: Cross-host VM migration (not yet designed)
+- **Multi-host Orchestration**: Distributed VM scheduling (not yet designed)
 
 ## Goals and Non-Goals
 
@@ -268,13 +269,12 @@ VM overlays:    vm-001-overlay.qcow2 (200KB, writable)
 8. **Production Architecture**: Follow proven patterns from core project (interfaces, factories, JSON config)
 9. **Intuitive CLI**: Docker-like commands (run, create, start, stop, delete, doctor, firmware)
 
-### Non-Goals (Phase 1)
+### Non-Goals
 
-- **Network Configuration**: Explicitly deferred to Phase 2
-- **Live Migration**: Out of scope for Phase 1
-- **GPU Passthrough**: Future consideration
-- **Kubernetes Integration**: Future consideration
-- **Multi-host Orchestration**: Future consideration
+- **Live Migration**: Cross-host VM migration (Phase 3+)
+- **Kubernetes Integration**: CRI plugin for K8s Pod sandboxes (Phase 3+)
+- **Multi-host Orchestration**: Distributed VM scheduling (Phase 3+)
+- **Container Compatibility**: Cocoon is NOT a container runtime — regular container images are not supported
 
 ## Use Cases
 
@@ -306,6 +306,7 @@ Cocoon is a general-purpose lightweight VM manager. Common use cases include:
 
 ## Technology Stack
 
+**Core (Phase 1)**:
 - **Hypervisor**: Cloud Hypervisor (Rust-based VMM, production-grade)
 - **Language**: Go 1.25+ (interface-driven, factory pattern)
 - **OCI Tools**: Buildah (daemonless, rootless-capable)
@@ -313,6 +314,11 @@ Cocoon is a general-purpose lightweight VM manager. Common use cases include:
 - **Firmware**: OVMF (UEFI) or rust-hypervisor-firmware (PVH)
 - **CLI Framework**: urfave/cli/v2
 - **Configuration**: JSON with sensible defaults
+
+**Phase 2 Additions**:
+- **Networking**: CNI plugins (bridge, macvlan, host-local IPAM, portmap)
+- **Console**: virtio-console PTY via Cloud Hypervisor `vm.info` API
+- **Checkpoint**: Cloud Hypervisor `vm.snapshot`/`vm.restore` API
 
 ## Deployment Strategy
 
@@ -394,6 +400,42 @@ For quick evaluation without dealing with rootless limitations:
    ```
 
 **Note**: This path uses cloud images directly, bypassing the OCI conversion pipeline. For OCI image support, you need libguestfs tools (requires root access via hybrid mode).
+
+## Document Index
+
+### Phase 1: Core VM Management
+
+| Doc | Title | Status |
+|-----|-------|--------|
+| [00-overview.md](./00-overview.md) | Cocoon Overview | Implemented |
+| [01-boot-contract.md](./01-boot-contract.md) | Boot Contract Specification | Implemented |
+| [02-installation.md](./02-installation.md) | Installation | Implemented |
+| [03-hypervisor-integration.md](./03-hypervisor-integration.md) | Cloud Hypervisor Integration | Implemented |
+| [04-oci-conversion.md](./04-oci-conversion.md) | OCI to qcow2 Conversion | Implemented |
+| [05-storage-management.md](./05-storage-management.md) | Storage Management | Implemented |
+| [06-concurrency.md](./06-concurrency.md) | Concurrency Design | Implemented |
+| [07-vm-lifecycle.md](./07-vm-lifecycle.md) | VM Lifecycle Management | Implemented |
+| [08-dependencies.md](./08-dependencies.md) | Dependencies and Requirements | Implemented |
+| [09-cli-design.md](./09-cli-design.md) | CLI Design and Commands | Implemented |
+| [10-implementation-roadmap.md](./10-implementation-roadmap.md) | Implementation Roadmap | Implemented |
+| [11-bootable-oci-build.md](./11-bootable-oci-build.md) | Building Bootable OCI Images | Implemented |
+
+### Phase 2: Advanced Features
+
+| Doc | Title | Status |
+|-----|-------|--------|
+| [12-console.md](./12-console.md) | VM Console | Planned |
+| [13-pause-resume.md](./13-pause-resume.md) | VM Pause and Resume | Planned |
+| [15-warm-start.md](./15-warm-start.md) | VM Warm Start (Checkpoint/Restore) | Planned |
+| [16-networking.md](./16-networking.md) | CNI Networking | Planned |
+
+### Phase 3: Hardware and Ecosystem
+
+| Doc | Title | Status |
+|-----|-------|--------|
+| [14-device-passthrough.md](./14-device-passthrough.md) | PCI Device Passthrough | Planned |
+
+See [docs/future/](./future/) for feature requests not yet promoted to design documents.
 
 ## Next Steps
 
