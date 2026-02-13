@@ -1742,7 +1742,7 @@ wget -q -O test-image.img "$PINNED_URL"
 sha256sum -c test/fixtures/verified-images.sha256
 
 # Full lifecycle pipeline
-cocoon create test-image.img --name ci-boot-test --cpus 1 --memory 1G --disk-size 5G
+cocoon create test-image.img --name ci-boot-test --cpus 1 --memory 1G --disk 5G
 cocoon start ci-boot-test --boot-timeout 120s
 cocoon logs ci-boot-test --tail 20  # Verify boot markers
 cocoon inspect ci-boot-test         # Verify state == RUNNING
@@ -1772,7 +1772,7 @@ cocoon image verify "ghcr.io/CMGS/cocoon-test-images/ubuntu-bootable@sha256:${PI
 
 # Full conversion + boot + lifecycle pipeline
 cocoon create "ghcr.io/CMGS/cocoon-test-images/ubuntu-bootable@sha256:${PINNED_DIGEST}" \
-  --name ci-oci-test --cpus 1 --memory 1G --disk-size 5G
+  --name ci-oci-test --cpus 1 --memory 1G --disk 5G
 cocoon start ci-oci-test --boot-timeout 180s
 cocoon logs ci-oci-test --tail 20     # Verify systemd + cloud-init markers
 cocoon inspect ci-oci-test            # Verify state == RUNNING

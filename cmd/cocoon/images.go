@@ -75,7 +75,13 @@ func imagePullCommand() *cli.Command {
 		Name:      "pull",
 		Usage:     "Pull and cache an image without creating a VM",
 		ArgsUsage: "IMAGE_REF",
-		Action:    imagePullAction,
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:  "type",
+				Usage: "force image source type: oci, url, local (auto-detected if omitted)",
+			},
+		},
+		Action: imagePullAction,
 	}
 }
 
@@ -90,6 +96,10 @@ func imagePullAction(c *cli.Context) error {
 	}
 
 	ref := c.Args().Get(0)
+
+	// TODO: --type flag is accepted but not yet plumbed into the Prepare pipeline.
+	// classifyRef auto-detects the source type internally; override support needs
+	// changes to the image.Manager interface.
 
 	// Use the Prepare pipeline to pull + convert + cache the image.
 	identity, basePath, err := app.imgMgr.Prepare(c.Context, ref)
@@ -107,7 +117,7 @@ func imageInspectCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "inspect",
 		Usage:     "Show details of a cached image (size, checksum, ref count)",
-		ArgsUsage: "BASE_KEY",
+		ArgsUsage: "IMAGE_REF",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "format",
@@ -121,7 +131,7 @@ func imageInspectCommand() *cli.Command {
 
 func imageInspectAction(c *cli.Context) error {
 	if c.NArg() < 1 {
-		return fmt.Errorf("BASE_KEY argument required\n\nUsage: cocoon image inspect BASE_KEY")
+		return fmt.Errorf("IMAGE_REF argument required\n\nUsage: cocoon image inspect IMAGE_REF")
 	}
 
 	app, err := initApp(c)
@@ -129,7 +139,12 @@ func imageInspectAction(c *cli.Context) error {
 		return err
 	}
 
-	baseKey := c.Args().Get(0)
+	ref := c.Args().Get(0)
+
+	baseKey, err := resolveBaseKey(c, app, ref)
+	if err != nil {
+		return err
+	}
 
 	// Look up the cached image.
 	images, err := app.imgMgr.ListCached(c.Context)
@@ -183,14 +198,14 @@ func imageRemoveCommand() *cli.Command {
 		Name:      "remove",
 		Aliases:   []string{"rm"},
 		Usage:     "Remove a cached image (only if unreferenced)",
-		ArgsUsage: "BASE_KEY",
+		ArgsUsage: "IMAGE_REF",
 		Action:    imageRemoveAction,
 	}
 }
 
 func imageRemoveAction(c *cli.Context) error {
 	if c.NArg() < 1 {
-		return fmt.Errorf("BASE_KEY argument required\n\nUsage: cocoon image remove BASE_KEY")
+		return fmt.Errorf("IMAGE_REF argument required\n\nUsage: cocoon image remove IMAGE_REF")
 	}
 
 	app, err := initApp(c)
@@ -198,7 +213,12 @@ func imageRemoveAction(c *cli.Context) error {
 		return err
 	}
 
-	baseKey := c.Args().Get(0)
+	ref := c.Args().Get(0)
+
+	baseKey, err := resolveBaseKey(c, app, ref)
+	if err != nil {
+		return err
+	}
 
 	// Check if the image is still referenced.
 	referenced, err := app.refCtr.IsReferenced(baseKey)
@@ -217,11 +237,34 @@ func imageRemoveAction(c *cli.Context) error {
 	return nil
 }
 
+// resolveBaseKey resolves an image reference to a base_key. It first checks if
+// ref is already a valid base_key in the cache. If not, it treats ref as an
+// image reference and resolves it via Prepare.
+func resolveBaseKey(c *cli.Context, app *appContext, ref string) (string, error) {
+	// Fast path: check if ref is already a valid base_key in cache.
+	images, err := app.imgMgr.ListCached(c.Context)
+	if err != nil {
+		return "", fmt.Errorf("list cached images: %w", err)
+	}
+	for _, img := range images {
+		if img.BaseKey == ref {
+			return ref, nil
+		}
+	}
+
+	// Slow path: treat ref as an image reference, resolve to base_key.
+	identity, _, err := app.imgMgr.Prepare(c.Context, ref)
+	if err != nil {
+		return "", fmt.Errorf("resolve image ref %q: %w", ref, err)
+	}
+	return identity.BaseKey(), nil
+}
+
 func imageVerifyCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "verify",
 		Usage:     "Check if an image is bootable",
-		ArgsUsage: "IMAGE_PATH",
+		ArgsUsage: "IMAGE_REF",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "format",
@@ -235,7 +278,7 @@ func imageVerifyCommand() *cli.Command {
 
 func imageVerifyAction(c *cli.Context) error {
 	if c.NArg() < 1 {
-		return fmt.Errorf("IMAGE_PATH argument required\n\nUsage: cocoon image verify IMAGE_PATH")
+		return fmt.Errorf("IMAGE_REF argument required\n\nUsage: cocoon image verify IMAGE_REF")
 	}
 
 	app, err := initApp(c)
@@ -243,12 +286,18 @@ func imageVerifyAction(c *cli.Context) error {
 		return err
 	}
 
-	imagePath := c.Args().Get(0)
+	arg := c.Args().Get(0)
 	format := c.String("format")
 
-	// Verify the image path exists.
-	if _, statErr := os.Stat(imagePath); statErr != nil {
-		return fmt.Errorf("image path not found: %w", statErr)
+	// If the argument is a local file path, use it directly.
+	// Otherwise, treat it as an image reference and resolve to a cached path.
+	imagePath := arg
+	if _, statErr := os.Stat(arg); statErr != nil {
+		_, basePath, prepErr := app.imgMgr.Prepare(c.Context, arg)
+		if prepErr != nil {
+			return fmt.Errorf("resolve image ref %q: %w", arg, prepErr)
+		}
+		imagePath = basePath
 	}
 
 	result, err := app.imgMgr.VerifyBootability(c.Context, imagePath)

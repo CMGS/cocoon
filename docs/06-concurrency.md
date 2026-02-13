@@ -378,11 +378,11 @@ func (rc *ReferenceCounter) updateReferences(op func(RefData) error) error {
 // ParseBaseKey splits base_key into (checksum, arch).
 // E.g., "a1b2c3d4e5f6a7b8_amd64" → ("a1b2c3d4e5f6a7b8", "amd64").
 func ParseBaseKey(baseKey string) (checksum, arch string, err error) {
-    idx := strings.LastIndex(baseKey, "_")
-    if idx < 0 {
-        return "", "", fmt.Errorf("invalid base_key format: %s", baseKey)
+    parts := strings.SplitN(baseKey, "_", 2)
+    if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+        return "", "", fmt.Errorf("invalid base_key format: %q", baseKey)
     }
-    return baseKey[:idx], baseKey[idx+1:], nil
+    return parts[0], parts[1], nil
 }
 
 // AddReference adds a VM reference to a base image.

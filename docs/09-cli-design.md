@@ -407,7 +407,7 @@ func RunCommand() *cli.Command {
                 Value:   "2G",
             },
             &cli.StringFlag{
-                Name:  "disk-size",
+                Name:  "disk",
                 Usage: "Root disk overlay size (e.g., 10G, 20G)",
                 Value: "10G",
             },
@@ -424,11 +424,6 @@ func RunCommand() *cli.Command {
                 Name:  "boot-strategy",
                 Usage: "Boot strategy: pvh_then_uefi (default), uefi_only, pvh_only",
                 Value: "pvh_then_uefi",
-            },
-            &cli.StringFlag{
-                Name:  "firmware",
-                Usage: "Path to PVH firmware (hypervisor-fw); for UEFI-only use --boot-strategy uefi_only",
-                Value: "/var/lib/cocoon/firmware/hypervisor-fw",
             },
         },
         Action: runAction,
@@ -499,7 +494,7 @@ func CreateCommand() *cli.Command {
                 Value:   "2G",
             },
             &cli.StringFlag{
-                Name:  "disk-size",
+                Name:  "disk",
                 Usage: "Root disk overlay size (e.g., 10G, 20G)",
                 Value: "10G",
             },
@@ -736,12 +731,12 @@ func ListCommand() *cli.Command {
             },
             &cli.StringFlag{
                 Name:  "format",
-                Usage: "Output format (table, json, yaml)",
+                Usage: "Output format (table, json)",
                 Value: "table",
             },
             &cli.StringFlag{
                 Name:  "filter",
-                Usage: "Filter VMs by state (running, stopped, error)",
+                Usage: "Filter by field (e.g., state=running, name=myvm)",
             },
         },
         Action: listAction,
@@ -762,7 +757,7 @@ cocoon list --all
 cocoon list --format json
 
 # Filter by state
-cocoon list --filter running
+cocoon list --filter state=running
 ```
 
 **Output Example**:
@@ -791,7 +786,7 @@ func InspectCommand() *cli.Command {
         Flags: []cli.Flag{
             &cli.StringFlag{
                 Name:  "format",
-                Usage: "Output format (json, yaml)",
+                Usage: "Output format (json)",
                 Value: "json",
             },
         },
@@ -805,9 +800,6 @@ func InspectCommand() *cli.Command {
 ```bash
 # Inspect VM in JSON
 cocoon inspect myvm
-
-# Inspect in YAML
-cocoon inspect myvm --format yaml
 ```
 
 **Output Example**:
@@ -1522,7 +1514,7 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
        },
        Disk: types.DiskConfig{
            RootDiskPath: overlayPath,         // auto-created in /var/lib/cocoon/vms/{vm-id}/
-           Size:         c.String("disk-size"), // from --disk-size flag
+           Size:         c.String("disk"), // from --disk flag
        },
        Resources: types.ResourceConfig{
            CPUs:     cpus,
@@ -1605,7 +1597,7 @@ cocoon run ubuntu-22.04-cloudimg --name myvm --cpus 4 --memory 4G
 # Run VM with custom disk size
 cocoon run ubuntu-22.04-cloudimg \
   --name devvm \
-  --disk-size 50G \
+  --disk 50G \
   --memory 8G \
   --cpus 4
 
@@ -1667,7 +1659,7 @@ cocoon image rm myorg/ubuntu-bootable:22.04 --force
 cocoon list --all
 
 # Filter by state
-cocoon list --filter running
+cocoon list --filter state=running
 
 # Inspect VM details
 cocoon inspect myvm
@@ -1717,7 +1709,7 @@ This CLI design implements the Boot Contract specification:
 
 | Boot Contract Section | CLI Implementation |
 |----------------------|-------------------|
-| §1 Boot Path Decision | `--boot-strategy` flag (default: pvh_then_uefi), `--firmware` flag, automatic UEFI fallback |
+| §1 Boot Path Decision | `--boot-strategy` flag (default: pvh_then_uefi), config-level firmware paths, automatic UEFI fallback |
 | §2 Guest Init Model | Metadata server startup in `cocoon run` |
 | §3 I/O Mechanisms | Serial console via `--serial-log`, `cocoon logs` command |
 | §4 Lifecycle Semantics | `run`, `stop`, `delete`, `kill` commands |

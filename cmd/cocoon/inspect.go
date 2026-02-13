@@ -15,7 +15,7 @@ func inspectCommand() *cli.Command {
 			&cli.StringFlag{
 				Name:  "format",
 				Value: "json",
-				Usage: "output format (json, yaml)",
+				Usage: "output format (json)",
 			},
 		},
 		Action: inspectAction,
@@ -43,6 +43,5 @@ func inspectAction(c *cli.Context) error {
 		return fmt.Errorf("inspect VM: %w", err)
 	}
 
-	// Both json and yaml formats output JSON (no yaml dependency available).
 	return printJSON(info)
 }

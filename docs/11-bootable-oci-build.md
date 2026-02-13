@@ -49,8 +49,8 @@ wget https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-
 # Convert to qcow2 if needed
 qemu-img convert -O qcow2 ubuntu-22.04-server-cloudimg-amd64.img ubuntu-22.04-cloudimg.qcow2
 
-# Use with Cocoon — IMAGE is a positional parameter, --disk-size sets overlay size
-cocoon create ubuntu-22.04-cloudimg.qcow2 --name myvm --cpus 2 --memory 2G --disk-size 20G
+# Use with Cocoon — IMAGE is a positional parameter, --disk sets overlay size
+cocoon create ubuntu-22.04-cloudimg.qcow2 --name myvm --cpus 2 --memory 2G --disk 20G
 ```
 
 **Fedora Cloud Images**:
