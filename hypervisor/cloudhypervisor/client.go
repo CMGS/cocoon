@@ -64,24 +64,15 @@ func New(cfg *config.CocoonConfig) hypervisor.Client {
 // buildLaunchArgs constructs the Cloud Hypervisor CLI arguments for a given
 // VM configuration. It selects the correct firmware flag based on the boot
 // strategy: --kernel for UEFI, --firmware for PVH (the default).
-func buildLaunchArgs(socketPath string, cfg *types.VMConfig) []string {
-	args := []string{
+func buildLaunchArgs(socketPath string, _ *types.VMConfig) []string {
+	// Launch CH in pure daemon mode with only the API socket.
+	// All VM configuration (firmware, cpus, memory, disks, etc.) is sent
+	// via the PUT /api/v1/vm.create REST call. Passing --firmware or
+	// --kernel on the CLI causes newer CH versions (v38+) to auto-create
+	// a VM, which then conflicts with the subsequent vm.create API call.
+	return []string{
 		"--api-socket", socketPath,
 	}
-
-	firmwarePath := cfg.FirmwarePath
-	if firmwarePath != "" {
-		switch cfg.BootStrategy {
-		case types.BootStrategyUEFIOnly:
-			// Cloud Hypervisor uses --kernel for UEFI firmware (CLOUDHV.fd).
-			args = append(args, "--kernel", firmwarePath)
-		default:
-			// PVH and pvh_then_uefi both use --firmware for the initial attempt.
-			args = append(args, "--firmware", firmwarePath)
-		}
-	}
-
-	return args
 }
 
 // Launch starts a Cloud Hypervisor process for the given VM.
@@ -224,7 +215,12 @@ func (c *client) CreateVM(ctx context.Context, socketPath string, vmCfg *hypervi
 		return fmt.Errorf("marshal vm config: %w", err)
 	}
 	return c.doWithRetry(ctx, func() error {
-		return c.doPUT(ctx, socketPath, "/api/v1/vm.create", body)
+		err := c.doPUT(ctx, socketPath, "/api/v1/vm.create", body)
+		if isVMAlreadyCreatedError(err) {
+			log.Printf("CH API reported VM already created for %s; treating vm.create as idempotent success", socketPath)
+			return nil
+		}
+		return err
 	})
 }
 
@@ -310,6 +306,23 @@ type apiError struct {
 }
 
 func (e *apiError) Error() string { return e.Message }
+
+// isVMAlreadyCreatedError checks whether CH returned the known "VM is already
+// created" API error. Some CH versions may report this on vm.create even when
+// the VM is effectively in CREATED state.
+func isVMAlreadyCreatedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ae *apiError
+	if !errors.As(err, &ae) {
+		return false
+	}
+	if ae.StatusCode != http.StatusInternalServerError {
+		return false
+	}
+	return strings.Contains(strings.ToLower(ae.Message), "vm is already created")
+}
 
 // isRetryable determines whether an error is transient and should be retried.
 // Retryable: connection refused, connection reset, HTTP 5xx, HTTP 429.

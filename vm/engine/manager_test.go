@@ -1125,3 +1125,67 @@ func TestBuildCHVMConfig_SetsMaxVCPUs(t *testing.T) {
 		t.Fatalf("max_vcpus = %d, want 4", chCfg.CPUs.MaxVCPUs)
 	}
 }
+
+func TestBuildCHVMConfig_PVHFirmwareInPayload(t *testing.T) {
+	t.Parallel()
+
+	vmCfg := &types.VMConfig{
+		CPUs:         2,
+		MemoryMB:     1024,
+		OverlayPath:  "/tmp/overlay.qcow2",
+		SerialLog:    "/tmp/serial.log",
+		BootStrategy: types.BootStrategyPVHOnly,
+		FirmwarePath: "/usr/share/hypervisor-fw",
+	}
+
+	chCfg := buildCHVMConfig(vmCfg)
+	if chCfg.Payload == nil {
+		t.Fatal("expected Payload to be set for PVH boot")
+	}
+	if chCfg.Payload.Firmware != "/usr/share/hypervisor-fw" {
+		t.Fatalf("payload.firmware = %q, want /usr/share/hypervisor-fw", chCfg.Payload.Firmware)
+	}
+	if chCfg.Payload.Kernel != "" {
+		t.Fatalf("payload.kernel should be empty for PVH, got %q", chCfg.Payload.Kernel)
+	}
+}
+
+func TestBuildCHVMConfig_UEFIFirmwareInPayload(t *testing.T) {
+	t.Parallel()
+
+	vmCfg := &types.VMConfig{
+		CPUs:         2,
+		MemoryMB:     1024,
+		OverlayPath:  "/tmp/overlay.qcow2",
+		SerialLog:    "/tmp/serial.log",
+		BootStrategy: types.BootStrategyUEFIOnly,
+		FirmwarePath: "/usr/share/CLOUDHV.fd",
+	}
+
+	chCfg := buildCHVMConfig(vmCfg)
+	if chCfg.Payload == nil {
+		t.Fatal("expected Payload to be set for UEFI boot")
+	}
+	if chCfg.Payload.Kernel != "/usr/share/CLOUDHV.fd" {
+		t.Fatalf("payload.kernel = %q, want /usr/share/CLOUDHV.fd", chCfg.Payload.Kernel)
+	}
+	if chCfg.Payload.Firmware != "" {
+		t.Fatalf("payload.firmware should be empty for UEFI, got %q", chCfg.Payload.Firmware)
+	}
+}
+
+func TestBuildCHVMConfig_NoFirmwareNoPayload(t *testing.T) {
+	t.Parallel()
+
+	vmCfg := &types.VMConfig{
+		CPUs:        2,
+		MemoryMB:    1024,
+		OverlayPath: "/tmp/overlay.qcow2",
+		SerialLog:   "/tmp/serial.log",
+	}
+
+	chCfg := buildCHVMConfig(vmCfg)
+	if chCfg.Payload != nil {
+		t.Fatalf("expected Payload to be nil when no firmware, got %+v", chCfg.Payload)
+	}
+}

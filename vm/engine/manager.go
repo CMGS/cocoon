@@ -970,7 +970,7 @@ func (m *manager) updateMetadata(vmID string, mutate func(*types.VMMetadataFile)
 // buildCHVMConfig converts a types.VMConfig to the Cloud Hypervisor REST API
 // request body (hypervisor.CHVMConfig) for PUT /api/v1/vm.create.
 func buildCHVMConfig(vmCfg *types.VMConfig) *hypervisor.CHVMConfig {
-	return &hypervisor.CHVMConfig{
+	cfg := &hypervisor.CHVMConfig{
 		CPUs: hypervisor.CHCPUConfig{
 			BootVCPUs: vmCfg.CPUs,
 			MaxVCPUs:  vmCfg.CPUs,
@@ -993,6 +993,25 @@ func buildCHVMConfig(vmCfg *types.VMConfig) *hypervisor.CHVMConfig {
 			Mode: "Off",
 		},
 	}
+
+	// Include firmware/kernel in the REST payload so CH is launched in
+	// pure daemon mode (no --firmware/--kernel CLI flags).
+	if vmCfg.FirmwarePath != "" {
+		switch vmCfg.BootStrategy {
+		case types.BootStrategyUEFIOnly:
+			// CH maps --kernel to payload.kernel for UEFI firmware (CLOUDHV.fd).
+			cfg.Payload = &hypervisor.CHPayloadConfig{
+				Kernel: vmCfg.FirmwarePath,
+			}
+		default:
+			// PVH uses payload.firmware for the hypervisor-fw binary.
+			cfg.Payload = &hypervisor.CHPayloadConfig{
+				Firmware: vmCfg.FirmwarePath,
+			}
+		}
+	}
+
+	return cfg
 }
 
 // resolveUEFIFirmwarePath returns a usable UEFI firmware path. It first checks

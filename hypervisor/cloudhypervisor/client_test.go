@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"testing"
 	"time"
 
@@ -15,7 +16,10 @@ import (
 // buildLaunchArgs tests
 // ---------------------------------------------------------------------------
 
-func TestBuildLaunchArgs_PVHBoot(t *testing.T) {
+// buildLaunchArgs only emits --api-socket; firmware/kernel is sent via the
+// vm.create REST payload to avoid CH auto-creating the VM.
+
+func TestBuildLaunchArgs_OnlyAPISocket(t *testing.T) {
 	cfg := &types.VMConfig{
 		BootStrategy: types.BootStrategyPVHOnly,
 		FirmwarePath: "/usr/share/firmware/pvh.bin",
@@ -23,11 +27,12 @@ func TestBuildLaunchArgs_PVHBoot(t *testing.T) {
 	args := buildLaunchArgs("/tmp/api.sock", cfg)
 
 	assertContainsFlag(t, args, "--api-socket", "/tmp/api.sock")
-	assertContainsFlag(t, args, "--firmware", "/usr/share/firmware/pvh.bin")
+	// Firmware is no longer passed on the CLI.
+	assertNotContainsKey(t, args, "--firmware")
 	assertNotContainsKey(t, args, "--kernel")
 }
 
-func TestBuildLaunchArgs_UEFIBoot(t *testing.T) {
+func TestBuildLaunchArgs_UEFIAlsoNoKernel(t *testing.T) {
 	cfg := &types.VMConfig{
 		BootStrategy: types.BootStrategyUEFIOnly,
 		FirmwarePath: "/usr/share/firmware/CLOUDHV.fd",
@@ -35,32 +40,8 @@ func TestBuildLaunchArgs_UEFIBoot(t *testing.T) {
 	args := buildLaunchArgs("/tmp/api.sock", cfg)
 
 	assertContainsFlag(t, args, "--api-socket", "/tmp/api.sock")
-	assertContainsFlag(t, args, "--kernel", "/usr/share/firmware/CLOUDHV.fd")
-	assertNotContainsKey(t, args, "--firmware")
-}
-
-func TestBuildLaunchArgs_PVHThenUEFI(t *testing.T) {
-	cfg := &types.VMConfig{
-		BootStrategy: types.BootStrategyPVHThenUEFI,
-		FirmwarePath: "/usr/share/firmware/pvh.bin",
-	}
-	args := buildLaunchArgs("/tmp/api.sock", cfg)
-
-	// Initial attempt uses PVH, so --firmware should be present.
-	assertContainsFlag(t, args, "--firmware", "/usr/share/firmware/pvh.bin")
 	assertNotContainsKey(t, args, "--kernel")
-}
-
-func TestBuildLaunchArgs_EmptyFirmwarePath(t *testing.T) {
-	cfg := &types.VMConfig{
-		BootStrategy: types.BootStrategyPVHOnly,
-		FirmwarePath: "",
-	}
-	args := buildLaunchArgs("/tmp/api.sock", cfg)
-
-	assertContainsFlag(t, args, "--api-socket", "/tmp/api.sock")
 	assertNotContainsKey(t, args, "--firmware")
-	assertNotContainsKey(t, args, "--kernel")
 }
 
 func TestBuildLaunchArgs_SocketPathAlwaysPresent(t *testing.T) {
@@ -78,6 +59,8 @@ func TestBuildLaunchArgs_SocketPathAlwaysPresent(t *testing.T) {
 			}
 			args := buildLaunchArgs("/run/cocoon/vms/abc/api.sock", cfg)
 			assertContainsFlag(t, args, "--api-socket", "/run/cocoon/vms/abc/api.sock")
+			assertNotContainsKey(t, args, "--firmware")
+			assertNotContainsKey(t, args, "--kernel")
 		})
 	}
 }
@@ -97,6 +80,29 @@ func TestIsRetryable_APIError500(t *testing.T) {
 	err := &apiError{StatusCode: 500, Message: "internal server error"}
 	if !isRetryable(err) {
 		t.Error("expected HTTP 500 to be retryable")
+	}
+}
+
+func TestIsVMAlreadyCreatedError(t *testing.T) {
+	err := &apiError{
+		StatusCode: 500,
+		Message:    `PUT /api/v1/vm.create returned 500: ["Error from API","The VM could not be created","VM is already created"]`,
+	}
+	if !isVMAlreadyCreatedError(err) {
+		t.Fatal("expected vm.create 'already created' error to be detected")
+	}
+}
+
+func TestIsVMAlreadyCreatedError_FalseForOtherErrors(t *testing.T) {
+	tests := []error{
+		&apiError{StatusCode: 500, Message: "internal server error"},
+		&apiError{StatusCode: 400, Message: "bad request"},
+		errors.New("some other error"),
+	}
+	for _, err := range tests {
+		if isVMAlreadyCreatedError(err) {
+			t.Fatalf("expected false for error: %v", err)
+		}
 	}
 }
 
@@ -252,10 +258,7 @@ func assertContainsFlag(t *testing.T, args []string, key, value string) {
 // assertNotContainsKey checks that args does not contain the given key.
 func assertNotContainsKey(t *testing.T, args []string, key string) {
 	t.Helper()
-	for _, arg := range args {
-		if arg == key {
-			t.Errorf("expected args to NOT contain %s, got %v", key, args)
-			return
-		}
+	if slices.Contains(args, key) {
+		t.Errorf("expected args to NOT contain %s, got %v", key, args)
 	}
 }
