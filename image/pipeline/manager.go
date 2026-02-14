@@ -19,6 +19,7 @@ import (
 
 	"github.com/CMGS/cocoon/config"
 	"github.com/CMGS/cocoon/image"
+	"github.com/CMGS/cocoon/image/refcache"
 	"github.com/CMGS/cocoon/lock/flock"
 	"github.com/CMGS/cocoon/storage"
 	"github.com/CMGS/cocoon/types"
@@ -206,8 +207,25 @@ func (m *manager) Prepare(ctx context.Context, ref string) (*image.ImageIdentity
 		return m.prepareOCI(ctx, ref)
 	}
 
-	// Non-OCI path (URL, local file): Pull determines identity and provides
-	// the source file path. Convert acquires its own lock.
+	// Non-OCI path (URL, local file): check manifest cache before pulling.
+	// The refcache maps IMAGE_REF -> base_key from prior successful pulls.
+	// If the base image file still exists, skip the expensive download.
+	if baseKey, found, _ := refcache.ResolveBaseKey(m.cfg, ref); found {
+		basePath := m.cfg.BaseImagePath(baseKey)
+		if _, statErr := os.Stat(basePath); statErr == nil {
+			log.Printf("image %s: manifest cache hit for %q, skipping pull", baseKey, ref)
+			checksum, arch := parseBaseKey(baseKey)
+			return &image.ImageIdentity{
+				Checksum:  checksum,
+				Arch:      arch,
+				SourceRef: ref,
+				ImageType: imgType,
+			}, basePath, nil
+		}
+	}
+
+	// Cache miss: Pull determines identity and provides the source file path.
+	// Convert acquires its own lock.
 	identity, err := m.Pull(ctx, ref)
 	if err != nil {
 		return nil, "", fmt.Errorf("pull %q: %w", ref, err)
@@ -748,4 +766,12 @@ func atomicCopyFile(src, dst string) error {
 	}
 
 	return nil
+}
+
+// parseBaseKey splits a base_key ("{checksum}_{arch}") into its components.
+func parseBaseKey(baseKey string) (checksum, arch string) {
+	if i := strings.LastIndex(baseKey, "_"); i > 0 {
+		return baseKey[:i], baseKey[i+1:]
+	}
+	return baseKey, ""
 }
