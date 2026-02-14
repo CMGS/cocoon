@@ -284,7 +284,6 @@ func (c *client) cleanupRuntimeFiles(vmID string) {
 	c.stopSwtpm(vmID)
 	_ = os.Remove(c.cfg.VMPIDPath(vmID))
 	_ = os.Remove(c.cfg.VMSocketPath(vmID))
-	_ = os.Remove(c.cfg.VMCHLogPath(vmID))
 }
 
 // startSwtpm launches a swtpm process for TPM 2.0 emulation.

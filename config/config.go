@@ -279,11 +279,11 @@ func (c *CocoonConfig) VMSwtpmPIDPath(vmID string) string {
 }
 
 func (c *CocoonConfig) VMSwtpmLogPath(vmID string) string {
-	return filepath.Join(c.RuntimeDir, "vms", vmID, "swtpm.log")
+	return filepath.Join(c.LogDir, vmID+"-swtpm.log")
 }
 
 func (c *CocoonConfig) VMCHLogPath(vmID string) string {
-	return filepath.Join(c.RuntimeDir, "vms", vmID, "ch.log")
+	return filepath.Join(c.LogDir, vmID+"-ch.log")
 }
 
 func (c *CocoonConfig) BaseImagePath(baseKey string) string {

@@ -711,8 +711,10 @@ func (m *manager) Delete(ctx context.Context, vmID string, force bool) error {
 	_ = os.RemoveAll(vmDir)
 	_ = os.RemoveAll(runtimeDir)
 
-	// Remove serial log (lives outside vmDir, under LogDir).
+	// Remove logs (live outside vmDir, under LogDir).
 	_ = os.Remove(m.cfg.VMSerialLogPath(vmID))
+	_ = os.Remove(m.cfg.VMCHLogPath(vmID))
+	_ = os.Remove(m.cfg.VMSwtpmLogPath(vmID))
 
 	return nil
 }
