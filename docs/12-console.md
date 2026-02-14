@@ -545,8 +545,9 @@ func consoleAction(c *cli.Context) error {
     if err != nil {
         return err
     }
-    if types.VMState(meta.State) != types.VMStateRunning {
-        return fmt.Errorf("VM %s is not running (state: %s)", ref, meta.State)
+    state := types.VMState(meta.State)
+    if state != types.VMStateRunning && state != types.VMStatePaused {
+        return fmt.Errorf("VM %s is not running or paused (state: %s)", ref, meta.State)
     }
 
     // Get PTY path from CH API.
@@ -684,6 +685,27 @@ console=ttyS0 console=hvc0
 
 When multiple `console=` arguments are present, the Linux kernel sends output to all listed consoles. The **last** one listed becomes the primary console (where `/dev/console` points).
 
+### 6.5 Cocoon Console Injection Strategy
+
+Cocoon applies the following strategy for console kernel command line parameters:
+
+| Boot Strategy | Cocoon Behavior |
+|---------------|----------------|
+| PVH (direct kernel boot) | Cocoon appends `console=hvc0` to the kernel command line automatically. If the user supplies a custom `--cmdline`, Cocoon does NOT override it. |
+| UEFI (GRUB boot) | Cocoon does NOT modify the kernel command line. GRUB controls `console=` parameters via `/etc/default/grub` inside the guest image. |
+
+**Default behavior (no user action required)**:
+
+- Standard cloud images (Ubuntu, Fedora, Debian) ship with `systemd-getty-generator`, which auto-spawns `serial-getty@hvcN.service` when it detects `/dev/hvc0`. In most cases, `cocoon console` works immediately after boot without guest configuration.
+
+**When console shows no login prompt**:
+
+If `cocoon console` connects successfully but shows no login prompt, the guest is not running `getty` on `/dev/hvc0`. Remediation:
+
+1. Connect via `cocoon logs` (serial on `/dev/ttyS0`) to inspect the guest.
+2. Enable getty: `systemctl enable --now serial-getty@hvc0.service`
+3. For custom OCI images: ensure `console=hvc0` is in the kernel command line and getty is configured (see §6.3 and §6.4).
+
 ---
 
 ## 7. Error Handling
@@ -693,7 +715,7 @@ When multiple `console=` arguments are present, the Linux kernel sends output to
 | Condition | Error Message | Exit Code |
 |-----------|--------------|-----------|
 | VM not found | `VM not found: <ref>` | 1 |
-| VM not running | `VM <ref> is not running (state: <state>)` | 1 |
+| VM not running or paused | `VM <ref> is not running or paused (state: <state>)` | 1 |
 | No console PTY available | `no console PTY available for <ref> (console mode: Off)` | 1 |
 | PTY path does not exist | `open console PTY <path>: no such file or directory` | 1 |
 | stdin is not a terminal | `stdin is not a terminal; cocoon console requires an interactive TTY` | 1 |

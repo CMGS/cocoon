@@ -135,18 +135,19 @@ func (s VMState) IsRunnable() bool {
 
 ### 2.6 Updated Operation Permission Matrix
 
-| State    | create | start | stop | kill | delete | inspect | pause | resume | logs |
-|----------|--------|-------|------|------|--------|---------|-------|--------|------|
-| CREATING | --     | --    | --   | --   | --     | yes     | --    | --     | --   |
-| CREATED  | --     | yes   | --   | --   | yes    | yes     | --    | --     | --   |
-| STARTING | --     | --    | --   | yes  | --     | yes     | --    | --     | yes  |
-| RUNNING  | --     | --    | yes  | yes  | yes*   | yes     | yes   | --     | yes  |
-| PAUSED   | --     | --    | yes  | yes  | yes*   | yes     | --    | yes    | yes  |
-| STOPPING | --     | --    | --   | yes  | --     | yes     | --    | --     | yes  |
-| STOPPED  | --     | yes   | --   | --   | yes    | yes     | --    | --     | yes  |
-| ERROR    | --     | --    | --   | --   | yes    | yes     | --    | --     | yes  |
+| State    | create | start | stop | kill | delete | inspect | pause | resume | console | logs |
+|----------|--------|-------|------|------|--------|---------|-------|--------|---------|------|
+| CREATING | --     | --    | --   | --   | --     | yes     | --    | --     | --      | --   |
+| CREATED  | --     | yes   | --   | --   | yes    | yes     | --    | --     | --      | --   |
+| STARTING | --     | --    | --   | yes  | --     | yes     | --    | --     | --      | yes  |
+| RUNNING  | --     | --    | yes  | yes  | yes*   | yes     | yes   | --     | yes     | yes  |
+| PAUSED   | --     | --    | yes  | yes  | yes*   | yes     | --    | yes    | yes**   | yes  |
+| STOPPING | --     | --    | --   | yes  | --     | yes     | --    | --     | --      | yes  |
+| STOPPED  | --     | yes   | --   | --   | yes    | yes     | --    | --     | --      | yes  |
+| ERROR    | --     | --    | --   | --   | yes    | yes     | --    | --     | --      | yes  |
 
 `*` = requires `--force`
+`**` = PTY remains open but no guest output arrives while paused; input is buffered and delivered on resume
 
 ---
 

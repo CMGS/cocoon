@@ -55,30 +55,37 @@ Rather than building a bespoke networking layer, Cocoon delegates all network pl
 cocoon create --network bridge myimage
     |
     v
-[1] CNI ADD (bridge plugin)
+[1] Create persistent network namespace for VM
+    |
+    v
+[2] CNI ADD (bridge plugin, inside netns)
     |-- Creates vethN pair
-    |-- Moves one end into network namespace
-    |-- Attaches other end to bridge (cni0)
-    |-- Creates TAP device (tapN) in namespace
+    |-- Moves one end into network namespace (eth0)
+    |-- Attaches other end to host bridge (cni0)
     |-- Calls IPAM plugin (host-local) -> 10.88.0.5/16
     |
     v
-[2] Cocoon reads CNI result
-    |-- IP: 10.88.0.5/16
-    |-- Gateway: 10.88.0.1
-    |-- DNS: 10.88.0.1
-    |-- TAP device: tapN
+[3] Cocoon network shim (inside netns)
+    |-- Creates TAP device (tap0)
+    |-- Sets up tc mirred: eth0 <-> tap0 bidirectional redirect
     |
     v
-[3] Cloud Hypervisor launch
-    |-- --net tap=tapN,mac=AA:BB:CC:DD:EE:01
-    |-- VM boots with virtio-net device
+[4] Cloud Hypervisor launch (via nsenter --net=<netns>)
+    |-- CH process enters VM's network namespace
+    |-- --net tap=tap0,mac=AA:BB:CC:DD:EE:01
+    |-- CH sees tap0 directly (same namespace)
     |
     v
-[4] Guest sees eth0
-    |-- IP configured via cloud-init or kernel cmdline
+[5] Guest sees eth0 (virtio-net)
+    |-- IP configured via cloud-init from CNI IPAM result
     |-- Gateway and DNS set from CNI result
 ```
+
+**Key design decisions**:
+
+- **nsenter for CH**: Cloud Hypervisor enters the VM's network namespace via `nsenter --net=<path>`. This is the only change to the CH launch path. CH's API socket is a Unix domain socket on the filesystem, which is NOT affected by network namespaces, so the host can still communicate with CH normally.
+- **tc mirred for L2 bridging**: Traffic Control `mirred` rules redirect all packets between the CNI interface (`eth0`) and the TAP device (`tap0`) at layer 2. This avoids creating an additional Linux bridge inside the namespace, and preserves all CNI-installed IP addresses, routes, and iptables rules on `eth0` without modification.
+- **Full CNI compatibility**: Any CNI plugin that produces a network interface inside a netns works with this model (bridge, macvlan, ipvlan, Calico). The TC redirect is agnostic to how the interface was created.
 
 ### 1.4 Backward Compatibility
 
@@ -105,76 +112,93 @@ VMs created without `--network` (or with `--network none`) have no TAP device, n
 ```
 +---------------------+     +-------------------+     +-------------------+
 |  cocoon create      |     |  network.Manager  |     |  CNI Plugins      |
-|  --network bridge   |---->|  AddNetwork()     |---->|  bridge + host-   |
-|                     |     |  DeleteNetwork()  |     |  local + portmap  |
-+---------------------+     +-------------------+     +-------------------+
-                                    |                         |
-                                    |  CNI Result             |  TAP device
-                                    |  (IP, GW, DNS, TAP)     |  created in
-                                    v                         |  netns
-                             +-------------------+            |
-                             |  VM Engine        |            |
-                             |  buildCHVMConfig() |<-----------+
-                             |  --net tap=tapN    |
-                             +-------------------+
-                                    |
-                                    v
-                             +-------------------+
-                             | Cloud Hypervisor  |
-                             | virtio-net <->TAP |
-                             +-------------------+
-                                    |
-                                    v
-                             +-------------------+
-                             |   Guest VM        |
-                             |   eth0: 10.88.0.5 |
-                             +-------------------+
+|  --network bridge   |---->|  SetupNetwork()   |---->|  bridge + host-   |
+|                     |     |  TeardownNetwork()|     |  local + portmap  |
++---------------------+     +---+---------------+     +-------------------+
+                                 |                            |
+                                 |  1. CNI ADD in netns       |
+                                 |  2. Create TAP in netns    |
+                                 |  3. tc mirred eth0<->tap0  |
+                                 v                            |
+                          +--------------------+              |
+                          |  VM Engine         |              |
+                          |  nsenter --net=... |              |
+                          |  CH --net tap=tap0 |<-------------+
+                          +--------------------+
+                                 |
+                                 v
+                          +--------------------+
+                          | Cloud Hypervisor   |  (runs inside VM netns)
+                          | virtio-net <-> TAP |
+                          +--------------------+    API socket: host filesystem
+                                 |                  (not affected by netns)
+                                 v
+                          +--------------------+
+                          |   Guest VM         |
+                          |   eth0: 10.88.0.5  |
+                          +--------------------+
 ```
 
 ### 2.2 Network Namespace Strategy
 
-Each VM gets its own network namespace. The CNI plugin creates network devices inside this namespace, and Cloud Hypervisor attaches to the TAP device through the namespace file descriptor.
+Each VM gets its own network namespace. CNI plugins operate inside this namespace, and Cloud Hypervisor enters it via `nsenter` at launch time.
 
 ```
 Host default namespace:
   cni0 (bridge) ---- vethXXXX_host
 
 VM network namespace (/run/cocoon/vms/{vm-id}/netns):
-  vethXXXX_vm ---- tapN
-                      |
-                      +--- Cloud Hypervisor (--net tap=tapN)
-                             |
-                             +--- Guest VM (virtio-net -> eth0)
+  eth0 (veth, CNI-created, holds IP)
+      |
+      +-- tc mirred redirect -->  tap0 (TAP, Cocoon-created)
+      |                             |
+      +-- <-- tc mirred redirect --+
+                                    |
+                                    +--- Cloud Hypervisor (nsenter --net=..., --net tap=tap0)
+                                           |
+                                           +--- Guest VM (virtio-net -> eth0)
 ```
 
-Why per-VM namespaces?
+**Why per-VM namespaces?**
 
-- **Isolation**: Each VM's network stack is isolated from the host and other VMs by default.
-- **CNI compatibility**: CNI plugins expect a network namespace path as input. This is the standard contract.
-- **Cleanup**: Deleting the namespace automatically cleans up all devices inside it.
+- **CNI contract**: CNI plugins require a namespace path (`CNI_NETNS`). This is non-negotiable for CNI compatibility.
+- **Isolation**: Each VM's network stack is isolated from the host and other VMs at the kernel level.
+- **Cleanup**: Deleting the namespace automatically destroys all devices inside it.
 - **Multiple networks**: A single namespace can hold multiple interfaces from different CNI networks.
 
-### 2.3 TAP Device Lifecycle
+**Why nsenter for Cloud Hypervisor?**
 
-TAP devices bridge the gap between the CNI-managed namespace and Cloud Hypervisor's virtio-net backend.
+- Network namespaces only affect the network view. File system, PID namespace, and mount namespace are shared. CH's API socket (`/run/cocoon/vms/{vmID}/api.sock`) is a Unix domain socket on the host filesystem and remains accessible from the host regardless of CH's network namespace.
+- `nsenter` is part of `util-linux`, present on all Linux distributions.
+- This is a single-line change to the CH launch path: prefix the command with `nsenter --net=<path> --`.
+
+**Why tc mirred instead of an internal bridge?**
+
+- **Preserves CNI state**: The IP address, routes, and iptables rules installed by CNI remain on `eth0` unchanged. No need to flush and re-assign IPs.
+- **No extra devices**: No Linux bridge inside the namespace. The `tc` redirect operates at the kernel traffic control layer with zero additional network devices.
+- **Proven model**: This is the same approach used by Kata Containers (`tc-redirect-tap` plugin) for connecting CNI interfaces to VM TAP devices.
+
+### 2.3 TAP Device and TC Redirect Lifecycle
 
 **Creation** (during `cocoon create --network`):
 
 1. Cocoon creates a network namespace for the VM.
-2. CNI ADD is invoked, which creates a veth pair and bridge attachment.
-3. A TAP device is created inside the namespace (by Cocoon, after CNI returns).
-4. The TAP device name and namespace path are recorded in `config.json`.
+2. CNI ADD is invoked, creating a veth pair and bridge attachment. The namespace-side interface (`eth0`) receives an IP from the IPAM plugin.
+3. Inside the namespace, Cocoon creates a persistent TAP device (`tap0`).
+4. TC mirred rules are installed to redirect all traffic bidirectionally between `eth0` and `tap0`.
+5. The TAP device name and namespace path are recorded in `config.json`.
 
 **Runtime** (during `cocoon start`):
 
-1. Cloud Hypervisor is launched with `--net tap=tapN` pointing to the TAP in the namespace.
-2. CH opens the TAP device and attaches it as a virtio-net backend.
+1. Cloud Hypervisor is launched via `nsenter --net=<netns_path>` with `--net tap=tap0`.
+2. CH opens the TAP device (visible because CH is in the same namespace) and attaches it as a virtio-net backend.
 3. Guest sees the device as `eth0` (or `eth1`, `eth2` for additional networks).
+4. Packets from the guest flow: guest eth0 -> virtio-net -> tap0 -> tc mirred -> eth0 (veth) -> host bridge -> internet.
 
 **Destruction** (during `cocoon delete`):
 
 1. CNI DEL is invoked to clean up routes, iptables rules, and IPAM allocations.
-2. The network namespace is deleted, which automatically destroys all devices inside it.
+2. The network namespace is deleted, which automatically destroys all devices (veth, TAP) and TC rules inside it.
 3. If CNI DEL fails, Cocoon still deletes the namespace (force cleanup).
 
 ### 2.4 CNI Plugin Chain
@@ -520,19 +544,14 @@ func (m *cniManager) AddNetwork(ctx context.Context, vmID string, netNSPath stri
         return nil, fmt.Errorf("parse CNI result: %w", err)
     }
 
-    // 7. Create the TAP device inside the namespace.
-    tapName := fmt.Sprintf("tap%d", interfaceIndex(attachment.InterfaceName))
-    if err := createTAPInNamespace(netNSPath, tapName); err != nil {
-        // Rollback: invoke CNI DEL.
-        _ = m.cniConfig.DelNetworkList(ctx, netConf, rt)
-        return nil, fmt.Errorf("create TAP device %q in netns: %w", tapName, err)
-    }
-
-    // 8. Build and return the attachment state.
+    // 7. Build and return the attachment state.
+    // Note: TAP creation and tc mirred setup are handled separately by
+    // SetupTAPAndRedirect() after CNI ADD completes. This keeps the CNI
+    // manager decoupled from the TAP/redirect plumbing.
     state := &NetworkAttachmentState{
         NetworkName:   attachment.Name,
         InterfaceName: attachment.InterfaceName,
-        TAPDevice:     tapName,
+        TAPDevice:     "", // Set by caller after SetupTAPAndRedirect()
         MACAddress:    mac,
     }
 
@@ -726,149 +745,187 @@ func DeleteNetNS(nsPath string) error {
 }
 ```
 
-### 4.4 TAP Device Creation
+### 4.4 TAP Device and TC Redirect Setup
 
 ```go
 package network
 
 import (
-    "fmt"
-    "os"
-    "runtime"
-    "unsafe"
+	"fmt"
+	"os"
+	"os/exec"
+	"runtime"
+	"unsafe"
 
-    "golang.org/x/sys/unix"
+	"golang.org/x/sys/unix"
 )
 
 const (
-    tunDevice = "/dev/net/tun"
+	tunDevice = "/dev/net/tun"
 
-    // ioctl constants for TUN/TAP.
-    ioctlTUNSETIFF   = 0x400454ca
-    ioctlTUNSETPERSIST = 0x400454cb
+	// ioctl constants for TUN/TAP.
+	ioctlTUNSETIFF     = 0x400454ca
+	ioctlTUNSETPERSIST = 0x400454cb
 
-    iffTAP     = 0x0002
-    iffNOPI    = 0x1000
-    iffMultiQueue = 0x0100
+	iffTAP  = 0x0002
+	iffNOPI = 0x1000
 )
 
 // ifReq is the ifreq structure for TUN/TAP ioctl calls.
 type ifReq struct {
-    Name  [unix.IFNAMSIZ]byte
-    Flags uint16
-    _     [22]byte // padding
+	Name  [unix.IFNAMSIZ]byte
+	Flags uint16
+	_     [22]byte // padding
 }
 
-// createTAPInNamespace creates a persistent TAP device inside a network namespace.
-// The TAP device is created with IFF_TAP | IFF_NO_PI flags (raw Ethernet frames,
-// no protocol information header).
-func createTAPInNamespace(nsPath string, tapName string) error {
-    if len(tapName) >= unix.IFNAMSIZ {
-        return fmt.Errorf("TAP name %q exceeds IFNAMSIZ (%d)", tapName, unix.IFNAMSIZ)
-    }
+// SetupTAPAndRedirect creates a persistent TAP device inside the given
+// network namespace and installs tc mirred rules to redirect all traffic
+// bidirectionally between the CNI interface and the TAP device.
+//
+// This is the "glue" between CNI (which creates eth0 with an IP) and
+// Cloud Hypervisor (which attaches to tap0 via --net tap=tap0).
+func SetupTAPAndRedirect(nsPath string, cniIfName string, tapName string) error {
+	// All operations must happen inside the target namespace.
+	errCh := make(chan error, 1)
+	go func() {
+		runtime.LockOSThread()
 
-    // Enter the namespace on a locked OS thread.
-    errCh := make(chan error, 1)
-    go func() {
-        runtime.LockOSThread()
+		// Open target namespace.
+		nsfd, err := unix.Open(nsPath, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+		if err != nil {
+			errCh <- fmt.Errorf("open netns %s: %w", nsPath, err)
+			return
+		}
+		defer unix.Close(nsfd)
 
-        // Open the target namespace.
-        nsfd, err := unix.Open(nsPath, unix.O_RDONLY|unix.O_CLOEXEC, 0)
-        if err != nil {
-            errCh <- fmt.Errorf("open netns %s: %w", nsPath, err)
-            return
-        }
-        defer unix.Close(nsfd)
+		// Save current namespace.
+		origNS, err := unix.Open("/proc/self/ns/net", unix.O_RDONLY|unix.O_CLOEXEC, 0)
+		if err != nil {
+			errCh <- fmt.Errorf("open current netns: %w", err)
+			return
+		}
+		defer unix.Close(origNS)
 
-        // Save current namespace.
-        origNS, err := unix.Open("/proc/self/ns/net", unix.O_RDONLY|unix.O_CLOEXEC, 0)
-        if err != nil {
-            errCh <- fmt.Errorf("open current netns: %w", err)
-            return
-        }
-        defer unix.Close(origNS)
+		// Enter target namespace.
+		if err := unix.Setns(nsfd, unix.CLONE_NEWNET); err != nil {
+			errCh <- fmt.Errorf("setns to %s: %w", nsPath, err)
+			return
+		}
 
-        // Enter target namespace.
-        if err := unix.Setns(nsfd, unix.CLONE_NEWNET); err != nil {
-            errCh <- fmt.Errorf("setns to %s: %w", nsPath, err)
-            return
-        }
+		// Create TAP device + setup tc redirect.
+		err = setupTAPAndTC(cniIfName, tapName)
 
-        // Create TAP device.
-        err = createTAP(tapName)
+		// Restore original namespace.
+		if restoreErr := unix.Setns(origNS, unix.CLONE_NEWNET); restoreErr != nil {
+			if err == nil {
+				err = fmt.Errorf("restore netns: %w", restoreErr)
+			}
+		}
 
-        // Restore original namespace (even if TAP creation failed).
-        if restoreErr := unix.Setns(origNS, unix.CLONE_NEWNET); restoreErr != nil {
-            if err == nil {
-                err = fmt.Errorf("restore netns: %w", restoreErr)
-            }
-        }
+		errCh <- err
+	}()
 
-        errCh <- err
-    }()
+	return <-errCh
+}
 
-    return <-errCh
+// setupTAPAndTC runs inside the target namespace.
+func setupTAPAndTC(cniIfName, tapName string) error {
+	// 1. Create persistent TAP device.
+	if err := createTAP(tapName); err != nil {
+		return fmt.Errorf("create TAP %s: %w", tapName, err)
+	}
+
+	// 2. Install tc mirred redirect rules: cniIf <-> tap bidirectional.
+	if err := setupTCRedirect(cniIfName, tapName); err != nil {
+		return fmt.Errorf("setup tc redirect %s <-> %s: %w", cniIfName, tapName, err)
+	}
+
+	return nil
 }
 
 // createTAP creates a persistent TAP device in the current network namespace.
 func createTAP(name string) error {
-    // Open /dev/net/tun.
-    fd, err := unix.Open(tunDevice, unix.O_RDWR|unix.O_CLOEXEC, 0)
-    if err != nil {
-        return fmt.Errorf("open %s: %w", tunDevice, err)
-    }
-    defer unix.Close(fd)
+	if len(name) >= unix.IFNAMSIZ {
+		return fmt.Errorf("TAP name %q exceeds IFNAMSIZ (%d)", name, unix.IFNAMSIZ)
+	}
 
-    // Configure the TAP device.
-    var req ifReq
-    copy(req.Name[:], name)
-    req.Flags = iffTAP | iffNOPI
+	fd, err := unix.Open(tunDevice, unix.O_RDWR|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", tunDevice, err)
+	}
+	defer unix.Close(fd)
 
-    _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), ioctlTUNSETIFF, uintptr(unsafe.Pointer(&req)))
-    if errno != 0 {
-        return fmt.Errorf("ioctl TUNSETIFF: %w", errno)
-    }
+	var req ifReq
+	copy(req.Name[:], name)
+	req.Flags = iffTAP | iffNOPI
 
-    // Make the TAP device persistent (survives fd close).
-    _, _, errno = unix.Syscall(unix.SYS_IOCTL, uintptr(fd), ioctlTUNSETPERSIST, 1)
-    if errno != 0 {
-        return fmt.Errorf("ioctl TUNSETPERSIST: %w", errno)
-    }
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), ioctlTUNSETIFF, uintptr(unsafe.Pointer(&req)))
+	if errno != 0 {
+		return fmt.Errorf("ioctl TUNSETIFF: %w", errno)
+	}
 
-    // Bring the TAP device up.
-    if err := setInterfaceUp(name); err != nil {
-        return fmt.Errorf("bring up %s: %w", name, err)
-    }
+	// Make persistent (survives fd close).
+	_, _, errno = unix.Syscall(unix.SYS_IOCTL, uintptr(fd), ioctlTUNSETPERSIST, 1)
+	if errno != 0 {
+		return fmt.Errorf("ioctl TUNSETPERSIST: %w", errno)
+	}
 
-    return nil
+	return setInterfaceUp(name)
+}
+
+// setupTCRedirect installs bidirectional tc mirred redirect rules between
+// two interfaces. All packets arriving on ifA are redirected to ifB and
+// vice versa. This operates at layer 2.
+//
+// Equivalent to:
+//   tc qdisc add dev eth0 ingress
+//   tc filter add dev eth0 parent ffff: protocol all u32 match u32 0 0 action mirred egress redirect dev tap0
+//   tc qdisc add dev tap0 ingress
+//   tc filter add dev tap0 parent ffff: protocol all u32 match u32 0 0 action mirred egress redirect dev eth0
+func setupTCRedirect(ifA, ifB string) error {
+	commands := [][]string{
+		{"tc", "qdisc", "add", "dev", ifA, "ingress"},
+		{"tc", "filter", "add", "dev", ifA, "parent", "ffff:", "protocol", "all",
+			"u32", "match", "u32", "0", "0", "action", "mirred", "egress", "redirect", "dev", ifB},
+		{"tc", "qdisc", "add", "dev", ifB, "ingress"},
+		{"tc", "filter", "add", "dev", ifB, "parent", "ffff:", "protocol", "all",
+			"u32", "match", "u32", "0", "0", "action", "mirred", "egress", "redirect", "dev", ifA},
+	}
+
+	for _, args := range commands {
+		cmd := exec.Command(args[0], args[1:]...) //nolint:gosec // args are fixed literals
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("%s: %s: %w", args[0], string(out), err)
+		}
+	}
+
+	return nil
 }
 
 // setInterfaceUp sets the IFF_UP flag on a network interface.
 func setInterfaceUp(name string) error {
-    sock, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
-    if err != nil {
-        return err
-    }
-    defer unix.Close(sock)
+	sock, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(sock)
 
-    var req ifReq
-    copy(req.Name[:], name)
+	var req ifReq
+	copy(req.Name[:], name)
 
-    // Get current flags.
-    _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(sock), unix.SIOCGIFFLAGS, uintptr(unsafe.Pointer(&req)))
-    if errno != 0 {
-        return errno
-    }
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(sock), unix.SIOCGIFFLAGS, uintptr(unsafe.Pointer(&req)))
+	if errno != 0 {
+		return errno
+	}
 
-    // Set IFF_UP.
-    req.Flags |= unix.IFF_UP
+	req.Flags |= unix.IFF_UP
 
-    _, _, errno = unix.Syscall(unix.SYS_IOCTL, uintptr(sock), unix.SIOCSIFFLAGS, uintptr(unsafe.Pointer(&req)))
-    if errno != 0 {
-        return errno
-    }
+	_, _, errno = unix.Syscall(unix.SYS_IOCTL, uintptr(sock), unix.SIOCSIFFLAGS, uintptr(unsafe.Pointer(&req)))
+	if errno != 0 {
+		return errno
+	}
 
-    return nil
+	return nil
 }
 ```
 
@@ -904,36 +961,67 @@ The `buildCHVMConfig` function in `vm/engine/manager.go` is extended to include 
 
 ```go
 func buildCHVMConfig(cfg *types.VMConfig, meta *types.VMMetadataFile) hypervisor.CHVMConfig {
-    vmConfig := hypervisor.CHVMConfig{
-        CPUs: hypervisor.CHCPUConfig{
-            BootVCPUs: cfg.CPUs,
-        },
-        Memory: hypervisor.CHMemoryConfig{
-            Size: cfg.MemoryMB * 1024 * 1024,
-        },
-        Disks: []hypervisor.CHDiskConfig{
-            {Path: cfg.OverlayPath},
-        },
-        Serial: hypervisor.CHSerialConfig{
-            Mode: "File",
-            File: cfg.SerialLog,
-        },
-        Console: hypervisor.CHConsoleConfig{
-            Mode: "Pty",
-        },
-    }
+	vmConfig := hypervisor.CHVMConfig{
+		CPUs: hypervisor.CHCPUConfig{
+			BootVCPUs: cfg.CPUs,
+		},
+		Memory: hypervisor.CHMemoryConfig{
+			Size: cfg.MemoryMB * 1024 * 1024,
+		},
+		Disks: []hypervisor.CHDiskConfig{
+			{Path: cfg.OverlayPath},
+		},
+		Serial: hypervisor.CHSerialConfig{
+			Mode: "File",
+			File: cfg.SerialLog,
+		},
+		Console: hypervisor.CHConsoleConfig{
+			Mode: "Pty",
+		},
+	}
 
-    // Add network devices from network state.
-    if meta.NetworkState.NetNSPath != "" {
-        for _, att := range meta.NetworkState.Attachments {
-            vmConfig.Net = append(vmConfig.Net, hypervisor.CHNetConfig{
-                Tap: att.TAPDevice,
-                MAC: att.MACAddress,
-            })
-        }
-    }
+	// Add network devices from network state.
+	for _, att := range meta.NetworkState.Attachments {
+		vmConfig.Net = append(vmConfig.Net, hypervisor.CHNetConfig{
+			Tap: att.TAPDevice,
+			MAC: att.MACAddress,
+		})
+	}
 
-    return vmConfig
+	return vmConfig
+}
+```
+
+The CH launch function is extended to enter the VM's network namespace when networking is configured:
+
+```go
+// LaunchVM starts a Cloud Hypervisor process for the given VM.
+// If netnsPath is non-empty, CH enters the network namespace via nsenter.
+func (c *client) LaunchVM(ctx context.Context, vmID string, vmConfig CHVMConfig, netnsPath string) (pid int, err error) {
+	args := buildCHArgs(vmConfig)
+
+	var cmd *exec.Cmd
+	if netnsPath != "" {
+		// Launch CH inside the VM's network namespace.
+		// nsenter --net=<path> only changes the network namespace.
+		// File system, PID, and mount namespaces are inherited from the host.
+		// CH's API socket (Unix domain socket on host filesystem) remains
+		// accessible from the host because UDS is filesystem-scoped, not
+		// network-namespace-scoped.
+		nsenterArgs := append([]string{"--net=" + netnsPath, "--", c.cfg.CHBinary}, args...)
+		cmd = exec.CommandContext(ctx, "nsenter", nsenterArgs...) //nolint:gosec // args are from internal config
+	} else {
+		// No networking: launch CH directly in host namespace.
+		cmd = exec.CommandContext(ctx, c.cfg.CHBinary, args...) //nolint:gosec // args are from internal config
+	}
+
+	configureCHProcess(cmd)
+
+	if err := cmd.Start(); err != nil {
+		return 0, fmt.Errorf("start cloud-hypervisor: %w", err)
+	}
+
+	// ... existing PID file, socket wait, process release logic ...
 }
 ```
 
@@ -964,7 +1052,7 @@ func (e *engine) Create(ctx context.Context, opts CreateOptions) (*types.VMConfi
 
         // 3. Invoke CNI ADD for each network.
         var states []types.NetworkAttachmentState
-        for _, att := range attachments {
+        for i, att := range attachments {
             state, err := e.netMgr.AddNetwork(ctx, vmID, nsPath, att)
             if err != nil {
                 // Rollback: delete all networks added so far.
@@ -974,6 +1062,20 @@ func (e *engine) Create(ctx context.Context, opts CreateOptions) (*types.VMConfi
                 _ = network.DeleteNetNS(nsPath)
                 return nil, fmt.Errorf("add network %q: %w", att.Name, err)
             }
+
+            // 4. Create TAP and install tc mirred redirect in the namespace.
+            tapName := fmt.Sprintf("tap%d", i)
+            if err := network.SetupTAPAndRedirect(nsPath, att.InterfaceName, tapName); err != nil {
+                // Rollback: CNI DEL + previous networks.
+                _ = e.netMgr.DeleteNetwork(ctx, vmID, nsPath, att)
+                for j := len(states) - 1; j >= 0; j-- {
+                    _ = e.netMgr.DeleteNetwork(ctx, vmID, nsPath, attachments[j])
+                }
+                _ = network.DeleteNetNS(nsPath)
+                return nil, fmt.Errorf("setup TAP redirect for %q: %w", att.Name, err)
+            }
+
+            state.TAPDevice = tapName
             states = append(states, *state)
         }
 
@@ -1598,6 +1700,25 @@ CNI plugins execute as root on the host. Cocoon trusts plugins found in the conf
 - Plugin binaries are not symlinks to untrusted locations.
 
 `cocoon doctor` verifies plugin directory permissions as a security check.
+
+### 10.6 CNI Plugin Compatibility with TC Redirect
+
+The tc mirred redirect model works with any CNI plugin that produces a standard network interface inside the namespace. Compatibility status:
+
+| CNI Plugin | Compatible | Notes |
+|------------|-----------|-------|
+| bridge | Yes | Primary plugin. Produces veth pair. Fully tested. |
+| macvlan | Yes | Produces macvlan interface. TC redirect works identically. |
+| ipvlan | Yes | Produces ipvlan interface. TC redirect works identically. |
+| host-local (IPAM) | Yes | Pure IPAM plugin, no interaction with TC redirect. |
+| dhcp (IPAM) | Yes | DHCP lease acquired on the CNI interface. Guest receives IP via cloud-init, not DHCP. |
+| portmap | Yes | Installs iptables DNAT rules keyed on IP address. TC redirect does not move the IP, so portmap rules remain valid. |
+| static (IPAM) | Yes | Fixed IP assignment. No interaction with TC redirect. |
+| Calico | Yes | Creates veth pair with BGP routing on host side. TC redirect operates inside netns only. |
+| Cilium | Experimental | Cilium attaches eBPF programs to the veth interface. TC mirred redirect may bypass Cilium's eBPF datapath depending on hook points. Requires testing with specific Cilium version. |
+| SR-IOV | N/A | SR-IOV VFs should use PCI passthrough (see [14-device-passthrough.md](./14-device-passthrough.md)), not TAP/TC redirect. |
+
+**Cilium note**: If Cilium's eBPF programs are attached at the `tc ingress` hook on the CNI interface, the mirred redirect replaces the ingress qdisc and may conflict. For Cilium environments, an alternative integration path (e.g., Cilium's native VM support or a dedicated tap plugin) may be required. This is deferred beyond Phase 2.
 
 ---
 

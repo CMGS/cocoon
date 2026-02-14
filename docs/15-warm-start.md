@@ -1099,6 +1099,46 @@ The base image referenced by the checkpoint's overlay must exist at restore time
 
 A checkpoint taken on x86_64 cannot be restored on aarch64 (and vice versa). The `arch` field in `checkpoint.json` is validated at restore time.
 
+### 10.10 Snapshot Invalidation Rules
+
+A checkpoint becomes invalid (restore will fail or produce undefined behavior) when any of the following change between checkpoint creation and restore:
+
+| Condition | Severity | Behavior |
+|-----------|----------|----------|
+| Cloud Hypervisor major version change | **Hard fail** | Snapshot format may be incompatible. Restore refuses with error. |
+| Firmware binary differs from checkpoint time | **Hard fail** | Memory layout mismatch. Restore refuses with error (override with `--force`). |
+| VM resource configuration change (CPUs, memory, disk size) | **Hard fail** | CH requires identical resource configuration for restore. Cocoon validates and refuses on mismatch. |
+| Base image content changed (same key but different content) | **Hard fail** | Overlay references specific base image blocks. Restore validates the base image checksum recorded in `checkpoint.json` matches the on-disk file. |
+| Guest kernel or initrd changed (inside base image) | **Silent corruption** | CH restores VM state assuming the original kernel. A different kernel in the base image causes undefined guest behavior. Caught by base image checksum validation above. |
+| Host kernel version change | **Usually safe** | KVM API is stable across kernel versions. Rare edge cases with new CPU features. |
+| Network configuration change | **Expected** | TCP/UDP connections are lost on restore by design (§10.3). Applications must reconnect. |
+
+Cocoon validates firmware version, CH version, architecture, resource configuration, and base image checksum at restore time. Any mismatch produces a clear error with `--force` override for version warnings.
+
+### 10.11 Operational Guidance
+
+**Checkpoint sizing**: A checkpoint's disk footprint equals approximately:
+
+```
+checkpoint_size ≈ VM_memory_size + overlay_actual_usage
+```
+
+A VM with 2GB memory and 100MB of overlay writes produces a ~2.1GB checkpoint. With `--compress` (zstd), memory state typically compresses 2-5x (many zero pages), reducing the example to ~0.5-1.1GB.
+
+**Capacity planning**:
+
+- Monitor total checkpoint disk usage via `cocoon checkpoint list` (shows per-checkpoint size)
+- Recommended: total checkpoint storage should not exceed 50% of available disk
+- A `cocoon gc` run with `--checkpoints` flag removes orphaned checkpoint directories
+
+**Concurrent restore**: Each restore performs a full overlay file copy and launches a CH process. On I/O-constrained hosts:
+
+- Avoid restoring more than 4-8 VMs simultaneously from the same checkpoint (I/O contention on overlay copy)
+- For batch restore, stagger launches or use faster storage (NVMe, tmpfs for overlay copies)
+- The overlay copy is the bottleneck; CH state restore is memory-mapped and fast
+
+**Prefault**: Cloud Hypervisor's `--restore` does not prefault memory pages by default. Pages are faulted on demand from the snapshot file. This gives faster initial restore but may cause latency spikes during early guest execution. If predictable latency is required, a future `--prefault` option can be added (not in Phase 2 scope).
+
 ---
 
 ## 11. Error Handling
@@ -1162,6 +1202,24 @@ Restore validates these checksums before launching the CH process.
 ### 12.4 Encryption at Rest (Future)
 
 A future enhancement could encrypt checkpoint state files using a host-level key. This is explicitly deferred beyond Phase 2.
+
+### 12.5 Pre-Checkpoint Guest Preparation
+
+A checkpoint captures the complete contents of VM memory, including sensitive data that may be present in the guest at checkpoint time. When creating golden checkpoints intended for repeated restore (especially across different workloads or users), the following preparation is recommended before taking the checkpoint:
+
+**Recommended cleanup before `cocoon checkpoint create`**:
+
+1. **Clear temporary files**: `rm -rf /tmp/* /var/tmp/*`
+2. **Clear shell history**: `history -c && rm -f ~/.bash_history ~/.zsh_history`
+3. **Clear package cache**: `apt-get clean` or `dnf clean all`
+4. **Flush DNS cache**: `systemd-resolve --flush-caches` (if applicable)
+5. **Remove SSH host keys** (regenerated on next boot): `rm -f /etc/ssh/ssh_host_*`
+6. **Revoke any temporary tokens or credentials** obtained during setup
+7. **Sync filesystem**: `sync` (ensures overlay captures all writes)
+
+**Security warning**: Do NOT distribute checkpoints across trust boundaries. A checkpoint contains the full memory of the VM, which may include encryption keys, API tokens, passwords, and other secrets even after the cleanup steps above. Checkpoints are intended for single-host or same-trust-domain use.
+
+**Future**: A pre-checkpoint hook mechanism (Phase 3) will allow users to register cleanup scripts that run automatically inside the guest before checkpoint capture.
 
 ---
 
