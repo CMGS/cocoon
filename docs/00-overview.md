@@ -128,7 +128,7 @@ Modern VM workloads and development environments face a challenging trade-off be
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                          Cocoon CLI                               │
-│   create/start/stop/kill/delete/inspect/ps/logs/console/doctor   │
+│   create/start/stop/kill/delete/inspect/ps/logs/doctor            │
 └───────────────────────────┬──────────────────────────────────────┘
                             │
           ┌─────────────────┼─────────────────────┐

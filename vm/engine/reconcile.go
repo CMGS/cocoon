@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -84,7 +85,7 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inc
 					Severity: vm.SeverityWarning,
 					Details:  fmt.Sprintf("failed to load references for base_key %s: %v", vmCfg.BaseKey, refsErr),
 				})
-			} else if !stringInSlice(vmID, refs) {
+			} else if !slices.Contains(refs, vmID) {
 				inconsistencies = append(inconsistencies, vm.Inconsistency{
 					VMID:       vmID,
 					Type:       vm.InconsistencyMissingReference,
@@ -297,15 +298,6 @@ func (m *manager) loadReferencesSnapshot() (types.ReferencesFile, error) {
 		return nil, fmt.Errorf("load references.json: %w", err)
 	}
 	return refs, nil
-}
-
-func stringInSlice(target string, items []string) bool {
-	for _, item := range items {
-		if item == target {
-			return true
-		}
-	}
-	return false
 }
 
 // determineActualState probes the system to find out what a VM is really doing.
