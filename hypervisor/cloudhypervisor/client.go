@@ -175,9 +175,14 @@ func (c *client) ForceKill(vmID string) error {
 		return fmt.Errorf("read PID for %s: %w", vmID, err)
 	}
 	if !utils.ValidateProcess(pid, "cloud-hypervisor") {
-		// PID reused or process already gone — clean up stale files.
+		if utils.IsProcessAlive(pid) {
+			// PID exists but name doesn't match — genuinely reused by another
+			// process. Don't kill, but preserve PID file for diagnostics.
+			return fmt.Errorf("PID %d for %s is not cloud-hypervisor (PID reused by another process)", pid, vmID)
+		}
+		// Process is gone. Clean up stale runtime files.
 		c.cleanupRuntimeFiles(vmID)
-		return fmt.Errorf("PID %d for %s is not cloud-hypervisor (stale or reused)", pid, vmID)
+		return nil
 	}
 	if err := utils.ForceKillProcess(pid); err != nil {
 		return fmt.Errorf("force kill %s (pid %d): %w", vmID, pid, err)

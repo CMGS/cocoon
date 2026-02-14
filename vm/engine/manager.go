@@ -770,6 +770,13 @@ func (m *manager) Delete(ctx context.Context, vmID string, force bool) error {
 		_ = m.hyper.ForceKill(vmID)
 	}
 
+	// Safety net: if the PID file was already cleaned up (e.g., by a prior
+	// failed ForceKill) but the CH process is still running, use the PID
+	// from metadata to kill it directly.
+	if metaPresent && meta.ProcessPID > 0 && utils.ValidateProcess(meta.ProcessPID, "cloud-hypervisor") {
+		_ = utils.ForceKillProcess(meta.ProcessPID)
+	}
+
 	// Transition to DELETED state before removing resources when metadata exists.
 	if metaPresent {
 		if transErr := m.TransitionState(vmID, types.VMStateDeleted, "delete requested"); transErr != nil {

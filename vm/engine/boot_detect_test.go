@@ -264,20 +264,16 @@ func TestWaitForBoot_InvalidFailureRegex(t *testing.T) {
 	}
 }
 
-func TestWaitForBoot_PartialLineBuffering(t *testing.T) {
+func TestWaitForBoot_PartialLineMatchesSuccess(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "serial.log")
 
 	// Write a partial line (no newline) that contains the success pattern.
-	// It should NOT match until the newline is appended.
-	writeToFile(t, logPath, "ubuntu login:")
-
-	// After a delay, complete the line with a newline.
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		writeToFile(t, logPath, " root\n")
-	}()
+	// This simulates the getty "login: " prompt which never ends with \n
+	// (getty waits for user input). The partial line should match success
+	// patterns immediately.
+	writeToFile(t, logPath, "ubuntu login: ")
 
 	ctx := t.Context()
 	err := waitForBoot(ctx, logPath, 2*time.Second,
@@ -285,7 +281,30 @@ func TestWaitForBoot_PartialLineBuffering(t *testing.T) {
 		[]string{`Kernel panic`},
 	)
 	if err != nil {
-		t.Fatalf("expected nil error after completing the line, got %v", err)
+		t.Fatalf("expected nil error for partial line with success pattern, got %v", err)
+	}
+}
+
+func TestWaitForBoot_PartialLineDoesNotMatchFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "serial.log")
+
+	// Write a partial line that contains a failure pattern substring.
+	// Failure patterns should NOT match partial lines (wait for the full
+	// line to avoid false positives from partial kernel output).
+	writeToFile(t, logPath, "Kernel pani")
+
+	ctx := t.Context()
+	err := waitForBoot(ctx, logPath, 500*time.Millisecond,
+		[]string{`login:`},
+		[]string{`Kernel panic`},
+	)
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if got := err.Error(); !contains(got, "boot timeout") {
+		t.Fatalf("expected 'boot timeout' (not a false failure match), got %q", got)
 	}
 }
 

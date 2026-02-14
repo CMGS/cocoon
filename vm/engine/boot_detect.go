@@ -95,6 +95,17 @@ func waitForBoot(ctx context.Context, serialLogPath string, timeout time.Duratio
 			}
 		}
 
+		// Check buffered partial line against success patterns.
+		// This handles prompts like "login: " that never get a trailing
+		// newline (getty waits for user input). We only check success
+		// patterns here — failure patterns require complete lines to
+		// avoid false positives from partial kernel output.
+		if partial != "" {
+			if _, matched := matchesAny(partial, successREs, successPatterns); matched {
+				return nil
+			}
+		}
+
 		// Wait for new data or context cancellation.
 		select {
 		case <-ctx.Done():
