@@ -16,32 +16,46 @@ import (
 // buildLaunchArgs tests
 // ---------------------------------------------------------------------------
 
-// buildLaunchArgs only emits --api-socket; firmware/kernel is sent via the
-// vm.create REST payload to avoid CH auto-creating the VM.
+// PVH: only --api-socket on CLI; firmware is sent via REST payload.kernel.
+// UEFI: --firmware on CLI with full VM config; REST API cannot load CLOUDHV.fd.
 
-func TestBuildLaunchArgs_OnlyAPISocket(t *testing.T) {
+func TestBuildLaunchArgs_PVH_OnlyAPISocket(t *testing.T) {
 	cfg := &types.VMConfig{
 		BootStrategy: types.BootStrategyPVHOnly,
 		FirmwarePath: "/usr/share/firmware/pvh.bin",
+		CPUs:         2,
+		MemoryMB:     1024,
+		OverlayPath:  "/tmp/overlay.qcow2",
+		SerialLog:    "/tmp/serial.log",
 	}
 	args := buildLaunchArgs("/tmp/api.sock", cfg)
 
 	assertContainsFlag(t, args, "--api-socket", "/tmp/api.sock")
-	// Firmware is no longer passed on the CLI.
+	// PVH firmware goes via REST payload, not CLI.
 	assertNotContainsKey(t, args, "--firmware")
 	assertNotContainsKey(t, args, "--kernel")
 }
 
-func TestBuildLaunchArgs_UEFIAlsoNoKernel(t *testing.T) {
+func TestBuildLaunchArgs_UEFI_FullCLIArgs(t *testing.T) {
 	cfg := &types.VMConfig{
 		BootStrategy: types.BootStrategyUEFIOnly,
 		FirmwarePath: "/usr/share/firmware/CLOUDHV.fd",
+		CPUs:         2,
+		MemoryMB:     1024,
+		OverlayPath:  "/tmp/overlay.qcow2",
+		SerialLog:    "/tmp/serial.log",
 	}
 	args := buildLaunchArgs("/tmp/api.sock", cfg)
 
 	assertContainsFlag(t, args, "--api-socket", "/tmp/api.sock")
+	assertContainsFlag(t, args, "--firmware", "/usr/share/firmware/CLOUDHV.fd")
 	assertNotContainsKey(t, args, "--kernel")
-	assertNotContainsKey(t, args, "--firmware")
+	// Verify VM config is on CLI for UEFI auto-create.
+	assertContainsKey(t, args, "--cpus")
+	assertContainsKey(t, args, "--memory")
+	assertContainsKey(t, args, "--disk")
+	assertContainsKey(t, args, "--serial")
+	assertContainsKey(t, args, "--console")
 }
 
 func TestBuildLaunchArgs_SocketPathAlwaysPresent(t *testing.T) {
@@ -56,11 +70,13 @@ func TestBuildLaunchArgs_SocketPathAlwaysPresent(t *testing.T) {
 			cfg := &types.VMConfig{
 				BootStrategy: strategy,
 				FirmwarePath: "/some/path",
+				CPUs:         1,
+				MemoryMB:     512,
+				OverlayPath:  "/tmp/overlay.qcow2",
+				SerialLog:    "/tmp/serial.log",
 			}
 			args := buildLaunchArgs("/run/cocoon/vms/abc/api.sock", cfg)
 			assertContainsFlag(t, args, "--api-socket", "/run/cocoon/vms/abc/api.sock")
-			assertNotContainsKey(t, args, "--firmware")
-			assertNotContainsKey(t, args, "--kernel")
 		})
 	}
 }
@@ -260,5 +276,13 @@ func assertNotContainsKey(t *testing.T, args []string, key string) {
 	t.Helper()
 	if slices.Contains(args, key) {
 		t.Errorf("expected args to NOT contain %s, got %v", key, args)
+	}
+}
+
+// assertContainsKey checks that args contains the given key.
+func assertContainsKey(t *testing.T, args []string, key string) {
+	t.Helper()
+	if !slices.Contains(args, key) {
+		t.Errorf("expected args to contain %s, got %v", key, args)
 	}
 }

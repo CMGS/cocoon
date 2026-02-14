@@ -64,15 +64,33 @@ func New(cfg *config.CocoonConfig) hypervisor.Client {
 // buildLaunchArgs constructs the Cloud Hypervisor CLI arguments for a given
 // VM configuration. It selects the correct firmware flag based on the boot
 // strategy: --kernel for UEFI, --firmware for PVH (the default).
-func buildLaunchArgs(socketPath string, _ *types.VMConfig) []string {
-	// Launch CH in pure daemon mode with only the API socket.
-	// All VM configuration (firmware, cpus, memory, disks, etc.) is sent
-	// via the PUT /api/v1/vm.create REST call. Passing --firmware or
-	// --kernel on the CLI causes newer CH versions (v38+) to auto-create
-	// a VM, which then conflicts with the subsequent vm.create API call.
-	return []string{
-		"--api-socket", socketPath,
+func buildLaunchArgs(socketPath string, cfg *types.VMConfig) []string {
+	args := []string{"--api-socket", socketPath}
+
+	// UEFI firmware (CLOUDHV.fd) must be passed via CLI --firmware flag.
+	// CH's REST API payload.firmware / payload.kernel cannot correctly load
+	// CLOUDHV.fd (a raw FD-format binary, not ELF/bzImage/PE). The CLI
+	// --firmware path sets up UEFI-specific memory layout that the REST API
+	// payload fields do not replicate.
+	//
+	// When --firmware is passed with --api-socket, CH auto-creates the VM
+	// (handled by isVMAlreadyCreatedError in CreateVM) but does NOT auto-boot;
+	// it waits for the vm.boot REST call.
+	//
+	// PVH firmware (hypervisor-fw) works via REST API payload.kernel and does
+	// NOT need CLI flags.
+	if cfg.BootStrategy == types.BootStrategyUEFIOnly && cfg.FirmwarePath != "" {
+		args = append(args,
+			"--firmware", cfg.FirmwarePath,
+			"--cpus", fmt.Sprintf("boot=%d,max=%d", cfg.CPUs, cfg.CPUs),
+			"--memory", fmt.Sprintf("size=%d", cfg.MemoryMB*1024*1024),
+			"--disk", fmt.Sprintf("path=%s", cfg.OverlayPath),
+			"--serial", fmt.Sprintf("file=%s", cfg.SerialLog),
+			"--console", "off",
+		)
 	}
+
+	return args
 }
 
 // Launch starts a Cloud Hypervisor process for the given VM.
