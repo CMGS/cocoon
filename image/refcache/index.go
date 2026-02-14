@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -336,12 +337,7 @@ func setResolvedBaseKeys(e *Entry, keys []string) {
 }
 
 func containsString(items []string, target string) bool {
-	for _, item := range items {
-		if item == target {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(items, target)
 }
 
 func removeString(items []string, target string) []string {

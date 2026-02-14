@@ -731,19 +731,8 @@ func (m *manager) Delete(ctx context.Context, vmID string, force bool) error {
 	}
 
 	if metaPresent {
-		state := types.VMState(meta.State)
-
-		// If running, require --force.
-		if state == types.VMStateRunning {
-			if !force {
-				return types.ErrVMRunning
-			}
-			// Force stop first.
-			if stopErr := m.Stop(ctx, vmID, 10*time.Second); stopErr != nil {
-				// Force kill the CH process directly.
-				_ = m.hyper.ForceKill(vmID)
-				_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("force stop failed: %v", stopErr))
-			}
+		if err := m.ensureDeletePreconditions(ctx, vmID, force, meta); err != nil {
+			return err
 		}
 	}
 
@@ -791,6 +780,24 @@ func (m *manager) Delete(ctx context.Context, vmID string, force bool) error {
 	// Remove serial log (lives outside vmDir, under LogDir).
 	_ = os.Remove(m.cfg.VMSerialLogPath(vmID))
 
+	return nil
+}
+
+func (m *manager) ensureDeletePreconditions(ctx context.Context, vmID string, force bool, meta *types.VMMetadataFile) error {
+	state := types.VMState(meta.State)
+
+	// If running, require --force and attempt graceful stop first.
+	if state != types.VMStateRunning {
+		return nil
+	}
+	if !force {
+		return types.ErrVMRunning
+	}
+	if stopErr := m.Stop(ctx, vmID, 10*time.Second); stopErr != nil {
+		// Force kill the CH process directly.
+		_ = m.hyper.ForceKill(vmID)
+		_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("force stop failed: %v", stopErr))
+	}
 	return nil
 }
 

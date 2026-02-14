@@ -18,6 +18,32 @@ func shouldFallbackToPrepare(resolveErr error) bool {
 	return errors.Is(resolveErr, errImageNotFoundInLocalCache)
 }
 
+func resolveVerifyImagePath(c *cli.Context, app *appContext, arg string) (string, error) {
+	// If the argument is a local file path, use it directly.
+	if _, statErr := os.Stat(arg); statErr == nil {
+		return arg, nil
+	}
+
+	// Prefer local cache resolution first to avoid network pulls.
+	baseKey, resolveErr := resolveBaseKeyFromCache(c, app, arg)
+	if resolveErr == nil {
+		return app.cfg.BaseImagePath(baseKey), nil
+	}
+
+	// Only fall back to Prepare when the image is simply absent from
+	// local cache. For ambiguous refs or cache read errors, surface the
+	// local resolution error to avoid unexpected network pulls.
+	if !shouldFallbackToPrepare(resolveErr) {
+		return "", resolveErr
+	}
+
+	_, basePath, prepErr := app.imgMgr.Prepare(c.Context, arg)
+	if prepErr != nil {
+		return "", fmt.Errorf("resolve image ref %q: %w", arg, prepErr)
+	}
+	return basePath, nil
+}
+
 func imagesCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "image",
@@ -354,25 +380,9 @@ func imageVerifyAction(c *cli.Context) error {
 	arg := c.Args().Get(0)
 	format := c.String("format")
 
-	// If the argument is a local file path, use it directly.
-	// Otherwise, prefer local cache resolution first to avoid network pulls.
-	imagePath := arg
-	if _, statErr := os.Stat(arg); statErr != nil {
-		if baseKey, resolveErr := resolveBaseKeyFromCache(c, app, arg); resolveErr == nil {
-			imagePath = app.cfg.BaseImagePath(baseKey)
-		} else {
-			// Only fall back to Prepare when the image is simply absent from
-			// local cache. For ambiguous refs or cache read errors, surface the
-			// local resolution error to avoid unexpected network pulls.
-			if !shouldFallbackToPrepare(resolveErr) {
-				return resolveErr
-			}
-			_, basePath, prepErr := app.imgMgr.Prepare(c.Context, arg)
-			if prepErr != nil {
-				return fmt.Errorf("resolve image ref %q: %w", arg, prepErr)
-			}
-			imagePath = basePath
-		}
+	imagePath, err := resolveVerifyImagePath(c, app, arg)
+	if err != nil {
+		return err
 	}
 
 	result, err := app.imgMgr.VerifyBootability(c.Context, imagePath)

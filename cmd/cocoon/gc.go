@@ -196,11 +196,11 @@ func previewOrphanedOverlayCandidates(app *appContext) ([]string, error) {
 
 		vmID := entry.Name()
 		overlayPath := filepath.Join(app.cfg.VMDir(), vmID, "overlay.qcow2")
-		configPath := filepath.Join(app.cfg.VMDir(), vmID, "config.json")
+		vmConfigPath := filepath.Join(app.cfg.VMDir(), vmID, "config.json")
 		if _, err := os.Stat(overlayPath); err != nil {
 			continue
 		}
-		if _, err := os.Stat(configPath); err == nil {
+		if _, err := os.Stat(vmConfigPath); err == nil {
 			continue
 		} else if !os.IsNotExist(err) {
 			continue
