@@ -278,6 +278,10 @@ func (c *CocoonConfig) VMSwtpmPIDPath(vmID string) string {
 	return filepath.Join(c.RuntimeDir, "vms", vmID, "swtpm.pid")
 }
 
+func (c *CocoonConfig) VMSwtpmLogPath(vmID string) string {
+	return filepath.Join(c.RuntimeDir, "vms", vmID, "swtpm.log")
+}
+
 func (c *CocoonConfig) BaseImagePath(baseKey string) string {
 	return filepath.Join(c.RootDir, "cache", "images", baseKey+".qcow2")
 }

@@ -256,7 +256,17 @@ func (c *client) startSwtpm(vmID string, tpmSocketPath string) error {
 	cmd := exec.Command("swtpm", args...) //nolint:gosec // args are constructed from trusted config paths
 	configureCHProcess(cmd)
 
+	// Write swtpm stderr to a log file for diagnostics on failure.
+	swtpmLogPath := c.cfg.VMSwtpmLogPath(vmID)
+	logFile, logErr := os.Create(swtpmLogPath) //nolint:gosec // G304: path derived from trusted config
+	if logErr == nil {
+		cmd.Stderr = logFile
+	}
+
 	if err := cmd.Start(); err != nil {
+		if logFile != nil {
+			_ = logFile.Close()
+		}
 		return fmt.Errorf("start swtpm: %w", err)
 	}
 
@@ -265,24 +275,55 @@ func (c *client) startSwtpm(vmID string, tpmSocketPath string) error {
 	pidPath := c.cfg.VMSwtpmPIDPath(vmID)
 	if err := utils.WritePIDFile(pidPath, pid); err != nil {
 		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		if logFile != nil {
+			_ = logFile.Close()
+		}
 		return fmt.Errorf("write swtpm PID file: %w", err)
 	}
 
-	// Release the process handle so swtpm outlives the CLI invocation.
-	_ = cmd.Process.Release()
-
-	// Wait for the TPM socket to appear.
+	// Wait for the TPM socket to appear. Do NOT Release() the process
+	// handle yet so we can detect early exit and call Wait() for cleanup.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(tpmSocketPath); err == nil {
+			// Socket ready. Release process handle so swtpm outlives CLI.
+			_ = cmd.Process.Release()
+			if logFile != nil {
+				_ = logFile.Close()
+			}
 			return nil
+		}
+		// Fast fail: if swtpm already exited, don't wait the full 5s.
+		if !utils.IsProcessAlive(pid) {
+			_ = cmd.Wait()
+			if logFile != nil {
+				_ = logFile.Close()
+			}
+			stderr := readSwtpmLog(swtpmLogPath)
+			return fmt.Errorf("swtpm exited immediately: %s", stderr)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	// Socket never appeared; kill swtpm.
+	// Timeout. Kill and report diagnostics.
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait()
+	if logFile != nil {
+		_ = logFile.Close()
+	}
+	stderr := readSwtpmLog(swtpmLogPath)
 	c.stopSwtpm(vmID)
-	return fmt.Errorf("swtpm socket %s did not appear within 5s", tpmSocketPath)
+	return fmt.Errorf("swtpm socket %s did not appear within 5s: %s", tpmSocketPath, stderr)
+}
+
+// readSwtpmLog reads the swtpm log file and returns its contents for error messages.
+func readSwtpmLog(path string) string {
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path derived from trusted config
+	if err != nil || len(data) == 0 {
+		return "(no output)"
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // stopSwtpm terminates the swtpm companion process for a VM.
