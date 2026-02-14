@@ -894,7 +894,7 @@ cocoon kill myvm
 
 **Command**: `cocoon list [FLAGS]`
 
-**Purpose**: List all VMs
+**Purpose**: List VMs (default: running only)
 
 ```go
 func psCommand() *cli.Command {
@@ -934,7 +934,7 @@ func psCommand() *cli.Command {
 # List running VMs
 cocoon list
 
-# List all VMs
+# List all VMs (including stopped/error)
 cocoon list --all
 
 # List in JSON format
@@ -949,11 +949,10 @@ cocoon list --filter state=running
 ```
 VM ID                              NAME              STATE     CPUS  MEMORY  CREATED
 vm-01HXYZ5A3B7C8D9E0F1G2H3J4K     myvm              RUNNING   2     2048MB  2026-02-11T10:30:00Z
-vm-01HABC9D8E7F6G5H4J3K2L1M0N     devbox            STOPPED   4     4096MB  2026-02-10T14:20:00Z
 vm-01H9ZZ8Y7X6W5V4U3T2S1R0Q9P     cocoon-a3f7b2c1   RUNNING   2     2048MB  2026-02-09T08:15:00Z
 ```
 
-Note: The `NAME` column shows the user-provided name or the auto-generated name (`cocoon-{random}` if `--name` was omitted at create time). Either the `VM ID` or `NAME` can be used as a `<vm-ref>` in subsequent commands. The `MEMORY` column displays the value with an `MB` suffix (e.g., `2048MB`). The `CREATED` column shows the creation timestamp in RFC 3339 format.
+Note: By default, `cocoon list` shows only `RUNNING` VMs. Use `--all` to include `CREATED`, `STOPPED`, and `ERROR`. The `NAME` column shows the user-provided name or the auto-generated name (`cocoon-{random}` if `--name` was omitted at create time). Either the `VM ID` or `NAME` can be used as a `<vm-ref>` in subsequent commands. The `MEMORY` column displays the value with an `MB` suffix (e.g., `2048MB`). The `CREATED` column shows the creation timestamp in RFC 3339 format.
 
 ### 4.10 cocoon inspect (VM Details)
 
@@ -1173,6 +1172,7 @@ func imagesCommand() *cli.Command {
   1. local file path
   2. cached image via `base_key`/manifest alias
   3. fallback `Prepare` only when not found locally
+  4. if local cache resolution fails due ambiguity/corruption, return error (do not auto-pull)
 - `image list` table output includes a `SOURCE REF` summary column; JSON output includes `source_refs`.
 
 **Example Usage**:
@@ -1298,7 +1298,7 @@ func doctorCommand() *cli.Command {
             },
             &cli.BoolFlag{
                 Name:  "force",
-                Usage: "force re-check even if cached results exist",
+                Usage: "kill zombie processes and force-fix stuck states (requires --fix)",
             },
             &cli.StringFlag{
                 Name:  "format",
@@ -1320,8 +1320,12 @@ func doctorAction(c *cli.Context) error {
     force := c.Bool("force")
     format := c.String("format")
 
-    // Phase 1: Dependency checks (binary existence, firmware, directories).
-    checks := runDependencyChecks(app)  // exec.LookPath + os.Stat
+    if force && !fix {
+        return fmt.Errorf("--force requires --fix; run 'cocoon doctor --fix --force'")
+    }
+
+    // Phase 1: Dependency checks (binary/path/version, firmware, directories).
+    checks := runDependencyChecks(app)
 
     // Phase 2: VM reconciliation (state consistency, orphan cleanup).
     issues, reconcileErr := app.vmMgr.Reconcile(c.Context, fix, force)
@@ -1336,9 +1340,9 @@ func doctorAction(c *cli.Context) error {
 - ch-remote binary
 - PVH firmware file
 - UEFI firmware file
-- qemu-img binary
-- buildah binary
-- skopeo binary
+- qemu-img binary (minimum `8.0.0`)
+- buildah binary (minimum `1.35.0`)
+- skopeo binary (minimum `1.14.0`)
 - guestfish binary
 - /dev/kvm device
 - Directory structure (root, runtime, log, db, vm, cache, buildah, firmware)
@@ -1361,6 +1365,9 @@ cocoon doctor
 
 # Fix VM state issues (reconcile stale states, rebuild name index)
 cocoon doctor --fix
+
+# Force repair mode (must be used with --fix)
+cocoon doctor --fix --force
 ```
 
 **Example Output**:
@@ -1372,10 +1379,10 @@ CHECK              STATUS  DETAIL
 cloud-hypervisor   pass    /usr/bin/cloud-hypervisor
 pvh-firmware       pass    /var/lib/cocoon/firmware/hypervisor-fw
 uefi-firmware      fail    not found at /var/lib/cocoon/firmware/CLOUDHV.fd
-qemu-img           pass    /usr/bin/qemu-img
+qemu-img           pass    /usr/bin/qemu-img (version 8.2.0)
 ch-remote          pass    /usr/bin/ch-remote
-buildah            pass    /usr/bin/buildah
-skopeo             pass    /usr/bin/skopeo
+buildah            pass    /usr/bin/buildah (version 1.35.2)
+skopeo             pass    /usr/bin/skopeo (version 1.14.4)
 guestfish          fail    binary not found in PATH (required for OCI-to-qcow2 conversion)
 kvm                pass    /dev/kvm
 dir/root-dir       pass    /var/lib/cocoon

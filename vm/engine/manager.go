@@ -539,8 +539,7 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 		result, bootErr = m.attemptBoot(ctx, vmID, vmCfg, vmCfg.FirmwarePath, types.BootModePVH)
 
 	default:
-		// Unknown strategy: attempt PVH as the default.
-		result, bootErr = m.attemptBoot(ctx, vmID, vmCfg, vmCfg.FirmwarePath, types.BootModePVH)
+		bootErr = fmt.Errorf("invalid boot strategy in config: %q", vmCfg.BootStrategy)
 	}
 
 	if bootErr != nil {
@@ -714,27 +713,37 @@ func (m *manager) Kill(ctx context.Context, vmID string) error {
 // Idempotent: deleting a non-existent or DELETED VM is a no-op.
 // If the VM is RUNNING, force must be true.
 func (m *manager) Delete(ctx context.Context, vmID string, force bool) error {
-	// Idempotent: VM does not exist -> no-op.
+	// Best effort load of metadata. If metadata is missing but other VM
+	// artifacts still exist, continue with cleanup to satisfy delete semantics.
 	meta, err := m.LoadMetadata(vmID)
+	metaPresent := true
 	if err != nil {
 		if isNotFound(err) {
-			return nil
+			metaPresent = false
+		} else {
+			return err
 		}
-		return err
 	}
 
-	state := types.VMState(meta.State)
+	// When metadata is missing but the VM process is still alive, require force.
+	if !metaPresent && m.hyper.IsAlive(vmID) && !force {
+		return types.ErrVMRunning
+	}
 
-	// If running, require --force.
-	if state == types.VMStateRunning {
-		if !force {
-			return types.ErrVMRunning
-		}
-		// Force stop first.
-		if stopErr := m.Stop(ctx, vmID, 10*time.Second); stopErr != nil {
-			// Force kill the CH process directly.
-			_ = m.hyper.ForceKill(vmID)
-			_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("force stop failed: %v", stopErr))
+	if metaPresent {
+		state := types.VMState(meta.State)
+
+		// If running, require --force.
+		if state == types.VMStateRunning {
+			if !force {
+				return types.ErrVMRunning
+			}
+			// Force stop first.
+			if stopErr := m.Stop(ctx, vmID, 10*time.Second); stopErr != nil {
+				// Force kill the CH process directly.
+				_ = m.hyper.ForceKill(vmID)
+				_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("force stop failed: %v", stopErr))
+			}
 		}
 	}
 
@@ -743,16 +752,18 @@ func (m *manager) Delete(ctx context.Context, vmID string, force bool) error {
 		_ = m.hyper.ForceKill(vmID)
 	}
 
-	// Transition to DELETED state before removing resources.
-	if transErr := m.TransitionState(vmID, types.VMStateDeleted, "delete requested"); transErr != nil {
-		if !force {
-			return fmt.Errorf("transition to DELETED: %w", transErr)
+	// Transition to DELETED state before removing resources when metadata exists.
+	if metaPresent {
+		if transErr := m.TransitionState(vmID, types.VMStateDeleted, "delete requested"); transErr != nil {
+			if !force {
+				return fmt.Errorf("transition to DELETED: %w", transErr)
+			}
+			// Force: write DELETED state directly, bypassing validation.
+			_ = m.updateMetadata(vmID, func(md *types.VMMetadataFile) {
+				md.PreviousState = md.State
+				md.State = string(types.VMStateDeleted)
+			})
 		}
-		// Force: write DELETED state directly, bypassing validation.
-		_ = m.updateMetadata(vmID, func(md *types.VMMetadataFile) {
-			md.PreviousState = md.State
-			md.State = string(types.VMStateDeleted)
-		})
 	}
 
 	// Load config to get the name and baseKey for cleanup.
@@ -1002,11 +1013,7 @@ func resolveFirmwarePath(cfg *config.CocoonConfig, strategy types.BootStrategy, 
 	case types.BootStrategyUEFIOnly:
 		return resolveUEFIFirmwarePath(cfg)
 	default:
-		// Unknown strategy: default to PVH firmware.
-		if cfg.PVHFirmwarePath == "" {
-			return "", fmt.Errorf("%w: PVH firmware path not configured", types.ErrFirmwareNotFound)
-		}
-		return cfg.PVHFirmwarePath, nil
+		return "", fmt.Errorf("invalid boot strategy: %q", strategy)
 	}
 }
 

@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
+	"strings"
 
 	cli "github.com/urfave/cli/v2"
 
@@ -38,6 +41,109 @@ type checkResult struct {
 	Name   string `json:"name"`
 	Status string `json:"status"` // "pass" or "fail"
 	Detail string `json:"detail"`
+}
+
+type semVersion struct {
+	Major int
+	Minor int
+	Patch int
+}
+
+var versionRe = regexp.MustCompile(`(\d+)\.(\d+)(?:\.(\d+))?`)
+
+func parseSemVersion(out string) (semVersion, error) {
+	matches := versionRe.FindStringSubmatch(out)
+	if len(matches) < 3 {
+		return semVersion{}, fmt.Errorf("no semantic version found in output")
+	}
+
+	major, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return semVersion{}, fmt.Errorf("parse major version: %w", err)
+	}
+	minor, err := strconv.Atoi(matches[2])
+	if err != nil {
+		return semVersion{}, fmt.Errorf("parse minor version: %w", err)
+	}
+	patch := 0
+	if len(matches) >= 4 && matches[3] != "" {
+		patch, err = strconv.Atoi(matches[3])
+		if err != nil {
+			return semVersion{}, fmt.Errorf("parse patch version: %w", err)
+		}
+	}
+
+	return semVersion{Major: major, Minor: minor, Patch: patch}, nil
+}
+
+func compareSemVersion(a, b semVersion) int {
+	if a.Major != b.Major {
+		if a.Major < b.Major {
+			return -1
+		}
+		return 1
+	}
+	if a.Minor != b.Minor {
+		if a.Minor < b.Minor {
+			return -1
+		}
+		return 1
+	}
+	if a.Patch != b.Patch {
+		if a.Patch < b.Patch {
+			return -1
+		}
+		return 1
+	}
+	return 0
+}
+
+func (v semVersion) String() string {
+	return fmt.Sprintf("%d.%d.%d", v.Major, v.Minor, v.Patch)
+}
+
+func checkBinaryWithMinVersion(name string, args []string, min semVersion, purpose string) checkResult {
+	path, err := exec.LookPath(name)
+	if err != nil {
+		return checkResult{
+			Name:   name,
+			Status: "fail",
+			Detail: fmt.Sprintf("binary not found in PATH (%s)", purpose),
+		}
+	}
+
+	cmd := exec.Command(path, args...) //nolint:gosec // binary path is resolved from PATH; args are fixed literals
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return checkResult{
+			Name:   name,
+			Status: "fail",
+			Detail: fmt.Sprintf("failed to query version: %v", err),
+		}
+	}
+
+	ver, err := parseSemVersion(string(out))
+	if err != nil {
+		return checkResult{
+			Name:   name,
+			Status: "fail",
+			Detail: fmt.Sprintf("failed to parse version from output: %s", strings.TrimSpace(string(out))),
+		}
+	}
+
+	if compareSemVersion(ver, min) < 0 {
+		return checkResult{
+			Name:   name,
+			Status: "fail",
+			Detail: fmt.Sprintf("detected %s, minimum required %s", ver.String(), min.String()),
+		}
+	}
+
+	return checkResult{
+		Name:   name,
+		Status: "pass",
+		Detail: fmt.Sprintf("%s (version %s)", path, ver.String()),
+	}
 }
 
 // runDependencyChecks verifies system dependencies required by Cocoon.
@@ -82,20 +188,13 @@ func runDependencyChecks(app *appContext) []checkResult {
 		results = append(results, checkUEFIFirmware(app.cfg.UEFIFirmwarePath))
 	}
 
-	// 4. Check qemu-img binary.
-	if qemuPath, err := exec.LookPath("qemu-img"); err != nil {
-		results = append(results, checkResult{
-			Name:   "qemu-img",
-			Status: "fail",
-			Detail: "binary not found in PATH",
-		})
-	} else {
-		results = append(results, checkResult{
-			Name:   "qemu-img",
-			Status: "pass",
-			Detail: qemuPath,
-		})
-	}
+	// 4. Check qemu-img binary + minimum version.
+	results = append(results, checkBinaryWithMinVersion(
+		"qemu-img",
+		[]string{"--version"},
+		semVersion{Major: 8, Minor: 0, Patch: 0},
+		"required for qcow2 operations",
+	))
 
 	// 4b. Check ch-remote binary.
 	if chRemotePath, err := exec.LookPath("ch-remote"); err != nil {
@@ -112,35 +211,21 @@ func runDependencyChecks(app *appContext) []checkResult {
 		})
 	}
 
-	// 4c. Check buildah binary.
-	if buildahPath, err := exec.LookPath("buildah"); err != nil {
-		results = append(results, checkResult{
-			Name:   "buildah",
-			Status: "fail",
-			Detail: "binary not found in PATH (required for OCI image operations)",
-		})
-	} else {
-		results = append(results, checkResult{
-			Name:   "buildah",
-			Status: "pass",
-			Detail: buildahPath,
-		})
-	}
+	// 4c. Check buildah binary + minimum version.
+	results = append(results, checkBinaryWithMinVersion(
+		"buildah",
+		[]string{"version"},
+		semVersion{Major: 1, Minor: 35, Patch: 0},
+		"required for OCI image operations",
+	))
 
-	// 4d. Check skopeo binary.
-	if skopeoPath, err := exec.LookPath("skopeo"); err != nil {
-		results = append(results, checkResult{
-			Name:   "skopeo",
-			Status: "fail",
-			Detail: "binary not found in PATH (required for OCI manifest inspection)",
-		})
-	} else {
-		results = append(results, checkResult{
-			Name:   "skopeo",
-			Status: "pass",
-			Detail: skopeoPath,
-		})
-	}
+	// 4d. Check skopeo binary + minimum version.
+	results = append(results, checkBinaryWithMinVersion(
+		"skopeo",
+		[]string{"--version"},
+		semVersion{Major: 1, Minor: 14, Patch: 0},
+		"required for OCI manifest inspection",
+	))
 
 	// 4e. Check guestfish binary.
 	if guestfishPath, err := exec.LookPath("guestfish"); err != nil {
@@ -307,6 +392,9 @@ func doctorAction(c *cli.Context) error {
 
 	if len(issues) == 0 {
 		fmt.Println("No VM issues found.")
+		if failCount > 0 {
+			return cli.Exit("", 1)
+		}
 		return nil
 	}
 

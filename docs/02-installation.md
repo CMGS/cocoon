@@ -302,19 +302,22 @@ Recommended directory structure for Cocoon deployment:
 /var/lib/cocoon/                   # Cocoon root directory (per Boot Contract v2.0)
 ├── firmware/
 │   ├── hypervisor-fw              # PVH firmware (primary)
-│   ├── hypervisor-fw-0.4.2        # Versioned backup
-│   └── checksums.txt              # SHA256 verification
+│   └── CLOUDHV.fd                 # UEFI firmware (optional in Phase 1)
 ├── cache/
-│   └── images/                    # Base image cache (qcow2)
-│       ├── ubuntu-22.04-abc123.qcow2
-│       └── fedora-38-def456.qcow2
+│   ├── images/                    # Base image cache (qcow2)
+│   ├── manifests/                 # IMAGE_REF -> base_key alias index
+│   └── locks/                     # Per-image conversion locks
+├── db/                            # Runtime metadata indexes
+│   ├── references.json            # base_key -> vm references
+│   └── name-index.json            # vm name -> vm_id
 ├── vms/                           # VM instances
 │   ├── vm-abc-123/
 │   │   ├── overlay.qcow2          # COW overlay disk
 │   │   ├── config.json            # VM configuration
 │   │   └── metadata.json          # VM metadata
 │   └── vm-def-456/
-└── temp/                          # Temporary conversion files
+├── temp/                          # Temporary conversion files
+└── trash/                         # Soft-deleted GC artifacts (image/overlay)
 
 /var/log/cocoon/                   # Logs
 ├── vm-abc-123.log                 # Serial console logs (per-VM)

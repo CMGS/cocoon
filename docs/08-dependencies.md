@@ -97,7 +97,8 @@ echo "8d2de5e4c5f8bdc08d37e6f3c01c785f5b4cf75e4e9c24e7e4a1c3d6b5e4f3a2  /tmp/hyp
 sudo mv /tmp/hypervisor-fw /var/lib/cocoon/firmware/hypervisor-fw
 sudo chmod 755 /var/lib/cocoon/firmware/hypervisor-fw
 
-# Store checksum for verification
+# Optional: store checksum for manual verification.
+# Note: Cocoon Phase 1 CLI does not read/manage this file.
 echo "8d2de5e4c5f8bdc08d37e6f3c01c785f5b4cf75e4e9c24e7e4a1c3d6b5e4f3a2  hypervisor-fw" | \
     sudo tee /var/lib/cocoon/firmware/checksums.txt
 ```
@@ -107,7 +108,7 @@ echo "8d2de5e4c5f8bdc08d37e6f3c01c785f5b4cf75e4e9c24e7e4a1c3d6b5e4f3a2  hypervis
 # Verify file exists and is executable
 ls -lh /var/lib/cocoon/firmware/hypervisor-fw
 
-# Verify checksum matches
+# Optional manual verification (not used by `cocoon firmware verify`)
 cd /var/lib/cocoon/firmware && sha256sum -c checksums.txt
 
 # Test with Cloud Hypervisor (requires bootable disk)

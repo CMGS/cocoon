@@ -55,11 +55,12 @@ func psAction(c *cli.Context) error {
 	format := c.String("format")
 	filter := c.String("filter")
 
-	// Filter out DELETED and ERROR states unless --all is specified.
+	// Default behavior: show only RUNNING VMs.
+	// Use --all to include non-running states.
 	if !all {
 		filtered := make([]*types.VMInspect, 0, len(vms))
 		for _, v := range vms {
-			if v.State != types.VMStateDeleted && v.State != types.VMStateError {
+			if v.State == types.VMStateRunning {
 				filtered = append(filtered, v)
 			}
 		}

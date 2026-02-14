@@ -1,6 +1,7 @@
 package refcache
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -82,5 +83,66 @@ func TestRefsForBaseKeyAndDelete(t *testing.T) {
 		t.Fatalf("ResolveBaseKey after delete: %v", err)
 	} else if ok {
 		t.Fatalf("ResolveBaseKey should miss after delete")
+	}
+}
+
+func TestResolveBaseKey_AmbiguousAlias(t *testing.T) {
+	cfg := testConfig(t)
+
+	baseKeyA := "aaaa1111bbbb2222_amd64"
+	baseKeyB := "cccc3333dddd4444_amd64"
+	digestA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	digestB := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+	refA := "https://images.example.com/ubuntu-22.04-server-cloudimg-amd64.img"
+	refB := "https://mirror.example.net/ubuntu-22.04-cloudimg-amd64.img"
+
+	if err := Upsert(cfg, refA, baseKeyA, digestA); err != nil {
+		t.Fatalf("Upsert refA: %v", err)
+	}
+	if err := Upsert(cfg, refB, baseKeyB, digestB); err != nil {
+		t.Fatalf("Upsert refB: %v", err)
+	}
+
+	_, ok, err := ResolveBaseKey(cfg, "ubuntu-22.04-cloudimg")
+	if err == nil {
+		t.Fatal("ResolveBaseKey should return ambiguity error, got nil")
+	}
+	if ok {
+		t.Fatal("ResolveBaseKey ambiguity should not return ok=true")
+	}
+	if !errors.Is(err, ErrAmbiguousImageRef) {
+		t.Fatalf("expected ErrAmbiguousImageRef, got: %v", err)
+	}
+}
+
+func TestDeleteByBaseKey_ClearsAmbiguousAlias(t *testing.T) {
+	cfg := testConfig(t)
+
+	baseKeyA := "aaaa1111bbbb2222_amd64"
+	baseKeyB := "cccc3333dddd4444_amd64"
+	refA := "https://images.example.com/ubuntu-22.04-server-cloudimg-amd64.img"
+	refB := "https://mirror.example.net/ubuntu-22.04-cloudimg-amd64.img"
+
+	if err := Upsert(cfg, refA, baseKeyA, ""); err != nil {
+		t.Fatalf("Upsert refA: %v", err)
+	}
+	if err := Upsert(cfg, refB, baseKeyB, ""); err != nil {
+		t.Fatalf("Upsert refB: %v", err)
+	}
+
+	if err := DeleteByBaseKey(cfg, baseKeyA); err != nil {
+		t.Fatalf("DeleteByBaseKey(baseKeyA): %v", err)
+	}
+
+	got, ok, err := ResolveBaseKey(cfg, "ubuntu-22.04-cloudimg")
+	if err != nil {
+		t.Fatalf("ResolveBaseKey after deleting one base key: %v", err)
+	}
+	if !ok {
+		t.Fatal("ResolveBaseKey should resolve after ambiguity is removed")
+	}
+	if got != baseKeyB {
+		t.Fatalf("ResolveBaseKey=%q, want %q", got, baseKeyB)
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -10,6 +11,12 @@ import (
 	"github.com/CMGS/cocoon/image/refcache"
 	"github.com/CMGS/cocoon/types"
 )
+
+var errImageNotFoundInLocalCache = errors.New("image not found in local cache")
+
+func shouldFallbackToPrepare(resolveErr error) bool {
+	return errors.Is(resolveErr, errImageNotFoundInLocalCache)
+}
 
 func imagesCommand() *cli.Command {
 	return &cli.Command{
@@ -315,7 +322,7 @@ func resolveBaseKeyFromCache(c *cli.Context, app *appContext, ref string) (strin
 			}
 		}
 	}
-	return "", fmt.Errorf("image %q not found in cache", ref)
+	return "", fmt.Errorf("%w: %q", errImageNotFoundInLocalCache, ref)
 }
 
 func imageVerifyCommand() *cli.Command {
@@ -354,6 +361,12 @@ func imageVerifyAction(c *cli.Context) error {
 		if baseKey, resolveErr := resolveBaseKeyFromCache(c, app, arg); resolveErr == nil {
 			imagePath = app.cfg.BaseImagePath(baseKey)
 		} else {
+			// Only fall back to Prepare when the image is simply absent from
+			// local cache. For ambiguous refs or cache read errors, surface the
+			// local resolution error to avoid unexpected network pulls.
+			if !shouldFallbackToPrepare(resolveErr) {
+				return resolveErr
+			}
 			_, basePath, prepErr := app.imgMgr.Prepare(c.Context, arg)
 			if prepErr != nil {
 				return fmt.Errorf("resolve image ref %q: %w", arg, prepErr)

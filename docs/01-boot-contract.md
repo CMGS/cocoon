@@ -73,15 +73,15 @@ cocoon doctor  # Checks if firmware exists; use 'cocoon firmware install' to dow
 # Manual firmware management
 cocoon firmware list      # Show installed firmware versions
 cocoon firmware update --pvh-url URL    # Alias for install (requires URL flags)
-cocoon firmware verify    # Verify integrity
+cocoon firmware verify    # Check file existence and accessibility
 ```
 
 **Firmware Location**:
 ```
 /var/lib/cocoon/firmware/
 ├── hypervisor-fw         # x86_64 PVH firmware (latest)
-├── hypervisor-fw-0.4.2   # Versioned backup
-└── checksums.txt         # SHA256 verification
+├── CLOUDHV.fd            # UEFI firmware (optional in Phase 1)
+└── (checksum metadata is optional; Cocoon Phase 1 does not read/manage it)
 ```
 
 **Architecture Support**:

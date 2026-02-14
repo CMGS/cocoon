@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/CMGS/cocoon/config"
@@ -234,6 +235,30 @@ func TestCreate_SkipVerify(t *testing.T) {
 	}
 }
 
+func TestCreate_InvalidBootStrategy(t *testing.T) {
+	t.Parallel()
+	td := setupTestManager(t)
+
+	identity := defaultMockIdentity()
+	td.imgMgr.PrepareFunc = func(_ context.Context, _ string) (*image.ImageIdentity, string, error) {
+		return identity, filepath.Join(td.cfg.ImageCacheDir(), identity.BaseKey()+".qcow2"), nil
+	}
+	td.imgMgr.VerifyBootabilityFunc = func(_ context.Context, _ string) (*image.BootCheckResult, error) {
+		return &image.BootCheckResult{Bootable: true}, nil
+	}
+
+	_, err := td.mgr.Create(t.Context(), &vm.CreateOptions{
+		Image:        "docker.io/library/ubuntu:22.04",
+		BootStrategy: types.BootStrategy("invalid_strategy"),
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid boot strategy, got nil")
+	}
+	if got, want := err.Error(), `invalid boot strategy: "invalid_strategy"`; !strings.Contains(got, want) {
+		t.Fatalf("Create error = %q, want substring %q", got, want)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: Delete happy path
 // ---------------------------------------------------------------------------
@@ -332,6 +357,63 @@ func TestDelete_Idempotent(t *testing.T) {
 	err := td.mgr.Delete(t.Context(), "vm-NONEXISTENT000000000000000", false)
 	if err != nil {
 		t.Fatalf("expected nil for non-existent VM, got %v", err)
+	}
+}
+
+func TestDelete_MissingMetadata_StillCleansResources(t *testing.T) {
+	t.Parallel()
+	td := setupTestManager(t)
+
+	vmCfg := createTestVM(t, td, &vm.CreateOptions{
+		Image: "docker.io/library/ubuntu:22.04",
+		Name:  "missing-metadata-delete",
+	})
+
+	// Simulate metadata loss/corruption.
+	if err := os.Remove(td.cfg.VMMetadataPath(vmCfg.VMID)); err != nil {
+		t.Fatalf("remove metadata.json: %v", err)
+	}
+
+	if err := td.mgr.Delete(t.Context(), vmCfg.VMID, false); err != nil {
+		t.Fatalf("Delete with missing metadata: %v", err)
+	}
+
+	if _, err := os.Stat(td.cfg.VMPersistDir(vmCfg.VMID)); !os.IsNotExist(err) {
+		t.Fatalf("expected VM dir removed, got stat err: %v", err)
+	}
+
+	index, err := LoadNameIndex(td.cfg)
+	if err != nil {
+		t.Fatalf("LoadNameIndex: %v", err)
+	}
+	if _, ok := index["missing-metadata-delete"]; ok {
+		t.Fatal("expected name removed from index")
+	}
+}
+
+func TestDelete_MissingMetadata_RequiresForceWhenAlive(t *testing.T) {
+	t.Parallel()
+	td := setupTestManager(t)
+
+	vmCfg := createTestVM(t, td, &vm.CreateOptions{
+		Image: "docker.io/library/ubuntu:22.04",
+		Name:  "missing-meta-running",
+	})
+
+	if err := os.Remove(td.cfg.VMMetadataPath(vmCfg.VMID)); err != nil {
+		t.Fatalf("remove metadata.json: %v", err)
+	}
+
+	td.hyper.IsAliveFunc = func(_ string) bool { return true }
+	td.hyper.ForceKillFunc = func(_ string) error { return nil }
+
+	err := td.mgr.Delete(t.Context(), vmCfg.VMID, false)
+	if !errors.Is(err, types.ErrVMRunning) {
+		t.Fatalf("expected ErrVMRunning, got %v", err)
+	}
+
+	if err := td.mgr.Delete(t.Context(), vmCfg.VMID, true); err != nil {
+		t.Fatalf("force delete with missing metadata: %v", err)
 	}
 }
 
@@ -972,6 +1054,48 @@ func TestStart_NoFallback_OnNonRecoverablePVHFailure(t *testing.T) {
 	}
 	if bootCalls != 1 {
 		t.Fatalf("BootVM calls = %d, want 1 (no fallback)", bootCalls)
+	}
+
+	meta, loadErr := td.mgr.LoadMetadata(v.VMID)
+	if loadErr != nil {
+		t.Fatalf("LoadMetadata: %v", loadErr)
+	}
+	if meta.State != string(types.VMStateError) {
+		t.Fatalf("metadata state = %q, want %q", meta.State, types.VMStateError)
+	}
+}
+
+func TestStart_InvalidBootStrategyInConfig(t *testing.T) {
+	t.Parallel()
+	td := setupTestManager(t)
+
+	td.cfg.BootTimeoutSeconds = 0
+
+	v := createTestVM(t, td, &vm.CreateOptions{
+		Image: "docker.io/library/ubuntu:22.04",
+		Name:  "start-invalid-strategy",
+	})
+
+	launchCalls := 0
+	td.hyper.LaunchFunc = func(_ context.Context, _ string, _ *types.VMConfig) (int, error) {
+		launchCalls++
+		return 1234, nil
+	}
+
+	v.BootStrategy = types.BootStrategy("invalid_strategy")
+	if err := utils.AtomicWriteJSON(td.cfg.VMConfigPath(v.VMID), v); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+
+	err := td.mgr.Start(t.Context(), v.VMID)
+	if err == nil {
+		t.Fatal("Start() error = nil, want non-nil")
+	}
+	if got, want := err.Error(), `invalid boot strategy in config: "invalid_strategy"`; !strings.Contains(got, want) {
+		t.Fatalf("Start error = %q, want substring %q", got, want)
+	}
+	if launchCalls != 0 {
+		t.Fatalf("Launch calls = %d, want 0 for invalid strategy", launchCalls)
 	}
 
 	meta, loadErr := td.mgr.LoadMetadata(v.VMID)

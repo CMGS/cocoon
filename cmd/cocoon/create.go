@@ -64,6 +64,11 @@ func parseCreateOptions(c *cli.Context, cmdName string) (*vm.CreateOptions, erro
 		return nil, fmt.Errorf("IMAGE argument required\n\nUsage: cocoon %s IMAGE [flags]", cmdName)
 	}
 
+	bootStrategy, err := types.ParseBootStrategy(c.String("boot-strategy"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid --boot-strategy value: %w", err)
+	}
+
 	memoryMB, err := parseMemory(c.String("memory"))
 	if err != nil {
 		return nil, fmt.Errorf("invalid --memory value: %w", err)
@@ -75,7 +80,7 @@ func parseCreateOptions(c *cli.Context, cmdName string) (*vm.CreateOptions, erro
 		CPUs:         c.Int("cpus"),
 		MemoryMB:     memoryMB,
 		DiskSize:     c.String("disk"),
-		BootStrategy: types.BootStrategy(c.String("boot-strategy")),
+		BootStrategy: bootStrategy,
 		SkipVerify:   c.Bool("skip-verify"),
 	}, nil
 }

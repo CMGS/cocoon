@@ -1,6 +1,7 @@
 package refcache
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -14,11 +15,19 @@ import (
 	"github.com/CMGS/cocoon/utils"
 )
 
+// ErrAmbiguousImageRef is returned when a short/alias ref maps to multiple
+// cached base images in manifest index.
+var ErrAmbiguousImageRef = errors.New("ambiguous image ref")
+
 // Entry describes one IMAGE_REF -> base_key mapping in manifest cache.
 type Entry struct {
-	BaseKey    string `json:"base_key"`
-	DigestFull string `json:"digest_full,omitempty"`
-	LastSeenAt string `json:"last_seen_at"`
+	// BaseKey is the unique mapping (legacy + current single-key form).
+	BaseKey string `json:"base_key,omitempty"`
+	// BaseKeys stores all candidate mappings for aliases. len>1 means ambiguous.
+	// This field allows collision-safe alias handling without silent overwrite.
+	BaseKeys   []string `json:"base_keys,omitempty"`
+	DigestFull string   `json:"digest_full,omitempty"`
+	LastSeenAt string   `json:"last_seen_at"`
 }
 
 type indexFile map[string]Entry
@@ -73,15 +82,35 @@ func Upsert(cfg *config.CocoonConfig, ref, baseKey, digestFull string) error {
 	}
 	return withLock(cfg, func(idx indexFile) error {
 		now := time.Now().UTC().Format(time.RFC3339)
+		exactRef := strings.TrimSpace(ref)
 		for _, candidate := range candidates(ref) {
-			entry := Entry{
-				BaseKey:    baseKey,
-				DigestFull: digestFull,
-				LastSeenAt: now,
+			existing, existed := idx[candidate]
+			entry := existing
+			keys := entry.resolvedBaseKeys()
+
+			// Exact source ref is authoritative: always point to the latest base key.
+			if candidate == exactRef {
+				setResolvedBaseKeys(&entry, []string{baseKey})
+			} else {
+				if !containsString(keys, baseKey) {
+					keys = append(keys, baseKey)
+				}
+				setResolvedBaseKeys(&entry, keys)
 			}
-			if existing, ok := idx[candidate]; ok && entry.DigestFull == "" {
-				entry.DigestFull = existing.DigestFull
+
+			// Keep digest only for unambiguous entries.
+			currentKeys := entry.resolvedBaseKeys()
+			if len(currentKeys) == 1 && currentKeys[0] == baseKey {
+				if digestFull != "" {
+					entry.DigestFull = digestFull
+				} else if existed && entry.DigestFull == "" {
+					entry.DigestFull = existing.DigestFull
+				}
+			} else if len(currentKeys) > 1 {
+				entry.DigestFull = ""
 			}
+
+			entry.LastSeenAt = now
 			idx[candidate] = entry
 		}
 		if err := save(cfg, idx); err != nil {
@@ -97,20 +126,53 @@ func ResolveBaseKey(cfg *config.CocoonConfig, ref string) (string, bool, error) 
 		baseKey string
 		found   bool
 	)
-	if strings.TrimSpace(ref) == "" {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
 		return "", false, nil
 	}
 	err := withLock(cfg, func(idx indexFile) error {
+		// Direct exact match has highest priority.
+		if entry, ok := idx[ref]; ok {
+			keys := entry.resolvedBaseKeys()
+			switch len(keys) {
+			case 1:
+				baseKey = keys[0]
+				found = true
+				return nil
+			case 0:
+				return nil
+			default:
+				return fmt.Errorf("%w: %q resolves to multiple base keys: %s",
+					ErrAmbiguousImageRef, ref, strings.Join(keys, ", "))
+			}
+		}
+
+		matches := make(map[string]struct{})
 		for _, candidate := range candidates(ref) {
+			if candidate == ref {
+				continue
+			}
 			entry, ok := idx[candidate]
 			if !ok {
 				continue
 			}
-			baseKey = entry.BaseKey
+			for _, k := range entry.resolvedBaseKeys() {
+				matches[k] = struct{}{}
+			}
+		}
+
+		keys := sortedStringSet(matches)
+		switch len(keys) {
+		case 0:
+			return nil
+		case 1:
+			baseKey = keys[0]
 			found = true
 			return nil
+		default:
+			return fmt.Errorf("%w: %q matches multiple cached images: %s",
+				ErrAmbiguousImageRef, ref, strings.Join(keys, ", "))
 		}
-		return nil
 	})
 	if err != nil {
 		return "", false, err
@@ -121,14 +183,14 @@ func ResolveBaseKey(cfg *config.CocoonConfig, ref string) (string, bool, error) 
 // RefsForBaseKey returns all IMAGE_REF aliases that currently map to base_key.
 // It also returns one non-empty digest_full value when present.
 func RefsForBaseKey(cfg *config.CocoonConfig, baseKey string) ([]string, string, error) {
-	refs := make([]string, 0)
+	refSet := make(map[string]struct{})
 	digestFull := ""
 	err := withLock(cfg, func(idx indexFile) error {
 		for ref, entry := range idx {
-			if entry.BaseKey != baseKey {
+			if !containsString(entry.resolvedBaseKeys(), baseKey) {
 				continue
 			}
-			refs = append(refs, ref)
+			refSet[ref] = struct{}{}
 			if digestFull == "" && entry.DigestFull != "" {
 				digestFull = entry.DigestFull
 			}
@@ -138,7 +200,7 @@ func RefsForBaseKey(cfg *config.CocoonConfig, baseKey string) ([]string, string,
 	if err != nil {
 		return nil, "", err
 	}
-	sort.Strings(refs)
+	refs := sortedStringSet(refSet)
 	return refs, digestFull, nil
 }
 
@@ -150,8 +212,17 @@ func DeleteByBaseKey(cfg *config.CocoonConfig, baseKey string) error {
 	return withLock(cfg, func(idx indexFile) error {
 		changed := false
 		for ref, entry := range idx {
-			if entry.BaseKey == baseKey {
+			keys := removeString(entry.resolvedBaseKeys(), baseKey)
+			switch len(keys) {
+			case 0:
 				delete(idx, ref)
+				changed = true
+			default:
+				setResolvedBaseKeys(&entry, keys)
+				if len(keys) > 1 {
+					entry.DigestFull = ""
+				}
+				idx[ref] = entry
 				changed = true
 			}
 		}
@@ -226,4 +297,69 @@ func simplifyAlias(v string) string {
 	}
 	s = strings.Trim(s, "-_")
 	return s
+}
+
+func (e Entry) resolvedBaseKeys() []string {
+	if len(e.BaseKeys) > 0 {
+		keys := append([]string(nil), e.BaseKeys...)
+		sort.Strings(keys)
+		return keys
+	}
+	if e.BaseKey != "" {
+		return []string{e.BaseKey}
+	}
+	return nil
+}
+
+func setResolvedBaseKeys(e *Entry, keys []string) {
+	unique := make(map[string]struct{})
+	for _, k := range keys {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		unique[k] = struct{}{}
+	}
+
+	sorted := sortedStringSet(unique)
+	switch len(sorted) {
+	case 0:
+		e.BaseKey = ""
+		e.BaseKeys = nil
+	case 1:
+		e.BaseKey = sorted[0]
+		e.BaseKeys = nil
+	default:
+		e.BaseKey = ""
+		e.BaseKeys = sorted
+	}
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
+}
+
+func removeString(items []string, target string) []string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if item == target {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func sortedStringSet(set map[string]struct{}) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
