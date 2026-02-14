@@ -59,7 +59,8 @@ type COWManager interface {
 	// (/var/lib/cocoon/vms/{vmID}/overlay.qcow2).
 	CreateOverlay(baseKey, vmID, diskSize string) (overlayPath string, err error)
 
-	// RemoveOverlay removes the VM overlay directory entirely.
+	// RemoveOverlay removes the VM overlay disk file for vmID.
+	// It does not remove the VM directory or config/metadata files.
 	RemoveOverlay(vmID string) error
 
 	// GetOverlayInfo returns metadata about an existing overlay.

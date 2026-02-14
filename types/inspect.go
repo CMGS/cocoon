@@ -33,9 +33,10 @@ type InspectStorageInfo struct {
 
 // InspectHypervisorInfo contains Cloud Hypervisor details.
 type InspectHypervisorInfo struct {
-	CHSocket  string `json:"ch_socket"`
-	CHPID     int    `json:"ch_pid"`
-	SerialLog string `json:"serial_log"`
+	CHSocket         string   `json:"ch_socket"`
+	CHPID            int      `json:"ch_pid"`
+	SerialLog        string   `json:"serial_log"`
+	SerialLogExcerpt []string `json:"serial_log_excerpt,omitempty"`
 }
 
 // InspectBootConfig contains boot configuration.

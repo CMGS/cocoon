@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -375,6 +376,41 @@ func TestInspect(t *testing.T) {
 	}
 	if inspect.Image.BaseKey != "a1b2c3d4e5f6a7b8_amd64" {
 		t.Errorf("Image.BaseKey = %q, want %q", inspect.Image.BaseKey, "a1b2c3d4e5f6a7b8_amd64")
+	}
+}
+
+func TestInspect_SerialLogExcerpt(t *testing.T) {
+	t.Parallel()
+	td := setupTestManager(t)
+
+	vmCfg := createTestVM(t, td, &vm.CreateOptions{
+		Image: "docker.io/library/ubuntu:22.04",
+		Name:  "inspect-log",
+	})
+
+	// Write >100 lines and assert inspect returns the last 100 lines.
+	lines := make([]byte, 0, 4096)
+	for i := 0; i < 120; i++ {
+		lines = append(lines, []byte(fmt.Sprintf("line-%03d\n", i))...)
+	}
+	if err := os.WriteFile(vmCfg.SerialLog, lines, 0o644); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("WriteFile serial log: %v", err)
+	}
+
+	inspect, err := td.mgr.Inspect(t.Context(), vmCfg.VMID)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+
+	excerpt := inspect.Hypervisor.SerialLogExcerpt
+	if len(excerpt) != 100 {
+		t.Fatalf("excerpt length=%d, want 100", len(excerpt))
+	}
+	if excerpt[0] != "line-020" {
+		t.Fatalf("excerpt[0]=%q, want %q", excerpt[0], "line-020")
+	}
+	if excerpt[len(excerpt)-1] != "line-119" {
+		t.Fatalf("excerpt[last]=%q, want %q", excerpt[len(excerpt)-1], "line-119")
 	}
 }
 

@@ -3,9 +3,11 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	cli "github.com/urfave/cli/v2"
 
+	"github.com/CMGS/cocoon/image/refcache"
 	"github.com/CMGS/cocoon/types"
 )
 
@@ -51,25 +53,51 @@ func imagesAction(c *cli.Context) error {
 	}
 
 	format := c.String("format")
+	rows := make([]imageListInfo, 0, len(images))
+	for _, img := range images {
+		sourceRefs, _, refsErr := refcache.RefsForBaseKey(app.cfg, img.BaseKey)
+		if refsErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: read manifest cache for %s: %v\n", img.BaseKey, refsErr)
+		}
+		rows = append(rows, imageListInfo{
+			BaseKey:    img.BaseKey,
+			Size:       img.Size,
+			RefCount:   img.RefCount,
+			CachedAt:   img.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			SourceRef:  summarizeSourceRefs(sourceRefs),
+			SourceRefs: sourceRefs,
+		})
+	}
 
 	// JSON output.
 	if format == formatJSON {
-		return printJSON(images)
+		return printJSON(rows)
 	}
 
 	// Table output (default).
-	headers := []string{"BASE KEY", "SIZE", "REF COUNT", "CACHED AT"}
-	rows := make([][]string, 0, len(images))
-	for _, img := range images {
-		rows = append(rows, []string{
-			img.BaseKey,
-			humanBytes(img.Size),
-			fmt.Sprintf("%d", img.RefCount),
-			img.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	headers := []string{"BASE KEY", "SIZE", "REF COUNT", "SOURCE REF", "CACHED AT"}
+	tableRows := make([][]string, 0, len(rows))
+	for _, row := range rows {
+		tableRows = append(tableRows, []string{
+			row.BaseKey,
+			humanBytes(row.Size),
+			fmt.Sprintf("%d", row.RefCount),
+			row.SourceRef,
+			row.CachedAt,
 		})
 	}
-	printTable(headers, rows)
+	printTable(headers, tableRows)
 	return nil
+}
+
+// imageListInfo is the CLI view model for image list output.
+type imageListInfo struct {
+	BaseKey    string   `json:"base_key"`
+	Size       int64    `json:"size"`
+	RefCount   int      `json:"ref_count"`
+	SourceRef  string   `json:"source_ref,omitempty"`
+	SourceRefs []string `json:"source_refs,omitempty"`
+	CachedAt   string   `json:"cached_at"`
 }
 
 func imagePullCommand() *cli.Command {
@@ -122,6 +150,9 @@ func imagePullAction(c *cli.Context) error {
 		for _, w := range result.Warnings {
 			fmt.Fprintf(os.Stderr, "Warning: image %s: %s\n", ref, w)
 		}
+	}
+	if idxErr := refcache.Upsert(app.cfg, ref, identity.BaseKey(), identity.FullDigest); idxErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: update manifest cache for %q: %v\n", ref, idxErr)
 	}
 
 	fmt.Printf("Pulled: %s\n", ref)
@@ -181,13 +212,21 @@ func imageInspectAction(c *cli.Context) error {
 			}
 
 			found = &imageInspectInfo{
-				BaseKey:   img.BaseKey,
-				Path:      img.Path,
-				Size:      img.Size,
-				SizeHuman: humanBytes(img.Size),
-				RefCount:  refCount,
-				Refs:      refs,
-				CachedAt:  img.CreatedAt.Format("2006-01-02T15:04:05Z"),
+				BaseKey:    img.BaseKey,
+				Path:       img.Path,
+				Size:       img.Size,
+				SizeHuman:  humanBytes(img.Size),
+				RefCount:   refCount,
+				Refs:       refs,
+				CachedAt:   img.CreatedAt.Format("2006-01-02T15:04:05Z"),
+				SourceRefs: []string{},
+			}
+			sourceRefs, digestFull, idxErr := refcache.RefsForBaseKey(app.cfg, baseKey)
+			if idxErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: read manifest cache for %s: %v\n", baseKey, idxErr)
+			} else {
+				found.SourceRefs = sourceRefs
+				found.DigestFull = digestFull
 			}
 			break
 		}
@@ -202,13 +241,15 @@ func imageInspectAction(c *cli.Context) error {
 
 // imageInspectInfo holds detailed info for the image inspect command.
 type imageInspectInfo struct {
-	BaseKey   string   `json:"base_key"`
-	Path      string   `json:"path"`
-	Size      int64    `json:"size"`
-	SizeHuman string   `json:"size_human"`
-	RefCount  int      `json:"ref_count"`
-	Refs      []string `json:"refs,omitempty"`
-	CachedAt  string   `json:"cached_at"`
+	BaseKey    string   `json:"base_key"`
+	Path       string   `json:"path"`
+	Size       int64    `json:"size"`
+	SizeHuman  string   `json:"size_human"`
+	RefCount   int      `json:"ref_count"`
+	Refs       []string `json:"refs,omitempty"`
+	SourceRefs []string `json:"source_refs,omitempty"`
+	DigestFull string   `json:"digest_full,omitempty"`
+	CachedAt   string   `json:"cached_at"`
 }
 
 func imageRemoveCommand() *cli.Command {
@@ -241,6 +282,9 @@ func imageRemoveAction(c *cli.Context) error {
 	if err := app.imgMgr.RemoveCached(c.Context, baseKey); err != nil {
 		return fmt.Errorf("remove cached image: %w", err)
 	}
+	if idxErr := refcache.DeleteByBaseKey(app.cfg, baseKey); idxErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: clean manifest cache for %s: %v\n", baseKey, idxErr)
+	}
 
 	fmt.Printf("Removed: %s\n", baseKey)
 	return nil
@@ -258,6 +302,17 @@ func resolveBaseKeyFromCache(c *cli.Context, app *appContext, ref string) (strin
 	for _, img := range images {
 		if img.BaseKey == ref {
 			return ref, nil
+		}
+	}
+	baseKey, ok, err := refcache.ResolveBaseKey(app.cfg, ref)
+	if err != nil {
+		return "", fmt.Errorf("resolve image ref from manifest cache %q: %w", ref, err)
+	}
+	if ok {
+		for _, img := range images {
+			if img.BaseKey == baseKey {
+				return baseKey, nil
+			}
 		}
 	}
 	return "", fmt.Errorf("image %q not found in cache", ref)
@@ -293,14 +348,18 @@ func imageVerifyAction(c *cli.Context) error {
 	format := c.String("format")
 
 	// If the argument is a local file path, use it directly.
-	// Otherwise, treat it as an image reference and resolve to a cached path.
+	// Otherwise, prefer local cache resolution first to avoid network pulls.
 	imagePath := arg
 	if _, statErr := os.Stat(arg); statErr != nil {
-		_, basePath, prepErr := app.imgMgr.Prepare(c.Context, arg)
-		if prepErr != nil {
-			return fmt.Errorf("resolve image ref %q: %w", arg, prepErr)
+		if baseKey, resolveErr := resolveBaseKeyFromCache(c, app, arg); resolveErr == nil {
+			imagePath = app.cfg.BaseImagePath(baseKey)
+		} else {
+			_, basePath, prepErr := app.imgMgr.Prepare(c.Context, arg)
+			if prepErr != nil {
+				return fmt.Errorf("resolve image ref %q: %w", arg, prepErr)
+			}
+			imagePath = basePath
 		}
-		imagePath = basePath
 	}
 
 	result, err := app.imgMgr.VerifyBootability(c.Context, imagePath)
@@ -349,4 +408,18 @@ func imageVerifyAction(c *cli.Context) error {
 	}
 
 	return nil
+}
+
+func summarizeSourceRefs(refs []string) string {
+	if len(refs) == 0 {
+		return "-"
+	}
+	if len(refs) == 1 {
+		return refs[0]
+	}
+	top := strings.Join(refs[:2], ", ")
+	if len(refs) == 2 {
+		return top
+	}
+	return fmt.Sprintf("%s (+%d)", top, len(refs)-2)
 }

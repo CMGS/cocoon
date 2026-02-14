@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -16,6 +17,7 @@ import (
 	"github.com/CMGS/cocoon/config"
 	"github.com/CMGS/cocoon/hypervisor"
 	"github.com/CMGS/cocoon/image"
+	"github.com/CMGS/cocoon/image/refcache"
 	"github.com/CMGS/cocoon/lock/flock"
 	"github.com/CMGS/cocoon/storage"
 	"github.com/CMGS/cocoon/types"
@@ -231,6 +233,9 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 	}
 
 	baseKey := identity.BaseKey()
+	if idxErr := refcache.Upsert(m.cfg, opts.Image, baseKey, identity.FullDigest); idxErr != nil {
+		log.Printf("warning: update manifest cache for %q: %v", opts.Image, idxErr)
+	}
 
 	// Resolve firmware path based on boot strategy and arch.
 	firmwarePath, err := resolveFirmwarePath(m.cfg, bootStrategy, identity.Arch)
@@ -790,7 +795,11 @@ func (m *manager) Inspect(ctx context.Context, vmID string) (*types.VMInspect, e
 		return nil, err
 	}
 
-	return types.BuildInspect(vmCfg, meta), nil
+	inspect := types.BuildInspect(vmCfg, meta)
+	if excerpt, readErr := readSerialLogExcerpt(vmCfg.SerialLog, 100); readErr == nil {
+		inspect.Hypervisor.SerialLogExcerpt = excerpt
+	}
+	return inspect, nil
 }
 
 // List returns inspect views for all VMs.
@@ -818,6 +827,36 @@ func (m *manager) List(ctx context.Context) ([]*types.VMInspect, error) {
 	}
 
 	return results, nil
+}
+
+func readSerialLogExcerpt(path string, maxLines int) ([]string, error) {
+	if maxLines <= 0 {
+		return nil, nil
+	}
+	f, err := os.Open(path) //nolint:gosec // G304: path comes from persisted VM config
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close() //nolint:errcheck
+
+	scanner := bufio.NewScanner(f)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	lines := make([]string, 0, maxLines)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if len(lines) < maxLines {
+			lines = append(lines, line)
+			continue
+		}
+		copy(lines, lines[1:])
+		lines[maxLines-1] = line
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return lines, nil
 }
 
 // ---------------------------------------------------------------------------
