@@ -1,9 +1,9 @@
 # Implementation Roadmap
 
 **Version**: 1.0
-**Status**: Implemented
+**Status**: Phases 0-6 Implemented; Phases 7-8 Planned
 **Phase**: Phase 1
-**Last Updated**: 2026-02-14
+**Last Updated**: 2026-02-15
 
 ## Executive Summary
 
@@ -1253,53 +1253,53 @@ qemu-img >= 8.0
 ### P0: Critical Requirements
 
 **Boot Contract**:
-- [ ] UEFI boot mode implemented
-- [ ] systemd + cloud-init integration working
-- [ ] Serial console capture functional
-- [ ] ACPI shutdown with 30s timeout
-- [ ] Force kill after timeout
+- [x] UEFI boot mode implemented (`types/boot.go`, `vm/engine/manager.go`, `hypervisor/cloudhypervisor/client.go`)
+- [ ] systemd + cloud-init integration working (boot detection implemented; metadata server is Phase 2)
+- [x] Serial console capture functional (`hypervisor/cloudhypervisor/client.go`, `vm/engine/boot_detect.go`)
+- [x] ACPI shutdown with 30s timeout (`vm/engine/manager.go`, `hypervisor/cloudhypervisor/client.go`)
+- [x] Force kill after timeout (`vm/engine/manager.go`, `hypervisor/hypervisor.go`)
 
 **Hypervisor Integration**:
-- [ ] One CH process per VM
-- [ ] Socket management correct
-- [ ] HTTP client complete with all REST endpoints
-- [ ] Process monitoring and crash detection
-- [ ] Graceful shutdown working
+- [x] One CH process per VM (`hypervisor/cloudhypervisor/client.go`)
+- [x] Socket management correct (`hypervisor/cloudhypervisor/client.go`)
+- [x] HTTP client complete with all REST endpoints (`hypervisor/cloudhypervisor/client.go`)
+- [x] Process monitoring and crash detection (`vm/engine/reconcile.go`)
+- [x] Graceful shutdown working (`vm/engine/manager.go`)
 
 **Storage Layer**:
-- [ ] qcow2 COW overlays created correctly
-- [ ] Reference counter maintains accurate counts
-- [ ] GC removes unused base images
-- [ ] Atomic file operations prevent corruption
-- [ ] Trash system protects against accidental deletion
+- [x] qcow2 COW overlays created correctly (`storage/local/cow.go`)
+- [x] Reference counter maintains accurate counts (`storage/local/refcount.go`)
+- [x] GC removes unused base images (`storage/local/gc.go`)
+- [x] Atomic file operations prevent corruption (`utils/atomic.go`)
+- [x] Trash system protects against accidental deletion (`storage/local/gc.go`)
 
 **OCI Conversion**:
-- [ ] Buildah pulls images successfully
-- [ ] Manifest checksum calculated correctly
-- [ ] Rootfs converted to bootable qcow2
-- [ ] Cache deduplicates identical images
-- [ ] Converted images boot in Cloud Hypervisor
+- [x] Buildah pulls images successfully (`image/pipeline/oci_linux.go`)
+- [x] Manifest checksum calculated correctly (`image/pipeline/checksum.go`)
+- [x] Rootfs converted to bootable qcow2 (`image/pipeline/convert_linux.go`)
+- [x] Cache deduplicates identical images (`image/pipeline/manager.go`)
+- [ ] Converted images boot in Cloud Hypervisor (requires E2E test on KVM host)
 
 **VM Lifecycle**:
-- [ ] State machine enforces valid transitions
-- [ ] Metadata persists correctly
-- [ ] All operations idempotent
-- [ ] Crash recovery working
-- [ ] Reconciliation handles orphaned resources
+- [x] State machine enforces valid transitions (`types/state.go`, `types/state_test.go`)
+- [x] Metadata persists correctly (`types/metadata.go`, `vm/engine/manager.go`)
+- [x] All operations idempotent (`vm/engine/manager.go`, `cmd/cocoon/rm.go`)
+- [x] Crash recovery working (`vm/engine/reconcile.go`)
+- [x] Reconciliation handles orphaned resources (`vm/engine/reconcile.go`)
 
 **Concurrency**:
-- [ ] Global lock hierarchy implemented
-- [ ] No deadlocks under stress test
-- [ ] No race conditions (go test -race clean)
-- [ ] Concurrent image conversion deduplicates
-- [ ] Reference counter thread-safe
+- [x] Global lock hierarchy implemented (`lock/lock.go`, `lock/flock/flock.go`)
+- [ ] No deadlocks under stress test (stress tests not yet written)
+- [x] No race conditions (`go test -race ./...` clean; concurrency tests in `image/pipeline/manager_test.go`, `storage/local/refcount_test.go`, `storage/local/gc_test.go`)
+- [x] Concurrent image conversion deduplicates (`image/pipeline/manager.go`)
+- [x] Reference counter thread-safe (`storage/local/refcount.go` uses flock)
 
 **CLI**:
-- [ ] All core commands functional (create, start, stop, delete)
-- [ ] Image commands working (pull, list, rm)
-- [ ] Utility commands complete (logs, doctor, gc, firmware)
-- [ ] Help text comprehensive
-- [ ] JSON output mode available
+- [x] All core commands functional (create, start, stop, delete) (`cmd/cocoon/`)
+- [x] Image commands working (pull, list, rm) (`cmd/cocoon/images.go`)
+- [x] Utility commands complete (logs, doctor, gc, firmware) (`cmd/cocoon/`)
+- [x] Help text comprehensive (urfave/cli auto-generated)
+- [x] JSON output mode available (`cmd/cocoon/output.go`)
 
 ---
 

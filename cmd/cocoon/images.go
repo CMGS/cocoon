@@ -5,6 +5,8 @@ import (
 	"os"
 
 	cli "github.com/urfave/cli/v2"
+
+	"github.com/CMGS/cocoon/types"
 )
 
 func imagesCommand() *cli.Command {
@@ -75,7 +77,13 @@ func imagePullCommand() *cli.Command {
 		Name:      "pull",
 		Usage:     "Pull and cache an image without creating a VM",
 		ArgsUsage: "IMAGE_REF",
-		Action:    imagePullAction,
+		Flags: []cli.Flag{
+			&cli.BoolFlag{
+				Name:  "skip-verify",
+				Usage: "skip bootability verification after pull",
+			},
+		},
+		Action: imagePullAction,
 	}
 }
 
@@ -97,9 +105,29 @@ func imagePullAction(c *cli.Context) error {
 		return fmt.Errorf("pull image %q: %w", ref, err)
 	}
 
+	// Post-pull bootability verification.
+	// VerifyBootability requires guestfish for deep checks (Linux-only).
+	// On Darwin or when guestfish is unavailable, it falls back to basic
+	// qcow2 validation with an optimistic result.
+	if !c.Bool("skip-verify") {
+		result, verifyErr := app.imgMgr.VerifyBootability(c.Context, basePath)
+		if verifyErr != nil {
+			return fmt.Errorf("verify bootability for %q: %w", ref, verifyErr)
+		} else if !result.Bootable {
+			if len(result.Errors) > 0 {
+				return fmt.Errorf("%w: %s - %v", types.ErrImageNotBootable, ref, result.Errors)
+			}
+			return fmt.Errorf("%w: %s", types.ErrImageNotBootable, ref)
+		}
+		for _, w := range result.Warnings {
+			fmt.Fprintf(os.Stderr, "Warning: image %s: %s\n", ref, w)
+		}
+	}
+
 	fmt.Printf("Pulled: %s\n", ref)
 	fmt.Printf("Base key: %s\n", identity.BaseKey())
 	fmt.Printf("Cached at: %s\n", basePath)
+
 	return nil
 }
 
@@ -131,7 +159,7 @@ func imageInspectAction(c *cli.Context) error {
 
 	ref := c.Args().Get(0)
 
-	baseKey, err := resolveBaseKey(c, app, ref)
+	baseKey, err := resolveBaseKeyFromCache(c, app, ref)
 	if err != nil {
 		return err
 	}
@@ -205,7 +233,7 @@ func imageRemoveAction(c *cli.Context) error {
 
 	ref := c.Args().Get(0)
 
-	baseKey, err := resolveBaseKey(c, app, ref)
+	baseKey, err := resolveBaseKeyFromCache(c, app, ref)
 	if err != nil {
 		return err
 	}
@@ -218,11 +246,11 @@ func imageRemoveAction(c *cli.Context) error {
 	return nil
 }
 
-// resolveBaseKey resolves an image reference to a base_key. It first checks if
-// ref is already a valid base_key in the cache. If not, it treats ref as an
-// image reference and resolves it via Prepare.
-func resolveBaseKey(c *cli.Context, app *appContext, ref string) (string, error) {
-	// Fast path: check if ref is already a valid base_key in cache.
+// resolveBaseKeyFromCache resolves an image reference to a base_key using only
+// the local cache. It checks if ref matches a cached image's BaseKey directly.
+// It never triggers a pull or conversion — making it safe for read-only
+// operations like inspect and remove.
+func resolveBaseKeyFromCache(c *cli.Context, app *appContext, ref string) (string, error) {
 	images, err := app.imgMgr.ListCached(c.Context)
 	if err != nil {
 		return "", fmt.Errorf("list cached images: %w", err)
@@ -232,13 +260,7 @@ func resolveBaseKey(c *cli.Context, app *appContext, ref string) (string, error)
 			return ref, nil
 		}
 	}
-
-	// Slow path: treat ref as an image reference, resolve to base_key.
-	identity, _, err := app.imgMgr.Prepare(c.Context, ref)
-	if err != nil {
-		return "", fmt.Errorf("resolve image ref %q: %w", ref, err)
-	}
-	return identity.BaseKey(), nil
+	return "", fmt.Errorf("image %q not found in cache", ref)
 }
 
 func imageVerifyCommand() *cli.Command {
@@ -288,7 +310,13 @@ func imageVerifyAction(c *cli.Context) error {
 
 	// JSON output.
 	if format == formatJSON {
-		return printJSON(result)
+		if err := printJSON(result); err != nil {
+			return err
+		}
+		if !result.Bootable {
+			return cli.Exit("", 1)
+		}
+		return nil
 	}
 
 	// Table-style summary (default).
@@ -314,6 +342,10 @@ func imageVerifyAction(c *cli.Context) error {
 		for _, w := range result.Warnings {
 			fmt.Printf("  - %s\n", w)
 		}
+	}
+
+	if !result.Bootable {
+		return cli.Exit("", 1)
 	}
 
 	return nil

@@ -8,6 +8,14 @@ import (
 	"strings"
 )
 
+// UEFIFallbackPaths lists system OVMF firmware paths to probe when the
+// primary UEFI firmware (CLOUDHV.fd) is not found. These are deprecated
+// fallbacks; users should install CLOUDHV.fd via 'cocoon firmware install'.
+var UEFIFallbackPaths = []string{
+	"/usr/share/OVMF/OVMF_CODE.fd",
+	"/usr/share/edk2/ovmf/OVMF_CODE.fd",
+}
+
 // CocoonConfig holds global Cocoon configuration.
 type CocoonConfig struct {
 	// Root directory for persistent data.

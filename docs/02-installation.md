@@ -133,7 +133,7 @@ cloud-hypervisor --version
 
 ### Firmware Requirements
 
-Cloud Hypervisor requires firmware to boot virtual machines. Cocoon supports two boot modes per [Boot Contract v2.0](./01-boot-contract.md):
+Cloud Hypervisor requires firmware to boot virtual machines. Cocoon supports two boot modes per [Boot Contract v2.0](./01-boot-contract.md). For authoritative CLI behavior (flags, subcommands, exit codes), see [docs/09-cli-design.md](./09-cli-design.md).
 
 #### PVH Firmware (Recommended - Phase 1 Primary)
 
@@ -195,7 +195,7 @@ cloud-hypervisor \
 **When to use UEFI fallback:**
 1. Image explicitly requires UEFI (metadata flag)
 2. PVH boot fails (automatic retry)
-3. User specifies `--boot-mode uefi` flag
+3. User specifies `--boot-strategy uefi_only` flag
 
 **Installation (recommended -- via `cocoon firmware install`):**
 
@@ -256,7 +256,7 @@ cloud-hypervisor \
 **Cocoon Default Strategy** (per Boot Contract v2.0):
 1. Try PVH boot first (faster, cloud-native)
 2. Automatic fallback to UEFI on failure
-3. User can force UEFI with `--boot-mode uefi`
+3. User can force UEFI with `--boot-strategy uefi_only`
 
 ### Firmware Updates
 

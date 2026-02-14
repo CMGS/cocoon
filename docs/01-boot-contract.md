@@ -65,14 +65,14 @@ cloud-hypervisor \
 6. Loads GRUB2/shim or direct kernel from ESP
 7. Transfers control to bootloader/kernel
 
-**Firmware Management**:
+**Firmware Management** (see [docs/09-cli-design.md](./09-cli-design.md) for authoritative CLI behavior):
 ```bash
-# Installation downloads firmware
-cocoon doctor  # Checks if firmware exists, downloads if missing
+# Installation checks firmware presence
+cocoon doctor  # Checks if firmware exists; use 'cocoon firmware install' to download
 
 # Manual firmware management
 cocoon firmware list      # Show installed firmware versions
-cocoon firmware update    # Update to latest release
+cocoon firmware update --pvh-url URL    # Alias for install (requires URL flags)
 cocoon firmware verify    # Verify integrity
 ```
 
@@ -97,7 +97,7 @@ cocoon firmware verify    # Verify integrity
 **When to use UEFI fallback**:
 1. Image explicitly requests UEFI (metadata flag)
 2. hypervisor-fw boot fails (automatic retry)
-3. User specifies `--boot-mode uefi` flag
+3. User specifies `--boot-strategy uefi_only` flag
 
 **UEFI boot command**:
 ```bash
@@ -112,9 +112,9 @@ cloud-hypervisor \
 
 **Firmware Requirements**:
 - **x86_64**: Use Cloud Hypervisor's edk2 UEFI firmware (`CLOUDHV.fd`)
-  - Install via `cocoon firmware install uefi` or download from CH releases
+  - Install via `cocoon firmware install --uefi-url URL` or download from CH releases
   - Installed to: `/var/lib/cocoon/firmware/CLOUDHV.fd`
-  - Deprecated fallback: `/usr/share/OVMF/OVMF_CODE.fd` from `ovmf` package (only used if CLOUDHV.fd missing)
+  - Deprecated fallback: `/usr/share/OVMF/OVMF_CODE.fd` from `ovmf` package (only used if CLOUDHV.fd missing). (Implemented: the engine probes system OVMF paths as deprecated fallback)
 - **aarch64**: `/usr/share/AAVMF/AAVMF_CODE.fd` (from `edk2-aarch64` package)
 
 **How UEFI fallback works**:

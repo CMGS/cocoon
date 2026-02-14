@@ -377,10 +377,13 @@ For quick evaluation without dealing with rootless limitations:
    sudo mv cocoon /usr/local/bin/
    ```
 
-4. **Run health check and download firmware** (2 min):
+4. **Run health check and install firmware** (2 min):
    ```bash
-   # Verify installation and download PVH firmware
-   cocoon doctor --fix
+   # Verify installation
+   cocoon doctor
+
+   # Install PVH firmware (explicit URL required)
+   cocoon firmware install --pvh-url https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw
    ```
 
 5. **Create and start a VM** (3 min):

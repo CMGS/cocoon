@@ -6,6 +6,8 @@ import (
 	"os/exec"
 
 	cli "github.com/urfave/cli/v2"
+
+	"github.com/CMGS/cocoon/config"
 )
 
 func doctorCommand() *cli.Command {
@@ -75,21 +77,9 @@ func runDependencyChecks(app *appContext) []checkResult {
 		}
 	}
 
-	// 3. Check UEFI firmware file.
+	// 3. Check UEFI firmware file (with fallback probing).
 	if app.cfg.UEFIFirmwarePath != "" {
-		if _, err := os.Stat(app.cfg.UEFIFirmwarePath); err != nil {
-			results = append(results, checkResult{
-				Name:   "uefi-firmware",
-				Status: "fail",
-				Detail: fmt.Sprintf("not found at %s", app.cfg.UEFIFirmwarePath),
-			})
-		} else {
-			results = append(results, checkResult{
-				Name:   "uefi-firmware",
-				Status: "pass",
-				Detail: app.cfg.UEFIFirmwarePath,
-			})
-		}
+		results = append(results, checkUEFIFirmware(app.cfg.UEFIFirmwarePath))
 	}
 
 	// 4. Check qemu-img binary.
@@ -218,6 +208,28 @@ func runDependencyChecks(app *appContext) []checkResult {
 	return results
 }
 
+// checkUEFIFirmware checks the primary UEFI firmware path and probes
+// deprecated system OVMF fallback paths if the primary is missing.
+func checkUEFIFirmware(primaryPath string) checkResult {
+	if _, err := os.Stat(primaryPath); err == nil {
+		return checkResult{Name: "uefi-firmware", Status: "pass", Detail: primaryPath}
+	}
+	for _, fb := range config.UEFIFallbackPaths {
+		if _, err := os.Stat(fb); err == nil {
+			return checkResult{
+				Name:   "uefi-firmware",
+				Status: "warn",
+				Detail: fmt.Sprintf("primary %s missing; using deprecated fallback %s", primaryPath, fb),
+			}
+		}
+	}
+	return checkResult{
+		Name:   "uefi-firmware",
+		Status: "fail",
+		Detail: fmt.Sprintf("not found at %s or system fallback paths", primaryPath),
+	}
+}
+
 func doctorAction(c *cli.Context) error {
 	app, err := initApp(c)
 	if err != nil {
@@ -227,6 +239,10 @@ func doctorAction(c *cli.Context) error {
 	fix := c.Bool("fix")
 	force := c.Bool("force")
 	format := c.String("format")
+
+	if force && !fix {
+		return fmt.Errorf("--force requires --fix; run 'cocoon doctor --fix --force'")
+	}
 
 	// Phase 1: Dependency checks.
 	checks := runDependencyChecks(app)

@@ -518,8 +518,13 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 		result, bootErr = m.attemptBoot(ctx, vmID, vmCfg, vmCfg.FirmwarePath, types.BootModePVH)
 		if bootErr != nil && shouldFallbackToUEFI(bootErr) {
 			log.Printf("PVH boot failed for %s, falling back to UEFI: %v", vmID, bootErr)
-			// Second attempt: UEFI boot using the global UEFI firmware path.
-			result, bootErr = m.attemptBoot(ctx, vmID, vmCfg, m.cfg.UEFIFirmwarePath, types.BootModeUEFI)
+			// Second attempt: UEFI boot using resolved firmware path (with system OVMF fallback).
+			uefiFW, fwErr := resolveUEFIFirmwarePath(m.cfg)
+			if fwErr != nil {
+				bootErr = fmt.Errorf("UEFI fallback: %w", fwErr)
+			} else {
+				result, bootErr = m.attemptBoot(ctx, vmID, vmCfg, uefiFW, types.BootModeUEFI)
+			}
 		}
 
 	case types.BootStrategyUEFIOnly:
@@ -917,10 +922,35 @@ func buildCHVMConfig(vmCfg *types.VMConfig) *hypervisor.CHVMConfig {
 	}
 }
 
+// resolveUEFIFirmwarePath returns a usable UEFI firmware path. It first checks
+// the configured primary path. If the primary is missing or empty, it probes
+// the deprecated system OVMF fallback paths. PVH firmware has no fallback.
+func resolveUEFIFirmwarePath(cfg *config.CocoonConfig) (string, error) {
+	// Try the configured primary path first.
+	if cfg.UEFIFirmwarePath != "" {
+		if _, err := os.Stat(cfg.UEFIFirmwarePath); err == nil {
+			return cfg.UEFIFirmwarePath, nil
+		}
+	}
+
+	// Probe deprecated system OVMF fallback paths.
+	for _, path := range config.UEFIFallbackPaths {
+		if _, err := os.Stat(path); err == nil {
+			log.Printf("WARNING: Using system OVMF at %s (deprecated; install CLOUDHV.fd via 'cocoon firmware install')", path)
+			return path, nil
+		}
+	}
+
+	// Build a helpful error listing all candidate paths.
+	candidates := []string{cfg.UEFIFirmwarePath}
+	candidates = append(candidates, config.UEFIFallbackPaths...)
+	return "", fmt.Errorf("%w: UEFI firmware not found at any candidate path: %v", types.ErrFirmwareNotFound, candidates)
+}
+
 // resolveFirmwarePath determines the firmware file path based on the boot
 // strategy and architecture. For PVH-first strategies, it returns the PVH
 // firmware (hypervisor-fw). For UEFI-only, it returns the UEFI firmware
-// (CLOUDHV.fd).
+// (CLOUDHV.fd) with fallback to system OVMF paths.
 func resolveFirmwarePath(cfg *config.CocoonConfig, strategy types.BootStrategy, arch string) (string, error) {
 	_ = arch // Reserved for future multi-arch firmware selection.
 
@@ -931,10 +961,7 @@ func resolveFirmwarePath(cfg *config.CocoonConfig, strategy types.BootStrategy, 
 		}
 		return cfg.PVHFirmwarePath, nil
 	case types.BootStrategyUEFIOnly:
-		if cfg.UEFIFirmwarePath == "" {
-			return "", fmt.Errorf("%w: UEFI firmware path not configured", types.ErrFirmwareNotFound)
-		}
-		return cfg.UEFIFirmwarePath, nil
+		return resolveUEFIFirmwarePath(cfg)
 	default:
 		// Unknown strategy: default to PVH firmware.
 		if cfg.PVHFirmwarePath == "" {

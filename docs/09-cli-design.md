@@ -1105,6 +1105,12 @@ func imagesCommand() *cli.Command {
                 Name:      "pull",
                 Usage:     "Pull and cache an image without creating a VM",
                 ArgsUsage: "IMAGE_REF",
+                Flags: []cli.Flag{
+                    &cli.BoolFlag{
+                        Name:  "skip-verify",
+                        Usage: "skip bootability verification after pull",
+                    },
+                },
                 Action:    imagePullAction,
             },
             {
@@ -1322,8 +1328,8 @@ func doctorAction(c *cli.Context) error {
 - Directory structure (root, runtime, log, db, vm, cache, buildah, firmware)
 
 **VM Reconciliation** (--fix repairs these):
-- Stale RUNNING state (CH process not found → mark STOPPED)
-- Missing runtime directories → recreate
+- Stale RUNNING state (CH process not found → mark ERROR)
+- Zombie socket / stale PID file → remove
 - Name index inconsistencies → rebuild from config.json files
 - Orphaned VM directories → report (manual cleanup required)
 
@@ -1887,8 +1893,8 @@ This CLI design implements the Boot Contract specification:
 
 **`cocoon doctor`** is the sole entry point for reconciliation:
 - Scans all VM directories for stale state (e.g., metadata says RUNNING but CH process is dead)
-- Cleans up orphaned sockets, PID files, and runtime directories
-- Fixes metadata inconsistencies (transitions stale RUNNING → STOPPED)
+- Cleans up orphaned sockets and stale PID files
+- Fixes metadata inconsistencies (transitions stale RUNNING → ERROR)
 - Rebuilds the name index if needed
 
 **Rationale**: Auto-reconcile on every command adds latency and complexity. Users who suspect state drift run `cocoon doctor` explicitly. This is the same pattern used by containerd and other container runtimes.
