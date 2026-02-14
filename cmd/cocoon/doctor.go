@@ -102,8 +102,8 @@ func (v semVersion) String() string {
 	return fmt.Sprintf("%d.%d.%d", v.Major, v.Minor, v.Patch)
 }
 
-func checkBinaryWithMinVersion(name string, args []string, min semVersion, purpose string) checkResult {
-	path, err := exec.LookPath(name)
+func checkBinaryWithMinVersion(name, binary string, args []string, min semVersion, purpose string) checkResult {
+	path, err := exec.LookPath(binary)
 	if err != nil {
 		return checkResult{
 			Name:   name,
@@ -151,20 +151,13 @@ func runDependencyChecks(app *appContext) []checkResult {
 	var results []checkResult
 
 	// 1. Check cloud-hypervisor binary.
-	chBinary := app.cfg.CHBinary
-	if chPath, err := exec.LookPath(chBinary); err != nil {
-		results = append(results, checkResult{
-			Name:   "cloud-hypervisor",
-			Status: "fail",
-			Detail: fmt.Sprintf("binary %q not found in PATH", chBinary),
-		})
-	} else {
-		results = append(results, checkResult{
-			Name:   "cloud-hypervisor",
-			Status: "pass",
-			Detail: chPath,
-		})
-	}
+	results = append(results, checkBinaryWithMinVersion(
+		"cloud-hypervisor",
+		app.cfg.CHBinary,
+		[]string{"--version"},
+		semVersion{Major: 38, Minor: 0, Patch: 0},
+		"required hypervisor runtime",
+	))
 
 	// 2. Check PVH firmware file.
 	if app.cfg.PVHFirmwarePath != "" {
@@ -191,28 +184,24 @@ func runDependencyChecks(app *appContext) []checkResult {
 	// 4. Check qemu-img binary + minimum version.
 	results = append(results, checkBinaryWithMinVersion(
 		"qemu-img",
+		"qemu-img",
 		[]string{"--version"},
 		semVersion{Major: 8, Minor: 0, Patch: 0},
 		"required for qcow2 operations",
 	))
 
-	// 4b. Check ch-remote binary.
-	if chRemotePath, err := exec.LookPath("ch-remote"); err != nil {
-		results = append(results, checkResult{
-			Name:   "ch-remote",
-			Status: "fail",
-			Detail: "binary not found in PATH",
-		})
-	} else {
-		results = append(results, checkResult{
-			Name:   "ch-remote",
-			Status: "pass",
-			Detail: chRemotePath,
-		})
-	}
+	// 4b. Check ch-remote binary + minimum version.
+	results = append(results, checkBinaryWithMinVersion(
+		"ch-remote",
+		"ch-remote",
+		[]string{"--version"},
+		semVersion{Major: 38, Minor: 0, Patch: 0},
+		"required for Cloud Hypervisor API interactions",
+	))
 
 	// 4c. Check buildah binary + minimum version.
 	results = append(results, checkBinaryWithMinVersion(
+		"buildah",
 		"buildah",
 		[]string{"version"},
 		semVersion{Major: 1, Minor: 35, Patch: 0},
@@ -222,25 +211,20 @@ func runDependencyChecks(app *appContext) []checkResult {
 	// 4d. Check skopeo binary + minimum version.
 	results = append(results, checkBinaryWithMinVersion(
 		"skopeo",
+		"skopeo",
 		[]string{"--version"},
 		semVersion{Major: 1, Minor: 14, Patch: 0},
 		"required for OCI manifest inspection",
 	))
 
-	// 4e. Check guestfish binary.
-	if guestfishPath, err := exec.LookPath("guestfish"); err != nil {
-		results = append(results, checkResult{
-			Name:   "guestfish",
-			Status: "fail",
-			Detail: "binary not found in PATH (required for OCI-to-qcow2 conversion)",
-		})
-	} else {
-		results = append(results, checkResult{
-			Name:   "guestfish",
-			Status: "pass",
-			Detail: guestfishPath,
-		})
-	}
+	// 4e. Check guestfish binary + minimum version.
+	results = append(results, checkBinaryWithMinVersion(
+		"guestfish",
+		"guestfish",
+		[]string{"--version"},
+		semVersion{Major: 1, Minor: 50, Patch: 0},
+		"required for OCI-to-qcow2 conversion",
+	))
 
 	// 5. Check KVM device.
 	if _, err := os.Stat("/dev/kvm"); err != nil {

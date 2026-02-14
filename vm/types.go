@@ -32,12 +32,18 @@ type CreateOptions struct {
 type InconsistencyType string
 
 const (
-	InconsistencyStateMismatch   InconsistencyType = "state_mismatch"
-	InconsistencyMetadataCorrupt InconsistencyType = "metadata_corrupted"
-	InconsistencyStalePIDFile    InconsistencyType = "stale_pid_file"
-	InconsistencyZombieSocket    InconsistencyType = "zombie_socket"
-	InconsistencyZombieProcess   InconsistencyType = "zombie_process"
-	InconsistencyMissingOverlay  InconsistencyType = "missing_overlay"
+	InconsistencyStateMismatch     InconsistencyType = "state_mismatch"
+	InconsistencyMetadataCorrupt   InconsistencyType = "metadata_corrupted"
+	InconsistencyStalePIDFile      InconsistencyType = "stale_pid_file"
+	InconsistencyZombieSocket      InconsistencyType = "zombie_socket"
+	InconsistencyZombieProcess     InconsistencyType = "zombie_process"
+	InconsistencyMissingOverlay    InconsistencyType = "missing_overlay"
+	InconsistencyOrphanedOverlay   InconsistencyType = "orphaned_overlay"
+	InconsistencyMissingReference  InconsistencyType = "missing_reference"
+	InconsistencyDanglingReference InconsistencyType = "dangling_reference"
+	InconsistencyNameIndexStale    InconsistencyType = "name_index_stale"
+	InconsistencyDuplicateVMName   InconsistencyType = "duplicate_vm_name"
+	InconsistencyDeletedVMDir      InconsistencyType = "deleted_vm_directory"
 )
 
 // InconsistencySeverity indicates how serious an inconsistency is.
@@ -62,6 +68,15 @@ type Inconsistency struct {
 
 	// Details is a human-readable description of the problem.
 	Details string `json:"details"`
+
+	// BaseKey is used for reference reconciliation issues.
+	BaseKey string `json:"base_key,omitempty"`
+
+	// DigestFull is the full image digest associated with a VM config.
+	DigestFull string `json:"digest_full,omitempty"`
+
+	// ImageRef is the original image reference associated with a VM config.
+	ImageRef string `json:"image_ref,omitempty"`
 
 	// ExpectedState is the state recorded in metadata.json.
 	ExpectedState string `json:"expected_state,omitempty"`

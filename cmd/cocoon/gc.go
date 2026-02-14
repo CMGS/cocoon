@@ -20,6 +20,10 @@ func gcCommand() *cli.Command {
 				Usage: "hours before unreferenced images are collected (0 = use config default)",
 			},
 			&cli.BoolFlag{
+				Name:  "aggressive",
+				Usage: "collect unreferenced images immediately (alias for --grace-period 0)",
+			},
+			&cli.BoolFlag{
 				Name:  "dry-run",
 				Usage: "only report what would be collected, don't actually delete",
 			},
@@ -35,7 +39,9 @@ func gcAction(c *cli.Context) error {
 	}
 
 	gracePeriodHours := c.Int("grace-period")
-	if gracePeriodHours == 0 {
+	if c.Bool("aggressive") {
+		gracePeriodHours = 0
+	} else if gracePeriodHours == 0 {
 		gracePeriodHours = app.cfg.GCGracePeriodHours
 	}
 	gracePeriod := time.Duration(gracePeriodHours) * time.Hour

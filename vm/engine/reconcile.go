@@ -6,11 +6,13 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/CMGS/cocoon/lock/flock"
 	"github.com/CMGS/cocoon/types"
 	"github.com/CMGS/cocoon/utils"
 	"github.com/CMGS/cocoon/vm"
@@ -20,9 +22,6 @@ import (
 // actual system state. When fix is true, it attempts to repair them. When
 // force is true, it will also kill zombie processes and force-move stuck VMs
 // to ERROR state.
-//
-// The name index is always rebuilt during reconciliation since it is a
-// derived cache (source of truth is config.json).
 func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inconsistency, error) {
 	entries, err := os.ReadDir(m.cfg.VMDir())
 	if err != nil {
@@ -34,6 +33,7 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inc
 
 	var inconsistencies []vm.Inconsistency
 	knownPIDs := make(map[int]string) // pid -> vmID
+	vmConfigs := make(map[string]*types.VMConfig)
 
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -41,16 +41,60 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inc
 		}
 		vmID := entry.Name()
 
-		// Check config.json existence (Priority 0 source of truth).
 		configPath := m.cfg.VMConfigPath(vmID)
 		if _, statErr := os.Stat(configPath); os.IsNotExist(statErr) {
+			overlayPath := m.cfg.VMOverlayPath(vmID)
+			if _, overlayErr := os.Stat(overlayPath); overlayErr == nil {
+				inconsistencies = append(inconsistencies, vm.Inconsistency{
+					VMID:     vmID,
+					Type:     vm.InconsistencyOrphanedOverlay,
+					Severity: vm.SeverityCritical,
+					Details:  fmt.Sprintf("overlay exists at %s but config.json is missing", overlayPath),
+				})
+			} else {
+				inconsistencies = append(inconsistencies, vm.Inconsistency{
+					VMID:     vmID,
+					Type:     vm.InconsistencyMetadataCorrupt,
+					Severity: vm.SeverityCritical,
+					Details:  "config.json missing; VM directory is orphaned",
+				})
+			}
+			continue
+		}
+
+		vmCfg, cfgErr := m.LoadConfig(vmID)
+		if cfgErr != nil {
 			inconsistencies = append(inconsistencies, vm.Inconsistency{
 				VMID:     vmID,
 				Type:     vm.InconsistencyMetadataCorrupt,
 				Severity: vm.SeverityCritical,
-				Details:  "config.json missing; VM directory is orphaned",
+				Details:  fmt.Sprintf("failed to load config.json: %v", cfgErr),
 			})
 			continue
+		}
+		vmConfigs[vmID] = vmCfg
+
+		// Crash point 2: config exists but references.json does not contain vmID.
+		if vmCfg.BaseKey != "" {
+			refs, refsErr := m.refCounter.GetReferences(vmCfg.BaseKey)
+			if refsErr != nil {
+				inconsistencies = append(inconsistencies, vm.Inconsistency{
+					VMID:     vmID,
+					Type:     vm.InconsistencyMetadataCorrupt,
+					Severity: vm.SeverityWarning,
+					Details:  fmt.Sprintf("failed to load references for base_key %s: %v", vmCfg.BaseKey, refsErr),
+				})
+			} else if !stringInSlice(vmID, refs) {
+				inconsistencies = append(inconsistencies, vm.Inconsistency{
+					VMID:       vmID,
+					Type:       vm.InconsistencyMissingReference,
+					Severity:   vm.SeverityWarning,
+					Details:    fmt.Sprintf("config exists but references.json missing vmID under base_key %s", vmCfg.BaseKey),
+					BaseKey:    vmCfg.BaseKey,
+					DigestFull: vmCfg.BaseDigestFull,
+					ImageRef:   vmCfg.ImageRef,
+				})
+			}
 		}
 
 		// Load metadata.json.
@@ -65,17 +109,13 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inc
 			continue
 		}
 
-		// Clean up stale DELETED directories that survived a crash during Delete().
+		// VM marked DELETED but directory still exists.
 		if types.VMState(meta.State) == types.VMStateDeleted {
-			// Best-effort cleanup of orphaned DELETED VM.
-			_ = os.RemoveAll(m.cfg.VMPersistDir(vmID))
-			_ = os.RemoveAll(m.cfg.VMRuntimeDir(vmID))
-			_ = os.Remove(m.cfg.VMSerialLogPath(vmID))
 			inconsistencies = append(inconsistencies, vm.Inconsistency{
 				VMID:     vmID,
-				Type:     vm.InconsistencyMetadataCorrupt,
+				Type:     vm.InconsistencyDeletedVMDir,
 				Severity: vm.SeverityInfo,
-				Details:  "cleaned up orphaned DELETED VM directory",
+				Details:  "metadata state is DELETED but VM directory/resources still exist",
 			})
 			continue
 		}
@@ -84,9 +124,6 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inc
 		if meta.ProcessPID > 0 {
 			knownPIDs[meta.ProcessPID] = vmID
 		}
-
-		// Load config for path information.
-		vmCfg, _ := m.LoadConfig(vmID)
 
 		// Determine actual state by probing the system.
 		actualState := m.determineActualState(meta, vmCfg)
@@ -108,7 +145,7 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inc
 		inconsistencies = append(inconsistencies, zombies...)
 
 		// Check overlay existence.
-		if vmCfg != nil && vmCfg.OverlayPath != "" {
+		if vmCfg.OverlayPath != "" {
 			if _, overlayErr := os.Stat(vmCfg.OverlayPath); os.IsNotExist(overlayErr) {
 				if metaState != types.VMStateDeleted {
 					inconsistencies = append(inconsistencies, vm.Inconsistency{
@@ -120,6 +157,28 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inc
 				}
 			}
 		}
+	}
+
+	refIssues, refErr := m.detectDanglingReferenceIssues(vmConfigs)
+	if refErr != nil {
+		inconsistencies = append(inconsistencies, vm.Inconsistency{
+			Type:     vm.InconsistencyMetadataCorrupt,
+			Severity: vm.SeverityWarning,
+			Details:  fmt.Sprintf("failed to scan references.json: %v", refErr),
+		})
+	} else {
+		inconsistencies = append(inconsistencies, refIssues...)
+	}
+
+	nameIssues, nameErr := m.detectNameIndexIssues(vmConfigs)
+	if nameErr != nil {
+		inconsistencies = append(inconsistencies, vm.Inconsistency{
+			Type:     vm.InconsistencyMetadataCorrupt,
+			Severity: vm.SeverityWarning,
+			Details:  fmt.Sprintf("failed to check name index: %v", nameErr),
+		})
+	} else {
+		inconsistencies = append(inconsistencies, nameIssues...)
 	}
 
 	// Apply fixes if requested.
@@ -136,17 +195,117 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inc
 	orphans := detectOrphanedCHProcesses(knownPIDs)
 	inconsistencies = append(inconsistencies, orphans...)
 
-	// Rebuild the name index (it is a derived cache).
-	if _, err := RebuildNameIndex(m.cfg); err != nil {
-		inconsistencies = append(inconsistencies, vm.Inconsistency{
-			VMID:     "",
-			Type:     vm.InconsistencyMetadataCorrupt,
+	return inconsistencies, nil
+}
+
+func (m *manager) detectDanglingReferenceIssues(vmConfigs map[string]*types.VMConfig) ([]vm.Inconsistency, error) {
+	refs, err := m.loadReferencesSnapshot()
+	if err != nil {
+		return nil, err
+	}
+
+	issues := make([]vm.Inconsistency, 0)
+	for baseKey, entry := range refs {
+		if entry == nil {
+			continue
+		}
+		for _, vmID := range entry.Refs {
+			vmCfg, ok := vmConfigs[vmID]
+			if !ok {
+				issues = append(issues, vm.Inconsistency{
+					VMID:     vmID,
+					Type:     vm.InconsistencyDanglingReference,
+					Severity: vm.SeverityWarning,
+					Details:  fmt.Sprintf("references.json contains vmID %s under base_key %s but VM config is missing", vmID, baseKey),
+					BaseKey:  baseKey,
+				})
+				continue
+			}
+			if vmCfg.BaseKey != "" && vmCfg.BaseKey != baseKey {
+				issues = append(issues, vm.Inconsistency{
+					VMID:     vmID,
+					Type:     vm.InconsistencyDanglingReference,
+					Severity: vm.SeverityWarning,
+					Details:  fmt.Sprintf("references.json maps vmID %s to %s but config.json base_key is %s", vmID, baseKey, vmCfg.BaseKey),
+					BaseKey:  baseKey,
+				})
+			}
+		}
+	}
+
+	return issues, nil
+}
+
+func (m *manager) detectNameIndexIssues(vmConfigs map[string]*types.VMConfig) ([]vm.Inconsistency, error) {
+	desired := make(vm.NameIndex)
+	issues := make([]vm.Inconsistency, 0)
+
+	for vmID, cfg := range vmConfigs {
+		name := strings.TrimSpace(cfg.Name)
+		if name == "" {
+			continue
+		}
+		if existing, ok := desired[name]; ok && existing != vmID {
+			issues = append(issues, vm.Inconsistency{
+				VMID:     vmID,
+				Type:     vm.InconsistencyDuplicateVMName,
+				Severity: vm.SeverityWarning,
+				Details:  fmt.Sprintf("duplicate VM name %q in config.json (vm_id=%s and vm_id=%s)", name, existing, vmID),
+			})
+			continue
+		}
+		desired[name] = vmID
+	}
+
+	current, err := LoadNameIndex(m.cfg)
+	if err != nil {
+		return nil, err
+	}
+	if !nameIndexEqual(current, desired) {
+		issues = append(issues, vm.Inconsistency{
+			Type:     vm.InconsistencyNameIndexStale,
 			Severity: vm.SeverityWarning,
-			Details:  fmt.Sprintf("failed to rebuild name index: %v", err),
+			Details:  fmt.Sprintf("name-index.json is out of sync with VM configs (index=%d, expected=%d)", len(current), len(desired)),
 		})
 	}
 
-	return inconsistencies, nil
+	return issues, nil
+}
+
+func nameIndexEqual(a, b vm.NameIndex) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for name, vmID := range a {
+		if b[name] != vmID {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *manager) loadReferencesSnapshot() (types.ReferencesFile, error) {
+	fl := flock.New(m.cfg.ReferencesLock())
+	if err := fl.Lock(); err != nil {
+		return nil, fmt.Errorf("acquire references.lock: %w", err)
+	}
+	defer fl.Unlock() //nolint:errcheck
+
+	refs := make(types.ReferencesFile)
+	err := utils.ReadJSON(m.cfg.ReferencesFile(), &refs)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("load references.json: %w", err)
+	}
+	return refs, nil
+}
+
+func stringInSlice(target string, items []string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
 
 // determineActualState probes the system to find out what a VM is really doing.
@@ -291,6 +450,9 @@ func (m *manager) applyFix(inc *vm.Inconsistency, force bool) error {
 		if !force {
 			return fmt.Errorf("--force required to kill zombie processes")
 		}
+		if inc.VMID == "" {
+			return nil
+		}
 		meta, err := m.LoadMetadata(inc.VMID)
 		if err != nil {
 			return err
@@ -305,6 +467,52 @@ func (m *manager) applyFix(inc *vm.Inconsistency, force bool) error {
 		}
 		return nil
 
+	case vm.InconsistencyOrphanedOverlay:
+		return m.fixOrphanedOverlay(inc.VMID)
+
+	case vm.InconsistencyMissingReference:
+		baseKey := inc.BaseKey
+		digestFull := inc.DigestFull
+		imageRef := inc.ImageRef
+
+		if baseKey == "" || imageRef == "" {
+			cfg, err := m.LoadConfig(inc.VMID)
+			if err != nil {
+				return err
+			}
+			if baseKey == "" {
+				baseKey = cfg.BaseKey
+			}
+			if digestFull == "" {
+				digestFull = cfg.BaseDigestFull
+			}
+			if imageRef == "" {
+				imageRef = cfg.ImageRef
+			}
+		}
+
+		if baseKey == "" {
+			return fmt.Errorf("missing base_key for reference repair")
+		}
+
+		return m.refCounter.AddReference(baseKey, inc.VMID, digestFull, imageRef)
+
+	case vm.InconsistencyDanglingReference:
+		if inc.BaseKey == "" {
+			return fmt.Errorf("missing base_key for dangling reference cleanup")
+		}
+		return m.refCounter.RemoveReference(inc.BaseKey, inc.VMID)
+
+	case vm.InconsistencyNameIndexStale:
+		_, err := RebuildNameIndex(m.cfg)
+		return err
+
+	case vm.InconsistencyDuplicateVMName:
+		return fmt.Errorf("duplicate VM name requires manual intervention")
+
+	case vm.InconsistencyDeletedVMDir:
+		return m.cleanupDeletedVMArtifacts(inc.VMID)
+
 	case vm.InconsistencyMetadataCorrupt:
 		// Cannot auto-fix corrupt metadata without more context.
 		return fmt.Errorf("manual intervention required for corrupt metadata")
@@ -316,6 +524,37 @@ func (m *manager) applyFix(inc *vm.Inconsistency, force bool) error {
 	default:
 		return fmt.Errorf("unknown inconsistency type: %s", inc.Type)
 	}
+}
+
+func (m *manager) cleanupDeletedVMArtifacts(vmID string) error {
+	_ = os.RemoveAll(m.cfg.VMPersistDir(vmID))
+	_ = os.RemoveAll(m.cfg.VMRuntimeDir(vmID))
+	_ = os.Remove(m.cfg.VMSerialLogPath(vmID))
+	return nil
+}
+
+func (m *manager) fixOrphanedOverlay(vmID string) error {
+	overlayPath := m.cfg.VMOverlayPath(vmID)
+	if _, err := os.Stat(overlayPath); os.IsNotExist(err) {
+		return nil
+	}
+
+	if err := os.MkdirAll(m.cfg.TrashDir(), 0o755); err != nil { //nolint:gosec // G301: trash dir permissions align with other cocoon state dirs
+		return fmt.Errorf("ensure trash dir: %w", err)
+	}
+
+	trashName := fmt.Sprintf("%d_%s-orphan-overlay.qcow2", time.Now().UnixNano(), vmID)
+	trashPath := filepath.Join(m.cfg.TrashDir(), trashName)
+	if err := os.Rename(overlayPath, trashPath); err != nil {
+		if rmErr := os.Remove(overlayPath); rmErr != nil {
+			return fmt.Errorf("cleanup orphaned overlay: rename=%v, remove=%w", err, rmErr)
+		}
+	}
+
+	_ = os.RemoveAll(m.cfg.VMPersistDir(vmID))
+	_ = os.RemoveAll(m.cfg.VMRuntimeDir(vmID))
+	_ = os.Remove(m.cfg.VMSerialLogPath(vmID))
+	return nil
 }
 
 // fixStateMismatch updates metadata.json to reflect the actual system state.

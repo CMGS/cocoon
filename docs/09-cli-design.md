@@ -1256,6 +1256,10 @@ func gcCommand() *cli.Command {
                 Usage: "hours before unreferenced images are collected (0 = use config default)",
             },
             &cli.BoolFlag{
+                Name:  "aggressive",
+                Usage: "collect unreferenced images immediately (alias for --grace-period 0)",
+            },
+            &cli.BoolFlag{
                 Name:  "dry-run",
                 Usage: "only report what would be collected, don't actually delete",
             },
@@ -1276,6 +1280,9 @@ cocoon gc --dry-run
 
 # Run GC with custom grace period (12 hours)
 cocoon gc --grace-period 12
+
+# Run GC aggressively (collect unreferenced images immediately)
+cocoon gc --aggressive
 ```
 
 ### 4.14 cocoon doctor (System Health Check)
@@ -1336,22 +1343,24 @@ func doctorAction(c *cli.Context) error {
 ```
 
 **Dependency Checks** (informational, --fix does not install missing tools):
-- cloud-hypervisor binary
-- ch-remote binary
+- cloud-hypervisor binary (minimum `38.0.0`)
+- ch-remote binary (minimum `38.0.0`)
 - PVH firmware file
 - UEFI firmware file
 - qemu-img binary (minimum `8.0.0`)
 - buildah binary (minimum `1.35.0`)
 - skopeo binary (minimum `1.14.0`)
-- guestfish binary
+- guestfish binary (minimum `1.50.0`)
 - /dev/kvm device
 - Directory structure (root, runtime, log, db, vm, cache, buildah, firmware)
 
 **VM Reconciliation** (--fix repairs these):
 - Stale RUNNING state (CH process not found → mark ERROR)
 - Zombie socket / stale PID file → remove
-- Name index inconsistencies → rebuild from config.json files
-- Orphaned VM directories → report (manual cleanup required)
+- Orphaned overlay (overlay exists, config missing) → move overlay to trash + cleanup VM dir
+- Missing reference (config exists, references missing vmID) → restore `references.json` entry
+- Dangling reference (references vmID missing/mismatched config) → remove stale vmID from `references.json`
+- Name index inconsistencies → detect in dry-run, rebuild only with `--fix`
 
 **Exit Codes**:
 - `0`: All checks passed (returns nil)
@@ -1918,7 +1927,7 @@ This CLI design implements the Boot Contract specification:
 - Scans all VM directories for stale state (e.g., metadata says RUNNING but CH process is dead)
 - Cleans up orphaned sockets and stale PID files
 - Fixes metadata inconsistencies (transitions stale RUNNING → ERROR)
-- Rebuilds the name index if needed
+- Checks name index drift in dry-run mode; rebuilds name index only with `cocoon doctor --fix`
 
 **Rationale**: Auto-reconcile on every command adds latency and complexity. Users who suspect state drift run `cocoon doctor` explicitly. This is the same pattern used by containerd and other container runtimes.
 
