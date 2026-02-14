@@ -973,6 +973,7 @@ func buildCHVMConfig(vmCfg *types.VMConfig) *hypervisor.CHVMConfig {
 	return &hypervisor.CHVMConfig{
 		CPUs: hypervisor.CHCPUConfig{
 			BootVCPUs: vmCfg.CPUs,
+			MaxVCPUs:  vmCfg.CPUs,
 		},
 		Memory: hypervisor.CHMemoryConfig{
 			// CH expects memory size in bytes; VMConfig stores MB.

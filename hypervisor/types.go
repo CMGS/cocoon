@@ -13,6 +13,9 @@ type CHVMConfig struct {
 // CHCPUConfig specifies the number of virtual CPUs.
 type CHCPUConfig struct {
 	BootVCPUs int `json:"boot_vcpus"`
+	// MaxVCPUs is required by newer Cloud Hypervisor API versions.
+	// For now we pin it to boot_vcpus (no CPU hotplug in Phase 1).
+	MaxVCPUs int `json:"max_vcpus"`
 }
 
 // CHMemoryConfig specifies the guest memory size.

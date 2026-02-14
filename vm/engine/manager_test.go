@@ -1106,3 +1106,22 @@ func TestStart_InvalidBootStrategyInConfig(t *testing.T) {
 		t.Fatalf("metadata state = %q, want %q", meta.State, types.VMStateError)
 	}
 }
+
+func TestBuildCHVMConfig_SetsMaxVCPUs(t *testing.T) {
+	t.Parallel()
+
+	vmCfg := &types.VMConfig{
+		CPUs:        4,
+		MemoryMB:    2048,
+		OverlayPath: "/tmp/overlay.qcow2",
+		SerialLog:   "/tmp/serial.log",
+	}
+
+	chCfg := buildCHVMConfig(vmCfg)
+	if chCfg.CPUs.BootVCPUs != 4 {
+		t.Fatalf("boot_vcpus = %d, want 4", chCfg.CPUs.BootVCPUs)
+	}
+	if chCfg.CPUs.MaxVCPUs != 4 {
+		t.Fatalf("max_vcpus = %d, want 4", chCfg.CPUs.MaxVCPUs)
+	}
+}
