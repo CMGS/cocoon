@@ -412,6 +412,7 @@ const (
 	bootFailurePVHProtocol
 	bootFailureDiskDiscovery
 	bootFailureBootloaderCompat
+	bootFailureKernelPanic
 
 	// Non-recoverable: fallback won't help.
 	bootFailureKVMAccess
@@ -444,6 +445,10 @@ func classifyBootFailure(err error) bootFailureReason {
 	case strings.Contains(msg, "failed to load boot loader"),
 		strings.Contains(msg, "unsupported boot loader format"):
 		return bootFailureBootloaderCompat
+	case strings.Contains(msg, "kernel panic"),
+		strings.Contains(msg, "unable to mount root fs"),
+		strings.Contains(msg, "vfs: cannot open root device"):
+		return bootFailureKernelPanic
 	}
 
 	// Non-recoverable conditions.
@@ -475,7 +480,8 @@ func shouldFallbackToUEFI(err error) bool {
 	case bootFailureFirmwareNotFound,
 		bootFailurePVHProtocol,
 		bootFailureDiskDiscovery,
-		bootFailureBootloaderCompat:
+		bootFailureBootloaderCompat,
+		bootFailureKernelPanic:
 		return true
 	default:
 		return false
@@ -524,6 +530,31 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 
 	bootStartTime := time.Now()
 
+	// attemptBootAndWait runs attemptBoot + waitForBoot as a single unit.
+	// If the CH API calls succeed but boot-time monitoring detects a failure
+	// (e.g., kernel panic), it kills the CH process and returns the error so
+	// the fallback logic can retry with a different boot mode.
+	attemptBootAndWait := func(firmwarePath string, bootMode types.BootMode) (*bootResult, error) {
+		res, err := m.attemptBoot(ctx, vmID, vmCfg, firmwarePath, bootMode)
+		if err != nil {
+			return nil, err
+		}
+
+		// Monitor serial log for boot success/failure.
+		bootTimeout := time.Duration(m.cfg.BootTimeoutSeconds) * time.Second
+		if bootTimeout > 0 {
+			successPatterns := m.cfg.BootSuccessPatternsOrDefault()
+			failurePatterns := m.cfg.BootFailurePatternsOrDefault()
+			if waitErr := waitForBoot(ctx, vmCfg.SerialLog, bootTimeout, successPatterns, failurePatterns); waitErr != nil {
+				log.Printf("boot detection failed for %s (%s): %v", vmID, bootMode, waitErr)
+				_ = m.hyper.ForceKill(vmID)
+				return nil, fmt.Errorf("boot failure detected: %w", waitErr)
+			}
+		}
+
+		return res, nil
+	}
+
 	// Attempt boot with fallback logic based on boot strategy.
 	var result *bootResult
 	var bootErr error
@@ -531,7 +562,7 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 	switch vmCfg.BootStrategy {
 	case types.BootStrategyPVHThenUEFI:
 		// First attempt: PVH boot using the firmware from config.
-		result, bootErr = m.attemptBoot(ctx, vmID, vmCfg, vmCfg.FirmwarePath, types.BootModePVH)
+		result, bootErr = attemptBootAndWait(vmCfg.FirmwarePath, types.BootModePVH)
 		if bootErr != nil && shouldFallbackToUEFI(bootErr) {
 			log.Printf("PVH boot failed for %s, falling back to UEFI: %v", vmID, bootErr)
 			// Second attempt: UEFI boot using resolved firmware path (with system OVMF fallback).
@@ -539,15 +570,15 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 			if fwErr != nil {
 				bootErr = fmt.Errorf("UEFI fallback: %w", fwErr)
 			} else {
-				result, bootErr = m.attemptBoot(ctx, vmID, vmCfg, uefiFW, types.BootModeUEFI)
+				result, bootErr = attemptBootAndWait(uefiFW, types.BootModeUEFI)
 			}
 		}
 
 	case types.BootStrategyUEFIOnly:
-		result, bootErr = m.attemptBoot(ctx, vmID, vmCfg, vmCfg.FirmwarePath, types.BootModeUEFI)
+		result, bootErr = attemptBootAndWait(vmCfg.FirmwarePath, types.BootModeUEFI)
 
 	case types.BootStrategyPVHOnly:
-		result, bootErr = m.attemptBoot(ctx, vmID, vmCfg, vmCfg.FirmwarePath, types.BootModePVH)
+		result, bootErr = attemptBootAndWait(vmCfg.FirmwarePath, types.BootModePVH)
 
 	default:
 		bootErr = fmt.Errorf("invalid boot strategy in config: %q", vmCfg.BootStrategy)
@@ -556,19 +587,6 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 	if bootErr != nil {
 		_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("boot failed: %v", bootErr))
 		return fmt.Errorf("boot VM %s: %w", vmID, bootErr)
-	}
-
-	// Wait for the guest to finish booting by monitoring the serial log.
-	bootTimeout := time.Duration(m.cfg.BootTimeoutSeconds) * time.Second
-	if bootTimeout > 0 {
-		successPatterns := m.cfg.BootSuccessPatternsOrDefault()
-		failurePatterns := m.cfg.BootFailurePatternsOrDefault()
-		if err := waitForBoot(ctx, vmCfg.SerialLog, bootTimeout, successPatterns, failurePatterns); err != nil {
-			log.Printf("boot detection failed for %s: %v", vmID, err)
-			_ = m.hyper.ForceKill(vmID)
-			_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("boot detection: %v", err))
-			return fmt.Errorf("boot VM %s: %w", vmID, err)
-		}
 	}
 
 	// Transition STARTING -> RUNNING with runtime metadata.

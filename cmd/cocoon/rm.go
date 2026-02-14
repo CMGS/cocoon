@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	cli "github.com/urfave/cli/v2"
 
@@ -13,8 +14,8 @@ func rmCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "delete",
 		Aliases:   []string{"rm"},
-		Usage:     "Remove a VM and cleanup storage",
-		ArgsUsage: "VM_REF",
+		Usage:     "Remove one or more VMs and cleanup storage",
+		ArgsUsage: "VM_REF [VM_REF...]",
 		Flags: []cli.Flag{
 			&cli.BoolFlag{
 				Name:    "force",
@@ -28,7 +29,7 @@ func rmCommand() *cli.Command {
 
 func rmAction(c *cli.Context) error {
 	if c.NArg() < 1 {
-		return fmt.Errorf("VM_REF argument required\n\nUsage: cocoon delete VM_REF [flags]")
+		return fmt.Errorf("VM_REF argument required\n\nUsage: cocoon delete VM_REF [VM_REF...] [flags]")
 	}
 
 	app, err := initApp(c)
@@ -36,23 +37,33 @@ func rmAction(c *cli.Context) error {
 		return err
 	}
 
-	ref := c.Args().Get(0)
-	vmID, err := app.vmMgr.ResolveVMRef(ref)
-	if err != nil {
-		if errors.Is(err, types.ErrVMNotFound) {
-			return nil // idempotent: VM already gone
-		}
-		return fmt.Errorf("resolve VM ref %q: %w", ref, err)
-	}
-
 	force := c.Bool("force")
-	if err := app.vmMgr.Delete(c.Context, vmID, force); err != nil {
-		if errors.Is(err, types.ErrVMNotFound) {
-			return nil // idempotent: VM disappeared between resolve and delete
+	var errs []string
+
+	for i := 0; i < c.NArg(); i++ {
+		ref := c.Args().Get(i)
+		vmID, err := app.vmMgr.ResolveVMRef(ref)
+		if err != nil {
+			if errors.Is(err, types.ErrVMNotFound) {
+				continue // idempotent: VM already gone
+			}
+			errs = append(errs, fmt.Sprintf("%s: %v", ref, err))
+			continue
 		}
-		return fmt.Errorf("delete VM %s: %w", vmID, err)
+
+		if err := app.vmMgr.Delete(c.Context, vmID, force); err != nil {
+			if errors.Is(err, types.ErrVMNotFound) {
+				continue // idempotent: VM disappeared between resolve and delete
+			}
+			errs = append(errs, fmt.Sprintf("%s: %v", vmID, err))
+			continue
+		}
+
+		fmt.Println(vmID)
 	}
 
-	fmt.Println(vmID)
+	if len(errs) > 0 {
+		return fmt.Errorf("delete failed for %d VM(s):\n  %s", len(errs), strings.Join(errs, "\n  "))
+	}
 	return nil
 }
