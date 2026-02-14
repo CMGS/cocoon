@@ -1020,14 +1020,25 @@ func buildCHVMConfig(vmCfg *types.VMConfig) *hypervisor.CHVMConfig {
 	}
 
 	// Include firmware in the REST payload so CH is launched in pure daemon
-	// mode (no --firmware/--kernel CLI flags). Both PVH (hypervisor-fw) and
-	// UEFI (CLOUDHV.fd) use the payload.kernel field, matching the CH
-	// quickstart pattern (--kernel). CH auto-detects the file type (ELF for
-	// PVH, PE for UEFI) and sets up the boot protocol accordingly.
-	// payload.firmware is a legacy field that doesn't set up PVH start_info.
+	// mode (no --firmware/--kernel CLI flags).
+	//
+	// PVH (hypervisor-fw): uses payload.kernel. hypervisor-fw is an ELF
+	//   binary; CH loads it as a kernel and sets up PVH start_info (memory
+	//   map, boot parameters). This matches the CH quickstart (--kernel).
+	//
+	// UEFI (CLOUDHV.fd): uses payload.firmware. CLOUDHV.fd is a raw firmware
+	//   binary (not ELF/bzImage); CH loads it at a fixed address. Using
+	//   payload.kernel would fail with "Invalid bzImage".
 	if vmCfg.FirmwarePath != "" {
-		cfg.Payload = &hypervisor.CHPayloadConfig{
-			Kernel: vmCfg.FirmwarePath,
+		switch vmCfg.BootStrategy {
+		case types.BootStrategyUEFIOnly:
+			cfg.Payload = &hypervisor.CHPayloadConfig{
+				Firmware: vmCfg.FirmwarePath,
+			}
+		default:
+			cfg.Payload = &hypervisor.CHPayloadConfig{
+				Kernel: vmCfg.FirmwarePath,
+			}
 		}
 	}
 

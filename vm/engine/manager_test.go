@@ -1168,11 +1168,12 @@ func TestBuildCHVMConfig_UEFIFirmwareInPayload(t *testing.T) {
 	if chCfg.Payload == nil {
 		t.Fatal("expected Payload to be set for UEFI boot")
 	}
-	if chCfg.Payload.Kernel != "/usr/share/CLOUDHV.fd" {
-		t.Fatalf("payload.kernel = %q, want /usr/share/CLOUDHV.fd", chCfg.Payload.Kernel)
+	// UEFI uses payload.firmware (CLOUDHV.fd is a raw firmware binary, not ELF/bzImage).
+	if chCfg.Payload.Firmware != "/usr/share/CLOUDHV.fd" {
+		t.Fatalf("payload.firmware = %q, want /usr/share/CLOUDHV.fd", chCfg.Payload.Firmware)
 	}
-	if chCfg.Payload.Firmware != "" {
-		t.Fatalf("payload.firmware should be empty for UEFI, got %q", chCfg.Payload.Firmware)
+	if chCfg.Payload.Kernel != "" {
+		t.Fatalf("payload.kernel should be empty for UEFI, got %q", chCfg.Payload.Kernel)
 	}
 }
 
