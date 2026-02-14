@@ -38,7 +38,7 @@ func vmCreateFlags() []cli.Flag {
 		&cli.StringFlag{
 			Name:  "boot-strategy",
 			Value: string(types.DefaultBootStrategy),
-			Usage: "boot strategy: pvh (default), uefi",
+			Usage: "boot strategy: uefi (default), pvh",
 		},
 		&cli.BoolFlag{
 			Name:  "skip-verify",

@@ -16,6 +16,7 @@ fi
 # ----- Version defaults (env-overridable) -----
 CH_VERSION="${CH_VERSION:-v50.0}"
 HYPERVISOR_FW_VERSION="${HYPERVISOR_FW_VERSION:-0.5.0}"
+EDK2_CH_VERSION="${EDK2_CH_VERSION:-a54f262b09}"
 
 # ----- Path defaults (env-overridable) -----
 COCOON_ROOT="${COCOON_ROOT:-/var/lib/cocoon}"
@@ -261,7 +262,40 @@ install_firmware() {
     local fw_dir="${COCOON_ROOT}/firmware"
     mkdir -p "$fw_dir"
 
-    # PVH firmware (rust-hypervisor-firmware).
+    # UEFI firmware (CLOUDHV.fd) — default boot firmware.
+    if [[ -f "${fw_dir}/CLOUDHV.fd" ]]; then
+        ok "UEFI firmware already present at ${fw_dir}/CLOUDHV.fd"
+    else
+        local uefi_url="https://github.com/cloud-hypervisor/edk2/releases/download/ch-${EDK2_CH_VERSION}/CLOUDHV.fd"
+        info "Downloading UEFI firmware (edk2 ch-${EDK2_CH_VERSION})..."
+        if download_binary "$uefi_url" "${fw_dir}/CLOUDHV.fd" "UEFI firmware"; then
+            chmod 644 "${fw_dir}/CLOUDHV.fd"
+            ok "UEFI firmware installed at ${fw_dir}/CLOUDHV.fd"
+        else
+            # Fallback: try distro package paths.
+            local found_uefi=false
+            local uefi_search_paths=(
+                "/usr/share/edk2/x64/CLOUDHV.fd"
+                "/usr/share/OVMF/CLOUDHV.fd"
+                "/usr/share/qemu/CLOUDHV.fd"
+            )
+            for uefi_path in "${uefi_search_paths[@]}"; do
+                if [[ -f "$uefi_path" ]]; then
+                    cp "$uefi_path" "${fw_dir}/CLOUDHV.fd"
+                    chmod 644 "${fw_dir}/CLOUDHV.fd"
+                    ok "UEFI firmware copied from $uefi_path"
+                    found_uefi=true
+                    break
+                fi
+            done
+            if [[ "$found_uefi" == "false" ]]; then
+                warn "UEFI firmware (CLOUDHV.fd) download failed and no system copy found."
+                warn "  UEFI boot (default) requires CLOUDHV.fd."
+            fi
+        fi
+    fi
+
+    # PVH firmware (rust-hypervisor-firmware) — optional, for --boot-strategy pvh.
     if [[ -f "${fw_dir}/hypervisor-fw" ]]; then
         ok "PVH firmware already present at ${fw_dir}/hypervisor-fw"
     else
@@ -270,36 +304,6 @@ install_firmware() {
         if download_binary "$fw_url" "${fw_dir}/hypervisor-fw" "PVH firmware"; then
             chmod 755 "${fw_dir}/hypervisor-fw"
             ok "PVH firmware installed at ${fw_dir}/hypervisor-fw"
-        fi
-    fi
-
-    # UEFI firmware (CLOUDHV.fd).
-    if [[ -f "${fw_dir}/CLOUDHV.fd" ]]; then
-        ok "UEFI firmware already present at ${fw_dir}/CLOUDHV.fd"
-    else
-        info "Looking for UEFI firmware (CLOUDHV.fd)..."
-        local found_uefi=false
-
-        # Try distro package paths first.
-        local uefi_search_paths=(
-            "/usr/share/edk2/x64/CLOUDHV.fd"
-            "/usr/share/OVMF/CLOUDHV.fd"
-            "/usr/share/qemu/CLOUDHV.fd"
-        )
-        for uefi_path in "${uefi_search_paths[@]}"; do
-            if [[ -f "$uefi_path" ]]; then
-                cp "$uefi_path" "${fw_dir}/CLOUDHV.fd"
-                chmod 644 "${fw_dir}/CLOUDHV.fd"
-                ok "UEFI firmware copied from $uefi_path"
-                found_uefi=true
-                break
-            fi
-        done
-
-        if [[ "$found_uefi" == "false" ]]; then
-            warn "UEFI firmware (CLOUDHV.fd) not found."
-            warn "  Install via distro package (e.g. apt install ovmf) or build from edk2."
-            warn "  PVH boot (default) does not require UEFI firmware."
         fi
     fi
 }
@@ -421,8 +425,8 @@ check_ch_runtime() {
 
     echo ""
     echo -e "${BOLD}--- Firmware ---${NC}"
-    check_file_exists "PVH firmware" "${COCOON_ROOT}/firmware/hypervisor-fw"
-    check_file_exists "UEFI firmware (optional)" "${COCOON_ROOT}/firmware/CLOUDHV.fd"
+    check_file_exists "UEFI firmware" "${COCOON_ROOT}/firmware/CLOUDHV.fd"
+    check_file_exists "PVH firmware (optional)" "${COCOON_ROOT}/firmware/hypervisor-fw"
 
     echo ""
     echo -e "${BOLD}--- Directories ---${NC}"

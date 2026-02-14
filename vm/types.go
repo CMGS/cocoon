@@ -20,7 +20,7 @@ type CreateOptions struct {
 	// DiskSize is the overlay disk size (e.g., "10G"). Defaults to config default if empty.
 	DiskSize string `json:"disk_size,omitempty"`
 
-	// BootStrategy is one of "pvh" (default) or "uefi".
+	// BootStrategy is one of "uefi" (default) or "pvh".
 	BootStrategy types.BootStrategy `json:"boot_strategy,omitempty"`
 
 	// SkipVerify skips bootability verification during create.

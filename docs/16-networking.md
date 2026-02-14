@@ -3,7 +3,7 @@
 **Version**: 1.0
 **Status**: Planned
 **Phase**: Phase 2
-**Last Updated**: 2026-02-14
+**Last Updated**: 2026-02-15
 
 ## Executive Summary
 
@@ -85,6 +85,7 @@ cocoon create --network bridge myimage
 
 - **nsenter for CH**: Cloud Hypervisor enters the VM's network namespace via `nsenter --net=<path>`. This is the only change to the CH launch path. CH's API socket is a Unix domain socket on the filesystem, which is NOT affected by network namespaces, so the host can still communicate with CH normally.
 - **tc mirred for L2 bridging**: Traffic Control `mirred` rules redirect all packets between the CNI interface (`eth0`) and the TAP device (`tap0`) at layer 2. This avoids creating an additional Linux bridge inside the namespace, and preserves all CNI-installed IP addresses, routes, and iptables rules on `eth0` without modification.
+- **IP ownership model**: The CNI IPAM plugin assigns an IP address to `eth0` (the veth inside the netns). The `tc mirred redirect` intercepts all ingress packets on `eth0` at the Traffic Control layer *before* the namespace's IP stack processes them, forwarding them directly to `tap0` and hence to the guest. The guest configures the same IP (via cloud-init) on its own `eth0` (virtio-net). There is no IP conflict because the namespace never processes packets for that IP on the data path — `tc mirred` diverts them first. The IP on the namespace `eth0` exists solely for CNI/IPAM bookkeeping (address pool tracking, route installation, iptables rules). This is the same model used by [Kata Containers' `tc-redirect-tap`](https://github.com/kata-containers/kata-containers/tree/main/tools/networking/cmd/tc-redirect-tap).
 - **Full CNI compatibility**: Any CNI plugin that produces a network interface inside a netns works with this model (bridge, macvlan, ipvlan, Calico). The TC redirect is agnostic to how the interface was created.
 
 ### 1.4 Backward Compatibility

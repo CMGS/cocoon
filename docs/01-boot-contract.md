@@ -9,7 +9,7 @@
 
 This document defines the **Boot Contract** - the core specification for how Cocoon boots virtual machines using Cloud Hypervisor. The contract establishes:
 
-1. **Dual boot mode strategy**: PVH (primary) + UEFI (fallback)
+1. **Boot mode strategy**: UEFI (default) + PVH (option for faster cold boot)
 2. **Guest initialization**: systemd + cloud-init with metadata server
 3. **I/O mechanisms**: Serial console, future vsock/virtiofs
 4. **Lifecycle semantics**: Start, stop, delete, crash recovery
@@ -29,32 +29,47 @@ This document defines the **Boot Contract** - the core specification for how Coc
 
 ## 1. Boot Mode Strategy
 
-### 1.1 Primary Boot Mode: PVH + hypervisor-fw
+### 1.1 Default Boot Mode: UEFI + CLOUDHV.fd
 
-**Selected Approach**: **PVH boot with rust-hypervisor-firmware** as the primary boot method.
+**Selected Approach**: **UEFI boot with CLOUDHV.fd** (Cloud Hypervisor's edk2 firmware) as the default boot method.
 
 **Rationale**:
-- ✅ **Fast boot**: Sub-100ms boot time (vs 500ms+ for UEFI)
-- ✅ **Lightweight**: Minimal firmware footprint (~100KB vs 2MB OVMF)
-- ✅ **Cloud-native**: Designed specifically for Cloud Hypervisor
-- ✅ **Standard cloud images**: Works with Ubuntu Cloud, Fedora Cloud, etc.
-- ✅ **Disk-based boot**: Loads kernel from GPT+ESP like standard cloud VMs
+- ✅ **Broadest compatibility**: Works with all Linux distributions and cloud images
+- ✅ **CH recommended**: CLOUDHV.fd is the Cloud Hypervisor project's own edk2 build
+- ✅ **Secure boot ready**: UEFI supports secure boot for production workloads
+- ✅ **Standard cloud images**: Works with Ubuntu Cloud, Fedora Cloud, Debian Cloud, etc.
+- ✅ **Reliable**: No kernel layout assumptions — UEFI boot path is well-tested
 
-**How it works**:
-```bash
-cloud-hypervisor \
-  --firmware /var/lib/cocoon/firmware/hypervisor-fw \
-  --disk path=/var/lib/cocoon/vms/vm-123/overlay.qcow2 \
-  --cpus boot=2 \
-  --memory size=2G \
-  --serial file=/var/log/cocoon/vm-123-serial.log \
-  --console off
+**How it works** (all config via REST `vm.create` payload, CLI only passes `--api-socket`):
+```json
+{
+  "payload": {"firmware": "/var/lib/cocoon/firmware/CLOUDHV.fd"},
+  "cpus": {"boot_vcpus": 2, "max_vcpus": 2},
+  "memory": {"size": 2147483648},
+  "disks": [{"path": "/var/lib/cocoon/vms/vm-123/overlay.qcow2"}],
+  "serial": {"mode": "File", "file": "/var/log/cocoon/vm-123-serial.log"},
+  "console": {"mode": "Off"}
+}
 ```
 
-**Parameter Choice**:
-- `--firmware` is the recommended way to load hypervisor-fw (architecture-specific firmware loading)
-- `--kernel` also works because hypervisor-fw has a PVH entry point, but `--firmware` is semantically correct
-- Cloud Hypervisor documentation: "Use --firmware for firmware loading"
+**Firmware Management** (see [docs/09-cli-design.md](./09-cli-design.md) for authoritative CLI behavior):
+- Downloaded automatically by `cocoon init` from the edk2-cloudhv GitHub releases
+- Version controlled via `EDK2_CH_VERSION` environment variable (default: `a54f262b09`)
+- URL: `https://github.com/cloud-hypervisor/edk2/releases/download/ch-{version}/CLOUDHV.fd`
+
+### 1.2 Alternative Boot Mode: PVH + hypervisor-fw
+
+**PVH boot** is available via `--boot-strategy pvh` for workloads that benefit from faster cold boot.
+
+**When to use PVH**:
+- Latency-sensitive workloads where ~400ms boot time difference matters
+- Known-compatible images (Ubuntu Cloud, Fedora Cloud with standard GPT+ESP layout)
+- Batch VM creation where cumulative boot time is significant
+
+**Trade-offs**:
+- ✅ **Fast boot**: Sub-100ms boot time (vs ~500ms for UEFI)
+- ✅ **Lightweight**: Minimal firmware footprint (~100KB vs 2MB CLOUDHV.fd)
+- ⚠️ **Narrower compatibility**: Requires kernel in ESP with BLS entries; some images may not boot
 
 **What hypervisor-fw does**:
 1. Boots via PVH entry point (Xen PVH protocol)
@@ -66,465 +81,63 @@ cloud-hypervisor \
 7. Transfers control to bootloader/kernel
 
 **Firmware Management** (see [docs/09-cli-design.md](./09-cli-design.md) for authoritative CLI behavior):
-```bash
-# Installation checks firmware presence
-cocoon doctor  # Checks if firmware exists; use 'cocoon firmware install' to download
-
-# Manual firmware management
-cocoon firmware list      # Show installed firmware versions
-cocoon firmware update --pvh-url URL    # Alias for install (requires URL flags)
-cocoon firmware verify    # Check file existence and accessibility
-```
+- Downloaded automatically by `cocoon init`
+- Installed to: `/var/lib/cocoon/firmware/hypervisor-fw`
 
 **Firmware Location**:
 ```
 /var/lib/cocoon/firmware/
-├── hypervisor-fw         # x86_64 PVH firmware (latest)
-├── CLOUDHV.fd            # UEFI firmware (optional in Phase 1)
+├── CLOUDHV.fd            # UEFI firmware (default)
+├── hypervisor-fw         # PVH firmware (optional)
 └── (checksum metadata is optional; Cocoon Phase 1 does not read/manage it)
 ```
 
 **Architecture Support**:
 | Arch | Firmware | Status |
 |------|----------|--------|
-| x86_64 | rust-hypervisor-firmware | ✅ Phase 1 |
-| aarch64 | rust-hypervisor-firmware (ARM64 build) | 📋 Phase 2 |
-
----
-
-### 1.2 Fallback Boot Mode: UEFI + OVMF
-
-**When to use UEFI fallback**:
-1. Image explicitly requests UEFI (metadata flag)
-2. hypervisor-fw boot fails (automatic retry)
-3. User specifies `--boot-strategy uefi_only` flag
-
-**UEFI boot command**:
-```bash
-cloud-hypervisor \
-  --kernel /var/lib/cocoon/firmware/CLOUDHV.fd \
-  --disk path=/var/lib/cocoon/vms/vm-123/overlay.qcow2 \
-  --cpus boot=2 \
-  --memory size=2G \
-  --serial file=/var/log/cocoon/vm-123-serial.log \
-  --console off
-```
-
-**Firmware Requirements**:
-- **x86_64**: Use Cloud Hypervisor's edk2 UEFI firmware (`CLOUDHV.fd`)
-  - Install via `cocoon firmware install --uefi-url URL` or download from CH releases
-  - Installed to: `/var/lib/cocoon/firmware/CLOUDHV.fd`
-  - Deprecated fallback: `/usr/share/OVMF/OVMF_CODE.fd` from `ovmf` package (only used if CLOUDHV.fd missing). (Implemented: the engine probes system OVMF paths as deprecated fallback)
-- **aarch64**: `/usr/share/AAVMF/AAVMF_CODE.fd` (from `edk2-aarch64` package)
-
-**How UEFI fallback works**:
-1. Cocoon passes `--kernel /path/to/CLOUDHV.fd` (CH's edk2 UEFI firmware)
-2. Cloud Hypervisor loads UEFI firmware from specified path
-3. UEFI firmware discovers virtio-blk disk and parses GPT
-4. UEFI firmware loads GRUB from ESP → boots kernel
-
-**Note**: Cloud Hypervisor does NOT auto-detect OVMF. You must explicitly provide the UEFI firmware path via `--kernel` parameter.
+| x86_64 | CLOUDHV.fd (UEFI), rust-hypervisor-firmware (PVH) | ✅ Phase 1 |
+| aarch64 | CLOUDHV.fd (UEFI) | 📋 Phase 2 |
 
 ---
 
 ### 1.3 Boot Mode Selection Logic
 
+Cocoon uses the configured boot strategy directly with no automatic fallback. The boot strategy is set at VM creation time via `--boot-strategy` (default: `uefi`) and stored immutably in `config.json`.
+
 ```go
-type BootMode string
+// From types/boot.go:
+
+type BootStrategy string
 
 const (
-    BootModePVH  BootMode = "pvh"   // Primary: hypervisor-fw
-    BootModeUEFI BootMode = "uefi"  // Fallback: OVMF
+    // BootStrategyUEFI boots with UEFI firmware (CLOUDHV.fd) via REST payload.firmware.
+    // This is the default boot strategy.
+    BootStrategyUEFI BootStrategy = "uefi"
+    // BootStrategyPVH boots with PVH firmware (hypervisor-fw) via REST payload.kernel.
+    BootStrategyPVH  BootStrategy = "pvh"
 )
 
-func SelectBootMode(image *Image, userPreference BootMode) BootMode {
-    // 1. User explicitly requested UEFI
-    if userPreference == BootModeUEFI {
-        return BootModeUEFI
+// DefaultBootStrategy is the default boot strategy for new VMs.
+const DefaultBootStrategy = BootStrategyUEFI
+
+// ParseBootStrategy validates and normalizes a user-provided boot strategy.
+// Empty input resolves to DefaultBootStrategy.
+func ParseBootStrategy(raw string) (BootStrategy, error) {
+    normalized := strings.ToLower(strings.TrimSpace(raw))
+    if normalized == "" {
+        return DefaultBootStrategy, nil
     }
-
-    // 2. Image metadata requires UEFI (e.g., secure boot)
-    if image.Metadata.RequiresUEFI {
-        return BootModeUEFI
-    }
-
-    // 3. Default: PVH with hypervisor-fw
-    return BootModePVH
-}
-```
-
-**Automatic fallback on failure**:
-```go
-func BootVM(vmID string, mode BootMode) error {
-    if mode == BootModePVH {
-        err := bootWithPVH(vmID)
-        if shouldFallbackToUEFI(err) {
-            log.Warn("PVH boot failed, falling back to UEFI: %v", err)
-            return bootWithUEFI(vmID)
-        }
-        return err  // Non-recoverable error, don't fallback
-    }
-    return bootWithUEFI(vmID)
-}
-```
-
----
-
-### 1.4 PVH/UEFI Fallback Detection Conditions
-
-**Decision**: Cocoon uses **explicit error detection** with automatic fallback. When PVH boot fails due to specific recoverable conditions, Cocoon automatically retries with UEFI. For non-recoverable errors, Cocoon fails immediately without fallback.
-
-#### Recoverable Conditions (Trigger Automatic Fallback)
-
-These conditions indicate that PVH boot is not supported or unsuitable for the image, but UEFI might work:
-
-**1. Firmware Loading Failures**:
-- **CH Exit Code**: 1 (firmware file not found or invalid)
-- **Error Pattern**: `Failed to load firmware` or `firmware: No such file or directory`
-- **Reason**: hypervisor-fw binary missing or corrupted
-- **Fallback**: Try UEFI with CLOUDHV.fd or OVMF
-
-**2. PVH Boot Protocol Failures**:
-- **CH Exit Code**: 1
-- **Error Pattern**: `PVH entry point not found` or `Invalid PVH header`
-- **Serial Log Pattern**: Firmware loads but finds no PVH-compatible bootloader
-- **Reason**: Image doesn't support PVH boot protocol
-- **Fallback**: Try UEFI boot
-
-**3. Disk/ESP Discovery Failures**:
-- **CH Exit Code**: 0 (VM starts but doesn't boot)
-- **Serial Log Pattern** (within 10 seconds):
-  - `No bootable device found`
-  - `Failed to find EFI System Partition`
-  - `virtio-blk: no bootable partitions`
-- **Reason**: Disk format incompatible with hypervisor-fw's GPT parser
-- **Fallback**: Try UEFI (more robust GPT handling)
-
-**4. Bootloader Compatibility Issues**:
-- **CH Exit Code**: 0 (VM starts but doesn't boot)
-- **Serial Log Pattern** (within 10 seconds):
-  - `Failed to load boot loader`
-  - `Unsupported boot loader format`
-- **Reason**: Bootloader requires full UEFI environment (e.g., Secure Boot)
-- **Fallback**: Try UEFI
-
-#### Non-Recoverable Errors (Fail Immediately, No Fallback)
-
-These errors indicate fundamental problems that UEFI fallback won't fix:
-
-**1. KVM Access Failures**:
-- **CH Exit Code**: 1
-- **Error Pattern**: `Failed to open /dev/kvm: Permission denied` or `KVM not available`
-- **Reason**: Missing KVM access, virtualization disabled
-- **Action**: Fail with clear error (user must fix KVM configuration)
-
-**2. Resource Exhaustion**:
-- **CH Exit Code**: 1
-- **Error Pattern**: `Cannot allocate memory` or `Out of memory`
-- **Reason**: Insufficient host resources
-- **Action**: Fail with clear error (user must free resources or reduce VM size)
-
-**3. Disk Access Failures**:
-- **CH Exit Code**: 1
-- **Error Pattern**: `Failed to open disk` or `Permission denied` or `No such file or directory`
-- **Reason**: Disk file missing, corrupted, or permission issues
-- **Action**: Fail with clear error (user must fix disk path/permissions)
-
-**4. API/Socket Failures**:
-- **CH Exit Code**: 1
-- **Error Pattern**: `Failed to bind socket` or `Address already in use`
-- **Reason**: Socket path conflicts or permission issues
-- **Action**: Fail with clear error (user must clean up stale sockets)
-
-**5. Configuration Errors**:
-- **CH Exit Code**: 1
-- **Error Pattern**: `Invalid parameter` or `Failed to parse`
-- **Reason**: Invalid Cloud Hypervisor parameters
-- **Action**: Fail with clear error (fix configuration)
-
-#### Implementation
-
-```go
-type BootFailureReason int
-
-const (
-    BootFailureUnknown BootFailureReason = iota
-    BootFailureFirmwareNotFound
-    BootFailurePVHProtocol
-    BootFailureDiskDiscovery
-    BootFailureBootloaderCompat
-    BootFailureKVMAccess
-    BootFailureResourceExhaustion
-    BootFailureDiskAccess
-    BootFailureSocketConflict
-    BootFailureInvalidConfig
-)
-
-type BootFailure struct {
-    Reason     BootFailureReason
-    Message    string
-    CHExitCode int
-    SerialLog  string
-}
-
-// shouldFallbackToUEFI determines if a PVH boot failure should trigger UEFI fallback
-func shouldFallbackToUEFI(err error) bool {
-    if err == nil {
-        return false
-    }
-
-    failure := analyzeBootFailure(err)
-
-    // Recoverable conditions that warrant UEFI fallback
-    switch failure.Reason {
-    case BootFailureFirmwareNotFound:
-        return true
-    case BootFailurePVHProtocol:
-        return true
-    case BootFailureDiskDiscovery:
-        return true
-    case BootFailureBootloaderCompat:
-        return true
+    switch BootStrategy(normalized) {
+    case BootStrategyUEFI, BootStrategyPVH:
+        return BootStrategy(normalized), nil
     default:
-        // Non-recoverable errors: don't fallback
-        return false
+        return "", fmt.Errorf("invalid boot strategy %q (must be one of: %s, %s)",
+            raw, BootStrategyPVH, BootStrategyUEFI)
     }
 }
-
-// analyzeBootFailure inspects CH exit code, stderr, and serial log to determine failure reason
-func analyzeBootFailure(err error) BootFailure {
-    failure := BootFailure{
-        Reason:  BootFailureUnknown,
-        Message: err.Error(),
-    }
-
-    // Extract CH exit code
-    if exitErr, ok := err.(*exec.ExitError); ok {
-        failure.CHExitCode = exitErr.ExitCode()
-    }
-
-    // Read serial log for boot-time errors
-    serialLog := readSerialLog(vmID, 10*time.Second) // First 10 seconds
-    failure.SerialLog = serialLog
-
-    // Pattern matching on error message and serial log
-    errorMsg := strings.ToLower(failure.Message)
-    serialLower := strings.ToLower(serialLog)
-
-    // Check for specific error patterns
-    switch {
-    // Firmware issues
-    case strings.Contains(errorMsg, "failed to load firmware"):
-        failure.Reason = BootFailureFirmwareNotFound
-    case strings.Contains(errorMsg, "firmware: no such file"):
-        failure.Reason = BootFailureFirmwareNotFound
-
-    // PVH protocol issues
-    case strings.Contains(errorMsg, "pvh entry point not found"):
-        failure.Reason = BootFailurePVHProtocol
-    case strings.Contains(errorMsg, "invalid pvh header"):
-        failure.Reason = BootFailurePVHProtocol
-
-    // Disk discovery issues (from serial log)
-    case strings.Contains(serialLower, "no bootable device"):
-        failure.Reason = BootFailureDiskDiscovery
-    case strings.Contains(serialLower, "failed to find efi system partition"):
-        failure.Reason = BootFailureDiskDiscovery
-    case strings.Contains(serialLower, "virtio-blk: no bootable partitions"):
-        failure.Reason = BootFailureDiskDiscovery
-
-    // Bootloader compatibility (from serial log)
-    case strings.Contains(serialLower, "failed to load boot loader"):
-        failure.Reason = BootFailureBootloaderCompat
-    case strings.Contains(serialLower, "unsupported boot loader format"):
-        failure.Reason = BootFailureBootloaderCompat
-
-    // Non-recoverable: KVM access
-    case strings.Contains(errorMsg, "failed to open /dev/kvm"):
-        failure.Reason = BootFailureKVMAccess
-    case strings.Contains(errorMsg, "kvm not available"):
-        failure.Reason = BootFailureKVMAccess
-
-    // Non-recoverable: Resource exhaustion
-    case strings.Contains(errorMsg, "cannot allocate memory"):
-        failure.Reason = BootFailureResourceExhaustion
-    case strings.Contains(errorMsg, "out of memory"):
-        failure.Reason = BootFailureResourceExhaustion
-
-    // Non-recoverable: Disk access
-    case strings.Contains(errorMsg, "failed to open disk"):
-        failure.Reason = BootFailureDiskAccess
-    case strings.Contains(errorMsg, "permission denied") && strings.Contains(errorMsg, "disk"):
-        failure.Reason = BootFailureDiskAccess
-
-    // Non-recoverable: Socket conflicts
-    case strings.Contains(errorMsg, "failed to bind socket"):
-        failure.Reason = BootFailureSocketConflict
-    case strings.Contains(errorMsg, "address already in use"):
-        failure.Reason = BootFailureSocketConflict
-
-    // Non-recoverable: Invalid config
-    case strings.Contains(errorMsg, "invalid parameter"):
-        failure.Reason = BootFailureInvalidConfig
-    case strings.Contains(errorMsg, "failed to parse"):
-        failure.Reason = BootFailureInvalidConfig
-    }
-
-    return failure
-}
-
-// readSerialLog reads the serial log file for the first N seconds of boot
-func readSerialLog(vmID string, duration time.Duration) string {
-    logPath := fmt.Sprintf("/var/log/cocoon/%s-serial.log", vmID)
-
-    // Wait up to duration for log to appear
-    deadline := time.Now().Add(duration)
-    for time.Now().Before(deadline) {
-        data, err := os.ReadFile(logPath)
-        if err == nil {
-            return string(data)
-        }
-        time.Sleep(100 * time.Millisecond)
-    }
-
-    return ""
-}
 ```
 
-#### Boot Attempt Flow
-
-```
-┌─────────────────────┐
-│  Start VM Boot      │
-│  (mode = PVH)       │
-└──────────┬──────────┘
-           │
-           ▼
-┌─────────────────────┐
-│ Launch CH with      │
-│ --firmware          │
-│ hypervisor-fw       │
-└──────────┬──────────┘
-           │
-           ▼
-    ┌──────────┐
-    │ Success? │──Yes──▶ VM Running ✅
-    └──────────┘
-           │
-          No
-           │
-           ▼
-┌─────────────────────┐
-│ Analyze Failure     │
-│ (CH exit code +     │
-│  serial log)        │
-└──────────┬──────────┘
-           │
-           ▼
-    ┌──────────────┐
-    │ Recoverable? │──No──▶ Fail with error ❌
-    └──────────────┘        (KVM/disk/config issue)
-           │
-          Yes
-           │
-           ▼
-┌─────────────────────┐
-│ Log fallback reason │
-│ "PVH failed: ..."   │
-└──────────┬──────────┘
-           │
-           ▼
-┌─────────────────────┐
-│ Launch CH with      │
-│ --kernel CLOUDHV.fd │
-│ (UEFI mode)         │
-└──────────┬──────────┘
-           │
-           ▼
-    ┌──────────┐
-    │ Success? │──Yes──▶ VM Running ✅
-    └──────────┘        (slower boot)
-           │
-          No
-           │
-           ▼
-      Fail ❌
-```
-
-#### Logging and Observability
-
-```go
-func BootVM(vmID string, mode BootMode) error {
-    log.Info("Starting VM %s with boot mode: %s", vmID, mode)
-
-    if mode == BootModePVH {
-        err := bootWithPVH(vmID)
-        if err != nil {
-            failure := analyzeBootFailure(err)
-
-            if shouldFallbackToUEFI(err) {
-                log.Warn("VM %s: PVH boot failed with recoverable error: %s (reason: %v)",
-                    vmID, failure.Message, failure.Reason)
-                log.Info("VM %s: Attempting UEFI fallback", vmID)
-
-                // Emit metric for fallback tracking
-                metrics.IncrementCounter("vm.boot.pvh_fallback", map[string]string{
-                    "reason": failure.Reason.String(),
-                })
-
-                return bootWithUEFI(vmID)
-            }
-
-            // Non-recoverable error
-            log.Error("VM %s: PVH boot failed with non-recoverable error: %s (reason: %v)",
-                vmID, failure.Message, failure.Reason)
-            return fmt.Errorf("boot failed: %w", err)
-        }
-
-        log.Info("VM %s: PVH boot successful", vmID)
-        return nil
-    }
-
-    return bootWithUEFI(vmID)
-}
-```
-
-#### Testing Fallback Detection
-
-**Test Case 1: Firmware Missing**
-```bash
-# Remove hypervisor-fw
-sudo rm /var/lib/cocoon/firmware/hypervisor-fw
-
-# Attempt boot - should fallback to UEFI
-cocoon create ubuntu-22.04-cloudimg --name test-vm
-
-# Expected log:
-# WARN: PVH boot failed with recoverable error: Failed to load firmware (reason: FirmwareNotFound)
-# INFO: Attempting UEFI fallback
-# INFO: VM test-vm: UEFI boot successful
-```
-
-**Test Case 2: Non-PVH Image**
-```bash
-# Use image without PVH support (e.g., Windows or old Linux)
-cocoon create custom-image:latest --name test-vm
-
-# Expected: Automatic fallback to UEFI
-```
-
-**Test Case 3: KVM Access Denied**
-```bash
-# Remove user from kvm group
-sudo deluser $USER kvm
-
-# Attempt boot - should fail immediately (no fallback)
-cocoon create ubuntu-22.04-cloudimg --name test-vm
-
-# Expected log:
-# ERROR: PVH boot failed with non-recoverable error: Failed to open /dev/kvm: Permission denied (reason: KVMAccess)
-# Error: boot failed: KVM access denied. Add user to 'kvm' group.
-```
+**No automatic PVH-to-UEFI fallback**: Cocoon boots using whichever strategy is configured. If the chosen strategy fails (e.g., firmware missing, image incompatible), the boot fails with an error. Users must explicitly choose a different strategy by recreating the VM with `--boot-strategy uefi` or `--boot-strategy pvh`.
 
 ---
 
@@ -1064,55 +677,64 @@ func StopVM(vmID string) error {
 
 ## 5. VM Configuration Schema
 
+The canonical definition is in `types/config.go`. VMConfig is immutable after creation:
+
 ```go
 type VMConfig struct {
     // Identity
-    VMID        string `json:"vm_id"`
-    Name        string `json:"name"`
+    VMID string `json:"vm_id"`
+    Name string `json:"name"`
 
-    // Boot Configuration
-    BootStrategy string `json:"boot_strategy"` // "pvh_then_uefi", "uefi_only", "pvh_only"
-    Firmware     string `json:"firmware"`      // Primary firmware path
+    // Image provenance
+    ImageRef       string `json:"image_ref"`
+    BaseKey        string `json:"base_key"`         // {checksum_16}_{arch}
+    BaseDigestFull string `json:"base_digest_full"` // Full SHA-256 (64 hex chars)
+    Arch           string `json:"arch"`
 
-    // Disk
-    RootDisk    string `json:"root_disk"`     // Overlay qcow2 path
-    DiskSize    string `json:"disk_size"`     // e.g., "10G"
+    // Boot configuration
+    BootStrategy  BootStrategy `json:"boot_strategy"`            // "uefi" (default), "pvh"
+    FirmwarePath  string       `json:"firmware_path"`
+    TPMSocketPath string       `json:"tpm_socket_path,omitempty"` // swtpm socket (if TPM enabled)
 
     // Resources
-    CPUs        int   `json:"cpus"`
-    Memory      int64 `json:"memory"`         // In bytes
+    CPUs     int    `json:"cpus"`
+    MemoryMB int64  `json:"memory_mb"`   // In megabytes
+    DiskSize string `json:"disk_size"`   // e.g., "10G"
 
-    // Runtime
-    VMSocket    string `json:"vm_socket"`     // /run/cocoon/vms/{vm-id}/api.sock
-    SerialLog   string `json:"serial_log"`    // /var/log/cocoon/vm-{id}-serial.log
-    PIDFile     string `json:"pid_file"`      // /run/cocoon/vms/{vm-id}/ch.pid
+    // Storage paths (derived, stored for fast lookup)
+    BaseImagePath string `json:"base_image_path"`
+    OverlayPath   string `json:"overlay_path"`
+    SerialLog     string `json:"serial_log"`
+    SocketPath    string `json:"socket_path"`
 
-    // Initialization [Phase 2]
-    MetadataServer string `json:"metadata_server"` // http://169.254.169.254 (Phase 2 — not yet implemented)
+    // Timestamps
+    CreatedAt string `json:"created_at"` // RFC 3339
 
-    // Timeouts
-    BootTimeout time.Duration `json:"boot_timeout"` // Default: 60s
-    StopTimeout time.Duration `json:"stop_timeout"` // Default: 30s
+    // Schema version for migration
+    SchemaVersion int `json:"schema_version"`
 }
 ```
 
-**Example Configuration**:
+**Example Configuration** (`config.json`, written once at VM creation):
 ```json
 {
-  "vm_id": "vm-abc-123",
+  "vm_id": "vm-01HXYZ5A3B7C8D9E0F1G2H3J4K",
   "name": "ubuntu-vm-1",
-  "boot_strategy": "pvh_then_uefi",
-  "firmware": "/var/lib/cocoon/firmware/hypervisor-fw",
-  "root_disk": "/var/lib/cocoon/vms/vm-abc-123/overlay.qcow2",
-  "disk_size": "10G",
+  "image_ref": "ubuntu-22.04-cloudimg",
+  "base_key": "ef015678abcd1234_amd64",
+  "base_digest_full": "ef015678abcd1234567890abcdef1234567890abcdef1234567890abcdef1234",
+  "arch": "amd64",
+  "boot_strategy": "uefi",
+  "firmware_path": "/var/lib/cocoon/firmware/CLOUDHV.fd",
   "cpus": 2,
-  "memory": 2147483648,
-  "vm_socket": "/run/cocoon/vms/vm-abc-123/api.sock",
-  "serial_log": "/var/log/cocoon/vm-abc-123-serial.log",
-  "pid_file": "/run/cocoon/vms/vm-abc-123/ch.pid",
-  "metadata_server": "http://169.254.169.254",
-  "boot_timeout": 60000000000,
-  "stop_timeout": 30000000000
+  "memory_mb": 2048,
+  "disk_size": "10G",
+  "base_image_path": "/var/lib/cocoon/cache/images/ef015678abcd1234_amd64.qcow2",
+  "overlay_path": "/var/lib/cocoon/vms/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K/overlay.qcow2",
+  "serial_log": "/var/log/cocoon/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K-serial.log",
+  "socket_path": "/run/cocoon/vms/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K/api.sock",
+  "created_at": "2026-02-11T10:30:00Z",
+  "schema_version": 1
 }
 ```
 
@@ -1274,10 +896,10 @@ virt-customize -a image.qcow2 \
   - [ ] Verify firmware can boot standard cloud images
   - [ ] Test with Ubuntu Cloud, Fedora Cloud
 
-- [ ] **UEFI Fallback**:
+- [ ] **UEFI Boot**:
   - [ ] Locate UEFI firmware: primary `/var/lib/cocoon/firmware/CLOUDHV.fd`, deprecated fallback `/usr/share/OVMF/OVMF_CODE.fd`
-  - [ ] Launch CH with `--kernel /var/lib/cocoon/firmware/CLOUDHV.fd` (CH does NOT auto-detect firmware)
-  - [ ] Automatic fallback on PVH failure
+  - [ ] Launch CH with UEFI firmware via REST `payload.firmware` (default boot strategy)
+  - [ ] No automatic PVH-to-UEFI fallback (boot uses the configured strategy directly)
 
 - [ ] **Metadata Server (Stub Implementation)** — **[Not Yet Implemented — Phase 2]**:
   - [ ] Implement lightweight HTTP server listening on 169.254.169.254:80
@@ -1340,7 +962,7 @@ virt-customize -a image.qcow2 \
 
 **Boot Contract v2.0** establishes:
 
-1. ✅ **Dual boot strategy**: PVH primary + UEFI fallback
+1. ✅ **Boot strategy**: UEFI default + PVH option
 2. ✅ **Fast boot**: <100ms with hypervisor-fw
 3. ✅ **VM initialization**: cloud-init + metadata server for setup (users, SSH, network)
 4. ✅ **Image requirements**: kernel + bootloader + systemd + cloud-init

@@ -1,11 +1,11 @@
 # OCI to qcow2 Conversion Pipeline
 
-**Version**: 1.0
+**Version**: 1.1
 **Status**: Implemented
 **Phase**: Phase 1
-**Last Updated**: 2026-02-14
+**Last Updated**: 2026-02-15
 
-## ⚠️ Root Access Requirement
+## Root Access Requirement
 
 **IMPORTANT**: OCI image conversion requires root privileges due to libguestfs dependency.
 
@@ -14,24 +14,24 @@
 - **Option B (Rootful)**: Run cocoon as root - NOT recommended for production
 - **Option C (Hybrid)**: Recommended - cocoon runs as user, privileged helper for conversion only
 
-See [00-overview.md § Deployment Strategy](./00-overview.md#deployment-strategy) and [08-dependencies.md](./08-dependencies.md) for details.
+See [00-overview.md Deployment Strategy](./00-overview.md#deployment-strategy) and [08-dependencies.md](./08-dependencies.md) for details.
 
 ## Executive Summary
 
 This document specifies the pipeline for converting OCI container images into bootable qcow2 disk images for Cloud Hypervisor VMs. The conversion process must produce images that satisfy the [Boot Contract](01-boot-contract.md) while maintaining efficiency through caching and deduplication.
 
 **Key Requirements**:
-1. Pull OCI images from registries using Buildah
-2. Extract container rootfs to disk
-3. Convert rootfs to qcow2 format with proper partitioning
-4. Make the image bootable (bootloader, kernel, init)
-5. Cache images based on content checksums
+1. Pull OCI images from registries using Buildah (with `--root` flag for custom storage)
+2. Extract container rootfs to disk via Buildah mount
+3. Convert rootfs to qcow2 format with proper partitioning (guestfish + tar-in)
+4. Validate GRUB config presence post-conversion (fail if missing)
+5. Cache images based on content checksums (atomic rename into cache)
 6. Handle rootless and rootful operation modes (conversion requires root)
-7. Provide robust error handling
+7. Provide robust error handling via ClassifiedError (transient/permanent)
 
 ---
 
-## ⚠️ Code Examples Disclaimer
+## Code Examples Disclaimer
 
 **IMPORTANT**: Code examples in this document serve different purposes:
 
@@ -55,25 +55,13 @@ Examples marked as "**MUST**" or "**Implementation-Required**" define mandatory 
 - Required external tool usage patterns
 - Critical error conditions
 
-**Example**:
-```go
-// MUST: Implementation-required validation
-func ValidateBootability(rootfs string) error {
-    // This exact check is mandatory
-    if !pathExists(filepath.Join(rootfs, "/boot/vmlinuz*")) {
-        return ErrKernelNotFound
-    }
-    return nil
-}
-```
-
 ### Responsibility Boundaries
 
 **Cocoon's Role**:
-- ✅ **Validate**: Check if image has required components (kernel, bootloader)
-- ✅ **Warn**: Alert if cloud-init missing (VM will boot but metadata server disabled) [Phase 2]
-- ✅ **Configure**: Modify GRUB config, inject cloud-init datasource settings (if cloud-init present)
-- ❌ **Install**: Does NOT install missing packages (kernel, GRUB, cloud-init)
+- **Validate**: Check if image has required components (kernel, bootloader) -- post-conversion via `cocoon image verify`
+- **Warn**: Alert if cloud-init missing (VM will boot but metadata server disabled) [Phase 2]
+- **Configure**: Modify GRUB config, inject serial console settings (if GRUB config present)
+- **Does NOT Install**: Does NOT install missing packages (kernel, GRUB, cloud-init)
 
 **User's Role** (Image Provider):
 - **MUST provide**: kernel, bootloader **pre-installed**
@@ -98,11 +86,12 @@ Instead, Cocoon **fails fast** with clear error messages when components are mis
 4. [Extract Workflow](#4-extract-workflow)
 5. [Convert Workflow](#5-convert-workflow)
 6. [Checksum-Based Caching](#6-checksum-based-caching)
-7. [Error Handling](#7-error-handling)
-8. [Rootless vs Rootful Considerations](#8-rootless-vs-rootful-considerations)
-9. [Implementation Checklist](#9-implementation-checklist)
-10. [Verified Images (CI Reference)](#10-verified-images-ci-reference)
-11. [References](#11-references)
+7. [Manifest Refcache](#7-manifest-refcache)
+8. [Error Handling](#8-error-handling)
+9. [Rootless vs Rootful Considerations](#9-rootless-vs-rootful-considerations)
+10. [Implementation Checklist](#10-implementation-checklist)
+11. [Verified Images (CI Reference)](#11-verified-images-ci-reference)
+12. [References](#12-references)
 
 ---
 
@@ -111,46 +100,50 @@ Instead, Cocoon **fails fast** with clear error messages when components are mis
 ### 1.1 Conversion Pipeline
 
 ```
-┌─────────────────┐
-│  OCI Registry   │ (Docker Hub, GHCR, etc.)
-└────────┬────────┘
-         │ buildah pull
-         ▼
-┌─────────────────┐
-│ OCI Image Store │ (~/.local/share/containers/storage)
-└────────┬────────┘
-         │ buildah from + mount
-         ▼
-┌─────────────────┐
-│  Mounted Rootfs │ (/tmp/buildah-mount-XXXXX)
-└────────┬────────┘
-         │ Conversion Tools
-         ▼
-┌─────────────────┐
-│  Base qcow2     │ (Bootable disk image)
-└────────┬────────┘
-         │ Checksum + Cache
-         ▼
-┌─────────────────┐
-│  Image Cache    │ (/var/lib/cocoon/cache/images/)
-└─────────────────┘
-         │ COW Backing File
-         ▼
-┌─────────────────┐
-│ VM Overlay Disk │ (Per-VM instance)
-└─────────────────┘
++-----------------+
+|  OCI Registry   | (Docker Hub, GHCR, etc.)
++--------+--------+
+         | skopeo inspect (identify)
+         | buildah --root <root> pull (inside lock)
+         v
++-----------------+
+| OCI Image Store | (/var/lib/cocoon/buildah/)
++--------+--------+
+         | buildah --root <root> from + mount
+         v
++-----------------+
+|  Mounted Rootfs | (buildah mount point)
++--------+--------+
+         | tar -cf (pack rootfs)
+         | guestfish (partition + tar-in)
+         v
++-----------------+
+|  Base qcow2     | (Bootable disk image, .tmp)
++--------+--------+
+         | os.Rename (atomic)
+         v
++-----------------+
+|  Image Cache    | (/var/lib/cocoon/cache/images/)
++-----------------+
+         | COW Backing File
+         v
++-----------------+
+| VM Overlay Disk | (Per-VM instance)
++-----------------+
 ```
 
 ### 1.2 Component Responsibilities
 
 | Component | Responsibility | Tool |
 |-----------|----------------|------|
-| **Image Puller** | Download OCI images from registries | Buildah |
+| **Image Identifier** | Compute content-addressed identity from OCI manifest | skopeo |
+| **Image Puller** | Download OCI images from registries | Buildah (via `--root` flag) |
 | **Rootfs Extractor** | Mount and extract container filesystem | Buildah mount |
-| **qcow2 Converter** | Create disk image with partitions | qemu-img, libguestfs |
-| **Bootloader Validator** | Validate bootloader exists, update grub.cfg | virt-customize, guestfish |
-| **Cache Manager** | Deduplicate and cache base images | Custom Go code |
+| **qcow2 Converter** | Create disk image with partitions, copy rootfs via tar-in | qemu-img, guestfish |
+| **GRUB Validator** | Validate GRUB config exists, best-effort serial console update | guestfish, virt-customize |
+| **Cache Manager** | Deduplicate and cache base images via atomic rename | Custom Go code |
 | **Checksum Calculator** | Generate stable image checksums | skopeo, Go crypto |
+| **Manifest Refcache** | Map IMAGE_REF to base_key for fast cache lookups | `image/refcache/index.go` |
 
 ### 1.3 Design Principles
 
@@ -158,7 +151,7 @@ Instead, Cocoon **fails fast** with clear error messages when components are mis
 2. **Checksum-Based Caching**: Never convert the same image twice
 3. **Fail-Fast Validation**: Verify boot contract compliance (on-demand via `cocoon image verify`)
 4. **Rootless-First**: Design for unprivileged operation
-5. **Shell-Out Strategy**: Use external tools via exec (Buildah, qemu-img, libguestfs)
+5. **Shell-Out Strategy**: Use external tools via `runCmd()` helper (Buildah, skopeo, qemu-img, guestfish)
 
 ---
 
@@ -169,253 +162,150 @@ Instead, Cocoon **fails fast** with clear error messages when components are mis
 **Decision**: Use Buildah for OCI image operations instead of Docker or containerd libraries.
 
 **Rationale**:
-- ✅ **Rootless by default**: Works without root privileges
-- ✅ **OCI-compliant**: Handles any OCI-compatible registry
-- ✅ **Simple CLI interface**: Easy to shell out from Go
-- ✅ **No daemon required**: Lightweight, no background process
-- ✅ **Battle-tested**: Used in production by Podman, OpenShift
+- **Rootless by default**: Works without root privileges
+- **OCI-compliant**: Handles any OCI-compatible registry
+- **Simple CLI interface**: Easy to shell out from Go
+- **No daemon required**: Lightweight, no background process
+- **Battle-tested**: Used in production by Podman, OpenShift
 
 **Alternatives Considered**:
 
 | Alternative | Pros | Cons | Decision |
 |-------------|------|------|----------|
-| Docker CLI | Familiar, widely available | Requires Docker daemon, rootful | ❌ Not selected |
-| containerd library | Native Go, no shell-out | Complex API, daemon required | ❌ Not selected |
-| Podman | Same CLI as Docker | Uses Buildah internally anyway | ❌ Redundant |
-| **Buildah** | **Rootless, simple, no daemon** | **None** | ✅ **Selected** |
+| Docker CLI | Familiar, widely available | Requires Docker daemon, rootful | Not selected |
+| containerd library | Native Go, no shell-out | Complex API, daemon required | Not selected |
+| Podman | Same CLI as Docker | Uses Buildah internally anyway | Redundant |
+| **Buildah** | **Rootless, simple, no daemon** | **None** | **Selected** |
 
-### 2.2 Shell-Out vs Library
+### 2.2 Shell-Out Pattern
 
-**Decision**: Shell out to Buildah CLI instead of using Buildah as a Go library.
+**Decision**: Shell out to Buildah CLI via a generic `runCmd()` helper, not a dedicated `BuildahClient` struct.
 
 **Rationale**:
-- ✅ **Stability**: CLI interface is stable, library internals change frequently
-- ✅ **Error handling**: Easier to capture stderr and parse error messages
-- ✅ **Process isolation**: Buildah runs in separate process, clean crash handling
-- ✅ **Version flexibility**: Works with any Buildah version installed on host
-- ⚠️ **Performance**: Minor overhead from process spawning (acceptable for infrequent operations)
+- **Stability**: CLI interface is stable, library internals change frequently
+- **Error handling**: Easier to capture stderr and parse error messages
+- **Process isolation**: Buildah runs in separate process, clean crash handling
+- **Version flexibility**: Works with any Buildah version installed on host
+- **Performance**: Minor overhead from process spawning (acceptable for infrequent operations)
 
-**Implementation Pattern**:
+**Actual Implementation** (`image/pipeline/oci_linux.go`):
+
+The code uses a package-level `runCmd()` function shared across all external tool invocations (skopeo, buildah, guestfish). There is no `BuildahClient` struct.
 
 ```go
-package oci
-
-import (
-    "bytes"
-    "fmt"
-    "os/exec"
-    "strings"
-)
-
-type BuildahClient struct {
-    executable string // Path to buildah binary
-}
-
-func NewBuildahClient() (*BuildahClient, error) {
-    // Find buildah in PATH
-    path, err := exec.LookPath("buildah")
+// Actual implementation: bare runCmd helper in pipeline package
+func runCmd(ctx context.Context, name string, args ...string) ([]byte, error) {
+    cmd := exec.CommandContext(ctx, name, args...)
+    out, err := cmd.Output()
     if err != nil {
-        return nil, fmt.Errorf("buildah not found: %w", err)
+        if exitErr, ok := err.(*exec.ExitError); ok {
+            return nil, fmt.Errorf("%s: %s",
+                strings.Join(append([]string{name}, args...), " "),
+                string(exitErr.Stderr))
+        }
+        return nil, err
     }
-
-    return &BuildahClient{executable: path}, nil
-}
-
-func (b *BuildahClient) run(args ...string) (string, error) {
-    cmd := exec.Command(b.executable, args...)
-
-    var stdout, stderr bytes.Buffer
-    cmd.Stdout = &stdout
-    cmd.Stderr = &stderr
-
-    if err := cmd.Run(); err != nil {
-        return "", fmt.Errorf("buildah error: %w\nstderr: %s", err, stderr.String())
-    }
-
-    return strings.TrimSpace(stdout.String()), nil
+    return out, nil
 }
 ```
 
 ### 2.3 Buildah Storage Configuration
 
-Buildah stores images in a local directory (default: `~/.local/share/containers/storage`).
+Buildah's storage root is configured via the `--root` CLI flag (not an environment variable). The root path comes from `config.CocoonConfig.BuildahRoot`.
 
-**Custom Storage Location**:
+**Actual Implementation**:
 
 ```go
-func (b *BuildahClient) WithStorage(storageRoot string) *BuildahClient {
-    // Override BUILDAH_STORAGE environment variable
-    b.storageRoot = storageRoot
-    return b
-}
-
-func (b *BuildahClient) run(args ...string) (string, error) {
-    cmd := exec.Command(b.executable, args...)
-
-    if b.storageRoot != "" {
-        cmd.Env = append(os.Environ(),
-            fmt.Sprintf("BUILDAH_STORAGE=%s", b.storageRoot))
-    }
-
-    // ... rest of execution
-}
+// Every buildah command uses --root to set the storage location.
+// The root path is taken from cfg.BuildahRoot (default: /var/lib/cocoon/buildah).
+root := cfg.BuildahRoot
+runCmd(ctx, "buildah", "--root", root, "pull", ref)
+runCmd(ctx, "buildah", "--root", root, "from", ref)
+runCmd(ctx, "buildah", "--root", root, "mount", containerID)
 ```
 
-**Recommended Storage Layout**:
+**Storage Layout**:
 
 ```
 /var/lib/cocoon/
-├── buildah/              # Buildah storage root
-│   ├── overlay/          # OCI image layers
-│   ├── vfs/
-│   └── storage.lock
-├── cache/
-│   └── images/           # Converted qcow2 base images
-└── vms/                  # Per-VM overlay disks
++-- buildah/              # Buildah storage root (--root flag)
+|   +-- overlay/          # OCI image layers
+|   +-- vfs/
+|   +-- storage.lock
++-- cache/
+|   +-- images/           # Converted qcow2 base images
+|   +-- manifest/         # Manifest refcache (index.json)
+|   +-- locks/            # Per-image conversion locks
++-- vms/                  # Per-VM overlay disks
 ```
 
 ---
 
 ## 3. Pull Workflow
 
-### 3.1 Image Pull Operation
+### 3.1 Two-Phase OCI Pull
 
-**Goal**: Download OCI image from registry to local storage.
+The OCI pull is split into two phases for efficiency:
+
+**Phase 1: Identify (cheap, outside lock)** -- Uses skopeo to inspect the manifest and compute the content-addressed identity. No image layers are downloaded.
+
+**Phase 2: Pull + Mount (expensive, inside conversion lock)** -- Uses buildah to pull layers, create a working container, and mount the rootfs.
+
+This design allows cache hits to skip the expensive pull entirely.
 
 ```go
-func (b *BuildahClient) Pull(image string) error {
-    // Normalize image name
-    // "ubuntu:22.04" -> "docker.io/library/ubuntu:22.04"
-    fullImage := b.normalizeImageName(image)
-
-    // Pull image
-    _, err := b.run("pull", fullImage)
-    return err
-}
-
-func (b *BuildahClient) normalizeImageName(image string) string {
-    // Add default registry if not specified
-    if !strings.Contains(image, "/") {
-        return "docker.io/library/" + image
+// Actual implementation: Phase 1 -- identify via skopeo
+func identifyOCIPlatform(ctx context.Context, ref string) (*image.ImageIdentity, error) {
+    // Skopeo handles image name resolution (docker.io/library/ prefix, etc.)
+    rawManifest, err := runCmd(ctx, "skopeo", "inspect", "--raw", "docker://"+ref)
+    if err != nil {
+        return nil, classifySkopeoError(...)
     }
 
-    if !strings.Contains(image, ".") {
-        return "docker.io/" + image
-    }
-
-    return image
+    // Detect manifest list vs single manifest
+    // If manifest list, re-inspect with --override-arch
+    // Parse config digest + layer digests
+    // Compute checksum identity
+    // Return identity WITHOUT TempPath (layers not pulled yet)
+    ...
 }
 ```
 
-### 3.2 Image Verification
+**Note on image name normalization**: The code does NOT implement a `normalizeImageName()` function. Image references are passed directly to skopeo as `"docker://"+ref`. Skopeo handles registry resolution (e.g., resolving short names like `ubuntu:22.04` to `docker.io/library/ubuntu:22.04`) internally.
 
-Before pulling, verify the image exists and is accessible:
+### 3.2 Image Verification (skopeo inspect)
+
+Before pulling layers, the manifest is inspected to compute identity:
 
 ```go
-func (b *BuildahClient) Inspect(image string) (*ImageInfo, error) {
-    output, err := b.run("inspect", "--type", "image", image)
-    if err != nil {
-        return nil, fmt.Errorf("image not found or inaccessible: %w", err)
-    }
+// Actual: uses skopeo inspect --raw to get manifest without pulling layers
+rawManifest, err := runCmd(ctx, "skopeo", "inspect", "--raw", "docker://"+ref)
 
-    var info ImageInfo
-    if err := json.Unmarshal([]byte(output), &info); err != nil {
-        return nil, fmt.Errorf("failed to parse image info: %w", err)
-    }
+// Parse manifest to detect if it's a manifest list
+var index ociIndex
+json.Unmarshal(rawManifest, &index)
 
-    return &info, nil
-}
-
-type ImageInfo struct {
-    Digest      string            `json:"digest"`
-    RepoDigests []string          `json:"repoDigests"`
-    Size        int64             `json:"size"`
-    Config      ImageConfig       `json:"config"`
-    RootFS      RootFSInfo        `json:"rootfs"`
-}
-
-type ImageConfig struct {
-    Cmd        []string          `json:"Cmd"`
-    Entrypoint []string          `json:"Entrypoint"`
-    Env        []string          `json:"Env"`
-    WorkingDir string            `json:"WorkingDir"`
-}
-
-type RootFSInfo struct {
-    Type    string   `json:"type"`
-    Layers  []string `json:"layers"`
-}
+isManifestList := strings.Contains(index.MediaType, "image.index") ||
+    strings.Contains(index.MediaType, "manifest.list")
 ```
 
 ### 3.3 Authenticated Pulls
 
-For private registries, handle authentication:
+> **Not Yet Implemented** -- Future Work
 
-```go
-func (b *BuildahClient) Login(registry, username, password string) error {
-    cmd := exec.Command(b.executable, "login",
-        "--username", username,
-        "--password-stdin",
-        registry)
+The current implementation relies on ambient credentials available to skopeo and buildah (e.g., `~/.docker/config.json`, podman login state, or environment variables). There is no explicit `Login()` or `PullWithAuth()` API.
 
-    cmd.Stdin = strings.NewReader(password)
+**Current behavior**: If the image requires authentication and skopeo/buildah cannot find credentials in the standard credential stores, the pull will fail with a permanent `ClassifiedError` (the error message will contain "unauthorized" or "authentication required").
 
-    return cmd.Run()
-}
-
-func (b *BuildahClient) PullWithAuth(image, username, password string) error {
-    // Extract registry from image name
-    parts := strings.Split(image, "/")
-    registry := parts[0]
-
-    // Login
-    if err := b.Login(registry, username, password); err != nil {
-        return fmt.Errorf("authentication failed: %w", err)
-    }
-
-    // Pull
-    return b.Pull(image)
-}
-```
+**Planned**: Explicit `Login()` and credential management APIs are planned for Phase 2.
 
 ### 3.4 Pull Progress Tracking
 
-For large images, track download progress:
+> **Not Yet Implemented** -- Future Work
 
-```go
-func (b *BuildahClient) PullWithProgress(image string, progressChan chan<- PullProgress) error {
-    fullImage := b.normalizeImageName(image)
+The current implementation does not track or report OCI pull progress. Buildah pull runs to completion without progress callbacks.
 
-    cmd := exec.Command(b.executable, "pull", fullImage)
-
-    stderr, err := cmd.StderrPipe()
-    if err != nil {
-        return err
-    }
-
-    if err := cmd.Start(); err != nil {
-        return err
-    }
-
-    // Parse progress from stderr
-    scanner := bufio.NewScanner(stderr)
-    for scanner.Scan() {
-        line := scanner.Text()
-        if progress := parsePullProgress(line); progress != nil {
-            progressChan <- *progress
-        }
-    }
-
-    return cmd.Wait()
-}
-
-type PullProgress struct {
-    Layer       string
-    Current     int64
-    Total       int64
-    Percentage  float64
-}
-```
+**Note**: For URL-based image downloads (`pullURL`), the code does log progress every 10% when content-length is known.
 
 ---
 
@@ -423,671 +313,288 @@ type PullProgress struct {
 
 ### 4.1 Container Creation and Mount
 
-**Goal**: Mount the OCI image layers as a unified filesystem.
+**Goal**: Mount the OCI image layers as a unified filesystem using buildah.
+
+The actual implementation uses bare `runCmd()` calls with `buildah --root`:
 
 ```go
-func (b *BuildahClient) From(image string) (string, error) {
-    // Create working container from image
-    containerID, err := b.run("from", image)
-    if err != nil {
-        return "", fmt.Errorf("failed to create container: %w", err)
-    }
+// Actual implementation (image/pipeline/oci_linux.go)
+func pullAndMountOCIPlatform(ctx context.Context, cfg *config.CocoonConfig,
+    identity *image.ImageIdentity) error {
 
-    return containerID, nil
-}
+    ref := identity.SourceRef
+    root := cfg.BuildahRoot
 
-func (b *BuildahClient) Mount(containerID string) (string, error) {
-    // Mount container filesystem
-    mountPoint, err := b.run("mount", containerID)
-    if err != nil {
-        return "", fmt.Errorf("failed to mount container: %w", err)
-    }
+    // 1. Pull image with buildah
+    runCmd(ctx, "buildah", "--root", root, "pull", ref)
 
-    return mountPoint, nil
-}
+    // 2. Create working container
+    containerOut, _ := runCmd(ctx, "buildah", "--root", root, "from", ref)
+    containerID := strings.TrimSpace(string(containerOut))
 
-func (b *BuildahClient) Umount(containerID string) error {
-    _, err := b.run("umount", containerID)
-    return err
-}
+    // 3. Mount container to get rootfs path
+    mountOut, _ := runCmd(ctx, "buildah", "--root", root, "mount", containerID)
+    mountPath := strings.TrimSpace(string(mountOut))
 
-func (b *BuildahClient) Rm(containerID string) error {
-    _, err := b.run("rm", containerID)
-    return err
-}
-```
-
-### 4.2 Complete Extract Operation
-
-Combine create, mount, and cleanup:
-
-```go
-type MountedContainer struct {
-    client      *BuildahClient
-    containerID string
-    mountPoint  string
-}
-
-func (b *BuildahClient) ExtractImage(image string) (*MountedContainer, error) {
-    // 1. Create container
-    containerID, err := b.From(image)
-    if err != nil {
-        return nil, err
-    }
-
-    // 2. Mount filesystem
-    mountPoint, err := b.Mount(containerID)
-    if err != nil {
-        b.Rm(containerID) // Cleanup on failure
-        return nil, err
-    }
-
-    return &MountedContainer{
-        client:      b,
-        containerID: containerID,
-        mountPoint:  mountPoint,
-    }, nil
-}
-
-func (m *MountedContainer) Path() string {
-    return m.mountPoint
-}
-
-func (m *MountedContainer) Cleanup() error {
-    // Umount
-    if err := m.client.Umount(m.containerID); err != nil {
-        return err
-    }
-
-    // Remove container
-    return m.client.Rm(m.containerID)
-}
-
-// Ensure cleanup happens even on panic
-func (m *MountedContainer) Close() error {
-    return m.Cleanup()
-}
-```
-
-### 4.3 Rootfs Validation
-
-Before conversion, verify the rootfs has required components:
-
-```go
-func (m *MountedContainer) ValidateBootability() error {
-    // MUST have components (mandatory)
-    required := []struct {
-        path    string
-        isFile  bool
-        message string
-    }{
-        {"/boot/vmlinuz", false, "kernel not found (no /boot/vmlinuz*)"},
-        {"/boot/initrd", false, "initrd/initramfs not found (no /boot/initrd* or /boot/initramfs*)"},
-        {"/sbin/init", true, "init system not found (/sbin/init missing)"},
-        {"/boot/efi/EFI", false, "EFI bootloader not found (no ESP partition)"},
-        {"/etc", false, "incomplete rootfs (missing /etc)"},
-        {"/usr", false, "incomplete rootfs (missing /usr)"},
-    }
-
-    for _, req := range required {
-        fullPath := filepath.Join(m.mountPoint, req.path)
-
-        // Check if path exists (glob for kernel/initrd/initramfs)
-        if strings.Contains(req.path, "vmlinuz") {
-            matches, _ := filepath.Glob(fullPath + "*")
-            if len(matches) == 0 {
-                return fmt.Errorf("bootability check failed: %s", req.message)
-            }
-        } else if strings.Contains(req.path, "initrd") {
-            // Support both initrd* and initramfs* (Fedora, RHEL use initramfs)
-            matches1, _ := filepath.Glob(filepath.Join(m.mountPoint, "/boot/initrd*"))
-            matches2, _ := filepath.Glob(filepath.Join(m.mountPoint, "/boot/initramfs*"))
-            if len(matches1) == 0 && len(matches2) == 0 {
-                return fmt.Errorf("bootability check failed: %s", req.message)
-            }
-        } else {
-            if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-                return fmt.Errorf("bootability check failed: %s", req.message)
-            }
-        }
-    }
-
-    // Verify init is systemd (mandatory for Cocoon)
-    initPath := filepath.Join(m.mountPoint, "/sbin/init")
-    initTarget, err := os.Readlink(initPath)
-    if err == nil {  // init is a symlink
-        if !strings.Contains(initTarget, "systemd") {
-            return fmt.Errorf("bootability check failed: init must be systemd, got: %s", initTarget)
-        }
-    }
-    // If init is not a symlink, check if it's systemd binary directly
-    // (some distros have systemd as /sbin/init directly)
-
-    // Architecture-aware bootloader validation
-    if err := m.ValidateBootloaderForArch(); err != nil {
-        return fmt.Errorf("bootability check failed: %w", err)
-    }
-
-    // SHOULD have components (recommended, not mandatory)
-    // cloud-init: CONDITIONAL
-    // - REQUIRED: For Cocoon metadata server integration (SSH/user setup) [Phase 2]
-    // - OPTIONAL: VM will boot without it (standalone use case)
-    cloudInitPath := filepath.Join(m.mountPoint, "/usr/bin/cloud-init")
-    if _, err := os.Stat(cloudInitPath); os.IsNotExist(err) {
-        log.Warn("cloud-init not found - VM will boot but Cocoon metadata server integration disabled") // [Phase 2]
-    }
-
+    // 4. Populate identity with transient paths
+    identity.TempPath = mountPath
+    identity.ContainerID = containerID
     return nil
 }
+```
 
-// ValidateBootloaderForArch validates the bootloader exists for the detected architecture
-func (m *MountedContainer) ValidateBootloaderForArch() error {
-    // Detect architecture
-    arch, err := DetectArchitecture(m.mountPoint)
-    if err != nil {
-        return fmt.Errorf("failed to detect architecture: %w", err)
+### 4.2 Cleanup
+
+Cleanup uses a dedicated function that unmounts and removes the buildah container:
+
+```go
+// Actual implementation (image/pipeline/cleanup_linux.go)
+func cleanupBuildahContainer(containerID string, cfg *config.CocoonConfig) {
+    if containerID == "" {
+        return
     }
+    root := cfg.BuildahRoot
+    exec.Command("buildah", "--root", root, "umount", containerID).CombinedOutput()
+    exec.Command("buildah", "--root", root, "rm", containerID).CombinedOutput()
+}
+```
 
-    // Check architecture-specific bootloader
-    // Path semantics: /boot/efi/EFI/BOOT/BOOTX64.EFI is the "mounted path"
-    // (ESP partition mounted at /boot/efi in the rootfs)
-    // The actual ESP internal path is /EFI/BOOT/BOOTX64.EFI
-    var bootloaderMountedPath string
-    switch arch {
-    case "x86_64":
-        // Mounted path: where bootloader appears after ESP is mounted to /boot/efi
-        bootloaderMountedPath = filepath.Join(m.mountPoint, "/boot/efi/EFI/BOOT/BOOTX64.EFI")
-    case "aarch64":
-        bootloaderMountedPath = filepath.Join(m.mountPoint, "/boot/efi/EFI/BOOT/BOOTAA64.EFI")
+Cleanup is called:
+- After successful conversion (in `prepareOCI` and `Convert`)
+- On pull failure (in `prepareOCI`)
+- Both umount and rm failures are logged as warnings but do not fail the operation
+
+### 4.3 Bootability Verification
+
+> **Important timing note**: Bootability verification happens **post-conversion** on the resulting qcow2 image, NOT pre-conversion on the mounted rootfs. It is invoked on-demand via `cocoon image verify`, not automatically during the conversion pipeline.
+
+The `VerifyBootability()` method on the `manager` performs a two-tier check:
+
+**Basic verification** (always available):
+- File exists and has non-zero size
+- `qemu-img check` passes (image integrity)
+- `qemu-img info` confirms valid qcow2 format
+- Optimistically sets `Bootable=true` if qcow2 is valid
+
+**Deep verification** (Linux only, requires guestfish):
+- Kernel: glob-expand `/boot/vmlinuz*`
+- Initrd/initramfs: glob-expand `/boot/initr*` and `/boot/initramfs*`
+- systemd: readlink `/sbin/init` for "systemd", or check `/lib/systemd/systemd`
+- UEFI bootloader: check multiple ESP paths (BOOTX64.EFI, BOOTAA64.EFI, shimx64.efi, grubx64.efi, etc.)
+- cloud-init: check `/usr/bin/cloud-init` (warning if missing, not error)
+
+```go
+// Actual implementation (image/pipeline/verify_linux.go)
+// deepVerifyBoot uses guestfish --ro to inspect the qcow2 image contents.
+// If guestfish is not installed, this is non-fatal: a warning is logged.
+func deepVerifyBoot(imagePath string, result *image.BootCheckResult) error {
+    // Check kernel via: guestfish --ro -a <image> -i glob-expand /boot/vmlinuz*
+    // Check initrd via: guestfish --ro -a <image> -i glob-expand /boot/initr*
+    // Check systemd via: guestfish --ro -a <image> -i readlink /sbin/init
+    // Check bootloader via: guestfish --ro -a <image> -i is-file <path>
+    //   (checks BOOTX64.EFI, BOOTAA64.EFI, shimx64.efi, grubx64.efi, etc.)
+    // Check cloud-init via: guestfish --ro -a <image> -i is-file /usr/bin/cloud-init
+    ...
+}
+```
+
+### 4.4 Architecture Detection
+
+> **Note**: The code does NOT implement a `DetectArchitecture()` function that inspects kernel binaries or dpkg/rpm metadata. Instead, architecture is always determined from `runtime.GOARCH` via the `goarchToOCI()` helper.
+
+```go
+// Actual implementation (image/pipeline/checksum.go)
+func goarchToOCI(goarch string) string {
+    switch goarch {
+    case "amd64":
+        return "amd64"
+    case "arm64":
+        return "arm64"
     default:
-        return fmt.Errorf("unsupported architecture: %s", arch)
+        return goarch
     }
+}
 
-    if _, err := os.Stat(bootloaderMountedPath); os.IsNotExist(err) {
-        return fmt.Errorf("bootloader not found for %s at %s (ESP should be mounted at /boot/efi)",
-            arch, bootloaderMountedPath)
-    }
-
-    return nil
+func defaultArch() string {
+    return goarchToOCI(runtime.GOARCH)
 }
 ```
 
-**Architecture Detection**:
-
-```go
-func DetectArchitecture(mountPoint string) (string, error) {
-    // Method 1: Check kernel binary architecture
-    kernelPath, _ := filepath.Glob(filepath.Join(mountPoint, "/boot/vmlinuz*"))
-    if len(kernelPath) > 0 {
-        out, err := exec.Command("file", kernelPath[0]).Output()
-        if err == nil {
-            output := string(out)
-            if strings.Contains(output, "x86-64") || strings.Contains(output, "x86_64") {
-                return "x86_64", nil
-            }
-            if strings.Contains(output, "ARM aarch64") || strings.Contains(output, "aarch64") {
-                return "aarch64", nil
-            }
-        }
-    }
-
-    // Method 2: Check dpkg/rpm architecture (for Debian/Ubuntu/Fedora)
-    if _, err := os.Stat(filepath.Join(mountPoint, "/var/lib/dpkg")); err == nil {
-        // Debian/Ubuntu
-        archFile := filepath.Join(mountPoint, "/var/lib/dpkg/arch")
-        if data, err := os.ReadFile(archFile); err == nil {
-            arch := strings.TrimSpace(string(data))
-            if arch == "amd64" {
-                return "x86_64", nil
-            }
-            if arch == "arm64" {
-                return "aarch64", nil
-            }
-        }
-    }
-
-    return "", fmt.Errorf("unable to detect architecture")
-}
-```
-
-**Architecture-Specific Bootloader Validation**:
-
-```go
-func ValidateBootloaderForArch(mountPoint, arch string) error {
-    var expectedBootloader string
-
-    switch arch {
-    case "x86_64":
-        expectedBootloader = "/boot/efi/EFI/BOOT/BOOTX64.EFI"
-    case "aarch64":
-        expectedBootloader = "/boot/efi/EFI/BOOT/BOOTAA64.EFI"
-    default:
-        return fmt.Errorf("unsupported architecture: %s", arch)
-    }
-
-    bootloaderPath := filepath.Join(mountPoint, expectedBootloader)
-    if _, err := os.Stat(bootloaderPath); os.IsNotExist(err) {
-        return fmt.Errorf("bootloader not found for %s: %s", arch, expectedBootloader)
-    }
-
-    return nil
-}
-```
+This means the architecture in the base_key always matches the host architecture. Cross-architecture detection from image contents is not implemented.
 
 ---
 
 ## 5. Convert Workflow
 
-### 5.1 Conversion Steps Overview
+### 5.1 Conversion Steps Overview (Actual)
+
+The actual conversion pipeline in `convertOCI()` (`image/pipeline/convert_linux.go`) has 6 steps:
 
 ```
-Mounted Rootfs
-    │
-    ▼
-1. Create empty qcow2 image
-    │
-    ▼
-2. Create GPT partition table + ESP + root partition
-    │
-    ▼
-3. Format ESP (FAT32) and root (ext4)
-    │
-    ▼
-4. Copy rootfs to root partition
-    │
-    ▼
-5. Validate UEFI bootloader (fail if missing)
-    │
-    ▼
-6. Verify boot contract compliance
-    │
-    ▼
+Mounted Rootfs (buildah mount path)
+    |
+    v
+1. Create empty qcow2 image (qemu-img create)
+    |
+    v
+2. Check guestfish availability
+    |
+    v
+3. Pack rootfs into tar archive (tar -C <mountPath> -cf <tarPath> .)
+    |
+    v
+4. Guestfish script: partition, format, tar-in rootfs
+   (GPT table, ESP FAT32, root ext4, tar-in, sync)
+    |
+    v
+5. Validate GRUB config (ensureGRUBConfig)
+   - Detect grub.cfg path (checks /boot/grub/grub.cfg and /boot/grub2/grub.cfg)
+   - Best-effort: inject serial console param via virt-customize (if available)
+    |
+    v
+6. Return (caller does atomic rename into cache)
+    |
+    v
 Bootable qcow2 Image
 ```
 
 ### 5.2 Step 1: Create Empty qcow2
 
 ```go
-func CreateEmptyQcow2(outputPath string, size string) error {
-    cmd := exec.Command("qemu-img", "create",
-        "-f", "qcow2",
-        outputPath,
-        size)
-
-    return cmd.Run()
+// Actual implementation
+createCmd := exec.CommandContext(ctx, "qemu-img", "create", "-f", "qcow2", outputPath, diskSize)
+if out, err := createCmd.CombinedOutput(); err != nil {
+    return fmt.Errorf("qemu-img create: %s: %w", strings.TrimSpace(string(out)), err)
 }
 ```
 
-**Example**:
-```bash
-qemu-img create -f qcow2 base.qcow2 10G
-```
+Default disk size for OCI conversion is `"10G"`.
 
-### 5.3 Step 2: Create Partition Table
-
-**Option A: Using libguestfs (Recommended)**
+### 5.3 Step 2: Check guestfish Availability
 
 ```go
-func CreatePartitions(imagePath string) error {
-    // Use guestfish to partition the disk
-    script := `
-    # Add disk
-    add %s
-    run
-
-    # Create GPT partition table
-    part-init /dev/sda gpt
-
-    # Create ESP (100MB, type: EFI System)
-    part-add /dev/sda primary 2048 206847
-    part-set-gpt-type /dev/sda 1 C12A7328-F81F-11D2-BA4B-00A0C93EC93B
-
-    # Create root partition (rest of disk, type: Linux filesystem)
-    part-add /dev/sda primary 206848 -1
-    part-set-gpt-type /dev/sda 2 0FC63DAF-8483-4772-8E79-3D69D8477DE4
-    `
-
-    cmd := exec.Command("guestfish", "-a", imagePath)
-    cmd.Stdin = strings.NewReader(fmt.Sprintf(script, imagePath))
-
-    return cmd.Run()
+if _, err := exec.LookPath("guestfish"); err != nil {
+    return fmt.Errorf("guestfish not found in PATH: OCI conversion requires libguestfs: %w", err)
 }
 ```
 
-**Option B: Manual with virt-format (Simpler but less control)**
+### 5.4 Step 3: Pack Rootfs into Tar
+
+The rootfs is packed into an uncompressed tar archive to preserve dotfiles and all top-level entries. This avoids shell glob issues with `copy-in` or `virt-copy-in`.
 
 ```go
-func FormatImageWithPartitions(imagePath string) error {
-    // virt-format creates partition table + filesystem automatically
-    cmd := exec.Command("virt-format",
-        "--partition=gpt",
-        "--filesystem=ext4",
-        "-a", imagePath)
+// Actual implementation
+rootfsTarPath := filepath.Join(filepath.Dir(outputPath),
+    fmt.Sprintf(".rootfs-%d.tar", time.Now().UnixNano()))
+tarCmd := exec.CommandContext(ctx, "tar", "-C", mountPath, "-cf", rootfsTarPath, ".")
+if out, err := tarCmd.CombinedOutput(); err != nil {
+    return fmt.Errorf("pack rootfs tar: %s: %w", strings.TrimSpace(string(out)), err)
+}
+defer os.Remove(rootfsTarPath)
+```
 
-    return cmd.Run()
+**Note**: The tar is **uncompressed** (`-cf`, not `-czf`). The `tar-in` guestfish command receives it without a compression flag.
+
+### 5.5 Step 4: Guestfish Script (Partition + Format + Copy)
+
+All partitioning, formatting, and rootfs copying happens in a single guestfish script piped via stdin:
+
+```go
+// Actual guestfish script (image/pipeline/convert_linux.go)
+script := fmt.Sprintf(`add %s
+run
+part-init /dev/sda gpt
+part-add /dev/sda primary 2048 206847
+part-set-gpt-type /dev/sda 1 C12A7328-F81F-11D2-BA4B-00A0C93EC93B
+part-add /dev/sda primary 206848 -1
+part-set-gpt-type /dev/sda 2 0FC63DAF-8483-4772-8E79-3D69D8477DE4
+mkfs fat /dev/sda1
+mkfs ext4 /dev/sda2
+mount /dev/sda2 /
+mkdir-p /boot/efi
+mount /dev/sda1 /boot/efi
+tar-in %s /
+sync
+umount-all
+`, outputPath, rootfsTarPath)
+
+gfCmd := exec.CommandContext(ctx, "guestfish")
+gfCmd.Stdin = strings.NewReader(script)
+if out, err := gfCmd.CombinedOutput(); err != nil {
+    return fmt.Errorf("guestfish: %s: %w", strings.TrimSpace(string(out)), err)
 }
 ```
 
-### 5.4 Step 3: Format Partitions
+Key details:
+- ESP partition: 100MB (sectors 2048-206847), GPT type EFI System
+- Root partition: rest of disk (sector 206848 to end), GPT type Linux filesystem
+- ESP formatted as FAT32, root as ext4
+- Rootfs copied via `tar-in` (not `copy-in` or `virt-copy-in`)
+- Paths are validated for safe characters before interpolation (prevents injection)
+
+### 5.6 Step 5: Validate GRUB Config (ensureGRUBConfig)
+
+After the rootfs is copied, the code validates that a GRUB config exists and optionally updates it for serial console support:
 
 ```go
-func FormatPartitions(imagePath string) error {
-    script := `
-    add %s
-    run
-
-    # Format ESP as FAT32
-    mkfs fat /dev/sda1
-
-    # Format root as ext4
-    mkfs ext4 /dev/sda2
-
-    # Set ESP flags
-    part-set-bootable /dev/sda 1 true
-    `
-
-    cmd := exec.Command("guestfish", "-a", imagePath)
-    cmd.Stdin = strings.NewReader(fmt.Sprintf(script, imagePath))
-
-    return cmd.Run()
-}
-```
-
-### 5.5 Step 4: Copy Rootfs
-
-**Method A: virt-copy-in (Simple)**
-
-```go
-func CopyRootfs(imagePath, rootfsPath string) error {
-    // Copy all files from rootfs to image root
-    cmd := exec.Command("virt-copy-in",
-        "-a", imagePath,
-        fmt.Sprintf("%s/*", rootfsPath),
-        "/")
-
-    return cmd.Run()
-}
-```
-
-**Method B: guestfish (More control)**
-
-```go
-func CopyRootfsAdvanced(imagePath, rootfsPath string) error {
-    script := `
-    add %s
-    run
-    mount /dev/sda2 /
-
-    # Create ESP mount point
-    mkdir /boot/efi
-    mount /dev/sda1 /boot/efi
-
-    # Copy rootfs contents
-    copy-in %s/* /
-
-    sync
-    `
-
-    cmd := exec.Command("guestfish", "-a", imagePath)
-    cmd.Stdin = strings.NewReader(fmt.Sprintf(script, imagePath, rootfsPath))
-
-    return cmd.Run()
-}
-```
-
-**Method C: tar-in (Most efficient)**
-
-```go
-func CopyRootfsFromTar(imagePath, tarPath string) error {
-    script := `
-    add %s
-    run
-    mount /dev/sda2 /
-
-    # Extract tar directly into image
-    tar-in %s / compress:gzip
-
-    sync
-    `
-
-    cmd := exec.Command("guestfish", "-a", imagePath)
-    cmd.Stdin = strings.NewReader(fmt.Sprintf(script, imagePath, tarPath))
-
-    return cmd.Run()
-}
-```
-
-### 5.6 Step 5: Validate Bootloader (Fail-Fast)
-
-**Strategy**: Cocoon does NOT install missing bootloaders or packages (see [Responsibility Boundaries](#responsibility-boundaries)). It validates that the required components exist and fails fast with a clear error if they don't.
-
-For images that already have GRUB installed, Cocoon may **update** `grub.cfg` to ensure correct boot parameters (e.g., serial console, root device), but never installs GRUB from scratch.
-
-```go
-func ValidateBootloader(imagePath string) error {
-    // Detect architecture
-    arch, err := DetectImageArchitecture(imagePath)
-    if err != nil {
-        return fmt.Errorf("failed to detect architecture: %w", err)
-    }
-
-    // Check architecture-specific UEFI bootloader
-    var bootloaderPath string
-    switch arch {
-    case "x86_64":
-        bootloaderPath = "/boot/efi/EFI/BOOT/BOOTX64.EFI"
-    case "aarch64":
-        bootloaderPath = "/boot/efi/EFI/BOOT/BOOTAA64.EFI"
-    default:
-        return fmt.Errorf("unsupported architecture: %s", arch)
-    }
-
-    hasBootloader, err := guestfishExists(imagePath, bootloaderPath)
+// Actual implementation (image/pipeline/convert_linux.go)
+func ensureGRUBConfig(ctx context.Context, imagePath string) error {
+    // 1. Detect GRUB config path (checks /boot/grub/grub.cfg and /boot/grub2/grub.cfg)
+    grubPath, found, err := detectGRUBConfigPath(ctx, imagePath)
     if err != nil {
         return err
     }
-    if !hasBootloader {
-        return &BootloaderMissingError{
-            Arch:         arch,
-            ExpectedPath: bootloaderPath,
-            Hint:         "Image must include a pre-installed UEFI bootloader (GRUB or systemd-boot). " +
-                          "Cocoon does NOT install bootloaders. Build a bootable OCI image with GRUB included.",
-        }
+    if !found {
+        return fmt.Errorf("grub config not found in image (checked /boot/grub/grub.cfg and /boot/grub2/grub.cfg)")
     }
 
-    // Check GRUB config exists
-    hasGRUBConfig, err := guestfishExists(imagePath, "/boot/grub/grub.cfg")
-    if err != nil {
-        return err
-    }
-    if !hasGRUBConfig {
-        return fmt.Errorf("bootloader found but /boot/grub/grub.cfg missing; image may not boot correctly")
+    // 2. Best-effort: inject serial console param via virt-customize (if available)
+    if _, err := exec.LookPath("virt-customize"); err != nil {
+        return nil  // virt-customize not required; skip silently
     }
 
-    // Bootloader exists — optionally regenerate grub.cfg for correct serial/root params
-    return updateGRUBConfig(imagePath)
+    // Inject console=ttyS0,115200n8 into /etc/default/grub and regenerate
+    ...
 }
 
-// guestfishExists checks if a path exists inside a qcow2 image
-func guestfishExists(imagePath, guestPath string) (bool, error) {
-    script := fmt.Sprintf(`
-    add %s
-    run
-    mount /dev/sda2 /
-    mount /dev/sda1 /boot/efi
-    exists %s
-    `, imagePath, guestPath)
-
-    cmd := exec.Command("guestfish")
-    cmd.Stdin = strings.NewReader(script)
-
-    output, err := cmd.Output()
-    if err != nil {
-        return false, err
+func detectGRUBConfigPath(ctx context.Context, imagePath string) (string, bool, error) {
+    candidates := []string{"/boot/grub/grub.cfg", "/boot/grub2/grub.cfg"}
+    for _, guestPath := range candidates {
+        // guestfish --ro -a <image> -i is-file <path>
+        ...
     }
-
-    return strings.TrimSpace(string(output)) == "true", nil
-}
-
-// updateGRUBConfig regenerates grub.cfg for correct serial console and root device
-// (does NOT install GRUB — only updates config for an already-installed bootloader)
-func updateGRUBConfig(imagePath string) error {
-    cmd := exec.Command("virt-customize",
-        "-a", imagePath,
-        "--run-command", "grub-mkconfig -o /boot/grub/grub.cfg")
-
-    return cmd.Run()
-}
-
-// BootloaderMissingError provides actionable guidance when bootloader is not found
-type BootloaderMissingError struct {
-    Arch         string
-    ExpectedPath string
-    Hint         string
-}
-
-func (e *BootloaderMissingError) Error() string {
-    return fmt.Sprintf(
-        "bootloader not found for %s at %s\n%s",
-        e.Arch, e.ExpectedPath, e.Hint,
-    )
+    return "", false, nil
 }
 ```
 
-**Bootloader Validation Cross-Reference**: This validation is consistent with [Boot Contract § 6](./01-boot-contract.md) and the `ValidateBootability()` rootfs checks in [§ 4.3](#43-rootfs-validation). The key principle: **Cocoon validates, it does not install.**
+**Key difference from doc design**: There is no `BootloaderMissingError` struct. If the GRUB config is missing, a plain `fmt.Errorf` is returned. The UEFI bootloader binary itself (BOOTX64.EFI, etc.) is NOT checked during conversion -- that check only happens in `deepVerifyBoot` during on-demand `cocoon image verify`.
 
-**Compatibility Scope** (what passes validation):
-| Image Type | Bootloader | Passes? | Notes |
+### 5.7 Complete Conversion Function
+
+```go
+// Actual implementation (image/pipeline/convert_linux.go)
+func convertOCI(ctx context.Context, mountPath, outputPath, diskSize string) error {
+    // Validate paths for safe characters (prevent guestfish injection)
+    validateSafePath(mountPath)
+    validateSafePath(outputPath)
+
+    // 1. Create empty qcow2 image
+    // 2. Check for guestfish
+    // 3. Pack rootfs into tar archive (uncompressed)
+    // 4. Run guestfish script (partition + format + tar-in)
+    // 5. Validate GRUB config (ensureGRUBConfig)
+    return nil
+}
+```
+
+**Compatibility Scope** (what passes conversion):
+| Image Type | GRUB Config | Passes? | Notes |
 |------------|-----------|---------|-------|
-| Ubuntu Cloud Image (qcow2) | GRUB pre-installed | Yes | Recommended path |
-| Custom OCI with GRUB | GRUB in ESP | Yes | Must be built with bootloader |
-| Custom OCI without GRUB | Missing | **No** | Fails with `BootloaderMissingError` |
-| Fedora Cloud Image | GRUB pre-installed | Yes | Uses initramfs (supported) |
+| Ubuntu Cloud Image (qcow2) | Pre-installed | Yes | Recommended path (no OCI conversion needed) |
+| Custom OCI with GRUB | grub.cfg present | Yes | Must be built with bootloader |
+| Custom OCI without GRUB | Missing | **No** | Fails at `ensureGRUBConfig` |
+| Fedora Cloud Image | grub2.cfg present | Yes | Uses /boot/grub2/grub.cfg path |
 | Minimal OCI (alpine) | Missing | **No** | Application container, not VM image |
-
-### 5.7 Step 6: Verify Boot Contract
-
-Before caching, verify the image meets the [Boot Contract](01-boot-contract.md):
-
-```go
-func VerifyBootContract(imagePath string) error {
-    // Detect architecture from image
-    arch, err := DetectImageArchitecture(imagePath)
-    if err != nil {
-        return fmt.Errorf("failed to detect architecture: %w", err)
-    }
-
-    // Architecture-specific bootloader path (mounted path in rootfs)
-    var bootloaderPath string
-    switch arch {
-    case "x86_64":
-        // This is the mounted path (ESP mounted at /boot/efi)
-        bootloaderPath = "/boot/efi/EFI/BOOT/BOOTX64.EFI"
-    case "aarch64":
-        bootloaderPath = "/boot/efi/EFI/BOOT/BOOTAA64.EFI"
-    default:
-        return fmt.Errorf("unsupported architecture: %s", arch)
-    }
-
-    // MUST checks (mandatory for boot)
-    checks := []struct {
-        name string
-        cmd  string
-    }{
-        {"kernel", "test -f /boot/vmlinuz-*"},
-        // Support both initrd* and initramfs* (Fedora uses initramfs)
-        {"initrd", "sh -c 'test -f /boot/initrd* || test -f /boot/initramfs*'"},
-        {"init", "test -x /sbin/init"},
-        {"grub-config", "test -f /boot/grub/grub.cfg"},
-        {"uefi-bootloader", fmt.Sprintf("test -f %s", bootloaderPath)},
-    }
-
-    for _, check := range checks {
-        cmd := exec.Command("guestfish", "-a", imagePath, "-i", "sh", check.cmd)
-        if err := cmd.Run(); err != nil {
-            return fmt.Errorf("boot contract violation: %s check failed", check.name)
-        }
-    }
-
-    // Verify init is systemd (mandatory for Cocoon)
-    cmd := exec.Command("guestfish", "-a", imagePath, "-i",
-        "sh", "readlink /sbin/init | grep -q systemd")
-    if err := cmd.Run(); err != nil {
-        return fmt.Errorf("boot contract violation: init system must be systemd")
-    }
-
-    // SHOULD check (recommended, not mandatory)
-    // cloud-init: CONDITIONAL (warning if missing, but don't fail)
-    // - REQUIRED: For metadata server integration [Phase 2]
-    // - OPTIONAL: VM will boot without it
-    cloudInitCmd := exec.Command("guestfish", "-a", imagePath, "-i",
-        "sh", "test -x /usr/bin/cloud-init")
-    if err := cloudInitCmd.Run(); err != nil {
-        log.Warn("cloud-init not found in image - VM will boot but Cocoon metadata server integration disabled") // [Phase 2]
-    }
-
-    return nil
-}
-
-// DetectImageArchitecture detects the architecture of a qcow2 image
-func DetectImageArchitecture(imagePath string) (string, error) {
-    // Method: Check kernel binary architecture via guestfish
-    cmd := exec.Command("guestfish", "-a", imagePath, "-i",
-        "sh", "file /boot/vmlinuz-* | head -1")
-
-    output, err := cmd.Output()
-    if err != nil {
-        return "", fmt.Errorf("failed to detect architecture: %w", err)
-    }
-
-    outputStr := string(output)
-    if strings.Contains(outputStr, "x86-64") || strings.Contains(outputStr, "x86_64") {
-        return "x86_64", nil
-    }
-    if strings.Contains(outputStr, "ARM aarch64") || strings.Contains(outputStr, "arm64") {
-        return "aarch64", nil
-    }
-
-    return "", fmt.Errorf("unknown architecture from kernel: %s", outputStr)
-}
-```
-
-### 5.8 Complete Conversion Function
-
-```go
-func ConvertOCIToQcow2(
-    rootfsPath string,
-    outputPath string,
-    size string,
-) error {
-    // 1. Create empty qcow2
-    if err := CreateEmptyQcow2(outputPath, size); err != nil {
-        return fmt.Errorf("failed to create qcow2: %w", err)
-    }
-
-    // 2. Create partitions and format
-    if err := FormatImageWithPartitions(outputPath); err != nil {
-        return fmt.Errorf("failed to create partitions: %w", err)
-    }
-
-    // 3. Copy rootfs
-    if err := CopyRootfs(outputPath, rootfsPath); err != nil {
-        return fmt.Errorf("failed to copy rootfs: %w", err)
-    }
-
-    // 4. Validate bootloader (fail-fast if missing; update grub.cfg if present)
-    if err := ValidateBootloader(outputPath); err != nil {
-        return fmt.Errorf("bootloader validation failed: %w", err)
-    }
-
-    // 5. Verify boot contract
-    if err := VerifyBootContract(outputPath); err != nil {
-        return fmt.Errorf("boot contract verification failed: %w", err)
-    }
-
-    return nil
-}
-```
 
 ---
 
@@ -1108,7 +615,7 @@ func ConvertOCIToQcow2(
 
 This section defines the precise checksum algorithm used for cache filenames,
 `references.json` keys, and conversion lock names. It is consistent with
-[05-storage-management.md § Image Checksum Identity](./05-storage-management.md#image-checksum-identity-normative),
+[05-storage-management.md Image Checksum Identity](./05-storage-management.md#image-checksum-identity-normative),
 which is the single source of truth for filesystem paths.
 
 **Why not image tag?** Tags are mutable (`ubuntu:22.04` can point to different content over time).
@@ -1125,7 +632,7 @@ checksum = SHA256(
 )
 ```
 
-- Layer digests are joined in **manifest order** — the OCI spec guarantees layer
+- Layer digests are joined in **manifest order** -- the OCI spec guarantees layer
   ordering within a manifest is immutable and meaningful (it encodes the
   filesystem stacking sequence). Sorting would lose this ordering and could map
   two semantically different images to the same checksum.
@@ -1145,401 +652,380 @@ checksum above on the resolved single-platform manifest.
 
 ```
 checksum = SHA256(file_content)[:16]
-arch     = detect from image metadata, or default to runtime.GOARCH
+arch     = runtime.GOARCH (always uses host architecture)
 ```
 
 #### For URL-Based Images
 
 ```
 checksum = SHA256(downloaded_file_content)[:16]
-arch     = detect or default to runtime.GOARCH
+arch     = runtime.GOARCH (always uses host architecture)
 ```
+
+**Note on architecture**: For all image types, the architecture defaults to
+`runtime.GOARCH` via `goarchToOCI()`. There is no detection from image contents.
 
 #### Implementation
 
 ```go
-import (
-    "crypto/sha256"
-    "encoding/hex"
-    "encoding/json"
-    "fmt"
-    "os/exec"
-    "runtime"
-    "strings"
-)
-
-// ImageIdentity holds the content-addressed identity of a base image.
-type ImageIdentity struct {
-    Checksum string // 16-char hex prefix of SHA-256
-    FullHash string // Full 64-char hex SHA-256 (for collision checks)
-    Arch     string // "amd64", "arm64", etc.
-}
-
-// CalculateOCIIdentity computes the checksum identity for an OCI image.
-// See 05-storage-management.md § "Image Checksum Identity" for the contract.
-func CalculateOCIIdentity(image string) (*ImageIdentity, error) {
-    // Use skopeo to get raw manifest
-    cmd := exec.Command("skopeo", "inspect", "--raw",
-        fmt.Sprintf("docker://%s", image))
-    output, err := cmd.Output()
-    if err != nil {
-        return nil, fmt.Errorf("failed to fetch manifest: %w", err)
-    }
-
-    // Detect manifest list vs single manifest
-    var probe struct {
-        MediaType string `json:"mediaType"`
-    }
-    json.Unmarshal(output, &probe)
-
-    if strings.Contains(probe.MediaType, "image.index") ||
-        strings.Contains(probe.MediaType, "manifest.list") {
-        // Multi-arch manifest list — resolve to platform-specific manifest
-        return resolveMultiArchIdentity(image)
-    }
-
-    return calculateSingleManifestIdentity(output, goarchToOCI(runtime.GOARCH))
-}
-
-func calculateSingleManifestIdentity(rawManifest []byte, arch string) (*ImageIdentity, error) {
-    var manifest struct {
-        Config struct {
-            Digest string `json:"digest"`
-        } `json:"config"`
-        Layers []struct {
-            Digest string `json:"digest"`
-        } `json:"layers"`
-    }
-
-    if err := json.Unmarshal(rawManifest, &manifest); err != nil {
-        return nil, fmt.Errorf("failed to parse manifest: %w", err)
-    }
-
-    // Preserve manifest-order layer digests (OCI spec guarantees immutable ordering)
-    layerDigests := make([]string, len(manifest.Layers))
-    for i, l := range manifest.Layers {
-        layerDigests[i] = l.Digest
-    }
-
-    // Build canonical representation:
-    //   config_digest + "\n" + layers_in_manifest_order.join("\n") + "\n" + platform
+// Actual implementation (image/pipeline/oci_linux.go)
+func computeOCIChecksum(configDigest string, layerDigests []string, arch string) (fullDigest string, checksum string) {
     var sb strings.Builder
-    sb.WriteString(manifest.Config.Digest)
+    sb.WriteString(configDigest)
     sb.WriteString("\n")
     sb.WriteString(strings.Join(layerDigests, "\n"))
     sb.WriteString("\n")
-    sb.WriteString("linux/" + arch) // e.g., "linux/amd64"
+    sb.WriteString("linux/" + arch)
 
-    // SHA-256
     hash := sha256.Sum256([]byte(sb.String()))
-    fullHex := hex.EncodeToString(hash[:])
-
-    return &ImageIdentity{
-        Checksum: fullHex[:16],
-        FullHash: fullHex,
-        Arch:     arch,
-    }, nil
+    fullDigest = hex.EncodeToString(hash[:])
+    checksum = fullDigest[:checksumHexLen]  // checksumHexLen = 16
+    return fullDigest, checksum
 }
 
-func resolveMultiArchIdentity(image string) (*ImageIdentity, error) {
-    // Fetch platform-specific manifest using --override-arch
-    arch := goarchToOCI(runtime.GOARCH)
-    cmd := exec.Command("skopeo", "inspect", "--raw",
-        "--override-arch", arch,
-        fmt.Sprintf("docker://%s", image))
-    output, err := cmd.Output()
-    if err != nil {
-        return nil, fmt.Errorf("failed to resolve %s manifest: %w", arch, err)
-    }
-    return calculateSingleManifestIdentity(output, arch)
+// Actual implementation (image/pipeline/checksum.go)
+func computeFileChecksum(path string) (fullDigest string, checksum string, err error) {
+    f, err := os.Open(path)
+    if err != nil { return "", "", err }
+    defer f.Close()
+
+    h := sha256.New()
+    io.Copy(h, f)
+
+    fullDigest = hex.EncodeToString(h.Sum(nil))
+    checksum = fullDigest[:checksumHexLen]
+    return fullDigest, checksum, nil
+}
+```
+
+The `ImageIdentity` struct (`image/types.go`):
+
+```go
+type ImageIdentity struct {
+    Checksum    string    // 16-char hex prefix of SHA-256
+    Arch        string    // "amd64", "arm64", etc.
+    FullDigest  string    // Full 64-char hex SHA-256 (for collision checks)
+    SourceRef   string    // Original image reference
+    ImageType   ImageType // OCI, URL, or LocalFile
+    TempPath    string    // Transient: path to pulled image (not persisted)
+    ContainerID string    // Transient: buildah container ID (not persisted)
 }
 
-// goarchToOCI maps Go's GOARCH to OCI platform architecture strings.
-func goarchToOCI(goarch string) string {
-    switch goarch {
-    case "amd64":
-        return "amd64"
-    case "arm64":
-        return "arm64"
-    default:
-        return goarch
-    }
+func (id *ImageIdentity) BaseKey() string {
+    return id.Checksum + "_" + id.Arch
 }
 
-// CacheFilename returns the content-addressed filename: {checksum}_{arch}.qcow2
 func (id *ImageIdentity) CacheFilename() string {
-    return fmt.Sprintf("%s_%s.qcow2", id.Checksum, id.Arch)
-}
-
-// CacheKey returns the content-addressed key: {checksum}_{arch}
-// Used as the key in references.json and lock filenames.
-func (id *ImageIdentity) CacheKey() string {
-    return fmt.Sprintf("%s_%s", id.Checksum, id.Arch)
+    return id.Checksum + "_" + id.Arch + ".qcow2"
 }
 ```
 
-### 6.3 Cache Lookup
+### 6.3 Cache Lookup and Storage
 
-Cache filenames use the content-addressed pattern `{checksum}_{arch}.qcow2`
-(see [05-storage-management.md § Canonical Filesystem Layout](./05-storage-management.md#canonical-filesystem-layout-normative)).
+Cache operations use atomic rename (not `cp --reflink=auto`):
 
 ```go
-type ImageCache struct {
-    cacheDir string // e.g., /var/lib/cocoon/cache/images
-}
+// Actual implementation (image/pipeline/manager.go)
+// Convert writes to a .tmp file, then atomically renames into cache.
 
-func NewImageCache(cacheDir string) *ImageCache {
-    os.MkdirAll(cacheDir, 0755)
-    return &ImageCache{cacheDir: cacheDir}
-}
+tmpPath := basePath + ".tmp"
+defer func() { _ = os.Remove(tmpPath) }()
 
-// GetByIdentity checks the cache for a previously converted image.
-// Returns the path to the cached qcow2 file, or os.ErrNotExist.
-func (c *ImageCache) GetByIdentity(id *ImageIdentity) (string, error) {
-    cachedPath := filepath.Join(c.cacheDir, id.CacheFilename())
+// ... conversion writes to tmpPath ...
 
-    if _, err := os.Stat(cachedPath); err == nil {
-        // Cache hit
-        return cachedPath, nil
-    }
-
-    // Cache miss
-    return "", os.ErrNotExist
-}
-
-// PutByIdentity stores a converted qcow2 image in the cache.
-func (c *ImageCache) PutByIdentity(id *ImageIdentity, qcow2Path string) (string, error) {
-    cachedPath := filepath.Join(c.cacheDir, id.CacheFilename())
-
-    // Copy qcow2 to cache (use reflink if available)
-    cmd := exec.Command("cp", "--reflink=auto", qcow2Path, cachedPath)
-    if err := cmd.Run(); err != nil {
-        return "", err
-    }
-    return cachedPath, nil
+// Atomic rename into cache.
+if err := os.Rename(tmpPath, basePath); err != nil {
+    return "", fmt.Errorf("convert %s: rename to cache: %w", baseKey, err)
 }
 ```
 
-### 6.4 Complete Pipeline with Caching
+Cache lookup is a simple `os.Stat`:
 
 ```go
-// PrepareBaseImage returns the cached qcow2 path and its content-addressed identity.
-func PrepareBaseImage(image string, cache *ImageCache) (string, *ImageIdentity, error) {
-    // 1. Calculate content-addressed identity (checksum + arch)
-    identity, err := CalculateOCIIdentity(image)
-    if err != nil {
-        return "", nil, fmt.Errorf("failed to calculate image identity: %w", err)
+basePath := m.cfg.BaseImagePath(baseKey)
+if _, err := os.Stat(basePath); err == nil {
+    // Cache hit
+    return identity, basePath, nil
+}
+```
+
+### 6.4 Complete Pipeline with Caching (prepareOCI)
+
+The OCI-specific `Prepare` pipeline runs the identify/pull/convert inside a
+per-image conversion lock to prevent parallel pulls of the same image:
+
+```go
+// Actual implementation (image/pipeline/manager.go)
+func (m *manager) prepareOCI(ctx context.Context, ref string) (*image.ImageIdentity, string, error) {
+    // Phase 1: Identify (skopeo inspect) -- cheap, outside lock.
+    identity, err := identifyOCIPlatform(ctx, ref)
+
+    baseKey := identity.BaseKey()
+    basePath := m.cfg.BaseImagePath(baseKey)
+
+    // Phase 2: Fast-path cache check (no lock).
+    if _, statErr := os.Stat(basePath); statErr == nil {
+        return identity, basePath, nil  // Cache hit
     }
 
-    // 2. Check cache using identity key ({checksum}_{arch}.qcow2)
-    cachedPath, err := cache.GetByIdentity(identity)
-    if err == nil {
-        log.Printf("Cache hit: %s -> %s (key: %s)", image, cachedPath, identity.CacheKey())
-        return cachedPath, identity, nil
+    // Phase 3: Acquire per-image conversion lock (Level 3).
+    lockPath := m.cfg.ConversionLockPath(baseKey)
+    fl := flock.New(lockPath)
+    fl.Lock()
+    defer fl.Unlock()
+
+    // Phase 4: Double-check cache after lock (another process may have finished).
+    if _, statErr := os.Stat(basePath); statErr == nil {
+        return identity, basePath, nil  // Cache hit
     }
 
-    log.Printf("Cache miss: %s (key: %s), converting from OCI...", image, identity.CacheKey())
+    // Phase 5: Pull + mount (buildah) -- inside lock.
+    pullAndMountOCIPlatform(ctx, m.cfg, identity)
 
-    // 3. Pull OCI image
-    buildah, _ := NewBuildahClient()
-    if err := buildah.Pull(image); err != nil {
-        return "", nil, fmt.Errorf("failed to pull image: %w", err)
-    }
+    // Phase 6: Convert OCI rootfs -> qcow2 -- inside lock.
+    tmpPath := basePath + ".tmp"
+    convertOCI(ctx, identity.TempPath, tmpPath, "10G")
 
-    // 4. Extract rootfs
-    mounted, err := buildah.ExtractImage(image)
-    if err != nil {
-        return "", nil, fmt.Errorf("failed to extract image: %w", err)
-    }
-    defer mounted.Cleanup()
+    // Atomic rename into cache.
+    os.Rename(tmpPath, basePath)
 
-    // 5. Validate bootability (illustrative: actual implementation verifies
-    //    post-conversion via VerifyBootability on the qcow2 artifact)
-    if err := mounted.ValidateBootability(); err != nil {
-        return "", nil, fmt.Errorf("image is not bootable: %w", err)
-    }
+    // Cleanup buildah container.
+    cleanupBuildahContainer(identity.ContainerID, m.cfg)
 
-    // 6. Convert to qcow2 in temp directory
-    tempPath := filepath.Join(os.TempDir(), fmt.Sprintf("cocoon-%s.qcow2", uuid.New().String()))
-    if err := ConvertOCIToQcow2(mounted.Path(), tempPath, "10G"); err != nil {
-        os.Remove(tempPath)
-        return "", nil, fmt.Errorf("conversion failed: %w", err)
-    }
-
-    // 7. Store in cache under content-addressed filename
-    cachedPath, err = cache.PutByIdentity(identity, tempPath)
-    if err != nil {
-        os.Remove(tempPath)
-        return "", nil, fmt.Errorf("failed to cache image: %w", err)
-    }
-
-    // 8. Cleanup temp file
-    os.Remove(tempPath)
-
-    return cachedPath, identity, nil
+    return identity, basePath, nil
 }
 ```
 
 ---
 
-## 7. Error Handling
+## 7. Manifest Refcache
 
-### 7.1 Error Classification
+### 7.1 Overview
 
-| Error Type | Recovery Strategy | User Action Required |
-|------------|-------------------|---------------------|
-| **Network Error** | Retry with backoff | Check network connectivity |
-| **Image Not Found** | Fail immediately | Verify image name and registry |
-| **Authentication Failed** | Fail with clear message | Provide credentials |
-| **Not Bootable** | Fail with validation report | Use bootable base image |
-| **Disk Full** | Cleanup and retry | Free disk space |
-| **Tool Missing** | Fail with install instructions | Install dependencies |
-| **Permission Denied** | Check rootless vs rootful | Fix permissions or use rootful |
+The refcache (`image/refcache/index.go`) provides a persistent mapping from IMAGE_REF strings to base_key values. This allows fast cache lookups without re-inspecting remote registries.
 
-### 7.2 Detailed Error Messages
+**File location**: `{ManifestCacheDir}/index.json` (typically `/var/lib/cocoon/cache/manifest/index.json`)
+
+### 7.2 Entry Structure
 
 ```go
-type ConversionError struct {
-    Stage   string // "pull", "extract", "convert", "bootloader", "verify"
-    Image   string
-    Cause   error
-    Details string
+// Actual implementation (image/refcache/index.go)
+type Entry struct {
+    BaseKey    string   `json:"base_key,omitempty"`     // Single mapping
+    BaseKeys   []string `json:"base_keys,omitempty"`    // Multiple candidates (ambiguous)
+    DigestFull string   `json:"digest_full,omitempty"`  // Full SHA-256 for collision check
+    LastSeenAt string   `json:"last_seen_at"`           // RFC3339 timestamp
 }
+```
 
-func (e *ConversionError) Error() string {
-    return fmt.Sprintf(
-        "OCI conversion failed at stage '%s' for image '%s': %v\nDetails: %s",
-        e.Stage, e.Image, e.Cause, e.Details,
-    )
-}
+The index file is a `map[string]Entry` where keys are ref variants.
 
-func (e *ConversionError) UserMessage() string {
-    switch e.Stage {
-    case "pull":
-        return fmt.Sprintf(
-            "Failed to pull image '%s'.\n"+
-            "Possible causes:\n"+
-            "  - Image does not exist in registry\n"+
-            "  - Network connectivity issues\n"+
-            "  - Authentication required for private image\n"+
-            "Error: %v", e.Image, e.Cause,
-        )
+### 7.3 Alias Resolution
 
-    case "bootable-check":
-        return fmt.Sprintf(
-            "Image '%s' is not bootable.\n"+
-            "Required components:\n"+
-            "  - Linux kernel (/boot/vmlinuz-*)\n"+
-            "  - Initrd (/boot/initrd.img-*)\n"+
-            "  - Init system (/sbin/init)\n"+
-            "  - UEFI bootloader (/boot/efi/EFI/BOOT/BOOTX64.EFI)\n"+
-            "  - GRUB config (/boot/grub/grub.cfg)\n"+
-            "Use a base image with these components installed.\n"+
-            "Error: %v", e.Image, e.Cause,
-        )
+When a ref is upserted, the refcache generates multiple candidate keys (aliases) to support ergonomic lookups:
 
-    default:
-        return e.Error()
+- Exact ref (e.g., `docker.io/library/ubuntu:22.04`)
+- Basename (e.g., `ubuntu:22.04`)
+- Without known extensions (`.qcow2`, `.img`, `.raw`, `.iso`)
+- Without architecture suffix (`-amd64`, `-arm64`, `-x86_64`, `-aarch64`)
+- Simplified alias (strip `-server-`, collapse `--`)
+
+For OCI refs, tag-less aliases are also generated (e.g., `ubuntu` from `ubuntu:22.04`).
+
+### 7.4 Ambiguity Handling
+
+If an alias maps to multiple base_keys (e.g., `ubuntu` was used for two different images), the entry stores all candidates in `BaseKeys`. Resolution returns `ErrAmbiguousImageRef` for ambiguous matches, forcing the user to provide a more specific ref.
+
+### 7.5 API
+
+```go
+// Upsert records IMAGE_REF -> base_key mapping with all aliases.
+func Upsert(cfg *config.CocoonConfig, ref, baseKey, digestFull string) error
+
+// ResolveBaseKey looks up IMAGE_REF -> base_key from local manifest cache.
+// Returns (baseKey, true, nil) on unique match, ("", false, nil) on miss,
+// or ("", false, ErrAmbiguousImageRef) on ambiguous match.
+func ResolveBaseKey(cfg *config.CocoonConfig, ref string) (string, bool, error)
+
+// RefsForBaseKey returns all IMAGE_REF aliases that map to a given base_key.
+func RefsForBaseKey(cfg *config.CocoonConfig, baseKey string) ([]string, string, error)
+
+// DeleteByBaseKey removes all mappings pointing to base_key.
+func DeleteByBaseKey(cfg *config.CocoonConfig, baseKey string) error
+```
+
+### 7.6 Usage in Pipeline
+
+The `Prepare()` method consults the refcache before pulling non-OCI images:
+
+```go
+// Actual usage in manager.go Prepare()
+if baseKey, found, _ := refcache.ResolveBaseKey(m.cfg, ref); found {
+    basePath := m.cfg.BaseImagePath(baseKey)
+    if _, statErr := os.Stat(basePath); statErr == nil {
+        // Manifest cache hit + base image exists -> skip pull entirely
+        return identity, basePath, nil
     }
 }
 ```
 
-### 7.3 Cleanup on Failure
+---
+
+## 8. Error Handling
+
+### 8.1 Error Classification
+
+The code uses `ClassifiedError` from `types/errors.go` to distinguish transient (retriable) errors from permanent ones:
 
 ```go
-func ConvertWithCleanup(image, outputPath string) (err error) {
-    var mounted *MountedContainer
-    var tempFiles []string
+// Actual implementation (types/errors.go)
+type ErrorCategory string
 
-    // Setup cleanup handler
-    defer func() {
-        // Cleanup mounted container
-        if mounted != nil {
-            mounted.Cleanup()
-        }
+const (
+    ErrorCategoryTransient ErrorCategory = "transient"
+    ErrorCategoryPermanent ErrorCategory = "permanent"
+)
 
-        // Cleanup temp files
-        for _, path := range tempFiles {
-            os.Remove(path)
-        }
-
-        // On error, remove partial output
-        if err != nil && outputPath != "" {
-            os.Remove(outputPath)
-        }
-    }()
-
-    // ... conversion logic
-
-    return nil
-}
-```
-
-### 7.4 Retry Logic
-
-```go
-func PullWithRetry(image string, maxRetries int) error {
-    var lastErr error
-
-    for attempt := 1; attempt <= maxRetries; attempt++ {
-        buildah := NewBuildahClient()
-        err := buildah.Pull(image)
-
-        if err == nil {
-            return nil // Success
-        }
-
-        lastErr = err
-
-        // Check if error is retryable
-        if !isRetryableError(err) {
-            return err // Fail immediately for non-retryable errors
-        }
-
-        if attempt < maxRetries {
-            backoff := time.Duration(attempt) * time.Second
-            log.Printf("Pull failed (attempt %d/%d), retrying in %v: %v",
-                attempt, maxRetries, backoff, err)
-            time.Sleep(backoff)
-        }
-    }
-
-    return fmt.Errorf("pull failed after %d attempts: %w", maxRetries, lastErr)
+type ClassifiedError struct {
+    Category ErrorCategory
+    Err      error
 }
 
-func isRetryableError(err error) bool {
-    // Network errors are retryable
-    if strings.Contains(err.Error(), "connection refused") ||
-       strings.Contains(err.Error(), "timeout") ||
-       strings.Contains(err.Error(), "temporary failure") {
-        return true
-    }
+func (e *ClassifiedError) Error() string {
+    return fmt.Sprintf("[%s] %s", e.Category, e.Err.Error())
+}
 
-    // Authentication and not-found errors are not retryable
+func (e *ClassifiedError) Unwrap() error { return e.Err }
+
+func NewTransientError(err error) *ClassifiedError {
+    return &ClassifiedError{Category: ErrorCategoryTransient, Err: err}
+}
+
+func NewPermanentError(err error) *ClassifiedError {
+    return &ClassifiedError{Category: ErrorCategoryPermanent, Err: err}
+}
+
+func IsTransient(err error) bool {
+    var ce *ClassifiedError
+    if errors.As(err, &ce) {
+        return ce.Category == ErrorCategoryTransient
+    }
     return false
 }
 ```
 
+### 8.2 Skopeo Error Classification
+
+```go
+// Actual implementation (image/pipeline/oci_linux.go)
+func classifySkopeoError(err error) error {
+    msg := err.Error()
+    // Permanent: unauthorized, denied, not found, manifest unknown, NAME_UNKNOWN
+    if strings.Contains(msg, "unauthorized") ||
+        strings.Contains(msg, "authentication required") ||
+        strings.Contains(msg, "denied") ||
+        strings.Contains(msg, "not found") ||
+        strings.Contains(msg, "manifest unknown") ||
+        strings.Contains(msg, "NAME_UNKNOWN") {
+        return types.NewPermanentError(err)
+    }
+    // Everything else is transient (network/timeout)
+    return types.NewTransientError(err)
+}
+```
+
+### 8.3 Buildah Error Classification
+
+```go
+// Actual implementation (image/pipeline/oci_linux.go)
+func classifyBuildahError(err error) error {
+    msg := strings.ToLower(err.Error())
+    // Permanent: auth failures (401, 403, unauthorized)
+    if strings.Contains(msg, "unauthorized") ||
+        strings.Contains(msg, "authentication required") ||
+        strings.Contains(msg, "403") || strings.Contains(msg, "401") {
+        return types.NewPermanentError(err)
+    }
+    // Transient: connection refused, timeout, temporary failure, i/o timeout
+    if strings.Contains(msg, "connection refused") ||
+        strings.Contains(msg, "timeout") ||
+        strings.Contains(msg, "temporary failure") ||
+        strings.Contains(msg, "i/o timeout") {
+        return types.NewTransientError(err)
+    }
+    return types.NewPermanentError(err)
+}
+```
+
+### 8.4 HTTP Error Classification (URL pulls)
+
+```go
+// Actual: HTTP status code classification in pullURL()
+if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+    return nil, types.NewTransientError(httpErr)
+}
+if resp.StatusCode >= 400 {
+    return nil, types.NewPermanentError(httpErr)
+}
+```
+
+### 8.5 Error Classification Summary
+
+| Error Type | Category | Recovery Strategy | User Action Required |
+|------------|----------|-------------------|---------------------|
+| **Network Error** | Transient | Classify as transient | Check network connectivity |
+| **Image Not Found** | Permanent | Fail immediately | Verify image name and registry |
+| **Authentication Failed** | Permanent | Fail with clear message | Provide credentials |
+| **Not Bootable** | Permanent | Fail with validation report | Use bootable base image |
+| **Tool Missing** | Permanent | Fail with install instructions | Install dependencies |
+
+### 8.6 Retry Logic
+
+> **Not Yet Implemented** -- Future Work
+
+Error classification (`ClassifiedError` with transient/permanent) exists and is used throughout the pipeline, but **no automatic retry logic is implemented**. The `IsTransient()` helper is available for callers who want to implement retry, but the pipeline itself does not retry failed operations.
+
+**Planned**: Retry with exponential backoff for transient errors (network timeouts, HTTP 429/5xx) is planned for Phase 2.
+
+### 8.7 Cleanup on Failure
+
+Cleanup is handled via deferred functions throughout the pipeline:
+
+```go
+// Actual patterns used in manager.go:
+
+// Temp file cleanup
+tmpPath := basePath + ".tmp"
+defer func() { _ = os.Remove(tmpPath) }()
+
+// Buildah container cleanup on failure
+if identity.ContainerID != "" {
+    cleanupBuildahContainer(identity.ContainerID, m.cfg)
+}
+
+// Rootfs tar cleanup in convertOCI
+defer os.Remove(rootfsTarPath)
+```
+
 ---
 
-## 8. Rootless vs Rootful Considerations
+## 9. Rootless vs Rootful Considerations
 
-### 8.1 Rootless Mode (Preferred for VM Operations, Not Conversion)
+### 9.1 Rootless Mode (Preferred for VM Operations, Not Conversion)
 
 **Goal**: Run VM operations without root privileges.
 
 **What Works Rootless**:
-- ✅ VM lifecycle management (start/stop/delete)
-- ✅ Cloud Hypervisor operation (with KVM access)
-- ✅ Buildah image pulling and mounting
-- ✅ qcow2 overlay creation (qemu-img)
+- VM lifecycle management (start/stop/delete)
+- Cloud Hypervisor operation (with KVM access)
+- Buildah image pulling and mounting
+- qcow2 overlay creation (qemu-img)
 
 **What Requires Root**:
-- ❌ **libguestfs operations** (virt-format, virt-copy-in, guestfish)
+- **libguestfs operations** (guestfish, virt-customize)
   - Partitioning and formatting disk images
   - Copying files into disk images
-  - Installing bootloaders
-- ❌ **OCI to qcow2 conversion pipeline** (depends on libguestfs)
+- **OCI to qcow2 conversion pipeline** (depends on libguestfs)
 
 **Implications for Rootless Deployment**:
 - **OCI image conversion is NOT available** in rootless mode
@@ -1553,139 +1039,82 @@ func isRetryableError(err error) bool {
 - Buildah configured for rootless
 - fuse-overlayfs installed
 
-### 8.2 Rootful Mode
+### 9.2 Rootful Mode
 
 **When needed**:
 - libguestfs operations fail in rootless mode
 - Need to access system-wide image caches
 - Performance-critical scenarios (overlayfs faster than fuse-overlayfs)
 
-**Setup**:
-
-```go
-func (b *BuildahClient) EnableRootful() *BuildahClient {
-    b.rootful = true
-    return b
-}
-
-func (b *BuildahClient) run(args ...string) (string, error) {
-    var cmd *exec.Cmd
-
-    if b.rootful {
-        // Run with sudo
-        allArgs := append([]string{b.executable}, args...)
-        cmd = exec.Command("sudo", allArgs...)
-    } else {
-        cmd = exec.Command(b.executable, args...)
-    }
-
-    // ... execute command
-}
-```
-
-### 8.3 libguestfs Rootless Workaround
+### 9.3 libguestfs Rootless Workaround
 
 libguestfs can run rootless with `--backend=direct`:
 
 ```go
-func GuestfishRootless(imagePath, script string) error {
-    cmd := exec.Command("guestfish",
-        "--backend=direct",  // Use direct backend (no libvirt)
-        "-a", imagePath)
-
-    cmd.Stdin = strings.NewReader(script)
-
-    return cmd.Run()
-}
+// Illustrative: not yet implemented in code
+cmd := exec.Command("guestfish", "--backend=direct", "-a", imagePath)
+cmd.Stdin = strings.NewReader(script)
+return cmd.Run()
 ```
 
 **Note**: Direct backend is slower but works without root.
 
-### 8.4 Automatic Mode Selection
-
-```go
-func NewConverter() *Converter {
-    c := &Converter{}
-
-    // Detect if running as root
-    if os.Geteuid() == 0 {
-        c.mode = "rootful"
-        log.Println("Running in rootful mode")
-    } else {
-        c.mode = "rootless"
-        log.Println("Running in rootless mode")
-
-        // Verify rootless prerequisites
-        if err := c.checkRootlessSupport(); err != nil {
-            log.Fatalf("Rootless mode not supported: %v", err)
-        }
-    }
-
-    return c
-}
-
-func (c *Converter) checkRootlessSupport() error {
-    // Check user namespaces
-    data, err := os.ReadFile("/proc/sys/kernel/unprivileged_userns_clone")
-    if err == nil && strings.TrimSpace(string(data)) != "1" {
-        return fmt.Errorf("user namespaces disabled, enable with: sysctl kernel.unprivileged_userns_clone=1")
-    }
-
-    // Check fuse-overlayfs
-    if _, err := exec.LookPath("fuse-overlayfs"); err != nil {
-        return fmt.Errorf("fuse-overlayfs not found, install it for rootless operation")
-    }
-
-    return nil
-}
-```
-
 ---
 
-## 9. Implementation Checklist
+## 10. Implementation Checklist
 
-### 9.1 Phase 1: Core Conversion Pipeline (P0)
+### 10.1 Phase 1: Core Conversion Pipeline (P0) -- Implemented
 
-- [ ] **Buildah Integration**:
-  - [ ] Implement BuildahClient with shell-out pattern
-  - [ ] Image pull operation
-  - [ ] Container create and mount
-  - [ ] Cleanup and error handling
+- [x] **Buildah Integration**:
+  - [x] Shell-out via `runCmd()` with `--root` flag
+  - [x] Image pull operation (`buildah pull`)
+  - [x] Container create and mount (`buildah from`, `buildah mount`)
+  - [x] Cleanup (`cleanupBuildahContainer`)
 
-- [ ] **Extraction**:
-  - [ ] Mount OCI container filesystem
-  - [ ] Validate bootability (kernel, init, bootloader checks)
-  - [ ] Cleanup mounted containers
+- [x] **Identification**:
+  - [x] OCI manifest inspection via skopeo
+  - [x] Multi-arch manifest list resolution
+  - [x] Content-addressed checksum computation
 
-- [ ] **Conversion**:
-  - [ ] Create empty qcow2 images
-  - [ ] Create GPT partition table (ESP + root)
-  - [ ] Format partitions (FAT32 ESP, ext4 root)
-  - [ ] Copy rootfs to qcow2 image
-  - [ ] Validate UEFI bootloader (fail-fast if missing)
-  - [ ] Verify boot contract compliance
+- [x] **Conversion**:
+  - [x] Create empty qcow2 images (`qemu-img create`)
+  - [x] Create GPT partition table (ESP + root)
+  - [x] Format partitions (FAT32 ESP, ext4 root)
+  - [x] Copy rootfs via tar-in
+  - [x] Validate GRUB config presence (fail if missing)
+  - [x] Best-effort serial console injection (virt-customize)
 
-- [ ] **Caching**:
-  - [ ] Calculate OCI manifest checksums
-  - [ ] Implement cache lookup and storage
-  - [ ] Deduplicate identical images
+- [x] **Caching**:
+  - [x] Calculate OCI manifest checksums
+  - [x] Atomic rename into cache
+  - [x] Per-image conversion locks (Level 3)
+  - [x] Double-check cache after lock acquisition
+  - [x] Manifest refcache for fast lookups
 
-- [ ] **Error Handling**:
-  - [ ] Network error retry with backoff
-  - [ ] Detailed error messages for users
-  - [ ] Automatic cleanup on failure
+- [x] **Bootability Verification** (on-demand):
+  - [x] Basic verification (qemu-img check + format detection)
+  - [x] Deep verification via guestfish (kernel, initrd, systemd, bootloader, cloud-init)
 
-### 9.2 Phase 2: Production Hardening (P1)
+- [x] **Error Handling**:
+  - [x] ClassifiedError (transient/permanent)
+  - [x] Skopeo and buildah error classification
+  - [x] HTTP error classification for URL pulls
+  - [x] Automatic cleanup on failure (deferred functions)
+
+### 10.2 Phase 2: Production Hardening (P1) -- Future Work
 
 - [ ] **Authentication**:
-  - [ ] Private registry login support
-  - [ ] Credential management
+  - [ ] Explicit private registry login support
+  - [ ] Credential management API
   - [ ] Token refresh
 
 - [ ] **Progress Tracking**:
-  - [ ] Pull progress reporting
+  - [ ] OCI pull progress reporting
   - [ ] Conversion progress updates
-  - [ ] ETA calculation
+
+- [ ] **Retry Logic**:
+  - [ ] Automatic retry with exponential backoff for transient errors
+  - [ ] Configurable retry count and backoff parameters
 
 - [ ] **Optimization**:
   - [ ] Parallel image pulls
@@ -1693,15 +1122,14 @@ func (c *Converter) checkRootlessSupport() error {
   - [ ] Copy-on-write optimizations
 
 - [ ] **Testing**:
-  - [ ] Unit tests for each stage
   - [ ] Integration tests with real images
   - [ ] Rootless mode tests
 
-### 9.3 Phase 3: Advanced Features (P2)
+### 10.3 Phase 3: Advanced Features (P2) -- Future Work
 
-- [ ] **Multi-Architecture**:
-  - [ ] ARM64 support
-  - [ ] Architecture detection and selection
+- [ ] **Architecture Detection**:
+  - [ ] Detect architecture from kernel binary in image
+  - [ ] Cross-architecture support
 
 - [ ] **Custom Bootloaders**:
   - [ ] systemd-boot support
@@ -1719,22 +1147,22 @@ func (c *Converter) checkRootlessSupport() error {
 
 ---
 
-## 10. Verified Images (CI Reference)
+## 11. Verified Images (CI Reference)
 
-Phase 1 requires at least one **pinned reference image** per source type for full-pipeline CI verification (conversion → boot detection → lifecycle). These images have fixed digests and known-good checksums, ensuring deterministic CI runs.
+Phase 1 requires at least one **pinned reference image** per source type for full-pipeline CI verification (conversion -> boot detection -> lifecycle). These images have fixed digests and known-good checksums, ensuring deterministic CI runs.
 
-### 10.1 Reference Cloud Image (qcow2)
+### 11.1 Reference Cloud Image (qcow2)
 
-**Ubuntu 22.04 Cloud Image** — primary CI image for boot + lifecycle tests:
+**Ubuntu 22.04 Cloud Image** -- primary CI image for boot + lifecycle tests:
 
 | Field | Value |
 |-------|-------|
 | **URL** | `https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img` |
 | **Pinned Release** | `20240126` (pin to a specific date release for reproducibility) |
 | **Pinned URL** | `https://cloud-images.ubuntu.com/releases/22.04/release-20240126/ubuntu-22.04-server-cloudimg-amd64.img` |
-| **SHA256** | Pin in `test/fixtures/verified-images.sha256` — placeholder until Phase 1 CI setup (update on deliberate image bump only) |
+| **SHA256** | Pin in `test/fixtures/verified-images.sha256` -- placeholder until Phase 1 CI setup (update on deliberate image bump only) |
 | **Format** | qcow2 (direct use, no conversion) |
-| **Boot Mode** | PVH (primary), UEFI (fallback) |
+| **Boot Mode** | UEFI (default), PVH (option) |
 | **cloud-init** | Pre-installed, NoCloud-Net datasource |
 
 **CI Usage**:
@@ -1752,9 +1180,9 @@ cocoon stop ci-boot-test
 cocoon delete ci-boot-test
 ```
 
-### 10.2 Reference Bootable OCI Image
+### 11.2 Reference Bootable OCI Image
 
-**Purpose**: Validates the complete OCI conversion pipeline (pull → extract → validate → convert → boot).
+**Purpose**: Validates the complete OCI conversion pipeline (pull -> extract -> convert -> boot).
 
 | Field | Value |
 |-------|-------|
@@ -1769,7 +1197,7 @@ cocoon delete ci-boot-test
 # Pull by digest (immutable, deterministic)
 cocoon image pull "ghcr.io/CMGS/cocoon-test-images/ubuntu-bootable@sha256:${PINNED_DIGEST}"
 
-# Verify bootability
+# Verify bootability (post-conversion, on-demand)
 cocoon image verify "ghcr.io/CMGS/cocoon-test-images/ubuntu-bootable@sha256:${PINNED_DIGEST}"
 
 # Full conversion + boot + lifecycle pipeline
@@ -1782,22 +1210,22 @@ cocoon stop ci-oci-test
 cocoon delete ci-oci-test
 ```
 
-### 10.3 CI Verification Matrix
+### 11.3 CI Verification Matrix
 
 The following pipeline stages MUST pass for every PR:
 
 | Stage | Cloud Image (qcow2) | Bootable OCI Image |
 |-------|---------------------|-------------------|
 | **Image fetch** | Download + SHA256 verify | Pull by digest |
-| **Bootability validation** | `cocoon image verify` | `cocoon image verify` (before conversion) |
-| **OCI→qcow2 conversion** | N/A (already qcow2) | Buildah extract → libguestfs convert |
+| **OCI->qcow2 conversion** | N/A (already qcow2) | Buildah extract -> guestfish convert |
+| **Bootability verification** | `cocoon image verify` (post-conversion) | `cocoon image verify` (post-conversion) |
 | **PVH boot** | Boot with `hypervisor-fw` | Boot with `hypervisor-fw` |
-| **Boot detection** | Serial log → systemd markers | Serial log → systemd + cloud-init markers |
-| **Lifecycle** | create → start → inspect → stop → delete | create → start → inspect → stop → delete |
-| **Crash recovery** | kill -9 CH → `cocoon doctor --fix` | kill -9 CH → `cocoon doctor --fix` |
-| **GC** | Delete VM → `cocoon gc --dry-run` | Delete VM → `cocoon gc --dry-run` |
+| **Boot detection** | Serial log -> systemd markers | Serial log -> systemd + cloud-init markers |
+| **Lifecycle** | create -> start -> inspect -> stop -> delete | create -> start -> inspect -> stop -> delete |
+| **Crash recovery** | kill -9 CH -> `cocoon doctor --fix` | kill -9 CH -> `cocoon doctor --fix` |
+| **GC** | Delete VM -> `cocoon gc --dry-run` | Delete VM -> `cocoon gc --dry-run` |
 
-### 10.4 Maintaining Verified Images
+### 11.4 Maintaining Verified Images
 
 **When to bump**:
 - Kernel CVE fix in upstream cloud image
@@ -1808,19 +1236,35 @@ The following pipeline stages MUST pass for every PR:
 1. Update URL/digest in `test/fixtures/verified-images.sha256` (or CI config)
 2. Run full CI pipeline manually against new image
 3. Commit with message: `ci: bump verified image to <new-version>`
-4. **Never** use floating tags (`:latest`, `:22.04`) in CI — always pin to digest or dated release
+4. **Never** use floating tags (`:latest`, `:22.04`) in CI -- always pin to digest or dated release
 
 ---
 
-## 11. References
+## 12. References
 
-### 11.1 Related Documents
+### 12.1 Related Documents
 
 - [01-boot-contract.md](01-boot-contract.md) - Boot requirements and VM lifecycle
 - [05-storage-management.md](05-storage-management.md) - COW storage, garbage collection, and **Image Checksum Identity** (normative)
 - [06-concurrency.md](06-concurrency.md) - Conversion lock keys use the same `{checksum}_{arch}` identity
 
-### 11.2 External Tools
+### 12.2 Source Files
+
+| File | Purpose |
+|------|---------|
+| `image/pipeline/manager.go` | Main pipeline: Pull, Convert, Prepare, VerifyBootability, ListCached, RemoveCached |
+| `image/pipeline/oci_linux.go` | OCI-specific: identifyOCIPlatform, pullAndMountOCIPlatform, runCmd, error classification |
+| `image/pipeline/convert_linux.go` | Conversion: convertOCI, ensureGRUBConfig, guestfish script |
+| `image/pipeline/checksum.go` | Checksum: computeFileChecksum, goarchToOCI, defaultArch |
+| `image/pipeline/cleanup_linux.go` | Cleanup: cleanupBuildahContainer |
+| `image/pipeline/verify_linux.go` | Deep boot verification: deepVerifyBoot |
+| `image/pipeline/format.go` | Format detection: detectImageFormat via qemu-img info |
+| `image/refcache/index.go` | Manifest refcache: Upsert, ResolveBaseKey, alias generation |
+| `image/types.go` | Types: ImageIdentity, BootCheckResult, CachedImage, ImageType |
+| `types/errors.go` | Error types: ClassifiedError, IsTransient, ErrorType constants |
+| `types/reference.go` | Reference types: ParseBaseKey, FormatBaseKey, ReferenceEntry |
+
+### 12.3 External Tools
 
 | Tool | Purpose | Documentation |
 |------|---------|---------------|
@@ -1829,7 +1273,7 @@ The following pipeline stages MUST pass for every PR:
 | libguestfs | Disk image manipulation | https://libguestfs.org/ |
 | skopeo | OCI manifest inspection | https://github.com/containers/skopeo |
 
-### 11.3 Installation
+### 12.4 Installation
 
 **Ubuntu/Debian**:
 ```bash
@@ -1851,34 +1295,49 @@ pacman -S buildah qemu libguestfs skopeo
 ## Appendix A: Example Complete Workflow
 
 ```go
+// Illustrative: Shows the conceptual flow. Actual implementation uses
+// the manager.Prepare() method which handles all steps internally.
 package main
 
 import (
+    "context"
     "fmt"
     "log"
 )
 
 func main() {
-    // 1. Setup
-    cache := NewImageCache("/var/lib/cocoon/cache/images")
+    // 1. Create manager with config and reference counter
+    mgr := pipeline.New(cfg, refCtr)
 
-    // 2. Prepare base image (with caching)
-    image := "myorg/ubuntu-bootable:22.04"
-    basePath, identity, err := PrepareBaseImage(image, cache)
+    // 2. Prepare base image (identify + cache check + pull + convert)
+    // For OCI images, this runs:
+    //   a. identifyOCIPlatform (skopeo inspect -> checksum)
+    //   b. Cache check (os.Stat on base image path)
+    //   c. Acquire conversion lock
+    //   d. pullAndMountOCIPlatform (buildah --root <root> pull/from/mount)
+    //   e. convertOCI (qemu-img create, tar, guestfish, ensureGRUBConfig)
+    //   f. os.Rename into cache (atomic)
+    //   g. cleanupBuildahContainer
+    ref := "myorg/ubuntu-bootable:22.04"
+    identity, basePath, err := mgr.Prepare(context.Background(), ref)
     if err != nil {
         log.Fatalf("Failed to prepare image: %v", err)
     }
 
-    fmt.Printf("Base image ready: %s (key: %s)\n", basePath, identity.CacheKey())
+    fmt.Printf("Base image ready: %s (key: %s)\n", basePath, identity.BaseKey())
 
-    // 3. Create VM overlay disk (covered in 05-storage-management.md)
-    // overlayPath := createOverlay(basePath, "vm-001")
+    // 3. Optionally verify bootability (on-demand, post-conversion)
+    result, err := mgr.VerifyBootability(context.Background(), basePath)
+    if err != nil {
+        log.Fatalf("Verification error: %v", err)
+    }
+    fmt.Printf("Bootable: %v, Modes: %v\n", result.Bootable, result.BootModes)
 
-    // 4. Register reference (covered in 05-storage-management.md)
-    // refCounter.AddReference(identity.CacheKey(), "vm-001", identity.FullHash, image)
+    // 4. Create VM overlay disk (covered in 05-storage-management.md)
+    // 5. Register reference (covered in 05-storage-management.md)
 }
 ```
 
 ---
 
-**End of OCI Conversion Pipeline Documentation v1.0**
+**End of OCI Conversion Pipeline Documentation v1.1**

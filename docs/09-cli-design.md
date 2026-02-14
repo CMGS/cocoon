@@ -34,7 +34,7 @@ See [00-overview.md § Supported Image Contract](./00-overview.md#️-supported-
 
 This document defines the command-line interface for Cocoon, a lightweight VM management tool built on Cloud Hypervisor. The CLI follows Docker-like patterns for familiarity while exposing VM-specific capabilities like PVH/UEFI boot modes, resource allocation, and lifecycle management.
 
-The design integrates the [Boot Contract](./01-boot-contract.md) decisions, including flexible boot modes (PVH preferred, UEFI optional), cloud-init task injection, serial console I/O, and graceful shutdown semantics. It also leverages the [storage management](./05-storage-management.md) system for efficient copy-on-write disk handling.
+The design integrates the [Boot Contract](./01-boot-contract.md) decisions, including flexible boot modes (UEFI default, PVH optional), cloud-init task injection, serial console I/O, and graceful shutdown semantics. It also leverages the [storage management](./05-storage-management.md) system for efficient copy-on-write disk handling.
 
 ## Table of Contents
 
@@ -197,7 +197,7 @@ type Client interface {
 
 The concrete implementation lives in `hypervisor/cloudhypervisor/client.go`. Key implementation details:
 - `Launch()` starts the CH binary with `--api-socket` + firmware flag only; all VM config goes via REST API.
-- `buildLaunchArgs()` selects `--kernel` for UEFI or `--firmware` for PVH based on `BootStrategy`.
+- `buildLaunchArgs()` selects the correct firmware flag based on `BootStrategy`: UEFI uses `payload.firmware`, PVH uses `payload.kernel`.
 - REST API calls use `doWithRetry()` with exponential backoff (100ms/200ms/400ms + jitter).
 - `isRetryable()`: retry on 500/503/429/connection-refused; no retry on 4xx/context.Canceled.
 
@@ -314,7 +314,7 @@ type Manager interface {
 }
 ```
 
-The concrete implementation is `vm/engine/manager.go`. `Start()` implements the boot fallback strategy: `pvh_then_uefi` attempts PVH first, logs a warning, then falls back to UEFI only for firmware-related errors.
+The concrete implementation is `vm/engine/manager.go`. `Start()` boots using the strategy stored in config.json (`uefi` by default, or `pvh` if specified at creation time).
 
 ### 2.5 Manager Initialization
 
@@ -552,10 +552,9 @@ func initCommand() *cli.Command {
 # Basic initialization
 sudo cocoon init
 
-# Initialize with firmware download
-sudo cocoon init \
-  --with-pvh-firmware https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw \
-  --with-uefi-firmware https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v50.0/CLOUDHV.fd
+# Initialize (downloads CLOUDHV.fd and hypervisor-fw automatically)
+# Override edk2 version: EDK2_CH_VERSION=a54f262b09 sudo cocoon init
+sudo cocoon init
 
 # Force re-initialization
 sudo cocoon init --force
@@ -605,11 +604,19 @@ func vmCreateFlags() []cli.Flag {
         &cli.StringFlag{
             Name:  "boot-strategy",
             Value: string(types.DefaultBootStrategy),
-            Usage: "boot strategy: pvh_then_uefi, uefi_only, pvh_only",
+            Usage: "boot strategy: uefi (default), pvh",
         },
         &cli.BoolFlag{
             Name:  "skip-verify",
             Usage: "skip bootability verification of the image",
+        },
+        &cli.IntFlag{
+            Name:  "boot-timeout",
+            Usage: "boot detection timeout in seconds (0 = skip boot detection)",
+        },
+        &cli.BoolFlag{
+            Name:  "tpm",
+            Usage: "enable TPM 2.0 emulation via swtpm",
         },
     }
 }
@@ -655,8 +662,14 @@ cocoon run ubuntu-22.04-cloudimg --name myvm --cpus 4 --memory 4G
 # Run VM with auto-remove on stop
 cocoon run --rm ubuntu-22.04-cloudimg --name temp-vm
 
-# Run with PVH-only boot strategy (no UEFI fallback)
-cocoon run --boot-strategy pvh_only ubuntu-22.04-cloudimg
+# Run with PVH boot strategy (faster cold boot)
+cocoon run --boot-strategy pvh ubuntu-22.04-cloudimg
+
+# Run with TPM 2.0 emulation enabled
+cocoon run --tpm ubuntu-22.04-cloudimg --name secure-vm
+
+# Run with custom boot timeout (seconds)
+cocoon run --boot-timeout 120 ubuntu-22.04-cloudimg --name slow-vm
 ```
 
 ### 4.4 cocoon create (Prepare VM)
@@ -709,7 +722,7 @@ func createAction(c *cli.Context) error {
 }
 ```
 
-The `createCommand` uses the same `vmCreateFlags()` as `runCommand`, which includes `--name`, `--cpus`, `--memory` (default "2048M"), `--disk`, `--boot-strategy`, and `--skip-verify`.
+The `createCommand` uses the same `vmCreateFlags()` as `runCommand`, which includes `--name`, `--cpus`, `--memory` (default "2048M"), `--disk`, `--boot-strategy`, `--skip-verify`, `--boot-timeout`, and `--tpm`.
 
 **Example Usage**:
 
@@ -1018,8 +1031,8 @@ When the serial log is readable, `hypervisor.serial_log_excerpt` contains the la
   "boot_config": {
     "cpus": 2,
     "memory_mb": 2048,
-    "boot_strategy": "pvh_then_uefi",
-    "firmware_path": "/var/lib/cocoon/firmware/hypervisor-fw"
+    "boot_strategy": "uefi",
+    "firmware_path": "/var/lib/cocoon/firmware/CLOUDHV.fd"
   },
   "timestamps": {
     "created_at": "2026-02-11T10:30:00Z",
@@ -1291,7 +1304,7 @@ cocoon gc --aggressive
 
 **Purpose**: Validate Cocoon installation and dependencies
 
-**Implementation**: Based on [08-dependencies.md § Startup Dependency Detection](./08-dependencies.md#startup-dependency-detection-cocoon-doctor) and [Boot Contract § 1.1](./01-boot-contract.md#11-primary-boot-mode-pvh--hypervisor-fw)
+**Implementation**: Based on [08-dependencies.md § Startup Dependency Detection](./08-dependencies.md#startup-dependency-detection-cocoon-doctor) and [Boot Contract § 1.1](./01-boot-contract.md#11-default-boot-mode-uefi--cloudhvfd)
 
 ```go
 func doctorCommand() *cli.Command {
@@ -1351,6 +1364,7 @@ func doctorAction(c *cli.Context) error {
 - buildah binary (minimum `1.35.0`)
 - skopeo binary (minimum `1.14.0`)
 - guestfish binary (minimum `1.50.0`)
+- swtpm binary (TPM 2.0 emulator)
 - /dev/kvm device
 - Directory structure (root, runtime, log, db, vm, cache, buildah, firmware)
 
@@ -1393,6 +1407,7 @@ ch-remote          pass    /usr/bin/ch-remote
 buildah            pass    /usr/bin/buildah (version 1.35.2)
 skopeo             pass    /usr/bin/skopeo (version 1.14.4)
 guestfish          fail    binary not found in PATH (required for OCI-to-qcow2 conversion)
+swtpm              pass    /usr/bin/swtpm (TPM 2.0 emulator)
 kvm                pass    /dev/kvm
 dir/root-dir       pass    /var/lib/cocoon
 dir/runtime-dir    pass    /run/cocoon
@@ -1432,7 +1447,7 @@ Attempted to fix 2 issue(s).
 
 **Purpose**: Manage hypervisor firmware files (PVH and UEFI)
 
-**Implementation**: Based on [Boot Contract § 1.1](./01-boot-contract.md#11-primary-boot-mode-pvh--hypervisor-fw)
+**Implementation**: Based on [Boot Contract § 1.1](./01-boot-contract.md#11-default-boot-mode-uefi--cloudhvfd)
 
 ```go
 func firmwareCommand() *cli.Command {
@@ -1896,7 +1911,7 @@ This CLI design implements the Boot Contract specification:
 
 | Boot Contract Section | CLI Implementation |
 |----------------------|-------------------|
-| §1 Boot Path Decision | `--boot-strategy` flag (default: pvh_then_uefi), config-level firmware paths, automatic UEFI fallback |
+| §1 Boot Path Decision | `--boot-strategy` flag (default: uefi), config-level firmware paths |
 | §2 Guest Init Model | [Phase 2] Metadata server for cloud-init (not yet implemented) |
 | §3 I/O Mechanisms | Serial console via `--serial file=...` (CH flag), `cocoon logs` command |
 | §4 Lifecycle Semantics | `run`, `stop`, `delete`, `kill` commands |
@@ -2006,8 +2021,8 @@ For the canonical schema definitions, see [07-vm-lifecycle.md § 5](./07-vm-life
   "base_key": "ef015678abcd1234_amd64",
   "base_digest_full": "ef015678abcd1234567890abcdef1234567890abcdef1234567890abcdef1234",
   "arch": "amd64",
-  "boot_strategy": "pvh_then_uefi",
-  "firmware_path": "/var/lib/cocoon/firmware/hypervisor-fw",
+  "boot_strategy": "uefi",
+  "firmware_path": "/var/lib/cocoon/firmware/CLOUDHV.fd",
   "cpus": 2,
   "memory_mb": 1024,
   "disk_size": "10G",

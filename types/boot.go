@@ -10,14 +10,15 @@ import (
 type BootStrategy string
 
 const (
-	// BootStrategyUEFI boots with UEFI firmware (CLOUDHV.fd) via CLI --firmware.
+	// BootStrategyUEFI boots with UEFI firmware (CLOUDHV.fd) via REST payload.firmware.
+	// This is the default boot strategy.
 	BootStrategyUEFI BootStrategy = "uefi"
 	// BootStrategyPVH boots with PVH firmware (hypervisor-fw) via REST payload.kernel.
 	BootStrategyPVH BootStrategy = "pvh"
 )
 
 // DefaultBootStrategy is the default boot strategy for new VMs.
-const DefaultBootStrategy = BootStrategyPVH
+const DefaultBootStrategy = BootStrategyUEFI
 
 // ParseBootStrategy validates and normalizes a user-provided boot strategy.
 // Empty input resolves to DefaultBootStrategy.

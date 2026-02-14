@@ -3,7 +3,7 @@
 **Version**: 1.0
 **Status**: Implemented
 **Phase**: Phase 1
-**Last Updated**: 2026-02-14
+**Last Updated**: 2026-02-15
 
 ## ⚠️ Supported Image Contract
 
@@ -167,14 +167,14 @@ Modern VM workloads and development environments face a challenging trade-off be
 
 ## Key Design Decisions
 
-### 1. Dual Boot Strategy: PVH Primary + UEFI Fallback
+### 1. Default Boot Strategy: UEFI with PVH Option
 
-**Decision**: Use PVH boot with rust-hypervisor-firmware as primary boot method, with UEFI (OVMF) as automatic fallback.
+**Decision**: Use UEFI boot with CLOUDHV.fd as the default boot method. PVH (rust-hypervisor-firmware) is available via `--boot-strategy pvh` for faster cold boot when image compatibility is confirmed.
 
 **Rationale**:
-- **PVH (Primary)**: Fast boot (<100ms), lightweight firmware, works with standard cloud images
-- **UEFI (Fallback)**: Automatic fallback on PVH failure for maximum compatibility
-- Best of both worlds: Fast boot when possible, compatibility when needed
+- **UEFI (Default)**: Broadest compatibility with cloud images, supports secure boot, CH project recommended firmware
+- **PVH (Option)**: Faster cold boot (<100ms vs ~500ms), useful for latency-sensitive workloads with known-compatible images
+- UEFI default eliminates boot failures from images that lack a PVH-compatible kernel layout
 
 ### 2. Per-VM Cloud Hypervisor Process for Isolation
 
@@ -231,7 +231,8 @@ Phase 1 delivers a complete, production-ready VM lifecycle management system.
 - ✅ VM lifecycle (create/start/stop/kill/delete) with state machine
 - ✅ Copy-on-write storage with qcow2 backing files
 - ✅ Reference counting and garbage collection
-- ✅ PVH/UEFI dual boot with automatic fallback
+- ✅ UEFI boot by default with PVH option (`--boot-strategy pvh`)
+- ✅ TPM 2.0 emulation via swtpm (`--tpm` flag)
 - ✅ Reconciliation and crash recovery (`cocoon doctor`)
 - ✅ CLI tool with Docker-like interface (`cocoon run/ps/logs/inspect`)
 - ✅ Concurrency control with file-based lock hierarchy
@@ -313,6 +314,7 @@ Cocoon is a general-purpose lightweight VM manager. Common use cases include:
 - **OCI Tools**: Buildah (daemonless, rootless-capable)
 - **Storage**: qcow2 via qemu-img and libguestfs
 - **Firmware**: OVMF (UEFI) or rust-hypervisor-firmware (PVH)
+- **TPM**: swtpm (optional TPM 2.0 emulation)
 - **CLI Framework**: urfave/cli/v2
 - **Configuration**: JSON with sensible defaults
 

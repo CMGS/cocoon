@@ -1116,8 +1116,8 @@ type manager struct {
 
 Volume passthrough via virtio-fs works with both PVH and UEFI boot modes.
 The virtio-fs device is presented through the virtio transport layer, which
-is independent of the firmware used during boot. The `pvh_then_uefi` fallback
-strategy is unaffected.
+is independent of the firmware used during boot. Both the default UEFI boot
+and the optional PVH boot mode work with virtio-fs.
 
 ### 10.2 Guest Kernel Requirements
 

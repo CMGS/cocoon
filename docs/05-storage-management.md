@@ -29,6 +29,8 @@ Other documents MUST reference this section rather than defining their own paths
 │   │   ├── {checksum_16}_{arch}.qcow2    # e.g., a1b2c3d4e5f6a7b8_amd64.qcow2
 │   │   └── ...
 │   ├── manifests/                        # OCI manifest cache
+│   │   ├── index.json                    # IMAGE_REF -> base_key mapping index
+│   │   └── index.lock                    # flock for manifest index updates
 │   └── locks/
 │       └── {checksum_16}_{arch}.lock     # Per-image conversion lock
 ├── buildah/                              # Buildah storage root
@@ -37,7 +39,8 @@ Other documents MUST reference this section rather than defining their own paths
 │   │   ├── config.json                   # Immutable VM configuration
 │   │   ├── metadata.json                 # Mutable runtime state
 │   │   ├── metadata.lock                 # flock for metadata writes
-│   │   └── overlay.qcow2                 # COW overlay (ALWAYS this name)
+│   │   ├── overlay.qcow2                 # COW overlay (ALWAYS this name)
+│   │   └── tpm/                          # swtpm TPM state directory (if TPM enabled)
 │   └── ...
 ├── firmware/                             # Boot firmware binaries
 │   ├── hypervisor-fw                     # PVH firmware (rust-hypervisor-firmware)
@@ -49,10 +52,14 @@ Other documents MUST reference this section rather than defining their own paths
 └── vms/
     └── {vm-id}/
         ├── api.sock                      # Cloud Hypervisor API socket
-        └── ch.pid                        # CH process PID file
+        ├── ch.pid                        # CH process PID file
+        ├── swtpm.sock                    # swtpm TPM socket (if TPM enabled)
+        └── swtpm.pid                     # swtpm PID file (if TPM enabled)
 
 /var/log/cocoon/                          # Logs (persistent)
 ├── {vm_id}-serial.log                    # Serial console per VM (e.g., vm-01HXYZ...-serial.log)
+├── {vm_id}-ch.log                        # Cloud Hypervisor log per VM
+├── {vm_id}-swtpm.log                     # swtpm log per VM (if TPM enabled)
 └── cocoon.log                            # Main cocoon log (optional)
 ```
 
@@ -78,10 +85,11 @@ Other documents MUST reference these definitions rather than re-defining fields.
 | `base_key` | string | `"a1b2c3d4e5f6a7b8_amd64"` | Content-addressed key: `{checksum_16}_{arch}` |
 | `base_digest_full` | string | `"a1b2c3d4e5f6a7b8..."` (64 hex) | Full SHA-256 for collision audit |
 | `arch` | string | `"amd64"` | Architecture |
-| `boot_strategy` | string | `"pvh_then_uefi"` | `"pvh_then_uefi"` / `"uefi_only"` / `"pvh_only"` |
-| `firmware_path` | string | `"/var/lib/cocoon/firmware/hypervisor-fw"` | Primary firmware path |
+| `boot_strategy` | string | `"uefi"` | `"uefi"` (default) / `"pvh"` |
+| `firmware_path` | string | `"/var/lib/cocoon/firmware/CLOUDHV.fd"` | Firmware path (CLOUDHV.fd for UEFI, hypervisor-fw for PVH) |
+| `tpm_socket_path` | string | `"/run/cocoon/vms/{vm_id}/swtpm.sock"` | swtpm TPM socket path (omitted if TPM not configured) |
 | `cpus` | int | `2` | vCPU count |
-| `memory_mb` | int | `1024` | Memory in MiB |
+| `memory_mb` | int64 | `2048` | Memory in MiB |
 | `disk_size` | string | `"10G"` | Overlay disk size (human-readable) |
 | `base_image_path` | string | `"/var/lib/cocoon/cache/images/..."` | Derived from `base_key` |
 | `overlay_path` | string | `"/var/lib/cocoon/vms/{vm_id}/overlay.qcow2"` | COW overlay path |
@@ -102,7 +110,10 @@ Other documents MUST reference these definitions rather than re-defining fields.
 | `last_boot_mode` | string | `"pvh"` | Actual boot mode used (`"pvh"` / `"uefi"`) |
 | `last_firmware_path` | string | `"/var/lib/cocoon/firmware/hypervisor-fw"` | Actual firmware used |
 | `last_error` | string | `""` | Last error message (empty if none) |
+| `last_error_type` | string | `""` | Error classification (omitted if none) |
+| `last_error_at` | string | `""` | RFC 3339 timestamp of last error (omitted if none) |
 | `error_count` | int | `0` | Consecutive error count |
+| `auto_remove` | bool | `false` | If true, VM is auto-deleted on stop (omitted if false) |
 | `updated_at` | string | `"2026-02-12T10:01:30Z"` | Last metadata write |
 | `started_at` | string | `"2026-02-12T10:01:00Z"` | Last start timestamp |
 | `stopped_at` | string | `null` | Last stop timestamp |
@@ -193,40 +204,59 @@ This identity contract is referenced by:
 
 ### Storage Configuration
 
-```python
-from dataclasses import dataclass
-from pathlib import Path
+The actual implementation uses `CocoonConfig` (in `config/config.go`), which holds
+all global Cocoon configuration -- not just storage paths. Derived path helpers
+(`CacheDir()`, `VMDir()`, etc.) compute subdirectories from `RootDir`.
 
-@dataclass
-class StorageConfig:
-    root: Path
-    cache_dir: Path
-    vm_dir: Path
-    temp_dir: Path
-    trash_dir: Path
+```go
+// CocoonConfig holds global Cocoon configuration (config/config.go).
+type CocoonConfig struct {
+    // Directory roots
+    RootDir    string `json:"root_dir"`     // Persistent root (default: /var/lib/cocoon)
+    RuntimeDir string `json:"runtime_dir"`  // Ephemeral/tmpfs (default: /run/cocoon)
+    LogDir     string `json:"log_dir"`      // Persistent logs (default: /var/log/cocoon)
 
-    @classmethod
-    def default(cls, root: Path = None) -> "StorageConfig":
-        root = root or Path("/var/lib/cocoon")
-        return cls(
-            root=root,
-            cache_dir=root / "cache",
-            vm_dir=root / "vms",
-            temp_dir=root / "temp",
-            trash_dir=root / "trash"
-        )
+    // Binaries and firmware
+    CHBinary         string `json:"ch_binary"`           // Cloud Hypervisor binary
+    PVHFirmwarePath  string `json:"pvh_firmware_path"`   // PVH firmware path
+    UEFIFirmwarePath string `json:"uefi_firmware_path"`  // UEFI firmware path
+    BuildahRoot      string `json:"buildah_root"`        // Buildah storage root
 
-    def ensure_dirs(self):
-        """Create all required directories."""
-        for path in [
-            self.cache_dir / "manifests",
-            self.cache_dir / "images",
-            self.cache_dir / "locks",
-            self.vm_dir,
-            self.temp_dir,
-            self.trash_dir
-        ]:
-            path.mkdir(parents=True, exist_ok=True)
+    // Default VM resources
+    DefaultCPUs     int    `json:"default_cpus"`       // Default: 2
+    DefaultMemoryMB int64  `json:"default_memory_mb"`  // Default: 2048
+    DefaultDiskSize string `json:"default_disk_size"`   // Default: "10G"
+
+    // GC configuration (see Garbage Collection section)
+    GCGracePeriodHours int `json:"gc_grace_period_hours"`    // Default: 24
+    GCTrashRetentDays  int `json:"gc_trash_retention_days"`  // Default: 7
+
+    // Timeouts
+    BootTimeoutSeconds int `json:"boot_timeout_seconds"`  // Default: 60
+    StopTimeoutSeconds int `json:"stop_timeout_seconds"`  // Default: 30
+
+    // Boot detection patterns (regex; defaults used if empty)
+    BootSuccessPatterns []string `json:"boot_success_patterns,omitempty"`
+    BootFailurePatterns []string `json:"boot_failure_patterns,omitempty"`
+}
+
+// DefaultConfig returns a CocoonConfig with production defaults.
+func DefaultConfig() *CocoonConfig { ... }
+
+// Derived path helpers (selected):
+func (c *CocoonConfig) CacheDir() string          // RootDir/cache
+func (c *CocoonConfig) ImageCacheDir() string      // RootDir/cache/images
+func (c *CocoonConfig) ManifestCacheDir() string   // RootDir/cache/manifests
+func (c *CocoonConfig) ConversionLockDir() string  // RootDir/cache/locks
+func (c *CocoonConfig) VMDir() string              // RootDir/vms
+func (c *CocoonConfig) TempDir() string            // RootDir/temp
+func (c *CocoonConfig) TrashDir() string           // RootDir/trash
+func (c *CocoonConfig) DBDir() string              // RootDir/db
+
+// EnsureDirs creates all required directories (db, cache/images,
+// cache/manifests, cache/locks, vms, temp, trash, firmware, buildah,
+// RuntimeDir/vms, LogDir).
+func (c *CocoonConfig) EnsureDirs() error { ... }
 ```
 
 ## Copy-on-Write (COW) Strategy
@@ -235,66 +265,70 @@ class StorageConfig:
 
 The core of the storage efficiency comes from qcow2's backing file feature. Multiple VMs can share a single base image, with each VM storing only its differences in a lightweight overlay.
 
-```python
-from pathlib import Path
-import subprocess
-import json
+```go
+// fileCOWManager implements COWManager (storage/local/cow.go).
+// It stores base images in cache/images/ and overlays under vms/{vmID}/overlay.qcow2.
+type fileCOWManager struct {
+    cfg *config.CocoonConfig
+}
 
-class COWImageManager:
-    def __init__(self, overlay_dir: Path):
-        self.overlay_dir = overlay_dir
-        self.overlay_dir.mkdir(parents=True, exist_ok=True)
+func NewCOWManager(cfg *config.CocoonConfig) storage.COWManager {
+    return &fileCOWManager{cfg: cfg}
+}
 
-    def create_overlay(
-        self,
-        base_image: Path,
-        vm_id: str,
-        size: str | None = None
-    ) -> Path:
-        """
-        Create COW overlay image with base as backing file.
+// CreateBaseImage copies srcPath into the image cache as {baseKey}.qcow2.
+// Idempotent: if the destination already exists, returns nil.
+// After copying, the base image is marked read-only (0o444) to enforce
+// immutability -- VMs use COW overlays and never write to the base.
+func (m *fileCOWManager) CreateBaseImage(srcPath, baseKey string) error {
+    dstPath := m.cfg.BaseImagePath(baseKey)
+    // ... atomic copy: temp + fsync + rename ...
+    // Mark read-only: os.Chmod(dstPath, 0o444)
+    return nil
+}
 
-        The overlay image only stores differences from the base.
-        Multiple VMs can share the same base image.
-        """
-        overlay_path = self.overlay_dir / vm_id / "overlay.qcow2"
+// CreateOverlay creates a COW overlay backed by {baseKey}.qcow2.
+// The baseKey is resolved to the cached base image path internally.
+// Returns the absolute overlay path (e.g., /var/lib/cocoon/vms/{vmID}/overlay.qcow2).
+//
+// Two-step process:
+//   1. qemu-img create -f qcow2 -F qcow2 -b <basePath> <overlayPath>
+//   2. If diskSize != "", qemu-img resize <overlayPath> <diskSize>
+//
+// No global lock is required because each VM directory is unique.
+func (m *fileCOWManager) CreateOverlay(baseKey, vmID, diskSize string) (string, error) {
+    basePath := m.cfg.BaseImagePath(baseKey)  // derives path from baseKey
+    overlayPath := m.cfg.VMOverlayPath(vmID)
 
-        cmd = [
-            "qemu-img", "create",
-            "-f", "qcow2",
-            "-F", "qcow2",  # Backing file format
-            "-b", str(base_image),  # Backing file
-            str(overlay_path)
-        ]
+    // Step 1: Create overlay with backing file (no size argument).
+    // qemu-img create -f qcow2 -F qcow2 -b <basePath> <overlayPath>
+    cmd := exec.Command("qemu-img", "create",
+        "-f", "qcow2", "-F", "qcow2",
+        "-b", basePath, overlayPath)
+    cmd.CombinedOutput()
 
-        if size:
-            cmd.append(size)
+    // Step 2: Resize separately if a disk size was requested.
+    if diskSize != "" {
+        resizeCmd := exec.Command("qemu-img", "resize", overlayPath, diskSize)
+        resizeCmd.CombinedOutput()
+    }
 
-        subprocess.run(cmd, check=True)
+    return overlayPath, nil
+}
 
-        return overlay_path
-
-    def get_overlay_info(self, overlay_path: Path) -> dict:
-        """Get overlay image information."""
-        result = subprocess.run([
-            "qemu-img", "info",
-            "--output=json",
-            str(overlay_path)
-        ], capture_output=True, text=True, check=True)
-
-        return json.loads(result.stdout)
-
-    def get_backing_chain(self, overlay_path: Path) -> list[Path]:
-        """Get full backing file chain."""
-        chain = [overlay_path]
-        info = self.get_overlay_info(overlay_path)
-
-        while "backing-filename" in info:
-            backing = Path(info["backing-filename"])
-            chain.append(backing)
-            info = self.get_overlay_info(backing)
-
-        return chain
+// RemoveOverlay soft-deletes the overlay by moving it to trash/ with a
+// timestamped prefix ({unixNano}_{vmID}-overlay.qcow2). If rename fails
+// (e.g., cross-filesystem), it falls back to hard delete (os.Remove).
+// The VM directory itself is preserved for the caller to handle.
+func (m *fileCOWManager) RemoveOverlay(vmID string) error {
+    overlayPath := m.cfg.VMOverlayPath(vmID)
+    trashName := fmt.Sprintf("%d_%s-overlay.qcow2", time.Now().UnixNano(), vmID)
+    trashPath := filepath.Join(m.cfg.TrashDir(), trashName)
+    if err := os.Rename(overlayPath, trashPath); err != nil {
+        return os.Remove(overlayPath) // fallback: hard delete
+    }
+    return nil
+}
 ```
 
 ### Space Efficiency Example
@@ -332,116 +366,70 @@ Each overlay only grows as the VM writes data. If each VM writes 100MB of unique
 
 Reference counting ensures base images are not deleted while VMs still depend on them. The system maintains a mapping of base images to the VMs using them.
 
-```python
-import json
-import os
-import tempfile
-from datetime import datetime
-from pathlib import Path
-from typing import Dict, Set, Tuple
+```go
+// fileReferenceCounter implements ReferenceCounter (storage/local/refcount.go).
+//
+// IMPORTANT: There is no in-memory cache. Every public method acquires
+// references.lock (flock, Level 2), loads references.json fresh from disk,
+// performs its read-modify-write, persists atomically, and releases the lock.
+// This ensures cross-process safety without stale data.
+type fileReferenceCounter struct {
+    cfg *config.CocoonConfig
+}
 
-class ReferenceCounter:
-    """
-    Tracks base image usage via content-addressed keys (base_key = {checksum}_{arch}).
+func NewReferenceCounter(cfg *config.CocoonConfig) storage.ReferenceCounter {
+    return &fileReferenceCounter{cfg: cfg}
+}
 
-    All public methods accept base_key as the primary identifier.
-    Use ParseBaseKey() to decompose into (checksum, arch) when needed.
+// withRefsLock acquires references.lock, runs fn, then releases the lock.
+func (rc *fileReferenceCounter) withRefsLock(fn func() error) error {
+    fl := flock.New(rc.cfg.ReferencesLock())
+    fl.Lock()
+    defer fl.Unlock()
+    return fn()
+}
 
-    IMPORTANT: All mutations (add/remove) MUST be called while holding
-    references.lock (flock, Level 2). See 06-concurrency.md § Lock Hierarchy.
-    Persistence uses atomic write (temp + fsync + rename) per 06-concurrency.md
-    § Atomic Read-Modify-Write.
-    """
+// loadRefs reads and unmarshals references.json.
+// If the file does not exist, returns an empty map (not an error).
+func (rc *fileReferenceCounter) loadRefs() (types.ReferencesFile, error) { ... }
 
-    def __init__(self, storage_config: StorageConfig):
-        self.storage = storage_config
-        self.ref_file = self.storage.root / "db" / "references.json"
-        self.refs: Dict[str, dict] = {}
-        self.load()
+// saveRefs atomically persists refs (temp + fsync + rename).
+func (rc *fileReferenceCounter) saveRefs(refs types.ReferencesFile) error { ... }
 
-    def load(self):
-        """Load reference counts from disk."""
-        if self.ref_file.exists():
-            self.refs = json.loads(self.ref_file.read_text())
+// AddReference pins vmID to baseKey. Collision detection compares digestFull
+// when the key already exists. Returns types.ErrChecksumCollision on mismatch.
+func (rc *fileReferenceCounter) AddReference(baseKey, vmID, digestFull, sourceRef string) error {
+    return rc.withRefsLock(func() error {
+        refs, _ := rc.loadRefs()   // fresh load from disk
+        // ... collision check, append vmID, save ...
+        return rc.saveRefs(refs)
+    })
+}
 
-    def save(self):
-        """Atomic write: temp file + fsync + rename (see 06-concurrency.md)."""
-        data = json.dumps(self.refs, indent=2).encode()
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(self.ref_file.parent), suffix=".tmp"
-        )
-        try:
-            os.write(fd, data)
-            os.fsync(fd)
-            os.close(fd)
-            os.rename(tmp_path, str(self.ref_file))
-        except BaseException:
-            os.close(fd)
-            os.unlink(tmp_path)
-            raise
+// RemoveReference unpins vmID from baseKey.
+// Deletes the entry entirely when the last reference is removed.
+func (rc *fileReferenceCounter) RemoveReference(baseKey, vmID string) error {
+    return rc.withRefsLock(func() error {
+        refs, _ := rc.loadRefs()   // fresh load from disk
+        // ... remove vmID; delete(refs, baseKey) if empty ...
+        return rc.saveRefs(refs)
+    })
+}
 
-    @staticmethod
-    def parse_base_key(base_key: str) -> Tuple[str, str]:
-        """Parse base_key into (checksum, arch). E.g., 'a1b2c3d4e5f6a7b8_amd64' → ('a1b2c3d4e5f6a7b8', 'amd64')."""
-        parts = base_key.rsplit("_", 1)
-        if len(parts) != 2:
-            raise ValueError(f"Invalid base_key format: {base_key}")
-        return parts[0], parts[1]
+// GetReferences returns the VM IDs currently pinning baseKey.
+// Returns an empty slice (not nil) when the key has no references.
+func (rc *fileReferenceCounter) GetReferences(baseKey string) ([]string, error) { ... }
 
-    def add_reference(self, base_key: str, vm_id: str,
-                      digest_full: str = "", source_ref: str = ""):
-        """
-        Add VM reference to base image.
+// IsReferenced reports whether baseKey has at least one VM reference.
+func (rc *fileReferenceCounter) IsReferenced(baseKey string) (bool, error) { ... }
 
-        If base_key already exists, verifies digest_full matches (collision check).
-        Raises ValueError on collision.
-        """
-        if base_key in self.refs:
-            stored = self.refs[base_key].get("digest_full", "")
-            if digest_full and stored and stored != digest_full:
-                raise ValueError(
-                    f"checksum collision: base_key {base_key} already maps to a "
-                    f"different image (stored: {stored[:16]}…, incoming: {digest_full[:16]}…)"
-                )
-        else:
-            self.refs[base_key] = {
-                "path": str(self.storage.cache_dir / "images" / f"{base_key}.qcow2"),
-                "digest_full": digest_full,
-                "source_ref": source_ref,
-                "refs": [],
-                "created_at": datetime.now().isoformat() + "Z",
-            }
-        if vm_id not in self.refs[base_key]["refs"]:
-            self.refs[base_key]["refs"].append(vm_id)
-        self.save()
-
-    def remove_reference(self, base_key: str, vm_id: str):
-        """Remove VM reference from base image."""
-        if base_key in self.refs:
-            refs = self.refs[base_key]["refs"]
-            if vm_id in refs:
-                refs.remove(vm_id)
-            if not refs:
-                del self.refs[base_key]
-            self.save()
-
-    def get_references(self, base_key: str) -> Set[str]:
-        """Get all VMs referencing base image."""
-        entry = self.refs.get(base_key)
-        return set(entry["refs"]) if entry else set()
-
-    def is_referenced(self, base_key: str) -> bool:
-        """Check if base image is referenced by any VM."""
-        return len(self.get_references(base_key)) > 0
-
-    def get_unreferenced_images(self) -> list[Path]:
-        """Get all base images with zero references."""
-        all_images = {
-            p.stem: p for p in (self.storage.cache_dir / "images").glob("*.qcow2")
-        }
-        referenced_keys = set(self.refs.keys())
-        unreferenced = set(all_images.keys()) - referenced_keys
-        return [all_images[k] for k in unreferenced]
+// GetUnreferencedImages scans cache/images/ and returns base_key strings
+// (not file paths) that have no entry (or an empty refs list) in references.json.
+func (rc *fileReferenceCounter) GetUnreferencedImages() ([]string, error) {
+    // Returns []string of base_key values, e.g. ["a1b2c3d4e5f6a7b8_amd64"]
+    // NOT file system paths.
+    ...
+}
 ```
 
 ### references.json Structure
@@ -522,119 +510,73 @@ Reference counting operations must be **cross-process safe**. See [06-concurrenc
 
 Garbage collection automatically reclaims disk space from resources that are no longer needed. The system uses grace periods to avoid premature deletion of recently created resources.
 
-```python
-import time
-from datetime import datetime, timedelta
+```go
+// fileGarbageCollector implements GarbageCollector (storage/local/gc.go).
+//
+// Locking order (docs/06-concurrency.md):
+//   1. gc.lock       (Level 1) -- acquired once per GC phase.
+//   2. references.lock (Level 2) -- acquired per-image for atomic check-and-delete.
+// Never acquire Level 1 while holding Level 2.
+type fileGarbageCollector struct {
+    cfg *config.CocoonConfig
+}
 
-class GarbageCollector:
-    def __init__(
-        self,
-        storage_config: StorageConfig,
-        ref_counter: ReferenceCounter
-    ):
-        self.storage = storage_config
-        self.refs = ref_counter
+func NewGarbageCollector(cfg *config.CocoonConfig) storage.GarbageCollector {
+    return &fileGarbageCollector{cfg: cfg}
+}
 
-    def collect_unreferenced_images(
-        self,
-        grace_period: timedelta = timedelta(hours=24)
-    ) -> list[Path]:
-        """
-        Collect unreferenced base images older than grace period.
+// CollectUnreferencedImages soft-deletes base images with zero references
+// whose mtime is older than gracePeriod.
+//
+// For each candidate image, atomically under references.lock (L2):
+//   1. Check refs -- skip if still referenced.
+//   2. Check mtime -- skip if newer than cutoff.
+//   3. Move image to trash/ with UnixNano timestamp prefix.
+//   4. Delete the entry from references.json (if a zero-ref entry exists).
+//
+// Returns collected base_key strings (not file paths).
+func (gc *fileGarbageCollector) CollectUnreferencedImages(gracePeriod time.Duration) ([]string, error) {
+    // gc.withGCLock -> for each image -> gc.withRefsLock:
+    //   refs check + mtime check + os.Rename to trash + delete(refs, baseKey)
+    ...
+}
 
-        Grace period prevents deleting recently created images that
-        might be about to be used.
-        """
-        collected = []
-        cutoff_time = time.time() - grace_period.total_seconds()
+// CollectOrphanedOverlays finds VM directories where overlay.qcow2 exists
+// but config.json is missing, moves the overlay to trash/, then removes
+// the now-empty VM directory with os.RemoveAll.
+//
+// Lock: gc.lock (L1) only.
+func (gc *fileGarbageCollector) CollectOrphanedOverlays() ([]string, error) {
+    // For each orphaned overlay:
+    //   1. Move overlay to trash/{unixNano}_{vmID}-orphan-overlay.qcow2
+    //   2. os.RemoveAll(vmDir) -- clean up the empty VM directory
+    ...
+}
 
-        for image in self.refs.get_unreferenced_images():
-            if not image.exists():
-                continue
+// CollectTempFiles removes files in temp/ older than maxAge.
+// Files are permanently deleted (not moved to trash).
+// Lock: gc.lock (L1) only.
+func (gc *fileGarbageCollector) CollectTempFiles(maxAge time.Duration) ([]string, error) { ... }
 
-            # Check age
-            if image.stat().st_mtime > cutoff_time:
-                print(f"Skipping recent image: {image}")
-                continue
+// EmptyTrash permanently deletes items in trash/ older than maxAge.
+// Lock: gc.lock (L1) only.
+func (gc *fileGarbageCollector) EmptyTrash(maxAge time.Duration) error { ... }
 
-            # Move to trash (soft delete, timestamp prefix avoids collisions)
-            trash_path = self.storage.trash_dir / f"{int(time.time_ns())}_{image.name}"
-            image.rename(trash_path)
-            collected.append(image)
+// FullGC runs a complete garbage collection cycle using grace periods
+// from CocoonConfig (GCGracePeriodHours, GCTrashRetentDays).
+// Each phase acquires gc.lock independently -- NOT atomic across the full
+// cycle, but safe because each phase performs its own reference check.
+func (gc *fileGarbageCollector) FullGC() error {
+    gracePeriod := time.Duration(gc.cfg.GCGracePeriodHours) * time.Hour
+    trashRetention := time.Duration(gc.cfg.GCTrashRetentDays) * 24 * time.Hour
+    tempMaxAge := 1 * time.Hour
 
-            print(f"Collected: {image} -> {trash_path}")
-
-        return collected
-
-    def collect_orphaned_overlays(self) -> list[Path]:
-        """
-        Collect overlay images without corresponding VM config.
-        """
-        collected = []
-
-        for vm_dir in self.storage.vm_dir.iterdir():
-            if not vm_dir.is_dir():
-                continue
-
-            overlay = vm_dir / "overlay.qcow2"
-            config = vm_dir / "config.json"
-
-            # Overlay exists but config missing = orphaned
-            if overlay.exists() and not config.exists():
-                trash_path = self.storage.trash_dir / f"{int(time.time_ns())}_{vm_dir.name}-orphan-overlay.qcow2"
-                overlay.rename(trash_path)
-                collected.append(overlay)
-
-                print(f"Collected orphaned overlay: {overlay}")
-
-        return collected
-
-    def collect_temp_files(
-        self,
-        max_age: timedelta = timedelta(hours=1)
-    ) -> list[Path]:
-        """Collect temporary files older than max_age."""
-        collected = []
-        cutoff_time = time.time() - max_age.total_seconds()
-
-        for temp_file in self.storage.temp_dir.iterdir():
-            if temp_file.stat().st_mtime < cutoff_time:
-                temp_file.unlink()
-                collected.append(temp_file)
-
-                print(f"Collected temp file: {temp_file}")
-
-        return collected
-
-    def empty_trash(self, max_age: timedelta = timedelta(days=7)):
-        """Permanently delete trash older than max_age."""
-        cutoff_time = time.time() - max_age.total_seconds()
-
-        for item in self.storage.trash_dir.iterdir():
-            if item.stat().st_mtime < cutoff_time:
-                item.unlink()
-                print(f"Permanently deleted: {item}")
-
-    def full_gc(self):
-        """Run full garbage collection cycle."""
-        print("Starting garbage collection...")
-
-        # Collect unreferenced images
-        images = self.collect_unreferenced_images()
-        print(f"Collected {len(images)} unreferenced images")
-
-        # Collect orphaned overlays
-        overlays = self.collect_orphaned_overlays()
-        print(f"Collected {len(overlays)} orphaned overlays")
-
-        # Collect old temp files
-        temps = self.collect_temp_files()
-        print(f"Collected {len(temps)} temp files")
-
-        # Empty old trash
-        self.empty_trash()
-
-        print("Garbage collection complete")
+    gc.CollectUnreferencedImages(gracePeriod)
+    gc.CollectOrphanedOverlays()
+    gc.CollectTempFiles(tempMaxAge)
+    gc.EmptyTrash(trashRetention)
+    return nil
+}
 ```
 
 ### Garbage Collection Locking
@@ -652,9 +594,11 @@ GC operations must coordinate with concurrent VM create/delete operations. See [
 
 #### 1. Unreferenced Base Images
 
-Base images with zero VM references are candidates for collection after a grace period (default: 24 hours).
+Base images with zero VM references are candidates for collection after a grace period (default: configurable via `gc_grace_period_hours`, default 24).
 
 **Why grace period?** A newly downloaded base image might not have references yet if VMs are still being provisioned. The grace period prevents premature deletion.
+
+**Action:** For each candidate, atomically under references.lock: move image file to trash/, then delete the entry from `references.json` (removes stale zero-ref entries).
 
 **Locking**: GC acquires both GC lock (L1) and reference lock (L2) to perform atomic check-and-delete.
 
@@ -663,6 +607,8 @@ Base images with zero VM references are candidates for collection after a grace 
 Overlay images whose parent VM configuration has been deleted or corrupted. These indicate incomplete cleanup operations.
 
 **Detection:** `overlay.qcow2` exists but `config.json` is missing in the same VM directory.
+
+**Action:** Move the overlay to trash/, then remove the now-empty VM directory with `os.RemoveAll`.
 
 **Locking**: GC lock (L1) only, as this operates on already-deleted VMs.
 
@@ -688,36 +634,31 @@ Permanently delete soft-deleted items from trash after a recovery period (defaul
 
 Different resource types use different grace periods:
 
-| Resource Type | Default Grace Period | Rationale |
-|--------------|---------------------|-----------|
-| Unreferenced images | 24 hours | Allow for batch VM creation |
-| Temporary files | 1 hour | Short-lived by nature |
-| Trash items | 7 days | Recovery window |
+| Resource Type | Default Grace Period | Config Field | Rationale |
+|--------------|---------------------|--------------|-----------|
+| Unreferenced images | 24 hours | `gc_grace_period_hours` | Allow for batch VM creation |
+| Temporary files | 1 hour | (hardcoded) | Short-lived by nature |
+| Trash items | 7 days | `gc_trash_retention_days` | Recovery window |
 
-These values are configurable in production deployments.
+The image grace period and trash retention are configurable via `CocoonConfig`
+(`gc_grace_period_hours` and `gc_trash_retention_days` fields). The temp file
+max age (1 hour) is currently hardcoded in `FullGC()`.
 
-### Scheduled Garbage Collection
+### Garbage Collection Invocation
 
-Run GC periodically in the background:
+**Current implementation**: GC is triggered manually via the CLI:
 
-```python
-import asyncio
-
-async def scheduled_gc_loop():
-    """Run garbage collection periodically."""
-    storage = StorageConfig.default()
-    ref_counter = ReferenceCounter(storage)
-    gc = GarbageCollector(storage, ref_counter)
-
-    while True:
-        # Run GC every hour
-        await asyncio.sleep(3600)
-
-        try:
-            gc.full_gc()
-        except Exception as e:
-            print(f"GC error: {e}")
+```bash
+cocoon gc          # Runs FullGC() with configured grace periods
 ```
+
+There is no background scheduler or daemon loop. Operators should run `cocoon gc`
+via cron or a systemd timer if periodic cleanup is desired.
+
+**Future Work / Not Yet Implemented**: A scheduled background GC loop (e.g.,
+running every hour inside a long-lived daemon) is planned but not yet
+implemented. The current manual-only approach keeps the architecture simple
+and avoids daemon management complexity.
 
 ## Storage Quotas
 

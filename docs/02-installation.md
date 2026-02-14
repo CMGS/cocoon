@@ -135,78 +135,25 @@ cloud-hypervisor --version
 
 Cloud Hypervisor requires firmware to boot virtual machines. Cocoon supports two boot modes per [Boot Contract v2.0](./01-boot-contract.md). For authoritative CLI behavior (flags, subcommands, exit codes), see [docs/09-cli-design.md](./09-cli-design.md).
 
-#### PVH Firmware (Recommended - Phase 1 Primary)
-
-**What is PVH?**
-- PVH (Paravirtualized Hardware) is a lightweight boot protocol designed for Cloud Hypervisor
-- **Fast boot**: Sub-100ms boot time (vs ~500ms for UEFI)
-- **Standard cloud images**: Works with Ubuntu Cloud, Fedora Cloud, Debian Cloud images out of the box
-- **Disk-based boot**: Loads kernel from GPT+ESP partition like standard VMs
-
-**rust-hypervisor-firmware** is the PVH firmware implementation:
-- Boots via PVH entry point (Xen PVH protocol)
-- Discovers virtio-blk disks and parses GPT
-- Mounts ESP partition and loads GRUB/kernel
-- Minimal footprint (~100KB vs 2MB OVMF)
-
-**Installation:**
-
-```bash
-# Create firmware directory
-sudo mkdir -p /var/lib/cocoon/firmware
-
-# Download rust-hypervisor-firmware (x86_64)
-curl -L https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw \
-    -o /tmp/hypervisor-fw
-
-# Install
-sudo mv /tmp/hypervisor-fw /var/lib/cocoon/firmware/hypervisor-fw
-sudo chmod +x /var/lib/cocoon/firmware/hypervisor-fw
-
-# Verify download (optional but recommended)
-sha256sum /var/lib/cocoon/firmware/hypervisor-fw
-# Expected: (check GitHub releases page)
-```
-
-**VM Launch with PVH:**
-
-```bash
-cloud-hypervisor \
-    --firmware /var/lib/cocoon/firmware/hypervisor-fw \
-    --disk path=/var/lib/cocoon/vms/vm-123/overlay.qcow2 \
-    --cpus boot=2 \
-    --memory size=2G \
-    --serial file=/var/log/cocoon/vm-123-serial.log \
-    --console off
-```
-
-**Parameter Semantics**:
-- `--firmware`: Recommended parameter for loading PVH firmware (architecture-specific firmware loading)
-- `--kernel`: Also works with hypervisor-fw (because it has PVH entry point), but `--firmware` is semantically correct
-- The firmware loads the actual kernel from the disk's ESP partition
-
-#### UEFI Firmware (Fallback)
+#### UEFI Firmware (Default)
 
 **What is UEFI?**
-- UEFI (Unified Extensible Firmware Interface) provides traditional firmware environment
-- Supports secure boot, older distributions, and specialized UEFI-only features
-- Slower boot (~500ms) but broader compatibility
+- UEFI (Unified Extensible Firmware Interface) provides the standard firmware environment
+- **Broadest compatibility**: Works with all Linux distributions and cloud images
+- **Secure boot ready**: Supports secure boot for production workloads
+- CLOUDHV.fd is the Cloud Hypervisor project's own edk2 build, optimized for CH
 
-**When to use UEFI fallback:**
-1. Image explicitly requires UEFI (metadata flag)
-2. PVH boot fails (automatic retry)
-3. User specifies `--boot-strategy uefi_only` flag
-
-**Installation (recommended -- via `cocoon firmware install`):**
+**Installation** (automatic via `cocoon init`, or manual):
 
 ```bash
-# Install CLOUDHV.fd (Cloud Hypervisor's edk2 UEFI firmware)
-cocoon firmware install --uefi-url https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v50.0/CLOUDHV.fd
+# Automatic (recommended) — cocoon init downloads CLOUDHV.fd:
+sudo cocoon init
 
-# Or manually download from CH releases:
-CH_VERSION="v50.0"
-curl -L https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/${CH_VERSION}/CLOUDHV.fd \
+# Manual download from edk2-cloudhv releases:
+EDK2_CH_VERSION="a54f262b09"
+curl -L "https://github.com/cloud-hypervisor/edk2/releases/download/ch-${EDK2_CH_VERSION}/CLOUDHV.fd" \
     -o /tmp/CLOUDHV.fd
+sudo mkdir -p /var/lib/cocoon/firmware
 sudo mv /tmp/CLOUDHV.fd /var/lib/cocoon/firmware/CLOUDHV.fd
 sudo chmod 644 /var/lib/cocoon/firmware/CLOUDHV.fd
 ```
@@ -223,40 +170,50 @@ sudo dnf install -y edk2-ovmf
 # Firmware at: /usr/share/edk2/ovmf/OVMF_CODE.fd
 ```
 
-**VM Launch with UEFI:**
+**UEFI Boot Behavior**:
+- All VM configuration (including firmware path) goes through the REST `vm.create` payload; CLI only passes `--api-socket`
+- Firmware is set as `payload.firmware` in the REST payload
+- Recommended: CLOUDHV.fd at `/var/lib/cocoon/firmware/CLOUDHV.fd`
+- Deprecated fallback: System OVMF (`OVMF_CODE.fd`) — only probed if CLOUDHV.fd is missing
+
+#### PVH Firmware (Optional — for `--boot-strategy pvh`)
+
+**What is PVH?**
+- PVH (Paravirtualized Hardware) is a lightweight boot protocol designed for Cloud Hypervisor
+- **Fast boot**: Sub-100ms boot time (vs ~500ms for UEFI)
+- **Standard cloud images**: Works with Ubuntu Cloud, Fedora Cloud, Debian Cloud images
+- **Disk-based boot**: Loads kernel from GPT+ESP partition like standard VMs
+
+**rust-hypervisor-firmware** is the PVH firmware implementation:
+- Boots via PVH entry point (Xen PVH protocol)
+- Discovers virtio-blk disks and parses GPT
+- Mounts ESP partition and loads GRUB/kernel
+- Minimal footprint (~100KB vs 2MB CLOUDHV.fd)
+
+**Installation** (also automatic via `cocoon init`):
 
 ```bash
-# UEFI boot requires explicit firmware path via --kernel parameter
-cloud-hypervisor \
-    --kernel /var/lib/cocoon/firmware/CLOUDHV.fd \
-    --disk path=/var/lib/cocoon/vms/vm-123/overlay.qcow2 \
-    --cpus boot=2 \
-    --memory size=2G \
-    --serial file=/var/log/cocoon/vm-123-serial.log \
-    --console off
+# Manual download (x86_64):
+curl -L https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw \
+    -o /tmp/hypervisor-fw
+sudo mv /tmp/hypervisor-fw /var/lib/cocoon/firmware/hypervisor-fw
+sudo chmod +x /var/lib/cocoon/firmware/hypervisor-fw
 ```
 
-**UEFI Boot Behavior**:
-- UEFI boot requires passing the UEFI firmware file to `--kernel` parameter
-- Recommended: Use Cloud Hypervisor's edk2 firmware (`CLOUDHV.fd`) at `/var/lib/cocoon/firmware/CLOUDHV.fd`
-  - Optimized for Cloud Hypervisor
-  - Installed via `cocoon firmware install --uefi-url URL` or downloaded from CH releases
-- Deprecated fallback: Standard OVMF firmware (`OVMF_CODE.fd`) -- only used if CLOUDHV.fd is missing
-  - Ubuntu/Debian: `/usr/share/OVMF/OVMF_CODE.fd` (from `ovmf` package)
-  - Fedora: `/usr/share/edk2/ovmf/OVMF_CODE.fd` (from `edk2-ovmf` package)
-- **Important**: Cloud Hypervisor does NOT auto-detect UEFI firmware. You must explicitly specify the firmware path.
+**PVH Boot Behavior**:
+- Firmware is set as `payload.kernel` in the REST payload
+- Use `--boot-strategy pvh` when creating/running VMs to select PVH boot
 
 ### Firmware Selection Guide
 
 | Boot Method | Firmware | Boot Time | OS Support | Phase |
 |-------------|----------|-----------|------------|-------|
-| **PVH (Primary)** | rust-hypervisor-firmware | <100ms | Ubuntu Cloud, Fedora Cloud, Debian Cloud | Phase 1 ✅ |
-| **UEFI (Fallback)** | CLOUDHV.fd (deprecated fallback: OVMF) | ~500ms | All Linux distributions | Phase 1 ✅ |
+| **UEFI (Default)** | CLOUDHV.fd (deprecated fallback: OVMF) | ~500ms | All Linux distributions | Phase 1 ✅ |
+| **PVH (Option)** | rust-hypervisor-firmware | <100ms | Ubuntu Cloud, Fedora Cloud, Debian Cloud | Phase 1 ✅ |
 
 **Cocoon Default Strategy** (per Boot Contract v2.0):
-1. Try PVH boot first (faster, cloud-native)
-2. Automatic fallback to UEFI on failure
-3. User can force UEFI with `--boot-strategy uefi_only`
+- UEFI boot by default (broadest compatibility)
+- User can select PVH with `--boot-strategy pvh` for faster cold boot
 
 ### Firmware Updates
 
@@ -301,8 +258,8 @@ Recommended directory structure for Cocoon deployment:
 ```
 /var/lib/cocoon/                   # Cocoon root directory (per Boot Contract v2.0)
 ├── firmware/
-│   ├── hypervisor-fw              # PVH firmware (primary)
-│   └── CLOUDHV.fd                 # UEFI firmware (optional in Phase 1)
+│   ├── CLOUDHV.fd                 # UEFI firmware (default)
+│   └── hypervisor-fw              # PVH firmware (optional)
 ├── cache/
 │   ├── images/                    # Base image cache (qcow2)
 │   ├── manifests/                 # IMAGE_REF -> base_key alias index

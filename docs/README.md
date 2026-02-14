@@ -42,7 +42,6 @@ The `future/` directory contains feature request specifications for Phase 2 feat
 
 | File | Title | Description |
 |------|-------|-------------|
-| [future/networking.md](./future/networking.md) | Network Configuration | TAP/bridge networking, port forwarding, and network isolation |
 | [future/api-server.md](./future/api-server.md) | gRPC/REST API Server | Programmatic VM management, authentication, and multi-tenant support |
 | [future/observability.md](./future/observability.md) | Monitoring and Logging | Prometheus metrics, structured logging, and distributed tracing |
 | [future/volume-passthrough.md](./future/volume-passthrough.md) | Volume Passthrough | Host-to-guest directory sharing via virtio-fs |
@@ -57,4 +56,4 @@ The `rfc/` directory contains the RFC process for proposing significant architec
 - [rfc/README.md](./rfc/README.md) -- RFC process and guidelines
 - [rfc/TEMPLATE.md](./rfc/TEMPLATE.md) -- Template for new RFC proposals
 
-No formal RFCs have been created yet. The initial architecture is captured in the specification documents above (00 through 15).
+No formal RFCs have been created yet. The initial architecture is captured in the specification documents above (00 through 16).
