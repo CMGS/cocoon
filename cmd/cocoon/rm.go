@@ -47,7 +47,10 @@ func rmAction(c *cli.Context) error {
 
 	force := c.Bool("force")
 	if err := app.vmMgr.Delete(c.Context, vmID, force); err != nil {
-		return fmt.Errorf("delete VM: %w", err)
+		if errors.Is(err, types.ErrVMNotFound) {
+			return nil // idempotent: VM disappeared between resolve and delete
+		}
+		return fmt.Errorf("delete VM %s: %w", vmID, err)
 	}
 
 	fmt.Println(vmID)

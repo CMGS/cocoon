@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"strconv"
@@ -60,6 +61,21 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inc
 				Type:     vm.InconsistencyMetadataCorrupt,
 				Severity: vm.SeverityCritical,
 				Details:  fmt.Sprintf("failed to load metadata.json: %v", metaErr),
+			})
+			continue
+		}
+
+		// Clean up stale DELETED directories that survived a crash during Delete().
+		if types.VMState(meta.State) == types.VMStateDeleted {
+			// Best-effort cleanup of orphaned DELETED VM.
+			_ = os.RemoveAll(m.cfg.VMPersistDir(vmID))
+			_ = os.RemoveAll(m.cfg.VMRuntimeDir(vmID))
+			_ = os.Remove(m.cfg.VMSerialLogPath(vmID))
+			inconsistencies = append(inconsistencies, vm.Inconsistency{
+				VMID:     vmID,
+				Type:     vm.InconsistencyMetadataCorrupt,
+				Severity: vm.SeverityInfo,
+				Details:  "cleaned up orphaned DELETED VM directory",
 			})
 			continue
 		}
@@ -367,6 +383,7 @@ func isStuckInState(updatedAt string, timeout time.Duration) bool {
 	}
 	t, err := time.Parse(time.RFC3339, updatedAt)
 	if err != nil {
+		log.Printf("WARNING: reconcile: invalid UpdatedAt timestamp %q for stuck-state check: %v", updatedAt, err)
 		return false
 	}
 	return time.Since(t) > timeout

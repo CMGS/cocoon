@@ -111,7 +111,7 @@ func (m *manager) Convert(ctx context.Context, identity *image.ImageIdentity) (s
 
 		// Ensure cache directory exists.
 		cacheDir := m.cfg.ImageCacheDir()
-		if err := os.MkdirAll(cacheDir, 0o755); err != nil { //nolint:gosec // G301: cache dir needs world-readable access for VM processes
+		if err := os.MkdirAll(cacheDir, 0o750); err != nil {
 			return "", fmt.Errorf("convert %s: create cache dir: %w", baseKey, err)
 		}
 
@@ -138,7 +138,7 @@ func (m *manager) Convert(ctx context.Context, identity *image.ImageIdentity) (s
 	}
 
 	// Detect source image format.
-	format, err := detectImageFormat(srcPath)
+	format, err := detectImageFormat(ctx, srcPath)
 	if err != nil {
 		return "", fmt.Errorf("convert %s: detect format: %w", baseKey, err)
 	}
@@ -146,7 +146,7 @@ func (m *manager) Convert(ctx context.Context, identity *image.ImageIdentity) (s
 
 	// Ensure cache directory exists.
 	cacheDir := m.cfg.ImageCacheDir()
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil { //nolint:gosec // G301: cache dir needs world-readable access for VM processes
+	if err := os.MkdirAll(cacheDir, 0o750); err != nil {
 		return "", fmt.Errorf("convert %s: create cache dir: %w", baseKey, err)
 	}
 
@@ -279,6 +279,10 @@ func (m *manager) prepareOCI(ctx context.Context, ref string) (*image.ImageIdent
 	// Phase 5: Pull + mount (buildah) — inside lock.
 	log.Printf("image %s: pulling OCI image %q", baseKey, ref)
 	if err := pullAndMountOCIPlatform(ctx, m.cfg, identity); err != nil {
+		// Clean up partially-created buildah container on failure.
+		if identity.ContainerID != "" {
+			cleanupBuildahContainer(identity.ContainerID, m.cfg)
+		}
 		return nil, "", fmt.Errorf("pull OCI %q: %w", ref, err)
 	}
 
@@ -296,7 +300,7 @@ func (m *manager) prepareOCI(ctx context.Context, ref string) (*image.ImageIdent
 
 	// Ensure cache directory exists.
 	cacheDir := m.cfg.ImageCacheDir()
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil { //nolint:gosec // G301: cache dir needs world-readable access for VM processes
+	if err := os.MkdirAll(cacheDir, 0o750); err != nil {
 		return nil, "", fmt.Errorf("convert %s: create cache dir: %w", baseKey, err)
 	}
 
@@ -363,7 +367,7 @@ func (m *manager) VerifyBootability(ctx context.Context, imagePath string) (*ima
 	}
 
 	// Basic check: verify format is qcow2.
-	format, err := detectImageFormat(imagePath)
+	format, err := detectImageFormat(ctx, imagePath)
 	if err != nil {
 		result.Errors = append(result.Errors, fmt.Sprintf("failed to detect image format: %v", err))
 		return result, nil

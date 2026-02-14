@@ -69,17 +69,33 @@ func parseCreateOptions(c *cli.Context, cmdName string) (*vm.CreateOptions, erro
 		return nil, fmt.Errorf("invalid --boot-strategy value: %w", err)
 	}
 
+	cpus := c.Int("cpus")
+	if cpus < 1 || cpus > 256 {
+		return nil, fmt.Errorf("invalid --cpus value %d: must be between 1 and 256", cpus)
+	}
+
 	memoryMB, err := parseMemory(c.String("memory"))
 	if err != nil {
 		return nil, fmt.Errorf("invalid --memory value: %w", err)
 	}
 
+	diskSize := c.String("disk")
+	if diskSize != "" {
+		diskBytes, diskErr := units.RAMInBytes(diskSize)
+		if diskErr != nil {
+			return nil, fmt.Errorf("invalid --disk value %q: %w", diskSize, diskErr)
+		}
+		if diskBytes < 1*1024*1024*1024 { // minimum 1GB
+			return nil, fmt.Errorf("invalid --disk value %q: minimum disk size is 1G", diskSize)
+		}
+	}
+
 	return &vm.CreateOptions{
 		Image:        c.Args().Get(0),
 		Name:         c.String("name"),
-		CPUs:         c.Int("cpus"),
+		CPUs:         cpus,
 		MemoryMB:     memoryMB,
-		DiskSize:     c.String("disk"),
+		DiskSize:     diskSize,
 		BootStrategy: bootStrategy,
 		SkipVerify:   c.Bool("skip-verify"),
 	}, nil

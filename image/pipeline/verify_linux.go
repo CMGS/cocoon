@@ -79,11 +79,15 @@ func deepVerifyBoot(imagePath string, result *image.BootCheckResult) error {
 	}
 
 	// Check for UEFI bootloader in ESP.
+	// Include standard UEFI boot binaries and common shim/GRUB paths.
 	uefiPaths := []string{
 		"/boot/efi/EFI/BOOT/BOOTX64.EFI",
 		"/boot/efi/EFI/BOOT/BOOTAA64.EFI",
 		"/boot/efi/EFI/BOOT/bootx64.efi",
 		"/boot/efi/EFI/BOOT/bootaa64.efi",
+		"/boot/efi/EFI/BOOT/shimx64.efi",
+		"/boot/efi/EFI/BOOT/grubx64.efi",
+		"/boot/efi/EFI/BOOT/shimaa64.efi",
 	}
 	for _, uefiPath := range uefiPaths {
 		isFileOut, errUEFI := exec.Command("guestfish", "--ro", "-a", imagePath, "-i", "is-file", uefiPath).Output() //nolint:gosec // uefiPath is from a hardcoded list, not user input

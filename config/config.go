@@ -99,7 +99,28 @@ func LoadConfig(path string) (*CocoonConfig, error) {
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	return cfg, nil
+}
+
+// Validate checks that the configuration values are within acceptable ranges.
+func (c *CocoonConfig) Validate() error {
+	if c.DefaultCPUs <= 0 {
+		return fmt.Errorf("config: DefaultCPUs must be > 0, got %d", c.DefaultCPUs)
+	}
+	if c.DefaultMemoryMB <= 0 {
+		return fmt.Errorf("config: DefaultMemoryMB must be > 0, got %d", c.DefaultMemoryMB)
+	}
+	if c.GCGracePeriodHours < 0 {
+		return fmt.Errorf("config: GCGracePeriodHours must be >= 0, got %d", c.GCGracePeriodHours)
+	}
+	if c.BootTimeoutSeconds < 0 {
+		return fmt.Errorf("config: BootTimeoutSeconds must be >= 0, got %d", c.BootTimeoutSeconds)
+	}
+	return nil
 }
 
 // RebaseRootDir updates RootDir and re-derives any config paths that were

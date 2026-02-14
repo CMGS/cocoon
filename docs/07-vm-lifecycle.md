@@ -101,6 +101,10 @@ CREATING -----> CREATED -----> STARTING -----> RUNNING -----> STOPPING -----> ST
 - Cloud Hypervisor crash
 - Resource exhaustion
 
+**Recovery Transition**:
+- `ERROR → STOPPED`: Via `cocoon kill` (force-terminates zombie process and resets state)
+- `ERROR → DELETED`: Via `cocoon delete` (cleanup after failure)
+
 ### 1.3 State Descriptions
 
 #### CREATING
@@ -232,12 +236,14 @@ CREATING -----> CREATED -----> STARTING -----> RUNNING -----> STOPPING -----> ST
 - Disk I/O error
 
 **Allowed Operations**:
+- `kill`: Force-terminate zombie process and transition to `STOPPED` (allows restart)
 - `delete`: Cleanup resources
 - `inspect`: View error details
 
 **Recovery**:
-- Cannot transition to any state except `DELETED`
-- User must delete and recreate VM
+- `ERROR → STOPPED`: Via `cocoon kill` (force-terminates zombie process and resets state, allowing restart)
+- `ERROR → DELETED`: Via `cocoon delete` (cleanup after failure)
+- The `kill` path enables recovery without full delete+recreate
 
 #### DELETED
 **Purpose**: VM fully removed, terminal state
@@ -352,6 +358,7 @@ var ValidTransitions = map[VMState][]VMState{
         VMStateDeleted,  // delete command
     },
     VMStateError: {
+        VMStateStopped,  // via cocoon kill (force-terminates zombie, resets state)
         VMStateDeleted,  // cleanup only
     },
     VMStateDeleted: {

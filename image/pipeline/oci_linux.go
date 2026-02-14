@@ -163,7 +163,15 @@ func classifySkopeoError(err error) error {
 
 // classifyBuildahError classifies buildah errors as transient or permanent.
 func classifyBuildahError(err error) error {
-	msg := err.Error()
+	msg := strings.ToLower(err.Error())
+	// Auth failures are permanent (not retryable).
+	if strings.Contains(msg, "unauthorized") ||
+		strings.Contains(msg, "authentication required") ||
+		strings.Contains(msg, "403") ||
+		strings.Contains(msg, "401") {
+		return types.NewPermanentError(err)
+	}
+	// Network/timeout errors are transient (retryable).
 	if strings.Contains(msg, "connection refused") ||
 		strings.Contains(msg, "timeout") ||
 		strings.Contains(msg, "temporary failure") ||

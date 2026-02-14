@@ -132,27 +132,51 @@ func followLog(c *cli.Context, path string, timestamps bool) error {
 	}
 
 	reader := bufio.NewReader(f)
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
+
+	const (
+		minPollInterval = 200 * time.Millisecond
+		maxPollInterval = 2 * time.Second
+	)
+	pollInterval := minPollInterval
 
 	for {
 		select {
 		case <-c.Done():
 			return nil
-		case <-ticker.C:
-			for {
-				line, err := reader.ReadString('\n')
-				if len(line) > 0 {
-					if timestamps {
-						fmt.Printf("%s %s", time.Now().UTC().Format(time.RFC3339), line)
-					} else {
-						fmt.Print(line)
-					}
-				}
-				if err != nil {
-					break
+		default:
+		}
+
+		hadData := false
+		for {
+			line, err := reader.ReadString('\n')
+			if len(line) > 0 {
+				hadData = true
+				if timestamps {
+					fmt.Printf("%s %s", time.Now().UTC().Format(time.RFC3339), line)
+				} else {
+					fmt.Print(line)
 				}
 			}
+			if err != nil {
+				if err != io.EOF {
+					// Non-EOF error: back off before retrying.
+					reader.Reset(f)
+				}
+				break
+			}
+		}
+
+		// Exponential backoff on consecutive empty reads; reset on data.
+		if hadData {
+			pollInterval = minPollInterval
+		} else if pollInterval < maxPollInterval {
+			pollInterval = min(pollInterval*2, maxPollInterval)
+		}
+
+		select {
+		case <-c.Done():
+			return nil
+		case <-time.After(pollInterval):
 		}
 	}
 }

@@ -128,8 +128,8 @@ func TestIsRetryable_ContextCanceled(t *testing.T) {
 }
 
 func TestIsRetryable_ContextDeadlineExceeded(t *testing.T) {
-	if !isRetryable(context.DeadlineExceeded) {
-		t.Error("expected context.DeadlineExceeded to be retryable")
+	if isRetryable(context.DeadlineExceeded) {
+		t.Error("expected context.DeadlineExceeded to NOT be retryable")
 	}
 }
 

@@ -312,15 +312,15 @@ type apiError struct {
 func (e *apiError) Error() string { return e.Message }
 
 // isRetryable determines whether an error is transient and should be retried.
-// Retryable: connection refused, HTTP 500, HTTP 503, net timeout.
-// Not retryable: HTTP 4xx (except 429), context.Canceled.
+// Retryable: connection refused, connection reset, HTTP 5xx, HTTP 429.
+// Not retryable: HTTP 4xx (except 429), context.Canceled, context.DeadlineExceeded.
 func isRetryable(err error) bool {
 	if err == nil {
 		return false
 	}
 
-	// Never retry on context cancellation.
-	if errors.Is(err, context.Canceled) {
+	// Never retry on context cancellation or overall deadline exceeded.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 
@@ -332,33 +332,32 @@ func isRetryable(err error) bool {
 			return true
 		case ae.StatusCode >= 400 && ae.StatusCode < 500:
 			return false // client errors are permanent
-		case ae.StatusCode == http.StatusInternalServerError,
-			ae.StatusCode == http.StatusServiceUnavailable:
-			return true
+		case ae.StatusCode >= 500:
+			return true // server errors are transient
 		}
 		return false
 	}
 
-	// Connection refused (CH not yet accepting on socket).
+	// Connection refused or connection reset (CH not yet accepting on socket
+	// or dropped the connection). Only retry on these specific transient
+	// conditions, not all net.OpError.
 	var opErr *net.OpError
 	if errors.As(err, &opErr) {
-		return true
+		if opErr.Op == "dial" || opErr.Op == "read" || opErr.Op == "write" {
+			errMsg := opErr.Err.Error()
+			if strings.Contains(errMsg, "connection refused") ||
+				strings.Contains(errMsg, "connection reset") {
+				return true
+			}
+		}
+		return false
 	}
 
-	// Check for net timeout.
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return true
-	}
-
-	// context.DeadlineExceeded is transient (per-request timeout, not user cancel).
-	if errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
-
-	// Check for common transient error strings (connection refused wrapped
-	// in generic fmt.Errorf by the http client).
-	if strings.Contains(err.Error(), "connection refused") {
+	// Check for common transient error strings (connection refused/reset
+	// wrapped in generic fmt.Errorf by the http client).
+	errMsg := err.Error()
+	if strings.Contains(errMsg, "connection refused") ||
+		strings.Contains(errMsg, "connection reset") {
 		return true
 	}
 
@@ -391,12 +390,17 @@ func (c *client) doWithRetry(ctx context.Context, fn func() error) error {
 		log.Printf("CH API transient error (attempt %d/%d): %v; retrying in %s",
 			attempt+1, c.maxRetries+1, lastErr, backoff)
 
-		// Wait with jitter: backoff +/- 25%.
+		// Wait with jitter: backoff +/- 25%, floored at baseBackoff/4 to
+		// prevent negative or near-zero sleep durations.
 		jitter := time.Duration(rand.Int64N(int64(backoff/2))) - backoff/4 //nolint:gosec // G404: jitter does not need cryptographic randomness
+		wait := backoff + jitter
+		if minBackoff := c.baseBackoff / 4; wait < minBackoff {
+			wait = minBackoff
+		}
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("retry canceled: %w", ctx.Err())
-		case <-time.After(backoff + jitter):
+		case <-time.After(wait):
 		}
 
 		// Exponential backoff: 100ms -> 200ms -> 400ms.

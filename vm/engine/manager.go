@@ -25,6 +25,17 @@ import (
 	"github.com/CMGS/cocoon/vm"
 )
 
+// Lock hierarchy (must acquire in this order to prevent deadlock):
+//
+//	Level 1: GC Lock (storage/local/gc.go)
+//	Level 2: References Lock / Name Index Lock
+//	Level 3: Image Conversion Lock (per-checksum)
+//	Level 4: VM Metadata Lock (per-VM)
+//
+// IMPORTANT: flock-based locks are NOT reentrant. A goroutine that holds
+// a lock MUST NOT attempt to acquire the same lock again. All current
+// call paths are verified to be non-recursive.
+
 // Compile-time interface check.
 var _ vm.Manager = (*manager)(nil)
 
@@ -883,6 +894,10 @@ func readSerialLogExcerpt(path string, maxLines int) ([]string, error) {
 
 // transitionStateWithUpdate validates a state transition and applies an
 // additional mutation function to metadata before persisting.
+//
+// Callers MUST NOT already hold the VM metadata lock (Level 4). This method
+// acquires it internally. Calling while holding the lock will deadlock because
+// flock is not reentrant.
 func (m *manager) transitionStateWithUpdate(vmID string, to types.VMState, reason string, mutate func(*types.VMMetadataFile)) error {
 	lockPath := m.cfg.VMMetadataLock(vmID)
 	fl := flock.New(lockPath)

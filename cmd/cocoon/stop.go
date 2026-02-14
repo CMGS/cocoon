@@ -50,6 +50,9 @@ func stopAction(c *cli.Context) error {
 	// Check if --rm was set at run time (auto_remove flag in metadata).
 	// If so, automatically delete the VM after stopping.
 	meta, metaErr := app.vmMgr.LoadMetadata(vmID)
+	if metaErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not check auto-remove for %s: %v\n", vmID, metaErr)
+	}
 	if metaErr == nil && meta.AutoRemove {
 		if delErr := app.vmMgr.Delete(c.Context, vmID, false); delErr != nil {
 			return fmt.Errorf("auto-remove VM %s: %w", vmID, delErr)

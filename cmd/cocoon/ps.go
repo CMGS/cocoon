@@ -114,7 +114,7 @@ func applyFilter(vms []*types.VMInspect, filter string) ([]*types.VMInspect, err
 	}
 
 	key := strings.ToLower(strings.TrimSpace(parts[0]))
-	value := strings.ToLower(strings.TrimSpace(parts[1]))
+	value := strings.TrimSpace(parts[1])
 
 	filtered := make([]*types.VMInspect, 0, len(vms))
 	for _, v := range vms {

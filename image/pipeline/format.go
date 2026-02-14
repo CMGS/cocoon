@@ -1,9 +1,11 @@
 package pipeline
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"time"
 )
 
 // qemuImgInfo is the JSON structure returned by `qemu-img info --output=json`.
@@ -14,10 +16,17 @@ type qemuImgInfo struct {
 	Filename    string `json:"filename"`
 }
 
+// detectImageFormatTimeout is the maximum time allowed for qemu-img info to complete.
+const detectImageFormatTimeout = 30 * time.Second
+
 // detectImageFormat runs `qemu-img info --output=json` on the given path and
 // returns the detected format string (e.g., "qcow2", "raw").
-func detectImageFormat(path string) (string, error) {
-	cmd := exec.Command("qemu-img", "info", "--output=json", path)
+// The parent context is respected: the effective timeout is the shorter of the
+// parent deadline and detectImageFormatTimeout.
+func detectImageFormat(ctx context.Context, path string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, detectImageFormatTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "qemu-img", "info", "--output=json", path)
 	out, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {

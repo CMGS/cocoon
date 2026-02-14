@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	cli "github.com/urfave/cli/v2"
 
@@ -125,6 +127,11 @@ func downloadFirmware(url, destPath string, perm os.FileMode, force bool) error 
 		return nil
 	}
 
+	// Validate URL scheme.
+	if !strings.HasPrefix(url, "https://") && !strings.HasPrefix(url, "http://") {
+		return fmt.Errorf("invalid firmware URL %q: must use http:// or https://", url)
+	}
+
 	// Ensure parent directory exists.
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil { //nolint:gosec // G301: firmware dir needs to be accessible
 		return fmt.Errorf("create firmware directory: %w", err)
@@ -132,7 +139,8 @@ func downloadFirmware(url, destPath string, perm os.FileMode, force bool) error 
 
 	fmt.Printf("\nDownloading %s\n  -> %s\n", url, destPath)
 
-	resp, err := http.Get(url) //nolint:gosec,noctx // G107: URL comes from user-provided CLI flag
+	client := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := client.Get(url) //nolint:noctx // URL comes from user-provided CLI flag
 	if err != nil {
 		return fmt.Errorf("HTTP GET: %w", err)
 	}
