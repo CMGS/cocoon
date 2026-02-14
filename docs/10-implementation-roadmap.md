@@ -1,9 +1,9 @@
 # Implementation Roadmap
 
 **Version**: 1.0
-**Status**: Phases 0-6 Implemented; Phases 7-8 Planned
+**Status**: Phases 0-6 Implemented (with validation gaps); Phases 7-8 Planned
 **Phase**: Phase 1
-**Last Updated**: 2026-02-15
+**Last Updated**: 2026-02-14
 
 ## Executive Summary
 
@@ -291,7 +291,7 @@ cloud-hypervisor --disk path=converted.qcow2 --cpus boot=1 --memory size=1024M
 - Can pull OCI images using buildah
 - Can calculate manifest checksums correctly
 - Can convert rootfs to qcow2 with partitions
-- Converted images boot successfully in CH
+- Converted-image boot path validated in a KVM-backed E2E environment
 - Cache prevents duplicate conversions
 
 ---
@@ -1049,7 +1049,7 @@ ls /var/lib/cocoon/cache/images/*.qcow2
 **Criteria**:
 - ✅ Can pull OCI images from Docker Hub
 - ✅ Can convert rootfs to bootable qcow2
-- ✅ Converted images boot successfully
+- ⚠️ Converted-image boot path verified by component tests; full KVM E2E validation pending
 - ✅ Checksum-based caching prevents duplicate conversions
 
 **Validation**:
@@ -1306,9 +1306,9 @@ qemu-img >= 8.0
 ### P1: Important But Not Blocking
 
 **Documentation**:
-- [ ] README with quickstart
-- [ ] Installation guide for major distros
-- [ ] Architecture overview
+- [x] README with quickstart (`README.md`)
+- [x] Installation guide for major distros (`docs/02-installation.md`)
+- [x] Architecture overview (`docs/00-overview.md`)
 - [ ] Troubleshooting FAQ
 - [ ] API documentation (if exposed)
 
@@ -1371,7 +1371,7 @@ qemu-img >= 8.0
 4. ✅ Crash recovery and reconciliation handle failures gracefully
 5. ✅ Concurrent operations safe (no races, no deadlocks)
 6. ✅ CLI provides Docker-like UX
-7. ✅ All P0 items in completion checklist satisfied
+7. ⚠️ P0 core implementation is complete; remaining validation gaps are KVM E2E boot confirmation and deadlock stress testing
 
 **Next Steps After Phase 1**:
 - Phase 2: Network configuration (TAP devices, bridges, port forwarding)
