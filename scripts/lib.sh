@@ -350,6 +350,34 @@ install_system_packages() {
             done
             ;;
     esac
+
+    # Disable AppArmor restriction on swtpm so it can create sockets
+    # under /run/cocoon/. Without this, swtpm fails with "Permission denied"
+    # when Cocoon starts a TPM emulator for a VM.
+    configure_swtpm_apparmor
+}
+
+# ----- Configure swtpm AppArmor -----
+configure_swtpm_apparmor() {
+    local profile="/etc/apparmor.d/usr.bin.swtpm"
+    if [[ ! -f "$profile" ]]; then
+        return # No AppArmor profile for swtpm; nothing to do.
+    fi
+    if ! command -v apparmor_parser &>/dev/null; then
+        return # AppArmor tools not installed.
+    fi
+
+    # Check if already disabled.
+    if [[ -L /etc/apparmor.d/disable/usr.bin.swtpm ]]; then
+        ok "swtpm AppArmor profile already disabled"
+        return
+    fi
+
+    info "Disabling AppArmor restriction on swtpm..."
+    mkdir -p /etc/apparmor.d/disable
+    ln -sf "$profile" /etc/apparmor.d/disable/usr.bin.swtpm
+    apparmor_parser -R "$profile" 2>/dev/null || true
+    ok "swtpm AppArmor profile disabled (allows socket creation under /run/cocoon/)"
 }
 
 # ----- Check all CH runtime components -----
@@ -382,6 +410,14 @@ check_ch_runtime() {
     check_tool "skopeo" "skopeo" "OCI image inspection"
     check_tool "guestfish" "guestfish" "OCI conversion and boot verification"
     check_tool "swtpm" "swtpm" "TPM 2.0 emulator for VM TPM support"
+    # Check swtpm AppArmor is not blocking socket creation.
+    if [[ -f /etc/apparmor.d/usr.bin.swtpm ]]; then
+        if [[ -L /etc/apparmor.d/disable/usr.bin.swtpm ]]; then
+            check_result "swtpm AppArmor" "true" "(profile disabled)"
+        else
+            check_result "swtpm AppArmor" "false" "(profile active - swtpm will fail with Permission denied)"
+        fi
+    fi
 
     echo ""
     echo -e "${BOLD}--- Firmware ---${NC}"
