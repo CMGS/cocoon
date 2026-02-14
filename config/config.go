@@ -266,6 +266,18 @@ func (c *CocoonConfig) VMSerialLogPath(vmID string) string {
 	return filepath.Join(c.LogDir, vmID+"-serial.log")
 }
 
+func (c *CocoonConfig) VMTPMStateDir(vmID string) string {
+	return filepath.Join(c.RootDir, "vms", vmID, "tpm")
+}
+
+func (c *CocoonConfig) VMTPMSocketPath(vmID string) string {
+	return filepath.Join(c.RuntimeDir, "vms", vmID, "swtpm.sock")
+}
+
+func (c *CocoonConfig) VMSwtpmPIDPath(vmID string) string {
+	return filepath.Join(c.RuntimeDir, "vms", vmID, "swtpm.pid")
+}
+
 func (c *CocoonConfig) BaseImagePath(baseKey string) string {
 	return filepath.Join(c.RootDir, "cache", "images", baseKey+".qcow2")
 }

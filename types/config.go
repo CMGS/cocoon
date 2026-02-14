@@ -14,8 +14,9 @@ type VMConfig struct {
 	Arch           string `json:"arch"`
 
 	// Boot configuration
-	BootStrategy BootStrategy `json:"boot_strategy"`
-	FirmwarePath string       `json:"firmware_path"`
+	BootStrategy  BootStrategy `json:"boot_strategy"`
+	FirmwarePath  string       `json:"firmware_path"`
+	TPMSocketPath string       `json:"tpm_socket_path,omitempty"`
 
 	// Resources
 	CPUs     int    `json:"cpus"`

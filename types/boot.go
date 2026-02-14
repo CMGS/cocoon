@@ -10,14 +10,14 @@ import (
 type BootStrategy string
 
 const (
-	// BootStrategyUEFIOnly boots with UEFI firmware (CLOUDHV.fd) via CLI --firmware.
-	BootStrategyUEFIOnly BootStrategy = "uefi_only"
-	// BootStrategyPVHOnly boots with PVH firmware (hypervisor-fw) via REST payload.kernel.
-	BootStrategyPVHOnly BootStrategy = "pvh_only"
+	// BootStrategyUEFI boots with UEFI firmware (CLOUDHV.fd) via CLI --firmware.
+	BootStrategyUEFI BootStrategy = "uefi"
+	// BootStrategyPVH boots with PVH firmware (hypervisor-fw) via REST payload.kernel.
+	BootStrategyPVH BootStrategy = "pvh"
 )
 
 // DefaultBootStrategy is the default boot strategy for new VMs.
-const DefaultBootStrategy = BootStrategyPVHOnly
+const DefaultBootStrategy = BootStrategyPVH
 
 // ParseBootStrategy validates and normalizes a user-provided boot strategy.
 // Empty input resolves to DefaultBootStrategy.
@@ -28,11 +28,11 @@ func ParseBootStrategy(raw string) (BootStrategy, error) {
 	}
 
 	switch BootStrategy(normalized) {
-	case BootStrategyUEFIOnly, BootStrategyPVHOnly:
+	case BootStrategyUEFI, BootStrategyPVH:
 		return BootStrategy(normalized), nil
 	default:
 		return "", fmt.Errorf("invalid boot strategy %q (must be one of: %s, %s)",
-			raw, BootStrategyPVHOnly, BootStrategyUEFIOnly)
+			raw, BootStrategyPVH, BootStrategyUEFI)
 	}
 }
 

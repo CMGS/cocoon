@@ -320,7 +320,7 @@ install_system_packages() {
     case "$PKG_MANAGER" in
         apt)
             apt-get update -qq
-            local packages=(qemu-utils buildah skopeo libguestfs-tools)
+            local packages=(qemu-utils buildah skopeo libguestfs-tools swtpm swtpm-tools)
             for pkg in "${packages[@]}"; do
                 if dpkg -l "$pkg" 2>/dev/null | grep -q "^ii"; then
                     ok "$pkg already installed"
@@ -335,7 +335,7 @@ install_system_packages() {
             done
             ;;
         dnf)
-            local packages=(qemu-img buildah skopeo libguestfs-tools)
+            local packages=(qemu-img buildah skopeo libguestfs-tools swtpm swtpm-tools)
             for pkg in "${packages[@]}"; do
                 if rpm -q "$pkg" &>/dev/null; then
                     ok "$pkg already installed"
@@ -381,6 +381,7 @@ check_ch_runtime() {
     check_tool "buildah" "buildah" "OCI image pull"
     check_tool "skopeo" "skopeo" "OCI image inspection"
     check_tool "guestfish" "guestfish" "OCI conversion and boot verification"
+    check_tool "swtpm" "swtpm" "TPM 2.0 emulator for VM TPM support"
 
     echo ""
     echo -e "${BOLD}--- Firmware ---${NC}"

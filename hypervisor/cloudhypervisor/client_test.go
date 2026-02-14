@@ -21,7 +21,7 @@ import (
 
 func TestBuildLaunchArgs_PVH_OnlyAPISocket(t *testing.T) {
 	cfg := &types.VMConfig{
-		BootStrategy: types.BootStrategyPVHOnly,
+		BootStrategy: types.BootStrategyPVH,
 		FirmwarePath: "/usr/share/firmware/pvh.bin",
 		CPUs:         2,
 		MemoryMB:     1024,
@@ -34,11 +34,13 @@ func TestBuildLaunchArgs_PVH_OnlyAPISocket(t *testing.T) {
 	// PVH firmware goes via REST payload, not CLI.
 	assertNotContainsKey(t, args, "--firmware")
 	assertNotContainsKey(t, args, "--kernel")
+	// No TPM socket → no --tpm flag.
+	assertNotContainsKey(t, args, "--tpm")
 }
 
-func TestBuildLaunchArgs_UEFI_FullCLIArgs(t *testing.T) {
+func TestBuildLaunchArgs_UEFI_OnlyFirmwareOnCLI(t *testing.T) {
 	cfg := &types.VMConfig{
-		BootStrategy: types.BootStrategyUEFIOnly,
+		BootStrategy: types.BootStrategyUEFI,
 		FirmwarePath: "/usr/share/firmware/CLOUDHV.fd",
 		CPUs:         2,
 		MemoryMB:     1024,
@@ -50,18 +52,52 @@ func TestBuildLaunchArgs_UEFI_FullCLIArgs(t *testing.T) {
 	assertContainsFlag(t, args, "--api-socket", "/tmp/api.sock")
 	assertContainsFlag(t, args, "--firmware", "/usr/share/firmware/CLOUDHV.fd")
 	assertNotContainsKey(t, args, "--kernel")
-	// Verify VM config is on CLI for UEFI auto-create.
-	assertContainsKey(t, args, "--cpus")
-	assertContainsKey(t, args, "--memory")
-	assertContainsKey(t, args, "--disk")
-	assertContainsKey(t, args, "--serial")
-	assertContainsKey(t, args, "--console")
+	// VM resource config goes via REST vm.create, NOT on CLI.
+	// This prevents CH from auto-creating and auto-booting the VM.
+	assertNotContainsKey(t, args, "--cpus")
+	assertNotContainsKey(t, args, "--memory")
+	assertNotContainsKey(t, args, "--disk")
+	assertNotContainsKey(t, args, "--serial")
+	assertNotContainsKey(t, args, "--console")
+}
+
+func TestBuildLaunchArgs_TPMSocketIncluded(t *testing.T) {
+	cfg := &types.VMConfig{
+		BootStrategy:  types.BootStrategyPVH,
+		FirmwarePath:  "/usr/share/firmware/pvh.bin",
+		CPUs:          2,
+		MemoryMB:      1024,
+		OverlayPath:   "/tmp/overlay.qcow2",
+		SerialLog:     "/tmp/serial.log",
+		TPMSocketPath: "/run/cocoon/vms/vm-abc/swtpm.sock",
+	}
+	args := buildLaunchArgs("/tmp/api.sock", cfg)
+
+	assertContainsFlag(t, args, "--tpm", "socket=/run/cocoon/vms/vm-abc/swtpm.sock")
+}
+
+func TestBuildLaunchArgs_UEFI_WithTPM(t *testing.T) {
+	cfg := &types.VMConfig{
+		BootStrategy:  types.BootStrategyUEFI,
+		FirmwarePath:  "/usr/share/firmware/CLOUDHV.fd",
+		CPUs:          2,
+		MemoryMB:      1024,
+		OverlayPath:   "/tmp/overlay.qcow2",
+		SerialLog:     "/tmp/serial.log",
+		TPMSocketPath: "/run/cocoon/vms/vm-abc/swtpm.sock",
+	}
+	args := buildLaunchArgs("/tmp/api.sock", cfg)
+
+	// UEFI flags present.
+	assertContainsFlag(t, args, "--firmware", "/usr/share/firmware/CLOUDHV.fd")
+	// TPM flag also present.
+	assertContainsFlag(t, args, "--tpm", "socket=/run/cocoon/vms/vm-abc/swtpm.sock")
 }
 
 func TestBuildLaunchArgs_SocketPathAlwaysPresent(t *testing.T) {
 	strategies := []types.BootStrategy{
-		types.BootStrategyPVHOnly,
-		types.BootStrategyUEFIOnly,
+		types.BootStrategyPVH,
+		types.BootStrategyUEFI,
 	}
 
 	for _, strategy := range strategies {
@@ -116,6 +152,29 @@ func TestIsVMAlreadyCreatedError_FalseForOtherErrors(t *testing.T) {
 	}
 	for _, err := range tests {
 		if isVMAlreadyCreatedError(err) {
+			t.Fatalf("expected false for error: %v", err)
+		}
+	}
+}
+
+func TestIsVMAlreadyBootedError(t *testing.T) {
+	err := &apiError{
+		StatusCode: 500,
+		Message:    `PUT /api/v1/vm.boot returned 500: ["Error from API","The VM could not boot","invalid VM state transition: Running to Running"]`,
+	}
+	if !isVMAlreadyBootedError(err) {
+		t.Fatal("expected vm.boot 'already running' error to be detected")
+	}
+}
+
+func TestIsVMAlreadyBootedError_FalseForOtherErrors(t *testing.T) {
+	tests := []error{
+		&apiError{StatusCode: 500, Message: "internal server error"},
+		&apiError{StatusCode: 400, Message: "bad request"},
+		errors.New("some other error"),
+	}
+	for _, err := range tests {
+		if isVMAlreadyBootedError(err) {
 			t.Fatalf("expected false for error: %v", err)
 		}
 	}
@@ -278,10 +337,3 @@ func assertNotContainsKey(t *testing.T, args []string, key string) {
 	}
 }
 
-// assertContainsKey checks that args contains the given key.
-func assertContainsKey(t *testing.T, args []string, key string) {
-	t.Helper()
-	if !slices.Contains(args, key) {
-		t.Errorf("expected args to contain %s, got %v", key, args)
-	}
-}

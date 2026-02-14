@@ -62,32 +62,27 @@ func New(cfg *config.CocoonConfig) hypervisor.Client {
 // ---------------------------------------------------------------------------
 
 // buildLaunchArgs constructs the Cloud Hypervisor CLI arguments for a given
-// VM configuration. It selects the correct firmware flag based on the boot
-// strategy: --kernel for UEFI, --firmware for PVH (the default).
+// VM configuration.
+//
+// UEFI firmware (CLOUDHV.fd) must be set via CLI --firmware because CH's REST
+// API payload fields cannot load it. Only --firmware is passed on CLI; the VM
+// resource config (cpus, memory, disk, serial, console) goes through the REST
+// vm.create call so that CH does NOT auto-create or auto-boot the VM.
+//
+// PVH firmware (hypervisor-fw) works via REST API payload.kernel and does NOT
+// need any CLI flags beyond --api-socket.
 func buildLaunchArgs(socketPath string, cfg *types.VMConfig) []string {
 	args := []string{"--api-socket", socketPath}
 
-	// UEFI firmware (CLOUDHV.fd) must be passed via CLI --firmware flag.
-	// CH's REST API payload.firmware / payload.kernel cannot correctly load
-	// CLOUDHV.fd (a raw FD-format binary, not ELF/bzImage/PE). The CLI
-	// --firmware path sets up UEFI-specific memory layout that the REST API
-	// payload fields do not replicate.
-	//
-	// When --firmware is passed with --api-socket, CH auto-creates the VM
-	// (handled by isVMAlreadyCreatedError in CreateVM) but does NOT auto-boot;
-	// it waits for the vm.boot REST call.
-	//
-	// PVH firmware (hypervisor-fw) works via REST API payload.kernel and does
-	// NOT need CLI flags.
-	if cfg.BootStrategy == types.BootStrategyUEFIOnly && cfg.FirmwarePath != "" {
-		args = append(args,
-			"--firmware", cfg.FirmwarePath,
-			"--cpus", fmt.Sprintf("boot=%d,max=%d", cfg.CPUs, cfg.CPUs),
-			"--memory", fmt.Sprintf("size=%d", cfg.MemoryMB*1024*1024),
-			"--disk", fmt.Sprintf("path=%s", cfg.OverlayPath),
-			"--serial", fmt.Sprintf("file=%s", cfg.SerialLog),
-			"--console", "off",
-		)
+	// UEFI: only pass --firmware. VM resource config is sent via REST vm.create.
+	if cfg.BootStrategy == types.BootStrategyUEFI && cfg.FirmwarePath != "" {
+		args = append(args, "--firmware", cfg.FirmwarePath)
+	}
+
+	// TPM: pass swtpm socket path to CH via --tpm CLI flag.
+	// swtpm must be started before CH (handled by Launch).
+	if cfg.TPMSocketPath != "" {
+		args = append(args, "--tpm", fmt.Sprintf("socket=%s", cfg.TPMSocketPath))
 	}
 
 	return args
@@ -107,6 +102,15 @@ func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (
 	// Prevents "Address already in use" if a stale socket remains.
 	_ = os.Remove(socketPath)
 	_ = os.Remove(c.cfg.VMPIDPath(vmID))
+	c.stopSwtpm(vmID) // Clean up stale swtpm from previous crash.
+
+	// Start swtpm companion process for TPM emulation (must be running
+	// before CH so the socket is ready for --tpm).
+	if cfg.TPMSocketPath != "" {
+		if err := c.startSwtpm(vmID, cfg.TPMSocketPath); err != nil {
+			return 0, fmt.Errorf("start swtpm for %s: %w", vmID, err)
+		}
+	}
 
 	// Build CH command-line arguments.
 	// Only pass --api-socket and firmware flag on the CLI. All VM resource
@@ -220,11 +224,80 @@ func (c *client) IsAlive(vmID string) bool {
 	return utils.ValidateProcess(pid, "cloud-hypervisor")
 }
 
-// cleanupRuntimeFiles removes the PID file and API socket for a VM.
+// cleanupRuntimeFiles removes the PID file and API socket for a VM,
+// and stops the swtpm companion process.
 // Best-effort: errors are ignored since files may already be gone.
 func (c *client) cleanupRuntimeFiles(vmID string) {
+	c.stopSwtpm(vmID)
 	_ = os.Remove(c.cfg.VMPIDPath(vmID))
 	_ = os.Remove(c.cfg.VMSocketPath(vmID))
+}
+
+// startSwtpm launches a swtpm process for TPM 2.0 emulation.
+// The swtpm process must be running before the CH process is started so the
+// TPM socket is ready for CH's --tpm flag.
+func (c *client) startSwtpm(vmID string, tpmSocketPath string) error {
+	tpmStateDir := c.cfg.VMTPMStateDir(vmID)
+	if err := os.MkdirAll(tpmStateDir, 0o755); err != nil { //nolint:gosec // G301: TPM state dir needs same access as VM dir
+		return fmt.Errorf("create TPM state dir %s: %w", tpmStateDir, err)
+	}
+
+	// Remove stale socket from previous run.
+	_ = os.Remove(tpmSocketPath)
+
+	args := []string{
+		"socket",
+		"--tpmstate", fmt.Sprintf("dir=%s", tpmStateDir),
+		"--ctrl", fmt.Sprintf("type=unixio,path=%s", tpmSocketPath),
+		"--flags", "startup-clear",
+		"--tpm2",
+	}
+
+	cmd := exec.Command("swtpm", args...) //nolint:gosec // args are constructed from trusted config paths
+	configureCHProcess(cmd)
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start swtpm: %w", err)
+	}
+
+	pid := cmd.Process.Pid
+
+	pidPath := c.cfg.VMSwtpmPIDPath(vmID)
+	if err := utils.WritePIDFile(pidPath, pid); err != nil {
+		_ = cmd.Process.Kill()
+		return fmt.Errorf("write swtpm PID file: %w", err)
+	}
+
+	// Release the process handle so swtpm outlives the CLI invocation.
+	_ = cmd.Process.Release()
+
+	// Wait for the TPM socket to appear.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(tpmSocketPath); err == nil {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Socket never appeared; kill swtpm.
+	c.stopSwtpm(vmID)
+	return fmt.Errorf("swtpm socket %s did not appear within 5s", tpmSocketPath)
+}
+
+// stopSwtpm terminates the swtpm companion process for a VM.
+// Best-effort: silently ignores missing PID files or already-exited processes.
+func (c *client) stopSwtpm(vmID string) {
+	pidPath := c.cfg.VMSwtpmPIDPath(vmID)
+	pid, err := utils.ReadPIDFile(pidPath)
+	if err != nil {
+		return // No PID file — nothing to stop.
+	}
+	if utils.ValidateProcess(pid, "swtpm") {
+		_ = utils.ForceKillProcess(pid)
+	}
+	_ = os.Remove(pidPath)
+	_ = os.Remove(c.cfg.VMTPMSocketPath(vmID))
 }
 
 // ---------------------------------------------------------------------------
@@ -250,8 +323,30 @@ func (c *client) CreateVM(ctx context.Context, socketPath string, vmCfg *hypervi
 // BootVM sends PUT /api/v1/vm.boot.
 func (c *client) BootVM(ctx context.Context, socketPath string) error {
 	return c.doWithRetry(ctx, func() error {
-		return c.doPUT(ctx, socketPath, "/api/v1/vm.boot", nil)
+		err := c.doPUT(ctx, socketPath, "/api/v1/vm.boot", nil)
+		if isVMAlreadyBootedError(err) {
+			log.Printf("CH API reported VM already running for %s; treating vm.boot as idempotent success", socketPath)
+			return nil
+		}
+		return err
 	})
+}
+
+// isVMAlreadyBootedError checks whether CH returned a "Running to Running"
+// transition error, indicating the VM was already booted (e.g., auto-booted
+// by CH when --firmware was passed with full config on CLI).
+func isVMAlreadyBootedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ae *apiError
+	if !errors.As(err, &ae) {
+		return false
+	}
+	if ae.StatusCode != http.StatusInternalServerError {
+		return false
+	}
+	return strings.Contains(strings.ToLower(ae.Message), "running to running")
 }
 
 // ShutdownVM sends PUT /api/v1/vm.shutdown.

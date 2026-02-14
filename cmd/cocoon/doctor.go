@@ -226,6 +226,9 @@ func runDependencyChecks(app *appContext) []checkResult {
 		"required for OCI-to-qcow2 conversion",
 	))
 
+	// 4f. Check swtpm binary (TPM emulator).
+	results = append(results, checkSwtpm())
+
 	// 5. Check KVM device.
 	if _, err := os.Stat("/dev/kvm"); err != nil {
 		results = append(results, checkResult{
@@ -275,6 +278,40 @@ func runDependencyChecks(app *appContext) []checkResult {
 	}
 
 	return results
+}
+
+// checkSwtpm checks that the swtpm binary is available and reports its version.
+func checkSwtpm() checkResult {
+	path, err := exec.LookPath("swtpm")
+	if err != nil {
+		return checkResult{
+			Name:   "swtpm",
+			Status: "fail",
+			Detail: "binary not found in PATH (required for VM TPM 2.0 support)",
+		}
+	}
+
+	// swtpm --version writes to stderr and exits 0.
+	cmd := exec.Command(path, "--version") //nolint:gosec // binary path is resolved from PATH
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// Binary found but version query failed — still usable.
+		return checkResult{
+			Name:   "swtpm",
+			Status: "pass",
+			Detail: fmt.Sprintf("%s (version unknown)", path),
+		}
+	}
+
+	ver := strings.TrimSpace(string(out))
+	if ver == "" {
+		ver = "installed"
+	}
+	return checkResult{
+		Name:   "swtpm",
+		Status: "pass",
+		Detail: fmt.Sprintf("%s (%s)", path, ver),
+	}
 }
 
 // checkUEFIFirmware checks the primary UEFI firmware path and probes

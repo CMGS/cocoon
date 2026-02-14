@@ -270,6 +270,7 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 		BaseImagePath:  baseImagePath,
 		OverlayPath:    m.cfg.VMOverlayPath(vmID),
 		SocketPath:     m.cfg.VMSocketPath(vmID),
+		TPMSocketPath:  m.cfg.VMTPMSocketPath(vmID),
 		SerialLog:      m.cfg.VMSerialLogPath(vmID),
 		CreatedAt:      now,
 		SchemaVersion:  types.CurrentConfigSchemaVersion,
@@ -362,9 +363,9 @@ func (m *manager) attemptBoot(ctx context.Context, vmID string, vmCfg *types.VMC
 	// Map boot mode to the strategy the hypervisor client expects.
 	switch bootMode {
 	case types.BootModeUEFI:
-		cfgCopy.BootStrategy = types.BootStrategyUEFIOnly
+		cfgCopy.BootStrategy = types.BootStrategyUEFI
 	default: // PVH
-		cfgCopy.BootStrategy = types.BootStrategyPVHOnly
+		cfgCopy.BootStrategy = types.BootStrategyPVH
 	}
 
 	// Step 1: Launch Cloud Hypervisor process.
@@ -471,10 +472,10 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 	var bootErr error
 
 	switch vmCfg.BootStrategy {
-	case types.BootStrategyUEFIOnly:
+	case types.BootStrategyUEFI:
 		result, bootErr = attemptBootAndWait(vmCfg.FirmwarePath, types.BootModeUEFI)
 
-	case types.BootStrategyPVHOnly:
+	case types.BootStrategyPVH:
 		result, bootErr = attemptBootAndWait(vmCfg.FirmwarePath, types.BootModePVH)
 
 	default:
@@ -921,11 +922,9 @@ func buildCHVMConfig(vmCfg *types.VMConfig) *hypervisor.CHVMConfig {
 	// (memory map, boot parameters). Matches the CH quickstart (--kernel).
 	//
 	// UEFI firmware (CLOUDHV.fd): passed via CLI --firmware flag in
-	// buildLaunchArgs, NOT via REST payload. CLOUDHV.fd is a raw FD-format
-	// binary that CH's REST API payload fields cannot load correctly.
-	// The CLI auto-creates the VM with UEFI boot mode, so no payload is
-	// needed here.
-	if vmCfg.FirmwarePath != "" && vmCfg.BootStrategy != types.BootStrategyUEFIOnly {
+	// buildLaunchArgs, NOT via REST payload. CH merges the CLI firmware with
+	// the REST vm.create config when booting.
+	if vmCfg.FirmwarePath != "" && vmCfg.BootStrategy != types.BootStrategyUEFI {
 		cfg.Payload = &hypervisor.CHPayloadConfig{
 			Kernel: vmCfg.FirmwarePath,
 		}
@@ -967,12 +966,12 @@ func resolveFirmwarePath(cfg *config.CocoonConfig, strategy types.BootStrategy, 
 	_ = arch // Reserved for future multi-arch firmware selection.
 
 	switch strategy {
-	case types.BootStrategyPVHOnly:
+	case types.BootStrategyPVH:
 		if cfg.PVHFirmwarePath == "" {
 			return "", fmt.Errorf("%w: PVH firmware path not configured", types.ErrFirmwareNotFound)
 		}
 		return cfg.PVHFirmwarePath, nil
-	case types.BootStrategyUEFIOnly:
+	case types.BootStrategyUEFI:
 		return resolveUEFIFirmwarePath(cfg)
 	default:
 		return "", fmt.Errorf("invalid boot strategy: %q", strategy)

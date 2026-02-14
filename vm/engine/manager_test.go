@@ -985,7 +985,7 @@ func TestBuildCHVMConfig_PVHFirmwareInPayload(t *testing.T) {
 		MemoryMB:     1024,
 		OverlayPath:  "/tmp/overlay.qcow2",
 		SerialLog:    "/tmp/serial.log",
-		BootStrategy: types.BootStrategyPVHOnly,
+		BootStrategy: types.BootStrategyPVH,
 		FirmwarePath: "/usr/share/hypervisor-fw",
 	}
 
@@ -1011,7 +1011,7 @@ func TestBuildCHVMConfig_UEFINoPayload(t *testing.T) {
 		MemoryMB:     1024,
 		OverlayPath:  "/tmp/overlay.qcow2",
 		SerialLog:    "/tmp/serial.log",
-		BootStrategy: types.BootStrategyUEFIOnly,
+		BootStrategy: types.BootStrategyUEFI,
 		FirmwarePath: "/usr/share/CLOUDHV.fd",
 	}
 
