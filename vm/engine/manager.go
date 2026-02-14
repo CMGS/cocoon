@@ -402,98 +402,9 @@ func (m *manager) attemptBoot(ctx context.Context, vmID string, vmCfg *types.VMC
 	}, nil
 }
 
-type bootFailureReason int
-
-const (
-	bootFailureUnknown bootFailureReason = iota
-
-	// Recoverable: retry with UEFI may succeed.
-	bootFailureFirmwareNotFound
-	bootFailurePVHProtocol
-	bootFailureDiskDiscovery
-	bootFailureBootloaderCompat
-	bootFailureKernelPanic
-
-	// Non-recoverable: fallback won't help.
-	bootFailureKVMAccess
-	bootFailureResourceExhaustion
-	bootFailureDiskAccess
-	bootFailureSocketConflict
-	bootFailureInvalidConfig
-)
-
-// classifyBootFailure returns a normalized failure reason from wrapped error text.
-func classifyBootFailure(err error) bootFailureReason {
-	if err == nil {
-		return bootFailureUnknown
-	}
-
-	msg := strings.ToLower(err.Error())
-
-	// Recoverable conditions.
-	switch {
-	case strings.Contains(msg, "failed to load firmware"),
-		strings.Contains(msg, "firmware: no such file"):
-		return bootFailureFirmwareNotFound
-	case strings.Contains(msg, "pvh entry point not found"),
-		strings.Contains(msg, "invalid pvh header"):
-		return bootFailurePVHProtocol
-	case strings.Contains(msg, "no bootable device"),
-		strings.Contains(msg, "failed to find efi system partition"),
-		strings.Contains(msg, "virtio-blk: no bootable partitions"):
-		return bootFailureDiskDiscovery
-	case strings.Contains(msg, "failed to load boot loader"),
-		strings.Contains(msg, "unsupported boot loader format"):
-		return bootFailureBootloaderCompat
-	case strings.Contains(msg, "kernel panic"),
-		strings.Contains(msg, "unable to mount root fs"),
-		strings.Contains(msg, "vfs: cannot open root device"):
-		return bootFailureKernelPanic
-	}
-
-	// Non-recoverable conditions.
-	switch {
-	case strings.Contains(msg, "failed to open /dev/kvm"),
-		strings.Contains(msg, "kvm not available"):
-		return bootFailureKVMAccess
-	case strings.Contains(msg, "cannot allocate memory"),
-		strings.Contains(msg, "out of memory"):
-		return bootFailureResourceExhaustion
-	case strings.Contains(msg, "failed to open disk"),
-		(strings.Contains(msg, "permission denied") && strings.Contains(msg, "disk")):
-		return bootFailureDiskAccess
-	case strings.Contains(msg, "failed to bind socket"),
-		strings.Contains(msg, "address already in use"):
-		return bootFailureSocketConflict
-	case strings.Contains(msg, "invalid parameter"),
-		strings.Contains(msg, "failed to parse"):
-		return bootFailureInvalidConfig
-	}
-
-	return bootFailureUnknown
-}
-
-// shouldFallbackToUEFI determines whether a PVH boot failure should trigger
-// automatic UEFI retry.
-func shouldFallbackToUEFI(err error) bool {
-	switch classifyBootFailure(err) {
-	case bootFailureFirmwareNotFound,
-		bootFailurePVHProtocol,
-		bootFailureDiskDiscovery,
-		bootFailureBootloaderCompat,
-		bootFailureKernelPanic:
-		return true
-	default:
-		return false
-	}
-}
-
 // Start launches the Cloud Hypervisor process for a VM.
 // Follows the transition flow: CREATED/STOPPED -> STARTING -> RUNNING.
 // Idempotent: starting a RUNNING VM is a no-op.
-//
-// When BootStrategy is pvh_then_uefi and the PVH boot fails, Start
-// automatically retries with UEFI firmware before transitioning to ERROR.
 func (m *manager) Start(ctx context.Context, vmID string) error {
 	meta, err := m.LoadMetadata(vmID)
 	if err != nil {
@@ -560,20 +471,6 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 	var bootErr error
 
 	switch vmCfg.BootStrategy {
-	case types.BootStrategyPVHThenUEFI:
-		// First attempt: PVH boot using the firmware from config.
-		result, bootErr = attemptBootAndWait(vmCfg.FirmwarePath, types.BootModePVH)
-		if bootErr != nil && shouldFallbackToUEFI(bootErr) {
-			log.Printf("PVH boot failed for %s, falling back to UEFI: %v", vmID, bootErr)
-			// Second attempt: UEFI boot using resolved firmware path (with system OVMF fallback).
-			uefiFW, fwErr := resolveUEFIFirmwarePath(m.cfg)
-			if fwErr != nil {
-				bootErr = fmt.Errorf("UEFI fallback: %w", fwErr)
-			} else {
-				result, bootErr = attemptBootAndWait(uefiFW, types.BootModeUEFI)
-			}
-		}
-
 	case types.BootStrategyUEFIOnly:
 		result, bootErr = attemptBootAndWait(vmCfg.FirmwarePath, types.BootModeUEFI)
 
@@ -1070,7 +967,7 @@ func resolveFirmwarePath(cfg *config.CocoonConfig, strategy types.BootStrategy, 
 	_ = arch // Reserved for future multi-arch firmware selection.
 
 	switch strategy {
-	case types.BootStrategyPVHThenUEFI, types.BootStrategyPVHOnly:
+	case types.BootStrategyPVHOnly:
 		if cfg.PVHFirmwarePath == "" {
 			return "", fmt.Errorf("%w: PVH firmware path not configured", types.ErrFirmwareNotFound)
 		}

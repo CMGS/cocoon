@@ -9,14 +9,12 @@ func TestParseBootStrategy_ValidValues(t *testing.T) {
 		in   string
 		want BootStrategy
 	}{
-		{in: "pvh_then_uefi", want: BootStrategyPVHThenUEFI},
 		{in: "uefi_only", want: BootStrategyUEFIOnly},
 		{in: "pvh_only", want: BootStrategyPVHOnly},
 		{in: "  PVH_ONLY  ", want: BootStrategyPVHOnly},
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.in, func(t *testing.T) {
 			t.Parallel()
 			got, err := ParseBootStrategy(tc.in)

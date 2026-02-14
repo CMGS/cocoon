@@ -62,7 +62,6 @@ func TestBuildLaunchArgs_SocketPathAlwaysPresent(t *testing.T) {
 	strategies := []types.BootStrategy{
 		types.BootStrategyPVHOnly,
 		types.BootStrategyUEFIOnly,
-		types.BootStrategyPVHThenUEFI,
 	}
 
 	for _, strategy := range strategies {
