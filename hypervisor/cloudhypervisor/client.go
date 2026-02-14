@@ -61,36 +61,30 @@ func New(cfg *config.CocoonConfig) hypervisor.Client {
 // Process management
 // ---------------------------------------------------------------------------
 
-// buildLaunchArgs constructs the Cloud Hypervisor CLI arguments for a given
-// VM configuration.
+// buildLaunchArgs constructs the Cloud Hypervisor CLI arguments.
 //
-// Both boot strategies pass firmware on the CLI:
-//   - UEFI: --firmware <CLOUDHV.fd>
-//   - PVH:  --kernel <hypervisor-fw>
+// The CLI only carries --api-socket (and --tpm when enabled). All VM
+// configuration including firmware paths goes through the REST vm.create
+// payload, keeping the CLI minimal and consistent across boot strategies.
 //
-// VM resource config (cpus, memory, disk, serial, console) goes exclusively
-// through the REST vm.create call so that CH does NOT auto-create or auto-boot.
-// The --kernel / --firmware flag alone only loads firmware; it does not trigger
-// auto-boot.
+// When --tpm is present, CH's CLI parser also requires --kernel or
+// --firmware, so we add the appropriate firmware flag in that case only.
 func buildLaunchArgs(socketPath string, cfg *types.VMConfig) []string {
 	args := []string{"--api-socket", socketPath}
 
-	// Firmware flag: UEFI uses --firmware, PVH uses --kernel.
-	// CH CLI requires one of these when --tpm is present, and it is safe
-	// to always provide them (no auto-boot without full VM config on CLI).
-	if cfg.FirmwarePath != "" {
-		switch cfg.BootStrategy {
-		case types.BootStrategyUEFI:
-			args = append(args, "--firmware", cfg.FirmwarePath)
-		case types.BootStrategyPVH:
-			args = append(args, "--kernel", cfg.FirmwarePath)
-		}
-	}
-
 	// TPM: pass swtpm socket path to CH via --tpm CLI flag.
-	// swtpm must be started before CH (handled by Launch).
+	// CH CLI requires --kernel or --firmware alongside --tpm, so we add
+	// the firmware flag only when TPM is enabled.
 	if cfg.TPMSocketPath != "" {
 		args = append(args, "--tpm", fmt.Sprintf("socket=%s", cfg.TPMSocketPath))
+		if cfg.FirmwarePath != "" {
+			switch cfg.BootStrategy {
+			case types.BootStrategyUEFI:
+				args = append(args, "--firmware", cfg.FirmwarePath)
+			default: // PVH
+				args = append(args, "--kernel", cfg.FirmwarePath)
+			}
+		}
 	}
 
 	return args

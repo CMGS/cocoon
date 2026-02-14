@@ -16,12 +16,11 @@ import (
 // buildLaunchArgs tests
 // ---------------------------------------------------------------------------
 
-// PVH: --kernel on CLI; also sent via REST payload.kernel.
-// UEFI: --firmware on CLI; REST API cannot load CLOUDHV.fd.
-// Both strategies: VM resource config (cpus, memory, disk, serial, console)
-// goes exclusively through REST vm.create — never on CLI.
+// CLI only carries --api-socket. Firmware goes via REST payload.
+// When TPM is enabled, --tpm plus --kernel/--firmware are added (CH CLI requires it).
+// VM resource config (cpus, memory, disk, serial, console) always goes via REST.
 
-func TestBuildLaunchArgs_PVH_KernelOnCLI(t *testing.T) {
+func TestBuildLaunchArgs_PVH_OnlyAPISocket(t *testing.T) {
 	cfg := &types.VMConfig{
 		BootStrategy: types.BootStrategyPVH,
 		FirmwarePath: "/usr/share/firmware/pvh.bin",
@@ -33,19 +32,13 @@ func TestBuildLaunchArgs_PVH_KernelOnCLI(t *testing.T) {
 	args := buildLaunchArgs("/tmp/api.sock", cfg)
 
 	assertContainsFlag(t, args, "--api-socket", "/tmp/api.sock")
-	assertContainsFlag(t, args, "--kernel", "/usr/share/firmware/pvh.bin")
+	// No firmware flags on CLI — goes via REST payload.
+	assertNotContainsKey(t, args, "--kernel")
 	assertNotContainsKey(t, args, "--firmware")
-	// No TPM socket → no --tpm flag.
 	assertNotContainsKey(t, args, "--tpm")
-	// VM resource config goes via REST vm.create, NOT on CLI.
-	assertNotContainsKey(t, args, "--cpus")
-	assertNotContainsKey(t, args, "--memory")
-	assertNotContainsKey(t, args, "--disk")
-	assertNotContainsKey(t, args, "--serial")
-	assertNotContainsKey(t, args, "--console")
 }
 
-func TestBuildLaunchArgs_UEFI_FirmwareOnCLI(t *testing.T) {
+func TestBuildLaunchArgs_UEFI_OnlyAPISocket(t *testing.T) {
 	cfg := &types.VMConfig{
 		BootStrategy: types.BootStrategyUEFI,
 		FirmwarePath: "/usr/share/firmware/CLOUDHV.fd",
@@ -57,14 +50,10 @@ func TestBuildLaunchArgs_UEFI_FirmwareOnCLI(t *testing.T) {
 	args := buildLaunchArgs("/tmp/api.sock", cfg)
 
 	assertContainsFlag(t, args, "--api-socket", "/tmp/api.sock")
-	assertContainsFlag(t, args, "--firmware", "/usr/share/firmware/CLOUDHV.fd")
+	// No firmware flags on CLI — goes via REST payload.
 	assertNotContainsKey(t, args, "--kernel")
-	// VM resource config goes via REST vm.create, NOT on CLI.
-	assertNotContainsKey(t, args, "--cpus")
-	assertNotContainsKey(t, args, "--memory")
-	assertNotContainsKey(t, args, "--disk")
-	assertNotContainsKey(t, args, "--serial")
-	assertNotContainsKey(t, args, "--console")
+	assertNotContainsKey(t, args, "--firmware")
+	assertNotContainsKey(t, args, "--tpm")
 }
 
 func TestBuildLaunchArgs_PVH_WithTPM(t *testing.T) {
@@ -79,8 +68,9 @@ func TestBuildLaunchArgs_PVH_WithTPM(t *testing.T) {
 	}
 	args := buildLaunchArgs("/tmp/api.sock", cfg)
 
-	assertContainsFlag(t, args, "--kernel", "/usr/share/firmware/pvh.bin")
 	assertContainsFlag(t, args, "--tpm", "socket=/run/cocoon/vms/vm-abc/swtpm.sock")
+	// TPM requires --kernel/--firmware on CLI for CH CLI validator.
+	assertContainsFlag(t, args, "--kernel", "/usr/share/firmware/pvh.bin")
 	assertNotContainsKey(t, args, "--firmware")
 }
 
@@ -96,10 +86,10 @@ func TestBuildLaunchArgs_UEFI_WithTPM(t *testing.T) {
 	}
 	args := buildLaunchArgs("/tmp/api.sock", cfg)
 
-	// UEFI flags present.
-	assertContainsFlag(t, args, "--firmware", "/usr/share/firmware/CLOUDHV.fd")
-	// TPM flag also present.
 	assertContainsFlag(t, args, "--tpm", "socket=/run/cocoon/vms/vm-abc/swtpm.sock")
+	// TPM requires --kernel/--firmware on CLI for CH CLI validator.
+	assertContainsFlag(t, args, "--firmware", "/usr/share/firmware/CLOUDHV.fd")
+	assertNotContainsKey(t, args, "--kernel")
 }
 
 func TestBuildLaunchArgs_SocketPathAlwaysPresent(t *testing.T) {

@@ -925,16 +925,19 @@ func buildCHVMConfig(vmCfg *types.VMConfig) *hypervisor.CHVMConfig {
 		},
 	}
 
-	// PVH firmware (hypervisor-fw): passed via REST API payload.kernel.
-	// hypervisor-fw is an ELF binary; CH loads it and sets up PVH start_info
-	// (memory map, boot parameters). Matches the CH quickstart (--kernel).
-	//
-	// UEFI firmware (CLOUDHV.fd): passed via CLI --firmware flag in
-	// buildLaunchArgs, NOT via REST payload. CH merges the CLI firmware with
-	// the REST vm.create config when booting.
-	if vmCfg.FirmwarePath != "" && vmCfg.BootStrategy != types.BootStrategyUEFI {
-		cfg.Payload = &hypervisor.CHPayloadConfig{
-			Kernel: vmCfg.FirmwarePath,
+	// Firmware is always passed via REST payload, not CLI flags.
+	//   PVH:  payload.kernel  = hypervisor-fw (ELF binary, PVH start_info)
+	//   UEFI: payload.firmware = CLOUDHV.fd
+	if vmCfg.FirmwarePath != "" {
+		switch vmCfg.BootStrategy {
+		case types.BootStrategyUEFI:
+			cfg.Payload = &hypervisor.CHPayloadConfig{
+				Firmware: vmCfg.FirmwarePath,
+			}
+		default: // PVH
+			cfg.Payload = &hypervisor.CHPayloadConfig{
+				Kernel: vmCfg.FirmwarePath,
+			}
 		}
 	}
 

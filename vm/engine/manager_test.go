@@ -993,17 +993,15 @@ func TestBuildCHVMConfig_PVHFirmwareInPayload(t *testing.T) {
 	if chCfg.Payload == nil {
 		t.Fatal("expected Payload to be set for PVH boot")
 	}
-	// Both PVH and UEFI use payload.kernel (matching CH --kernel flag).
-	// CH auto-detects ELF (PVH) vs PE (UEFI) and sets up the boot protocol.
 	if chCfg.Payload.Kernel != "/usr/share/hypervisor-fw" {
 		t.Fatalf("payload.kernel = %q, want /usr/share/hypervisor-fw", chCfg.Payload.Kernel)
 	}
 	if chCfg.Payload.Firmware != "" {
-		t.Fatalf("payload.firmware should be empty, got %q", chCfg.Payload.Firmware)
+		t.Fatalf("payload.firmware should be empty for PVH, got %q", chCfg.Payload.Firmware)
 	}
 }
 
-func TestBuildCHVMConfig_UEFINoPayload(t *testing.T) {
+func TestBuildCHVMConfig_UEFIFirmwareInPayload(t *testing.T) {
 	t.Parallel()
 
 	vmCfg := &types.VMConfig{
@@ -1015,11 +1013,15 @@ func TestBuildCHVMConfig_UEFINoPayload(t *testing.T) {
 		FirmwarePath: "/usr/share/CLOUDHV.fd",
 	}
 
-	// UEFI firmware is passed via CLI --firmware flag (buildLaunchArgs),
-	// NOT via REST payload. The REST config should have no payload.
 	chCfg := buildCHVMConfig(vmCfg)
-	if chCfg.Payload != nil {
-		t.Fatalf("expected Payload to be nil for UEFI (firmware passed via CLI), got %+v", chCfg.Payload)
+	if chCfg.Payload == nil {
+		t.Fatal("expected Payload to be set for UEFI boot")
+	}
+	if chCfg.Payload.Firmware != "/usr/share/CLOUDHV.fd" {
+		t.Fatalf("payload.firmware = %q, want /usr/share/CLOUDHV.fd", chCfg.Payload.Firmware)
+	}
+	if chCfg.Payload.Kernel != "" {
+		t.Fatalf("payload.kernel should be empty for UEFI, got %q", chCfg.Payload.Kernel)
 	}
 }
 
