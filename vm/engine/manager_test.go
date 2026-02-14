@@ -993,11 +993,12 @@ func TestBuildCHVMConfig_PVHFirmwareInPayload(t *testing.T) {
 	if chCfg.Payload == nil {
 		t.Fatal("expected Payload to be set for PVH boot")
 	}
-	if chCfg.Payload.Kernel != "/usr/share/hypervisor-fw" {
-		t.Fatalf("payload.kernel = %q, want /usr/share/hypervisor-fw", chCfg.Payload.Kernel)
+	// Both PVH and UEFI use payload.firmware; CH auto-detects the format.
+	if chCfg.Payload.Firmware != "/usr/share/hypervisor-fw" {
+		t.Fatalf("payload.firmware = %q, want /usr/share/hypervisor-fw", chCfg.Payload.Firmware)
 	}
-	if chCfg.Payload.Firmware != "" {
-		t.Fatalf("payload.firmware should be empty for PVH, got %q", chCfg.Payload.Firmware)
+	if chCfg.Payload.Kernel != "" {
+		t.Fatalf("payload.kernel should be empty, got %q", chCfg.Payload.Kernel)
 	}
 }
 

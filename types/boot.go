@@ -13,7 +13,7 @@ const (
 	// BootStrategyUEFI boots with UEFI firmware (CLOUDHV.fd) via REST payload.firmware.
 	// This is the default boot strategy.
 	BootStrategyUEFI BootStrategy = "uefi"
-	// BootStrategyPVH boots with PVH firmware (hypervisor-fw) via REST payload.kernel.
+	// BootStrategyPVH boots with PVH firmware (hypervisor-fw) via REST payload.firmware.
 	BootStrategyPVH BootStrategy = "pvh"
 )
 

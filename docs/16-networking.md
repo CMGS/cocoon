@@ -1524,7 +1524,40 @@ Key points:
 
 **Note on kernel `ip=` parameter**: Cocoon uses firmware-based boot (PVH firmware or UEFI firmware) for all boot strategies. The firmware loads the kernel from the guest disk, and the bootloader inside the guest controls the kernel command line. Cocoon cannot inject kernel parameters such as `ip=` from the host side. The cloud-init NoCloud datasource is the only supported network configuration injection mechanism.
 
-### 8.3 DNS Configuration in Code
+### 8.3 Cloud-Init NoCloud Image Lifecycle
+
+The NoCloud datasource requires a FAT filesystem image containing the cloud-init seed files. This section describes the concrete implementation for creating, attaching, and cleaning up the image.
+
+**Creation** (during `cocoon create --network`):
+
+1. Generate the `meta-data` and `network-config` YAML files from the CNI result (see Section 8.2 and 8.4).
+2. Create a FAT filesystem image at `{vm_dir}/cloud-init.img` using `mkdosfs` and `mcopy`:
+   ```bash
+   # Create a small FAT12 image with the "cidata" label (detected by cloud-init).
+   mkdosfs -n cidata -C {vm_dir}/cloud-init.img 256   # 256 KB
+   mcopy -i {vm_dir}/cloud-init.img meta-data ::meta-data
+   mcopy -i {vm_dir}/cloud-init.img network-config ::network-config
+   ```
+3. The image path is recorded in `config.json` as `CloudInitImagePath`.
+
+**Attachment** (during CH launch):
+
+The cloud-init image is attached as a second entry in the `disks` array of the CH REST payload, marked as read-only:
+
+```go
+Disks: []hypervisor.CHDiskConfig{
+    {Path: cfg.OverlayPath},                           // Primary disk (read-write)
+    {Path: cfg.CloudInitImagePath, ReadOnly: true},    // NoCloud seed (read-only)
+},
+```
+
+Cloud Hypervisor exposes this as a second virtio-blk device. The guest kernel enumerates it as `/dev/vdb` (or equivalent), and cloud-init detects the `cidata` filesystem label on first boot.
+
+**Cleanup** (during `cocoon delete`):
+
+The `cloud-init.img` file resides inside the VM directory (`{vm_dir}/`). It is removed along with the overlay and other VM files when the VM directory is deleted during `cocoon delete`. No separate cleanup step is needed.
+
+### 8.4 DNS Configuration in Code
 
 ```go
 // generateCloudInitNetworkConfig produces a cloud-init network-config v2 YAML
@@ -1650,6 +1683,71 @@ func networkDoctorChecks() []DoctorCheck {
                 return nil
             },
             Severity: "warning",
+        },
+        {
+            Name: "tc-command",
+            Check: func() error {
+                // tc is required for traffic control rules (tc mirred redirect).
+                if _, err := exec.LookPath("tc"); err != nil {
+                    return fmt.Errorf("'tc' command not found (needed for traffic control rules): %w", err)
+                }
+                return nil
+            },
+            Severity: "warning",
+        },
+        {
+            Name: "nsenter-command",
+            Check: func() error {
+                // nsenter is required for entering the VM network namespace.
+                if _, err := exec.LookPath("nsenter"); err != nil {
+                    return fmt.Errorf("'nsenter' command not found (needed for network namespace entry): %w", err)
+                }
+                return nil
+            },
+            Severity: "warning",
+        },
+        {
+            Name: "ip-command",
+            Check: func() error {
+                // ip is required for network namespace management.
+                if _, err := exec.LookPath("ip"); err != nil {
+                    return fmt.Errorf("'ip' command not found (needed for netns management): %w", err)
+                }
+                return nil
+            },
+            Severity: "warning",
+        },
+        {
+            Name: "tun-device",
+            Check: func() error {
+                // /dev/net/tun is required for creating TAP devices.
+                if _, err := os.Stat("/dev/net/tun"); err != nil {
+                    return fmt.Errorf("/dev/net/tun not available (needed for TAP devices): %w", err)
+                }
+                return nil
+            },
+            Severity: "warning",
+        },
+        {
+            Name: "ch-cap-net-admin",
+            Check: func() error {
+                // CAP_NET_ADMIN on the cloud-hypervisor binary is required
+                // for TAP device operations when not running as root.
+                // This check is informational; root bypasses capability checks.
+                if os.Getuid() == 0 {
+                    return nil // Root has all capabilities.
+                }
+                // Check file capabilities on the CH binary.
+                out, err := exec.Command("getcap", chBinaryPath).CombinedOutput()
+                if err != nil {
+                    return fmt.Errorf("cannot check capabilities on %s: %w", chBinaryPath, err)
+                }
+                if !strings.Contains(string(out), "cap_net_admin") {
+                    return fmt.Errorf("cloud-hypervisor binary %s lacks CAP_NET_ADMIN (needed for TAP devices in non-root mode)", chBinaryPath)
+                }
+                return nil
+            },
+            Severity: "info",
         },
         {
             Name: "stale-ipam-allocations",
@@ -1964,7 +2062,7 @@ func TestNetworkCreateRollback(t *testing.T) {
 ### 12.2 Interaction with Other Phase 2 Features
 
 - **Pause/Resume** ([13-pause-resume.md](./13-pause-resume.md)): Pausing a VM does not affect network configuration. The TAP device and namespace persist. Traffic arriving during pause is buffered (or dropped, depending on queue depth). On resume, networking resumes immediately.
-- **Checkpoint/Restore** ([15-warm-start.md](./15-warm-start.md)): On restore, the network namespace and TAP device must be recreated. The restore flow calls `AddNetwork` for each attachment before launching Cloud Hypervisor. The deterministic MAC generation (Section 4.5) ensures the restored VM gets the same MAC address, preserving DHCP leases.
+- **Checkpoint/Restore** ([15-warm-start.md](./15-warm-start.md)): On restore, the network namespace and TAP device must be recreated. The restore flow calls `AddNetwork` for each attachment before launching Cloud Hypervisor. Each restored VM gets a unique VM ID and therefore a unique MAC address, different from the source VM (because MAC = hash(vmID, ifName)). However, the deterministic generation from (vmID, ifName) ensures the MAC is stable across restarts of the same restored VM, preserving its DHCP lease.
 - **Device Passthrough** ([14-device-passthrough.md](./14-device-passthrough.md)): A physical NIC can be passed through via VFIO as an alternative to virtio-net. This is orthogonal to CNI networking. If both are used, the VM sees both a virtio-net device (from CNI/TAP) and a passthrough NIC.
 - **Volume Passthrough** ([future/volume-passthrough.md](./future/volume-passthrough.md)): Independent of networking. Both can be configured on the same VM.
 

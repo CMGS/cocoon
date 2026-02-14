@@ -197,7 +197,7 @@ type Client interface {
 
 The concrete implementation lives in `hypervisor/cloudhypervisor/client.go`. Key implementation details:
 - `Launch()` starts the CH binary with `--api-socket` + firmware flag only; all VM config goes via REST API.
-- `buildLaunchArgs()` selects the correct firmware flag based on `BootStrategy`: UEFI uses `payload.firmware`, PVH uses `payload.kernel`.
+- `buildCHVMConfig()` sets `payload.firmware` for both UEFI (CLOUDHV.fd) and PVH (hypervisor-fw); Cloud Hypervisor auto-detects the firmware format.
 - REST API calls use `doWithRetry()` with exponential backoff (100ms/200ms/400ms + jitter).
 - `isRetryable()`: retry on 500/503/429/connection-refused; no retry on 4xx/context.Canceled.
 

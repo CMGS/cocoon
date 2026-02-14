@@ -201,7 +201,7 @@ sudo chmod +x /var/lib/cocoon/firmware/hypervisor-fw
 ```
 
 **PVH Boot Behavior**:
-- Firmware is set as `payload.kernel` in the REST payload
+- Firmware is set as `payload.firmware` in the REST payload (same field as UEFI; CH auto-detects the format)
 - Use `--boot-strategy pvh` when creating/running VMs to select PVH boot
 
 ### Firmware Selection Guide

@@ -679,9 +679,14 @@ func (m *checkpointManager) Checkpoint(
     }
 
     // 11. Pin base image reference for the checkpoint.
+    // If pinning fails, roll back the checkpoint-index registration
+    // so the directory cleanup (deferred above) leaves no dangling index entry.
     if err := m.refCounter.AddReference(
         cfg.BaseKey, ckptID, cfg.BaseDigestFull, cfg.ImageRef,
     ); err != nil {
+        if opts.Name != "" {
+            _ = m.unregisterCheckpointName(opts.Name)
+        }
         return nil, fmt.Errorf("pin base image reference: %w", err)
     }
 
@@ -1069,7 +1074,7 @@ A checkpoint can only be restored with the **same firmware version** used when t
 
 ### 10.2 Cloud Hypervisor Version Compatibility
 
-The CH snapshot format may change between releases. `checkpoint.json` records the CH version. Restore warns on version mismatch.
+The CH snapshot format may change between releases. `checkpoint.json` records the CH version. Restore warns on minor/patch version mismatch but refuses to proceed on major version change (with a `--force` override).
 
 ### 10.3 Network State Not Preserved
 
@@ -1186,7 +1191,7 @@ A VM with 2GB memory and 100MB of overlay writes produces a ~2.1GB checkpoint. W
 
 Both checkpoint creation and restore use a `defer`-based cleanup pattern. If any step fails, all partially-created artifacts are removed:
 
-- Checkpoint creation: removes the checkpoint directory
+- Checkpoint creation: removes the checkpoint directory (via deferred `os.RemoveAll`). If the snapshot succeeded but a later step fails (reference pinning or index registration), the checkpoint-index entry is explicitly rolled back before the deferred directory cleanup runs. The `checkpoint-index.lock` file is released by the normal lock-release path in `registerCheckpointName`/`unregisterCheckpointName`; it is not removed on failure because it is a shared flock file reused across operations.
 - Restore: removes the new VM directory, unpins references, unregisters name
 
 ---
@@ -1431,7 +1436,7 @@ See [13-pause-resume.md](./13-pause-resume.md). Must be completed first.
 
 4. **Restore to different resources**: Can a checkpoint from a 2-vCPU/1GB VM be restored as 4-vCPU/2GB? CH may support this for memory (adding pages) but not for reducing. Decision: Require identical resource configuration; investigate relaxation later.
 
-5. **Network identity on restore**: Should the restored VM get the same or different MAC address? Decision: New MAC address for uniqueness; document the behavior.
+5. **Network identity on restore**: Should the restored VM get the same or different MAC address? Decision: Restored VMs receive a new VM ID and thus a new deterministic MAC address (MAC = hash(vmID, ifName)), different from the source VM. The MAC is stable across subsequent restarts of the same restored VM instance. This ensures uniqueness on the network while preserving DHCP lease stability for each individual restored VM.
 
 6. **Checkpoint portability**: Can a checkpoint be transferred to a different host? Requires same CH version, firmware, architecture, and base image. Decision: Focus on single-host; cross-host transfer is future scope.
 

@@ -925,19 +925,12 @@ func buildCHVMConfig(vmCfg *types.VMConfig) *hypervisor.CHVMConfig {
 		},
 	}
 
-	// Firmware is always passed via REST payload, not CLI flags.
-	//   PVH:  payload.kernel  = hypervisor-fw (ELF binary, PVH start_info)
-	//   UEFI: payload.firmware = CLOUDHV.fd
+	// Firmware is always passed via REST payload.firmware, not CLI flags.
+	// Both UEFI (CLOUDHV.fd) and PVH (hypervisor-fw) use payload.firmware;
+	// Cloud Hypervisor auto-detects the format (PE vs ELF/PVH).
 	if vmCfg.FirmwarePath != "" {
-		switch vmCfg.BootStrategy {
-		case types.BootStrategyUEFI:
-			cfg.Payload = &hypervisor.CHPayloadConfig{
-				Firmware: vmCfg.FirmwarePath,
-			}
-		default: // PVH
-			cfg.Payload = &hypervisor.CHPayloadConfig{
-				Kernel: vmCfg.FirmwarePath,
-			}
+		cfg.Payload = &hypervisor.CHPayloadConfig{
+			Firmware: vmCfg.FirmwarePath,
 		}
 	}
 
