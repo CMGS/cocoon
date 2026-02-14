@@ -125,7 +125,17 @@ func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (
 	// if cocoon exits unexpectedly.
 	configureCHProcess(cmd)
 
+	// Write CH stderr to a log file for diagnostics on startup failure.
+	chLogPath := c.cfg.VMCHLogPath(vmID)
+	chLogFile, chLogErr := os.Create(chLogPath) //nolint:gosec // G304: path derived from trusted config
+	if chLogErr == nil {
+		cmd.Stderr = chLogFile
+	}
+
 	if err := cmd.Start(); err != nil {
+		if chLogFile != nil {
+			_ = chLogFile.Close()
+		}
 		return 0, fmt.Errorf("start cloud-hypervisor: %w", err)
 	}
 
@@ -136,24 +146,59 @@ func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (
 	if err := utils.WritePIDFile(pidPath, pid); err != nil {
 		// Best-effort kill; the process was already started.
 		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		if chLogFile != nil {
+			_ = chLogFile.Close()
+		}
 		return 0, fmt.Errorf("write PID file %s: %w", pidPath, err)
 	}
 
 	// Wait for the API socket to appear so callers can immediately issue
-	// REST requests after Launch returns.
-	if err := c.WaitForSocket(ctx, socketPath, 5*time.Second); err != nil {
-		// Socket never appeared; kill the process.
-		_ = cmd.Process.Kill()
-		return 0, fmt.Errorf("wait for socket %s: %w", socketPath, err)
+	// REST requests after Launch returns. Check process liveness to
+	// fast-fail if CH crashes on startup instead of waiting the full timeout.
+	socketTimeout := 5 * time.Second
+	deadline := time.Now().Add(socketTimeout)
+	for time.Now().Before(deadline) {
+		// Check socket existence then connectivity.
+		if _, statErr := os.Stat(socketPath); statErr == nil {
+			if connErr := c.CheckSocketConnectivity(socketPath); connErr == nil {
+				// Socket ready. Release process handle so CH outlives CLI.
+				_ = cmd.Process.Release()
+				if chLogFile != nil {
+					_ = chLogFile.Close()
+				}
+				return pid, nil
+			}
+		}
+		// Fast fail: if CH already exited, don't wait the full timeout.
+		if !utils.IsProcessAlive(pid) {
+			_ = cmd.Wait()
+			if chLogFile != nil {
+				_ = chLogFile.Close()
+			}
+			stderr := readCHLog(chLogPath)
+			return 0, fmt.Errorf("cloud-hypervisor exited immediately: %s", stderr)
+		}
+		select {
+		case <-ctx.Done():
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			if chLogFile != nil {
+				_ = chLogFile.Close()
+			}
+			return 0, fmt.Errorf("context canceled waiting for CH socket: %w", ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 
-	// Release the OS process handle. The CH process is intentionally
-	// orphaned -- it outlives the cocoon CLI invocation. Process.Release()
-	// detaches Go's handle so the process is not waited on. This avoids
-	// leaking a goroutine per Launch() call.
-	_ = cmd.Process.Release()
-
-	return pid, nil
+	// Timeout. Kill and report diagnostics.
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait()
+	if chLogFile != nil {
+		_ = chLogFile.Close()
+	}
+	stderr := readCHLog(chLogPath)
+	return 0, fmt.Errorf("CH socket %s did not appear within %s: %s", socketPath, socketTimeout, stderr)
 }
 
 // Shutdown performs a graceful shutdown of the VM, falling back to SIGKILL.
@@ -231,6 +276,7 @@ func (c *client) cleanupRuntimeFiles(vmID string) {
 	c.stopSwtpm(vmID)
 	_ = os.Remove(c.cfg.VMPIDPath(vmID))
 	_ = os.Remove(c.cfg.VMSocketPath(vmID))
+	_ = os.Remove(c.cfg.VMCHLogPath(vmID))
 }
 
 // startSwtpm launches a swtpm process for TPM 2.0 emulation.
@@ -317,14 +363,20 @@ func (c *client) startSwtpm(vmID string, tpmSocketPath string) error {
 	return fmt.Errorf("swtpm socket %s did not appear within 5s: %s", tpmSocketPath, stderr)
 }
 
-// readSwtpmLog reads the swtpm log file and returns its contents for error messages.
-func readSwtpmLog(path string) string {
+// readProcessLog reads a process log file and returns its contents for error messages.
+func readProcessLog(path string) string {
 	data, err := os.ReadFile(path) //nolint:gosec // G304: path derived from trusted config
 	if err != nil || len(data) == 0 {
 		return "(no output)"
 	}
 	return strings.TrimSpace(string(data))
 }
+
+// readSwtpmLog reads the swtpm log file and returns its contents for error messages.
+func readSwtpmLog(path string) string { return readProcessLog(path) }
+
+// readCHLog reads the CH stderr log file and returns its contents for error messages.
+func readCHLog(path string) string { return readProcessLog(path) }
 
 // stopSwtpm terminates the swtpm companion process for a VM.
 // Best-effort: silently ignores missing PID files or already-exited processes.
