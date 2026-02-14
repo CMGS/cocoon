@@ -26,6 +26,9 @@ type CreateOptions struct {
 	// SkipVerify skips bootability verification during create.
 	// Useful for known-good images or when guestfish is unavailable.
 	SkipVerify bool `json:"skip_verify,omitempty"`
+
+	// EnableTPM enables TPM 2.0 emulation via swtpm.
+	EnableTPM bool `json:"enable_tpm,omitempty"`
 }
 
 // InconsistencyType classifies the kind of reconciliation inconsistency.

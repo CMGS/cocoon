@@ -48,6 +48,10 @@ func vmCreateFlags() []cli.Flag {
 			Name:  "boot-timeout",
 			Usage: "boot detection timeout in seconds (0 = skip boot detection)",
 		},
+		&cli.BoolFlag{
+			Name:  "tpm",
+			Usage: "enable TPM 2.0 emulation via swtpm",
+		},
 	}
 }
 
@@ -102,6 +106,7 @@ func parseCreateOptions(c *cli.Context, cmdName string) (*vm.CreateOptions, erro
 		DiskSize:     diskSize,
 		BootStrategy: bootStrategy,
 		SkipVerify:   c.Bool("skip-verify"),
+		EnableTPM:    c.Bool("tpm"),
 	}, nil
 }
 

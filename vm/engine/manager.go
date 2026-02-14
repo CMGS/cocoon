@@ -254,6 +254,12 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 		return nil, fmt.Errorf("resolve firmware: %w", err)
 	}
 
+	// Resolve TPM socket path only if TPM is explicitly enabled.
+	var tpmSocketPath string
+	if opts.EnableTPM {
+		tpmSocketPath = m.cfg.VMTPMSocketPath(vmID)
+	}
+
 	// Build immutable config.
 	vmCfg := &types.VMConfig{
 		VMID:           vmID,
@@ -270,7 +276,7 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 		BaseImagePath:  baseImagePath,
 		OverlayPath:    m.cfg.VMOverlayPath(vmID),
 		SocketPath:     m.cfg.VMSocketPath(vmID),
-		TPMSocketPath:  m.cfg.VMTPMSocketPath(vmID),
+		TPMSocketPath:  tpmSocketPath,
 		SerialLog:      m.cfg.VMSerialLogPath(vmID),
 		CreatedAt:      now,
 		SchemaVersion:  types.CurrentConfigSchemaVersion,

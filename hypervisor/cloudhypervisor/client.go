@@ -114,9 +114,19 @@ func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (
 
 	// Start swtpm companion process for TPM emulation (must be running
 	// before CH so the socket is ready for --tpm).
+	swtpmStarted := false
 	if cfg.TPMSocketPath != "" {
 		if err := c.startSwtpm(vmID, cfg.TPMSocketPath); err != nil {
 			return 0, fmt.Errorf("start swtpm for %s: %w", vmID, err)
+		}
+		swtpmStarted = true
+	}
+
+	// cleanupOnFail stops swtpm if it was started and CH launch fails.
+	// Prevents leaked swtpm processes on every error path below.
+	cleanupOnFail := func() {
+		if swtpmStarted {
+			c.stopSwtpm(vmID)
 		}
 	}
 
@@ -144,6 +154,7 @@ func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (
 		if chLogFile != nil {
 			_ = chLogFile.Close()
 		}
+		cleanupOnFail()
 		return 0, fmt.Errorf("start cloud-hypervisor: %w", err)
 	}
 
@@ -158,6 +169,7 @@ func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (
 		if chLogFile != nil {
 			_ = chLogFile.Close()
 		}
+		cleanupOnFail()
 		return 0, fmt.Errorf("write PID file %s: %w", pidPath, err)
 	}
 
@@ -184,6 +196,7 @@ func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (
 			if chLogFile != nil {
 				_ = chLogFile.Close()
 			}
+			cleanupOnFail()
 			stderr := readCHLog(chLogPath)
 			return 0, fmt.Errorf("cloud-hypervisor exited immediately: %s", stderr)
 		}
@@ -194,6 +207,7 @@ func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (
 			if chLogFile != nil {
 				_ = chLogFile.Close()
 			}
+			cleanupOnFail()
 			return 0, fmt.Errorf("context canceled waiting for CH socket: %w", ctx.Err())
 		case <-time.After(100 * time.Millisecond):
 		}
@@ -205,6 +219,7 @@ func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (
 	if chLogFile != nil {
 		_ = chLogFile.Close()
 	}
+	cleanupOnFail()
 	stderr := readCHLog(chLogPath)
 	return 0, fmt.Errorf("CH socket %s did not appear within %s: %s", socketPath, socketTimeout, stderr)
 }

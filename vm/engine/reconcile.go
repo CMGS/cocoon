@@ -192,8 +192,8 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inc
 		}
 	}
 
-	// Detect orphaned cloud-hypervisor processes not tracked by any VM.
-	orphans := detectOrphanedCHProcesses(knownPIDs)
+	// Detect orphaned cloud-hypervisor and swtpm processes not tracked by any VM.
+	orphans := detectOrphanedProcesses(knownPIDs)
 	inconsistencies = append(inconsistencies, orphans...)
 
 	return inconsistencies, nil
@@ -522,6 +522,8 @@ func (m *manager) cleanupDeletedVMArtifacts(vmID string) error {
 	_ = os.RemoveAll(m.cfg.VMPersistDir(vmID))
 	_ = os.RemoveAll(m.cfg.VMRuntimeDir(vmID))
 	_ = os.Remove(m.cfg.VMSerialLogPath(vmID))
+	_ = os.Remove(m.cfg.VMCHLogPath(vmID))
+	_ = os.Remove(m.cfg.VMSwtpmLogPath(vmID))
 	return nil
 }
 
@@ -546,6 +548,8 @@ func (m *manager) fixOrphanedOverlay(vmID string) error {
 	_ = os.RemoveAll(m.cfg.VMPersistDir(vmID))
 	_ = os.RemoveAll(m.cfg.VMRuntimeDir(vmID))
 	_ = os.Remove(m.cfg.VMSerialLogPath(vmID))
+	_ = os.Remove(m.cfg.VMCHLogPath(vmID))
+	_ = os.Remove(m.cfg.VMSwtpmLogPath(vmID))
 	return nil
 }
 
@@ -620,9 +624,9 @@ func isStuckInState(updatedAt string, timeout time.Duration) bool {
 	return time.Since(t) > timeout
 }
 
-// detectOrphanedCHProcesses scans /proc for cloud-hypervisor processes that
-// are not tracked by any VM's metadata.
-func detectOrphanedCHProcesses(knownPIDs map[int]string) []vm.Inconsistency {
+// detectOrphanedProcesses scans /proc for cloud-hypervisor and swtpm processes
+// that are not tracked by any VM's metadata.
+func detectOrphanedProcesses(knownPIDs map[int]string) []vm.Inconsistency {
 	var orphans []vm.Inconsistency
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
@@ -636,12 +640,14 @@ func detectOrphanedCHProcesses(knownPIDs map[int]string) []vm.Inconsistency {
 		if _, known := knownPIDs[pid]; known {
 			continue
 		}
-		if utils.ValidateProcess(pid, "cloud-hypervisor") {
-			orphans = append(orphans, vm.Inconsistency{
-				Type:     vm.InconsistencyZombieProcess,
-				Severity: vm.SeverityWarning,
-				Details:  fmt.Sprintf("orphaned cloud-hypervisor process PID=%d not tracked by any VM", pid),
-			})
+		for _, procName := range []string{"cloud-hypervisor", "swtpm"} {
+			if utils.ValidateProcess(pid, procName) {
+				orphans = append(orphans, vm.Inconsistency{
+					Type:     vm.InconsistencyZombieProcess,
+					Severity: vm.SeverityWarning,
+					Details:  fmt.Sprintf("orphaned %s process PID=%d not tracked by any VM", procName, pid),
+				})
+			}
 		}
 	}
 	return orphans
