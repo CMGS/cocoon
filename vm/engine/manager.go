@@ -941,6 +941,13 @@ func buildCHVMConfig(vmCfg *types.VMConfig) *hypervisor.CHVMConfig {
 		}
 	}
 
+	// TPM socket is passed via REST payload, not CLI flags.
+	if vmCfg.TPMSocketPath != "" {
+		cfg.TPM = &hypervisor.CHTPMConfig{
+			Socket: vmCfg.TPMSocketPath,
+		}
+	}
+
 	return cfg
 }
 

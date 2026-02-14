@@ -63,31 +63,11 @@ func New(cfg *config.CocoonConfig) hypervisor.Client {
 
 // buildLaunchArgs constructs the Cloud Hypervisor CLI arguments.
 //
-// The CLI only carries --api-socket (and --tpm when enabled). All VM
-// configuration including firmware paths goes through the REST vm.create
-// payload, keeping the CLI minimal and consistent across boot strategies.
-//
-// When --tpm is present, CH's CLI parser also requires --kernel or
-// --firmware, so we add the appropriate firmware flag in that case only.
-func buildLaunchArgs(socketPath string, cfg *types.VMConfig) []string {
-	args := []string{"--api-socket", socketPath}
-
-	// TPM: pass swtpm socket path to CH via --tpm CLI flag.
-	// CH CLI requires --kernel or --firmware alongside --tpm, so we add
-	// the firmware flag only when TPM is enabled.
-	if cfg.TPMSocketPath != "" {
-		args = append(args, "--tpm", fmt.Sprintf("socket=%s", cfg.TPMSocketPath))
-		if cfg.FirmwarePath != "" {
-			switch cfg.BootStrategy {
-			case types.BootStrategyUEFI:
-				args = append(args, "--firmware", cfg.FirmwarePath)
-			default: // PVH
-				args = append(args, "--kernel", cfg.FirmwarePath)
-			}
-		}
-	}
-
-	return args
+// The CLI only carries --api-socket. All VM configuration (firmware,
+// cpus, memory, disk, serial, console, tpm) goes through the REST
+// vm.create payload.
+func buildLaunchArgs(socketPath string) []string {
+	return []string{"--api-socket", socketPath}
 }
 
 // Launch starts a Cloud Hypervisor process for the given VM.
@@ -129,7 +109,7 @@ func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (
 	// configuration (cpus, memory, disks, serial, console) is sent via the
 	// PUT /api/v1/vm.create REST call so there is no conflict between CLI
 	// flags and the REST API.
-	args := buildLaunchArgs(socketPath, cfg)
+	args := buildLaunchArgs(socketPath)
 
 	cmd := exec.CommandContext(ctx, c.cfg.CHBinary, args...) //nolint:gosec // CHBinary is a trusted config value, not user input
 

@@ -5,112 +5,23 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"slices"
 	"testing"
 	"time"
-
-	"github.com/CMGS/cocoon/types"
 )
 
 // ---------------------------------------------------------------------------
 // buildLaunchArgs tests
 // ---------------------------------------------------------------------------
 
-// CLI only carries --api-socket. Firmware goes via REST payload.
-// When TPM is enabled, --tpm plus --kernel/--firmware are added (CH CLI requires it).
-// VM resource config (cpus, memory, disk, serial, console) always goes via REST.
+// CLI only carries --api-socket. Everything else (firmware, cpus, memory,
+// disk, serial, console, tpm) goes via REST vm.create payload.
 
-func TestBuildLaunchArgs_PVH_OnlyAPISocket(t *testing.T) {
-	cfg := &types.VMConfig{
-		BootStrategy: types.BootStrategyPVH,
-		FirmwarePath: "/usr/share/firmware/pvh.bin",
-		CPUs:         2,
-		MemoryMB:     1024,
-		OverlayPath:  "/tmp/overlay.qcow2",
-		SerialLog:    "/tmp/serial.log",
-	}
-	args := buildLaunchArgs("/tmp/api.sock", cfg)
+func TestBuildLaunchArgs_OnlyAPISocket(t *testing.T) {
+	args := buildLaunchArgs("/tmp/api.sock")
 
 	assertContainsFlag(t, args, "--api-socket", "/tmp/api.sock")
-	// No firmware flags on CLI — goes via REST payload.
-	assertNotContainsKey(t, args, "--kernel")
-	assertNotContainsKey(t, args, "--firmware")
-	assertNotContainsKey(t, args, "--tpm")
-}
-
-func TestBuildLaunchArgs_UEFI_OnlyAPISocket(t *testing.T) {
-	cfg := &types.VMConfig{
-		BootStrategy: types.BootStrategyUEFI,
-		FirmwarePath: "/usr/share/firmware/CLOUDHV.fd",
-		CPUs:         2,
-		MemoryMB:     1024,
-		OverlayPath:  "/tmp/overlay.qcow2",
-		SerialLog:    "/tmp/serial.log",
-	}
-	args := buildLaunchArgs("/tmp/api.sock", cfg)
-
-	assertContainsFlag(t, args, "--api-socket", "/tmp/api.sock")
-	// No firmware flags on CLI — goes via REST payload.
-	assertNotContainsKey(t, args, "--kernel")
-	assertNotContainsKey(t, args, "--firmware")
-	assertNotContainsKey(t, args, "--tpm")
-}
-
-func TestBuildLaunchArgs_PVH_WithTPM(t *testing.T) {
-	cfg := &types.VMConfig{
-		BootStrategy:  types.BootStrategyPVH,
-		FirmwarePath:  "/usr/share/firmware/pvh.bin",
-		CPUs:          2,
-		MemoryMB:      1024,
-		OverlayPath:   "/tmp/overlay.qcow2",
-		SerialLog:     "/tmp/serial.log",
-		TPMSocketPath: "/run/cocoon/vms/vm-abc/swtpm.sock",
-	}
-	args := buildLaunchArgs("/tmp/api.sock", cfg)
-
-	assertContainsFlag(t, args, "--tpm", "socket=/run/cocoon/vms/vm-abc/swtpm.sock")
-	// TPM requires --kernel/--firmware on CLI for CH CLI validator.
-	assertContainsFlag(t, args, "--kernel", "/usr/share/firmware/pvh.bin")
-	assertNotContainsKey(t, args, "--firmware")
-}
-
-func TestBuildLaunchArgs_UEFI_WithTPM(t *testing.T) {
-	cfg := &types.VMConfig{
-		BootStrategy:  types.BootStrategyUEFI,
-		FirmwarePath:  "/usr/share/firmware/CLOUDHV.fd",
-		CPUs:          2,
-		MemoryMB:      1024,
-		OverlayPath:   "/tmp/overlay.qcow2",
-		SerialLog:     "/tmp/serial.log",
-		TPMSocketPath: "/run/cocoon/vms/vm-abc/swtpm.sock",
-	}
-	args := buildLaunchArgs("/tmp/api.sock", cfg)
-
-	assertContainsFlag(t, args, "--tpm", "socket=/run/cocoon/vms/vm-abc/swtpm.sock")
-	// TPM requires --kernel/--firmware on CLI for CH CLI validator.
-	assertContainsFlag(t, args, "--firmware", "/usr/share/firmware/CLOUDHV.fd")
-	assertNotContainsKey(t, args, "--kernel")
-}
-
-func TestBuildLaunchArgs_SocketPathAlwaysPresent(t *testing.T) {
-	strategies := []types.BootStrategy{
-		types.BootStrategyPVH,
-		types.BootStrategyUEFI,
-	}
-
-	for _, strategy := range strategies {
-		t.Run(string(strategy), func(t *testing.T) {
-			cfg := &types.VMConfig{
-				BootStrategy: strategy,
-				FirmwarePath: "/some/path",
-				CPUs:         1,
-				MemoryMB:     512,
-				OverlayPath:  "/tmp/overlay.qcow2",
-				SerialLog:    "/tmp/serial.log",
-			}
-			args := buildLaunchArgs("/run/cocoon/vms/abc/api.sock", cfg)
-			assertContainsFlag(t, args, "--api-socket", "/run/cocoon/vms/abc/api.sock")
-		})
+	if len(args) != 2 {
+		t.Fatalf("expected exactly 2 args (--api-socket + path), got %v", args)
 	}
 }
 
@@ -327,11 +238,4 @@ func assertContainsFlag(t *testing.T, args []string, key, value string) {
 	t.Errorf("expected args to contain %s %s, got %v", key, value, args)
 }
 
-// assertNotContainsKey checks that args does not contain the given key.
-func assertNotContainsKey(t *testing.T, args []string, key string) {
-	t.Helper()
-	if slices.Contains(args, key) {
-		t.Errorf("expected args to NOT contain %s, got %v", key, args)
-	}
-}
 

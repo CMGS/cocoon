@@ -9,6 +9,12 @@ type CHVMConfig struct {
 	Disks   []CHDiskConfig   `json:"disks,omitempty"`
 	Serial  CHSerialConfig   `json:"serial"`
 	Console CHConsoleConfig  `json:"console"`
+	TPM     *CHTPMConfig     `json:"tpm,omitempty"`
+}
+
+// CHTPMConfig specifies the TPM 2.0 emulator socket path.
+type CHTPMConfig struct {
+	Socket string `json:"socket"`
 }
 
 // CHPayloadConfig specifies the boot firmware/kernel for the VM.
