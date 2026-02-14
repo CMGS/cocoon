@@ -74,10 +74,10 @@ cocoon delete <vm>
 | `cocoon inspect VM` | Display detailed VM information as JSON |
 | `cocoon logs VM` | View VM serial console logs |
 | `cocoon image list` | List cached base images (alias: `ls`) |
-| `cocoon image pull IMAGE` | Pull and cache an image without creating a VM |
-| `cocoon image inspect KEY` | Show details of a cached image |
-| `cocoon image remove KEY` | Remove a cached image if unreferenced (alias: `rm`) |
-| `cocoon image verify PATH` | Check if an image file is bootable |
+| `cocoon image pull IMAGE_REF` | Pull and cache an image without creating a VM |
+| `cocoon image inspect IMAGE_REF` | Show details of a cached image |
+| `cocoon image remove IMAGE_REF` | Remove a cached image if unreferenced (alias: `rm`) |
+| `cocoon image verify IMAGE_REF` | Check if an image (local path or cached ref) is bootable |
 | `cocoon gc` | Run garbage collection on unreferenced images and orphaned resources |
 | `cocoon firmware list` | List installed firmware files (alias: `ls`) |
 | `cocoon firmware verify` | Check firmware files exist and are accessible |

@@ -227,6 +227,7 @@ Phase 1 delivers a complete, production-ready VM lifecycle management system.
 
 - ✅ Cloud Hypervisor installation, setup, and firmware management
 - ✅ OCI image pull, cache, and qcow2 conversion pipeline
+- ✅ Manifest ref-index for `IMAGE_REF` local resolution (`image inspect` / `image rm` / `image verify`)
 - ✅ VM lifecycle (create/start/stop/kill/delete) with state machine
 - ✅ Copy-on-write storage with qcow2 backing files
 - ✅ Reference counting and garbage collection

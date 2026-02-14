@@ -43,7 +43,7 @@ Other documents MUST reference this section rather than defining their own paths
 │   ├── hypervisor-fw                     # PVH firmware (rust-hypervisor-firmware)
 │   └── CLOUDHV.fd                        # UEFI firmware (OVMF for Cloud Hypervisor)
 ├── temp/                                 # Scratch space for conversions
-└── trash/                                # Soft-deleted images (for recovery)
+└── trash/                                # Soft-deleted images/overlays (for recovery)
 
 /run/cocoon/                              # Runtime/ephemeral (tmpfs, cleared on reboot)
 └── vms/
@@ -599,8 +599,7 @@ class GarbageCollector:
 
         for temp_file in self.storage.temp_dir.iterdir():
             if temp_file.stat().st_mtime < cutoff_time:
-                trash_path = self.storage.trash_dir / f"{int(time.time_ns())}_{temp_file.name}"
-                temp_file.rename(trash_path)
+                temp_file.unlink()
                 collected.append(temp_file)
 
                 print(f"Collected temp file: {temp_file}")
@@ -672,6 +671,8 @@ Overlay images whose parent VM configuration has been deleted or corrupted. Thes
 Files in the `/var/lib/cocoon/temp/` directory older than a threshold (default: 1 hour).
 
 **Source:** Failed image conversions, interrupted downloads, or crashed operations.
+
+**Action:** Permanently delete expired temp files directly (not moved to trash).
 
 **Locking**: GC lock (L1) only, as temp files are not referenced.
 
@@ -771,7 +772,7 @@ The storage management system provides:
 2. **Space Optimization**: COW overlays allow 100 VMs to use ~5GB instead of 500GB
 3. **Safety**: Reference counting prevents premature deletion of in-use base images
 4. **Automation**: Garbage collection with grace periods cleans up unused resources
-5. **Recoverability**: Soft-delete to trash allows recovery from accidents
+5. **Recoverability**: Soft-delete of base images/overlays to trash allows recovery from accidental deletes
 6. **Scalability**: Supports high-concurrency VM creation through shared base images
 
 The combination of qcow2 backing files, checksum-based caching, and intelligent reference counting delivers an optimal storage solution for high-concurrency VM operations.

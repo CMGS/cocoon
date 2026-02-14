@@ -583,9 +583,10 @@ type InspectStorageInfo struct {
 
 // InspectHypervisorInfo contains Cloud Hypervisor details.
 type InspectHypervisorInfo struct {
-    CHSocket  string `json:"ch_socket"`
-    CHPID     int    `json:"ch_pid"`
-    SerialLog string `json:"serial_log"`
+    CHSocket         string   `json:"ch_socket"`
+    CHPID            int      `json:"ch_pid"`
+    SerialLog        string   `json:"serial_log"`
+    SerialLogExcerpt []string `json:"serial_log_excerpt,omitempty"`
 }
 
 // InspectBootConfig contains boot configuration.
@@ -642,7 +643,11 @@ type InspectErrorInfo struct {
   "hypervisor": {
     "ch_socket": "/run/cocoon/vms/vm-abc123/api.sock",
     "ch_pid": 12345,
-    "serial_log": "/var/log/cocoon/vm-abc123-serial.log"
+    "serial_log": "/var/log/cocoon/vm-abc123-serial.log",
+    "serial_log_excerpt": [
+      "[    0.000000] Linux version 6.8.0...",
+      "Ubuntu 22.04.5 LTS ready"
+    ]
   },
 
   "boot_config": {

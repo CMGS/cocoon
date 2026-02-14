@@ -989,6 +989,7 @@ cocoon inspect myvm
 **Output Example**:
 
 The inspect output merges data from `config.json` (immutable) and `metadata.json` (runtime state). See [07-vm-lifecycle.md § 5](./07-vm-lifecycle.md#5-vm-configuration-schema) for the schema details.
+When the serial log is readable, `hypervisor.serial_log_excerpt` contains the latest 100 lines.
 
 ```json
 {
@@ -1008,7 +1009,12 @@ The inspect output merges data from `config.json` (immutable) and `metadata.json
   "hypervisor": {
     "ch_socket": "/run/cocoon/vms/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K/api.sock",
     "ch_pid": 12345,
-    "serial_log": "/var/log/cocoon/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K-serial.log"
+    "serial_log": "/var/log/cocoon/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K-serial.log",
+    "serial_log_excerpt": [
+      "[    0.000000] Linux version 6.8.0...",
+      "[    2.134221] cloud-init[741]: Cloud-init v.24.1 finished",
+      "Ubuntu 22.04.5 LTS ready"
+    ]
   },
   "boot_config": {
     "cpus": 2,
@@ -1158,6 +1164,16 @@ func imagesCommand() *cli.Command {
 | `/path/to/*.qcow2` or `/path/to/*.img` | `qcow2` | Validate file, copy/link to cache |
 | `https://...` or `http://...` | `url` | Download, validate, cache |
 | `registry/repo:tag` or `repo:tag` | `oci` | Pull via Buildah, convert to qcow2, validate bootability, cache |
+
+**Cache Resolution Behavior**:
+
+- `image pull` updates the local manifest cache (`cache/manifests/index.json`) to map `IMAGE_REF` aliases to `base_key`.
+- `image inspect` and `image remove` resolve `IMAGE_REF` from local cache only (`base_key` direct hit or manifest-cache alias), without pulling.
+- `image verify` resolution order:
+  1. local file path
+  2. cached image via `base_key`/manifest alias
+  3. fallback `Prepare` only when not found locally
+- `image list` table output includes a `SOURCE REF` summary column; JSON output includes `source_refs`.
 
 **Example Usage**:
 

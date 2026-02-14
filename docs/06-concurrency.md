@@ -841,7 +841,7 @@ No orphans found. System is consistent.
 
 1. **Atomicity of reference updates**: Using file lock + atomic write ensures references are never corrupted
 2. **Idempotent operations**: Running reconcile multiple times produces same result
-3. **Safe defaults**: When in doubt, preserve data (move to trash, don't delete)
+3. **Safe defaults**: Preserve persistent VM/image artifacts (move to trash instead of hard delete when possible)
 4. **Manual override**: Admin can inspect trash before permanent deletion
 
 ## 5. VM Metadata Locking
