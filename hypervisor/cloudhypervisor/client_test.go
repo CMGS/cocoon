@@ -16,10 +16,12 @@ import (
 // buildLaunchArgs tests
 // ---------------------------------------------------------------------------
 
-// PVH: only --api-socket on CLI; firmware is sent via REST payload.kernel.
-// UEFI: --firmware on CLI with full VM config; REST API cannot load CLOUDHV.fd.
+// PVH: --kernel on CLI; also sent via REST payload.kernel.
+// UEFI: --firmware on CLI; REST API cannot load CLOUDHV.fd.
+// Both strategies: VM resource config (cpus, memory, disk, serial, console)
+// goes exclusively through REST vm.create — never on CLI.
 
-func TestBuildLaunchArgs_PVH_OnlyAPISocket(t *testing.T) {
+func TestBuildLaunchArgs_PVH_KernelOnCLI(t *testing.T) {
 	cfg := &types.VMConfig{
 		BootStrategy: types.BootStrategyPVH,
 		FirmwarePath: "/usr/share/firmware/pvh.bin",
@@ -31,14 +33,19 @@ func TestBuildLaunchArgs_PVH_OnlyAPISocket(t *testing.T) {
 	args := buildLaunchArgs("/tmp/api.sock", cfg)
 
 	assertContainsFlag(t, args, "--api-socket", "/tmp/api.sock")
-	// PVH firmware goes via REST payload, not CLI.
+	assertContainsFlag(t, args, "--kernel", "/usr/share/firmware/pvh.bin")
 	assertNotContainsKey(t, args, "--firmware")
-	assertNotContainsKey(t, args, "--kernel")
 	// No TPM socket → no --tpm flag.
 	assertNotContainsKey(t, args, "--tpm")
+	// VM resource config goes via REST vm.create, NOT on CLI.
+	assertNotContainsKey(t, args, "--cpus")
+	assertNotContainsKey(t, args, "--memory")
+	assertNotContainsKey(t, args, "--disk")
+	assertNotContainsKey(t, args, "--serial")
+	assertNotContainsKey(t, args, "--console")
 }
 
-func TestBuildLaunchArgs_UEFI_OnlyFirmwareOnCLI(t *testing.T) {
+func TestBuildLaunchArgs_UEFI_FirmwareOnCLI(t *testing.T) {
 	cfg := &types.VMConfig{
 		BootStrategy: types.BootStrategyUEFI,
 		FirmwarePath: "/usr/share/firmware/CLOUDHV.fd",
@@ -53,7 +60,6 @@ func TestBuildLaunchArgs_UEFI_OnlyFirmwareOnCLI(t *testing.T) {
 	assertContainsFlag(t, args, "--firmware", "/usr/share/firmware/CLOUDHV.fd")
 	assertNotContainsKey(t, args, "--kernel")
 	// VM resource config goes via REST vm.create, NOT on CLI.
-	// This prevents CH from auto-creating and auto-booting the VM.
 	assertNotContainsKey(t, args, "--cpus")
 	assertNotContainsKey(t, args, "--memory")
 	assertNotContainsKey(t, args, "--disk")
@@ -61,7 +67,7 @@ func TestBuildLaunchArgs_UEFI_OnlyFirmwareOnCLI(t *testing.T) {
 	assertNotContainsKey(t, args, "--console")
 }
 
-func TestBuildLaunchArgs_TPMSocketIncluded(t *testing.T) {
+func TestBuildLaunchArgs_PVH_WithTPM(t *testing.T) {
 	cfg := &types.VMConfig{
 		BootStrategy:  types.BootStrategyPVH,
 		FirmwarePath:  "/usr/share/firmware/pvh.bin",
@@ -73,7 +79,9 @@ func TestBuildLaunchArgs_TPMSocketIncluded(t *testing.T) {
 	}
 	args := buildLaunchArgs("/tmp/api.sock", cfg)
 
+	assertContainsFlag(t, args, "--kernel", "/usr/share/firmware/pvh.bin")
 	assertContainsFlag(t, args, "--tpm", "socket=/run/cocoon/vms/vm-abc/swtpm.sock")
+	assertNotContainsKey(t, args, "--firmware")
 }
 
 func TestBuildLaunchArgs_UEFI_WithTPM(t *testing.T) {

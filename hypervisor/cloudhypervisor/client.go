@@ -64,19 +64,27 @@ func New(cfg *config.CocoonConfig) hypervisor.Client {
 // buildLaunchArgs constructs the Cloud Hypervisor CLI arguments for a given
 // VM configuration.
 //
-// UEFI firmware (CLOUDHV.fd) must be set via CLI --firmware because CH's REST
-// API payload fields cannot load it. Only --firmware is passed on CLI; the VM
-// resource config (cpus, memory, disk, serial, console) goes through the REST
-// vm.create call so that CH does NOT auto-create or auto-boot the VM.
+// Both boot strategies pass firmware on the CLI:
+//   - UEFI: --firmware <CLOUDHV.fd>
+//   - PVH:  --kernel <hypervisor-fw>
 //
-// PVH firmware (hypervisor-fw) works via REST API payload.kernel and does NOT
-// need any CLI flags beyond --api-socket.
+// VM resource config (cpus, memory, disk, serial, console) goes exclusively
+// through the REST vm.create call so that CH does NOT auto-create or auto-boot.
+// The --kernel / --firmware flag alone only loads firmware; it does not trigger
+// auto-boot.
 func buildLaunchArgs(socketPath string, cfg *types.VMConfig) []string {
 	args := []string{"--api-socket", socketPath}
 
-	// UEFI: only pass --firmware. VM resource config is sent via REST vm.create.
-	if cfg.BootStrategy == types.BootStrategyUEFI && cfg.FirmwarePath != "" {
-		args = append(args, "--firmware", cfg.FirmwarePath)
+	// Firmware flag: UEFI uses --firmware, PVH uses --kernel.
+	// CH CLI requires one of these when --tpm is present, and it is safe
+	// to always provide them (no auto-boot without full VM config on CLI).
+	if cfg.FirmwarePath != "" {
+		switch cfg.BootStrategy {
+		case types.BootStrategyUEFI:
+			args = append(args, "--firmware", cfg.FirmwarePath)
+		case types.BootStrategyPVH:
+			args = append(args, "--kernel", cfg.FirmwarePath)
+		}
 	}
 
 	// TPM: pass swtpm socket path to CH via --tpm CLI flag.
