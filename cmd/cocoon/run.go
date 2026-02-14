@@ -50,6 +50,11 @@ func runAction(c *cli.Context) error {
 
 	autoRemove := c.Bool("rm")
 
+	// Override boot timeout if specified via CLI flag.
+	if c.IsSet("boot-timeout") {
+		app.cfg.BootTimeoutSeconds = c.Int("boot-timeout")
+	}
+
 	// Start the VM. In Phase 1, both detach and non-detach modes start
 	// the VM as a background CH process. Phase 2 will add attach mode
 	// (follow serial log) for non-detach runs.

@@ -44,6 +44,10 @@ func vmCreateFlags() []cli.Flag {
 			Name:  "skip-verify",
 			Usage: "skip bootability verification of the image",
 		},
+		&cli.IntFlag{
+			Name:  "boot-timeout",
+			Usage: "boot detection timeout in seconds (0 = skip boot detection)",
+		},
 	}
 }
 
