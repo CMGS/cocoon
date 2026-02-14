@@ -685,18 +685,19 @@ console=ttyS0 console=hvc0
 
 When multiple `console=` arguments are present, the Linux kernel sends output to all listed consoles. The **last** one listed becomes the primary console (where `/dev/console` points).
 
-### 6.5 Cocoon Console Injection Strategy
+### 6.5 Cocoon Console Strategy
 
-Cocoon applies the following strategy for console kernel command line parameters:
+Cocoon uses firmware-based boot for all boot strategies (PVH firmware via `hypervisor-fw`, UEFI firmware via `CLOUDHV.fd`). In both cases, the firmware loads the kernel from the guest disk image, and the **bootloader inside the guest** (e.g., GRUB) controls the kernel command line. Cocoon cannot inject kernel parameters such as `console=hvc0` from the host side.
 
-| Boot Strategy | Cocoon Behavior |
-|---------------|----------------|
-| PVH (direct kernel boot) | Cocoon appends `console=hvc0` to the kernel command line automatically. If the user supplies a custom `--cmdline`, Cocoon does NOT override it. |
-| UEFI (GRUB boot) | Cocoon does NOT modify the kernel command line. GRUB controls `console=` parameters via `/etc/default/grub` inside the guest image. |
+| Boot Strategy | Kernel cmdline control | Console mechanism |
+|---------------|----------------------|-------------------|
+| PVH (firmware boot via `hypervisor-fw`) | Guest bootloader (GRUB) | `systemd-getty-generator` auto-detects `/dev/hvc0` |
+| UEFI (firmware boot via `CLOUDHV.fd`) | Guest bootloader (GRUB) | `systemd-getty-generator` auto-detects `/dev/hvc0` |
 
 **Default behavior (no user action required)**:
 
 - Standard cloud images (Ubuntu, Fedora, Debian) ship with `systemd-getty-generator`, which auto-spawns `serial-getty@hvcN.service` when it detects `/dev/hvc0`. In most cases, `cocoon console` works immediately after boot without guest configuration.
+- Boot messages on `/dev/hvc0` depend on the guest's kernel command line containing `console=hvc0`. Most cloud images already include this, or the serial console on `/dev/ttyS0` captures boot output via `cocoon logs`.
 
 **When console shows no login prompt**:
 
@@ -704,7 +705,7 @@ If `cocoon console` connects successfully but shows no login prompt, the guest i
 
 1. Connect via `cocoon logs` (serial on `/dev/ttyS0`) to inspect the guest.
 2. Enable getty: `systemctl enable --now serial-getty@hvc0.service`
-3. For custom OCI images: ensure `console=hvc0` is in the kernel command line and getty is configured (see §6.3 and §6.4).
+3. For custom images: ensure `console=hvc0` is in the guest's GRUB config (`/etc/default/grub` → `GRUB_CMDLINE_LINUX`) and getty is configured (see §6.3 and §6.4).
 
 ---
 
