@@ -47,13 +47,13 @@ Examples marked as "**MUST**" or "**Implementation-Required**" define mandatory 
 
 **Cocoon's Role**:
 - **Validate**: Check if image has required components (kernel, bootloader) -- post-conversion via `cocoon image verify`
-- **Warn**: Alert if cloud-init missing (VM will boot but metadata server disabled) [Phase 2]
+- **Warn**: Alert if cloud-init missing (VM will boot but NoCloud configuration injection disabled) [Phase 2]
 - **Configure**: Modify GRUB config, inject serial console settings (if GRUB config present)
 - **Does NOT Install**: Does NOT install missing packages (kernel, GRUB, cloud-init)
 
 **User's Role** (Image Provider):
 - **MUST provide**: kernel, bootloader **pre-installed**
-- **SHOULD provide**: cloud-init **pre-installed** (required for metadata server integration) [Phase 2]
+- **SHOULD provide**: cloud-init **pre-installed** (required for NoCloud initialization) [Phase 2]
 - Cocoon only verifies and configures existing components
 
 **Rationale**: Installing packages during conversion would require:

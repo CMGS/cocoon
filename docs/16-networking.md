@@ -35,7 +35,7 @@ Cocoon Phase 1 VMs boot with no network interfaces. This is intentional for AI A
 1. **Package installation**: VMs that need to install software from upstream repositories require outbound internet access. Without networking, all packages must be baked into the base image at build time.
 2. **Service hosting**: Running a web server, database, or API inside a VM requires inbound connectivity from the host or other VMs.
 3. **Multi-VM communication**: Workloads spanning multiple VMs (e.g., a frontend VM and a backend VM) need a private network segment for inter-VM traffic.
-4. **Cloud-init network datasource**: Some cloud-init configurations rely on an HTTP metadata server (IMDS), which requires a network path from guest to host.
+4. **Cloud-init network datasource**: Some cloud-init configurations require network connectivity for package installation or external service access.
 5. **Development workflows**: Developers iterating on VM-based applications need SSH or HTTP access into the guest without rebuilding the image.
 
 ### 1.2 Approach: CNI Plugin Integration
@@ -1643,15 +1643,6 @@ Key points:
 - The MAC address is deterministically generated from the VM ID (see §4.5), so it is known at VM creation time.
 
 **Note on kernel `ip=` parameter**: Cocoon uses UEFI firmware boot (`CLOUDHV.fd`) for cloud images and direct kernel boot (`payload.kernel`) for OCI VM images. For UEFI boot, the firmware loads the kernel from the guest disk, and the bootloader inside the guest controls the kernel command line -- Cocoon cannot inject kernel parameters such as `ip=` from the host side. For direct kernel boot, Cocoon controls the kernel command line via `payload.cmdline`. In both cases, the cloud-init NoCloud datasource is the recommended network configuration injection mechanism.
-
-**Relationship to Metadata Server ([docs/01-boot-contract.md](./01-boot-contract.md))**:
-
-The metadata server (169.254.169.254) described in docs/01 is a separate, future feature -- not part of Phase 2 scope. NoCloud and the metadata server are complementary mechanisms that serve different purposes:
-
-- **NoCloud seed disk** (Phase 2): Handles network configuration injection. This is a static, creation-time mechanism -- network config is baked into a FAT image attached to the VM at creation and cannot be updated while the VM is running.
-- **Metadata server** (future): Will handle dynamic system configuration such as SSH keys, hostname, user-data scripts, and instance identity. The metadata server runs on the host and is accessible from the guest via the link-local address 169.254.169.254.
-
-They do not compete: NoCloud provides network configuration (which must be available before the network is up), while the metadata server provides everything else (which can be fetched over the network after boot). Phase 2 implements NoCloud only; the metadata server is deferred.
 
 **Guest Network Configuration Injection**: The CNI-assigned IP, routes, and DNS are injected into the guest via cloud-init NoCloud seed ISO (network-config v2 format). Cocoon generates a seed ISO containing the network configuration and attaches it as a secondary disk during VM creation. Guest images must have cloud-init installed and configured to consume NoCloud data sources. Images without cloud-init require manual network configuration inside the guest.
 

@@ -10,7 +10,7 @@
 This document defines the **Boot Contract** - the core specification for how Cocoon boots virtual machines using Cloud Hypervisor. The contract establishes:
 
 1. **Boot mode strategy**: UEFI (default for cloud images) + Direct kernel boot (for OCI VM images)
-2. **Guest initialization**: systemd + cloud-init with metadata server
+2. **Guest initialization**: systemd + cloud-init (NoCloud seed disks for initialization)
 3. **I/O mechanisms**: Serial console, future vsock/virtiofs
 4. **Lifecycle semantics**: Start, stop, delete, crash recovery
 5. **Image requirements**: What constitutes a bootable image
@@ -168,23 +168,20 @@ ls -la /sbin/init  # Should be symlink to systemd
 
 ---
 
-### 2.2 VM Initialization: cloud-init via Metadata Server
-
-> **Note**: The metadata server (169.254.169.254) is a future feature (Phase 3) and is not yet implemented. Phase 2 uses NoCloud seed disks for network configuration injection (see [16-networking.md](./16-networking.md) §8). Phase 1 relies on pre-baked cloud-init configuration in the image.
+### 2.2 VM Initialization: cloud-init
 
 **Purpose**: cloud-init is used for **VM initialization only** - setting up users, SSH keys, hostname, and network configuration. It is NOT used for task orchestration or command execution.
 
 **Architecture**:
 ```
 ┌─────────────┐
-│   Cocoon    │  1. Start metadata server (HTTP)
-│    Host     │  2. Launch VM with cloud-init cmdline
+│   Cocoon    │  1. Attach NoCloud seed disk (if --network specified)
+│    Host     │  2. Launch VM
 └──────┬──────┘
-       │ :8080
        │
        ▼
 ┌─────────────┐
-│  Guest VM   │  3. cloud-init fetches meta-data/user-data
+│  Guest VM   │  3. cloud-init reads NoCloud seed disk
 │             │  4. Configures users, SSH, hostname, network
 │ cloud-init  │  5. VM ready for external access
 └─────────────┘
@@ -193,94 +190,26 @@ ls -la /sbin/init  # Should be symlink to systemd
 **cloud-init Datasource Configuration**:
 
 **cloud-init: CONDITIONAL**
-- **REQUIRED**: For Cocoon metadata server integration (SSH/user setup, hostname config)
+- **REQUIRED**: For VM initialization (SSH/user setup, hostname, network config via NoCloud)
 - **OPTIONAL**: For standalone VMs with pre-configured credentials
 - **DEFAULT**: Standard cloud images (Ubuntu Cloud, Fedora Cloud) include it by default
-- **FALLBACK**: VMs without cloud-init will boot but cannot use metadata server
-
-Images using Cocoon metadata server MUST have cloud-init configured to use NoCloud-Net datasource:
-
-```yaml
-# /etc/cloud/cloud.cfg.d/99-cocoon.cfg
-datasource_list: [ NoCloud, NoCloudNet ]
-datasource:
-  NoCloudNet:
-    seedfrom: http://169.254.169.254/
-```
-
-**Kernel Cmdline Injection**:
-
-During image conversion or at boot time, Cocoon configures the kernel cmdline:
-
-```bash
-# GRUB configuration (modified during conversion)
-GRUB_CMDLINE_LINUX="... ds=nocloud-net;seedfrom=http://169.254.169.254/"
-```
-
-**Metadata Server Endpoints**:
-
-Cocoon runs an EC2-compatible metadata server on the host:
-
-```
-GET http://169.254.169.254/meta-data/instance-id
-→ vm-abc-123
-
-GET http://169.254.169.254/meta-data/hostname
-→ vm-abc-123.cocoon.local
-
-GET http://169.254.169.254/user-data
-→ #cloud-config
-  users:
-    - name: cocoon
-      sudo: ALL=(ALL) NOPASSWD:ALL
-      ssh_authorized_keys:
-        - ssh-rsa AAAAB3...
-```
-
-**Implementation Strategy**:
-
-**Phase 1: Stub Metadata Server (MVP)** — **[Not Yet Implemented]**
-- Lightweight HTTP server listening on 169.254.169.254:80
-- Per-VM metadata isolation (keyed by VM IP or request context)
-- EC2-compatible endpoints:
-  - `/meta-data/instance-id` → VM ID
-  - `/meta-data/hostname` → VM hostname
-  - `/meta-data/public-keys/` → SSH public keys (optional)
-  - `/user-data` → cloud-config for user/SSH setup
-- No authentication required (local host only)
-- Starts automatically when VM starts, stops when VM stops
-
-**NOT Included in Phase 1**:
-- ❌ cloud-init ISO (no disk mounting for cloud-init)
-- ❌ Advanced metadata: network config, block device mapping
-- ❌ IMDSv2 authentication (AWS-style token-based auth)
-
-**Phase 3: Full Metadata Server**
-- Network configuration injection
-- Block device mapping
-- IMDSv2 authentication for security
+- **FALLBACK**: VMs without cloud-init will boot but cannot receive NoCloud configuration
 
 ---
 
 ### 2.3 VM Boot Sequence
 
-> **Note**: Steps 1, 2, and 4 below describe the future metadata server flow (Phase 3). In Phase 1 and Phase 2, cloud-init is configured via NoCloud seed disks or image-embedded configuration.
-
 ```
-1. Cocoon starts metadata server [Phase 3]
-   └─ Listens on 169.254.169.254:80
+1. Cocoon attaches NoCloud seed disk (if --network specified)
 
-2. Cocoon launches VM with modified cmdline
-   └─ ds=nocloud-net;seedfrom=http://169.254.169.254/
+2. Cocoon launches VM
 
 3. VM boots → systemd starts cloud-init.service
 
-4. cloud-init fetches metadata from server
-   └─ GET http://169.254.169.254/meta-data/*
-   └─ GET http://169.254.169.254/user-data
+4. cloud-init reads NoCloud seed disk for network/meta-data
 
 5. cloud-init configures VM
-   └─ Create users, set hostname, configure SSH keys
+   └─ Create users, set hostname, configure SSH keys, apply network config
 
 6. VM initialization complete
    └─ VM is ready for external access (console, SSH, API)
@@ -313,7 +242,7 @@ cloud-hypervisor \
 [    0.123456] Linux version 5.15.0-87-generic ...
 [    0.234567] Command line: BOOT_IMAGE=/vmlinuz root=/dev/vda1 ds=nocloud-net;...
 [    1.456789] cloud-init[234]: Cloud-init v. 23.3.1 running ...
-[    2.567890] cloud-init[234]: Fetching user-data from http://169.254.169.254/
+[    2.567890] cloud-init[234]: Reading NoCloud seed disk for user-data
 [    3.678901] cloud-init[234]: Creating user 'cocoon'
 [    4.789012] cloud-init[234]: Setting hostname to 'vm-abc-123'
 [    5.890123] systemd[1]: Reached target Multi-User System
@@ -498,7 +427,7 @@ func tailFile(ctx context.Context, path string) <-chan string {
 **Architecture**:
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ Cocoon metadata server (user-data)                     │
+│ NoCloud seed disk (user-data)                           │
 │ ↓                                                       │
 │ cloud-init writes /etc/systemd/system/cocoon-ready.service│
 │ ↓                                                       │
@@ -509,7 +438,7 @@ func tailFile(ctx context.Context, path string) <-chan string {
 └─────────────────────────────────────────────────────────┘
 ```
 
-**user-data injection** (via metadata server):
+**user-data injection** (via NoCloud seed disk):
 ```yaml
 #cloud-config
 write_files:
@@ -593,7 +522,6 @@ func WaitForBootCompletion(vmID string, config BootDetectionConfig) error {
 **Rollout Strategy**:
 - **Phase 1 (MVP)**: Use multi-pattern detection (current implementation)
 - **Phase 2**: Enable cocoon-ready.service by default, keep pattern matching as fallback
-- **Phase 3**: Make cocoon-ready.service mandatory for certified images
 
 ---
 
@@ -666,10 +594,9 @@ func StopVM(vmID string) error {
 
 **On normal shutdown**:
 ```bash
-1. Stop metadata server for this VM
-2. Send ACPI shutdown to VM
-3. Wait for CH process exit
-4. Clean up socket and PID files
+1. Send ACPI shutdown to VM
+2. Wait for CH process exit
+3. Clean up socket and PID files
 ```
 
 **On crash**:
@@ -768,7 +695,7 @@ An image is **bootable** if it satisfies these requirements:
 **SHOULD Have (Recommended for VM Initialization)**:
 - 🔵 **cloud-init**: `/usr/bin/cloud-init` + datasource config
   - **Purpose**: VM initialization (users, SSH keys, hostname, network)
-  - **NOT mandatory**: Can boot without it, but Cocoon metadata server integration requires it
+  - **NOT mandatory**: Can boot without it, but NoCloud configuration injection requires it
   - **For basic boot testing**: Not required
 
 **Path Hierarchy Clarification**:
@@ -809,7 +736,7 @@ func ValidateBootability(rootfs string) error {
 
     // SHOULD check (warning, not error)
     if !pathExists(filepath.Join(rootfs, "/usr/bin/cloud-init")) {
-        log.Warn("cloud-init not found - VM will boot but Cocoon metadata server integration disabled")
+        log.Warn("cloud-init not found - VM will boot but NoCloud configuration injection disabled")
     }
 
     return nil
@@ -822,37 +749,17 @@ func ValidateBootability(rootfs string) error {
 
 **cloud-init: CONDITIONAL** (see § 2.2 for details)
 
-**IF using Cocoon metadata server**, images MUST have cloud-init datasource config:
+**IF using cloud-init with NoCloud**, images MUST have cloud-init datasource config:
 
 ```yaml
 # /etc/cloud/cloud.cfg.d/99-cocoon.cfg
-datasource_list: [ NoCloud, NoCloudNet ]
-datasource:
-  NoCloudNet:
-    seedfrom: http://169.254.169.254/
+datasource_list: [ NoCloud ]
 ```
 
-**MUST have NoCloudNet support**:
+**MUST have NoCloud support**:
 ```bash
-# Verify cloud-init has NoCloudNet module
-cloud-init query -l  # Should list NoCloudNet
-```
-
-**Conversion Process Injects**:
-
-During OCI→qcow2 conversion, Cocoon adds:
-```bash
-# 1. Install cloud-init config
-virt-customize -a image.qcow2 \
-  --upload 99-cocoon.cfg:/etc/cloud/cloud.cfg.d/
-
-# 2. Modify GRUB to add datasource cmdline
-virt-customize -a image.qcow2 \
-  --run-command "sed -i 's/GRUB_CMDLINE_LINUX=\"/GRUB_CMDLINE_LINUX=\"ds=nocloud-net;seedfrom=http:\/\/169.254.169.254\/ /' /etc/default/grub"
-
-# 3. Regenerate GRUB config
-virt-customize -a image.qcow2 \
-  --run-command "grub2-mkconfig -o /boot/grub2/grub.cfg"
+# Verify cloud-init has NoCloud module
+cloud-init query -l  # Should list NoCloud
 ```
 
 ---
@@ -906,21 +813,6 @@ virt-customize -a image.qcow2 \
   - [ ] Launch CH with `payload.kernel` + `payload.initramfs` + `payload.cmdline`
   - [ ] Build kernel cmdline with `root=PARTUUID=<uuid> rw console=ttyS0,115200n8 console=hvc0`
 
-- [ ] **Metadata Server (Stub Implementation)** — **[Not Yet Implemented — Phase 3]**:
-  - [ ] Implement lightweight HTTP server listening on 169.254.169.254:80
-  - [ ] EC2-compatible endpoints:
-    - [ ] `/meta-data/instance-id` → return VM ID
-    - [ ] `/meta-data/hostname` → return VM hostname
-    - [ ] `/meta-data/public-keys/` → return SSH keys (optional)
-    - [ ] `/user-data` → return cloud-config YAML
-  - [ ] Per-VM metadata isolation (keyed by request context or VM IP)
-  - [ ] Start metadata server before launching VM
-  - [ ] Stop metadata server when VM stops
-  - [ ] Generate user-data with:
-    - [ ] Default user creation
-    - [ ] SSH key injection
-    - [ ] Hostname configuration
-
 - [ ] **Image Conversion**:
   - [ ] Validate cloud-init installed
   - [ ] Inject cloud-init datasource config
@@ -941,7 +833,6 @@ virt-customize -a image.qcow2 \
 
 - [ ] **cocoon-ready.service Boot Marker**:
   - [ ] Add cocoon-ready.service to user-data generation
-  - [ ] Modify metadata server to include systemd unit in user-data
   - [ ] Update WaitForBootCompletion to check for COCOON_READY pattern
   - [ ] Add priority-based pattern matching (cocoon-ready → systemd+cloud-init → fallback)
   - [ ] Test across Ubuntu, Fedora, Debian distributions
@@ -962,7 +853,7 @@ virt-customize -a image.qcow2 \
 **Boot Contract v2.0** establishes:
 
 1. **Boot strategy**: UEFI (cloud images) + Direct kernel boot (OCI VM images)
-2. **VM initialization**: cloud-init + metadata server for setup (users, SSH, network)
+2. **VM initialization**: cloud-init + NoCloud seed disks for initialization (users, SSH, network)
 3. **Image requirements**: kernel + bootloader + systemd + cloud-init
 4. **Graceful lifecycle**: ACPI shutdown with timeout
 5. **Production ready**: Works with standard cloud images and OCI VM images

@@ -1251,7 +1251,7 @@ qemu-img >= 8.0
 
 **Boot Contract**:
 - [x] UEFI boot mode implemented (`types/boot.go`, `vm/engine/manager.go`, `hypervisor/cloudhypervisor/client.go`)
-- [ ] systemd + cloud-init integration working (boot detection implemented; metadata server is Phase 2)
+- [ ] systemd + cloud-init integration working (boot detection implemented; NoCloud seed disks in Phase 2)
 - [x] Serial console capture functional (`hypervisor/cloudhypervisor/client.go`, `vm/engine/boot_detect.go`)
 - [x] ACPI shutdown with 30s timeout (`vm/engine/manager.go`, `hypervisor/cloudhypervisor/client.go`)
 - [x] Force kill after timeout (`vm/engine/manager.go`, `hypervisor/hypervisor.go`)

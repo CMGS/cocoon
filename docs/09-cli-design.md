@@ -1689,8 +1689,7 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
    - **Release references.lock**
    - This "pin" ensures the base image survives even if GC runs during the subsequent (slow) steps. On failure in later steps, the cleanup path removes this reference.
 7. **Create COW overlay** → `StorageManager.CreateOverlay(baseKey, vmID)`
-8. **[Phase 3] Metadata server** → HTTP server on 169.254.169.254 for cloud-init is not yet implemented. Phase 1 relies on pre-baked cloud-init config; Phase 2 uses NoCloud seed disks (see [16-networking.md](./16-networking.md) §8).
-9. **Configure VM**:
+8. **Configure VM**:
    ```go
    config := &types.VMConfig{
        VMID:          vmID,
@@ -1712,7 +1711,7 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
        SchemaVersion: types.CurrentConfigSchemaVersion,
    }
    ```
-10. **Start Cloud Hypervisor** (REST-first):
+9. **Start Cloud Hypervisor** (REST-first):
     ```bash
     # Launch CH process with API socket and firmware (UEFI boot):
     cloud-hypervisor \
@@ -1731,11 +1730,11 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
     }
     ```
     Followed by `PUT /api/v1/vm.boot` to start the VM.
-11. **Wait for boot** → Poll serial log for boot completion marker (timeout: 60s)
-12. **Save VM metadata** → Write `config.json` (immutable) and `metadata.json` (mutable) to VM directory (acquires per-VM `metadata.lock`, Level 4)
-13. **Acquire name-index.lock** (Level 2) → Add `name → vm_id` to `name-index.json`, release lock
-14. **Print VM ID** → Output `vm_id` to stdout for scripting
-15. **Auto-remove bookkeeping** → If `--rm`, set `AutoRemove=true` in metadata; delete is triggered when the VM is later stopped via `cocoon stop` (crash/external-kill: `cocoon doctor --fix` performs state reconciliation; automatic deletion of crashed `auto_remove` VMs is a future enhancement)
+10. **Wait for boot** → Poll serial log for boot completion marker (timeout: 60s)
+11. **Save VM metadata** → Write `config.json` (immutable) and `metadata.json` (mutable) to VM directory (acquires per-VM `metadata.lock`, Level 4)
+12. **Acquire name-index.lock** (Level 2) → Add `name → vm_id` to `name-index.json`, release lock
+13. **Print VM ID** → Output `vm_id` to stdout for scripting
+14. **Auto-remove bookkeeping** → If `--rm`, set `AutoRemove=true` in metadata; delete is triggered when the VM is later stopped via `cocoon stop` (crash/external-kill: `cocoon doctor --fix` performs state reconciliation; automatic deletion of crashed `auto_remove` VMs is a future enhancement)
 
 **Failure cleanup**: If any step after 6 fails, the cleanup path must:
 - **Acquire references.lock** (Level 2)
@@ -1771,7 +1770,6 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
 11. **Delete resources**:
     - Move overlay to trash: `mv overlay.qcow2 /var/lib/cocoon/trash/`
     - Delete serial log: `rm /var/log/cocoon/{vm_id}-serial.log`
-    - [Phase 3] Stop metadata server for this VM (not yet implemented)
     - Delete API socket: `rm /run/cocoon/vms/{vm_id}/api.sock`
     - Delete VM directory: `rm -rf /var/lib/cocoon/vms/{vm_id}/`
 12. **Trigger GC** (optional) → If base image unreferenced, mark for collection
@@ -1899,7 +1897,7 @@ This CLI design implements the Boot Contract specification:
 | Boot Contract Section | CLI Implementation |
 |----------------------|-------------------|
 | §1 Boot Path Decision | `--oci` flag (selects direct kernel boot), config-level firmware paths |
-| §2 Guest Init Model | [Phase 3] Metadata server for cloud-init (not yet implemented) |
+| §2 Guest Init Model | NoCloud seed disks for cloud-init initialization (Phase 2: [16-networking.md](./16-networking.md)) |
 | §3 I/O Mechanisms | Serial console via `--serial file=...` (CH flag), `cocoon logs` command |
 | §4 Lifecycle Semantics | `run`, `stop`, `delete`, `kill` commands |
 | §5 VM Configuration Schema | `types.VMConfig` in Go code |

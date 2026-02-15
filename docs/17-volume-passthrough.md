@@ -1239,7 +1239,7 @@ maintenance status and security concerns.
 5. **Cloud-init integration depth**: How tightly should volume auto-mount
    integrate with cloud-init? Should Cocoon generate a full NoCloud
    datasource, or only append to existing user-data? This intersects with
-   future cloud-init / metadata server work.
+   future cloud-init / NoCloud integration.
 
 6. **Concurrent volume access**: What happens when multiple VMs share the
    same host directory in read-write mode? virtiofsd supports this, but

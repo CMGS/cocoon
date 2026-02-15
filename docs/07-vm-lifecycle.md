@@ -131,7 +131,7 @@ CREATING -----> CREATED -----> STARTING -----> RUNNING -----> STOPPING -----> ST
 **State**:
 - Overlay disk exists at `/var/lib/cocoon/vms/{vm-id}/overlay.qcow2`
 - Metadata stored in `/var/lib/cocoon/vms/{vm-id}/metadata.json`
-- [Phase 2] Metadata server configuration prepared (no separate ISO needed)
+- NoCloud seed disk prepared when --network is specified (see [16-networking.md](./16-networking.md))
 - No Cloud Hypervisor process running
 
 **Allowed Operations**:
@@ -483,7 +483,7 @@ func (m *manager) transitionStateWithUpdate(vmID string, to types.VMState, reaso
 **Postconditions**:
 - VM metadata created
 - Overlay disk created
-- [Phase 2] Metadata server configuration prepared (guest datasource config embedded in image)
+- NoCloud seed disk prepared when --network is specified
 - VM in CREATED state
 
 **Idempotency**:

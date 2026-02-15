@@ -17,10 +17,10 @@ Cocoon requires **bootable VM images** with a complete operating system, not app
 - **MUST contain**: kernel (`/boot/vmlinuz*`), initrd/initramfs, init system (`/sbin/init` → systemd)
 - **MUST have**: GRUB bootloader in ESP (EFI System Partition), GPT partition table
 - **cloud-init: CONDITIONAL**:
-  - **REQUIRED**: For Cocoon metadata server integration (SSH/user setup, hostname config)
+  - **REQUIRED**: For VM initialization via NoCloud (SSH/user setup, hostname, network config)
   - **OPTIONAL**: For standalone VMs with pre-configured credentials
   - **DEFAULT**: Standard cloud images include it by default
-  - **FALLBACK**: VMs without cloud-init will boot but cannot use metadata server
+  - **FALLBACK**: VMs without cloud-init will boot but cannot receive NoCloud configuration
 - **Reality**: Building bootable OCI images is complex - see [11-bootable-oci-build.md](./11-bootable-oci-build.md)
 
 **2. Cloud Hypervisor Native Cloud Images** (recommended, faster):
