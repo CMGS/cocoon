@@ -13,8 +13,8 @@ Cocoon relies on several external tools and libraries to provide VM management w
 
 | Tool | Purpose | Min Version | Rootless Support | Installation Method |
 |------|---------|-------------|------------------|---------------------|
-| cloud-hypervisor | Virtual Machine Monitor (VMM) | v50.0 | N/A (requires KVM) | Binary or source |
-| ch-remote | CH remote control (REST API client) | v50.0 | N/A | Binary (ships with CH release) |
+| cloud-hypervisor | Virtual Machine Monitor (VMM) | v38.0 | N/A (requires KVM) | Binary or source |
+| ch-remote | CH remote control (REST API client) | v38.0 | N/A | Binary (ships with CH release) |
 | edk2-cloudhv | UEFI firmware for CH (default boot mode) | ch-a54f262b09 | N/A | `cocoon firmware install` or `cocoon init --with-uefi-firmware <URL>` |
 | buildah | OCI image pull/extract | 1.35.0 | ✅ Yes | apt/dnf |
 | skopeo | OCI image inspection | 1.14.0 | ✅ Yes | apt/dnf |
@@ -29,13 +29,15 @@ Cocoon relies on several external tools and libraries to provide VM management w
 
 **Purpose**: Production-grade Virtual Machine Monitor built in Rust for running lightweight VMs.
 
-**Minimum Version**: v50.0
+**Minimum Version**: v38.0
+
+Phase 2 features (snapshot/restore, pause/resume) may require a higher minimum version; see individual Phase 2 design documents for version requirements.
 
 **Installation**:
 
 ```bash
 # Download pre-built binary (recommended)
-CH_VERSION="v50.0"
+CH_VERSION="v38.0"
 curl -LO https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/${CH_VERSION}/cloud-hypervisor-static
 
 # Verify checksum (optional but recommended)
@@ -60,7 +62,7 @@ source $HOME/.cargo/env
 # Clone and build
 git clone https://github.com/cloud-hypervisor/cloud-hypervisor.git
 cd cloud-hypervisor
-git checkout v50.0
+git checkout v38.0
 cargo build --release
 
 # Install
@@ -545,7 +547,7 @@ func checkFirmwareFiles() []DependencyStatus {
 
 func getInstallCommand(name string) string {
     installCmds := map[string]string{
-        "cloud-hypervisor": "curl -LO https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v50.0/cloud-hypervisor-static && chmod +x cloud-hypervisor-static && sudo mv cloud-hypervisor-static /usr/local/bin/cloud-hypervisor",
+        "cloud-hypervisor": "curl -LO https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v38.0/cloud-hypervisor-static && chmod +x cloud-hypervisor-static && sudo mv cloud-hypervisor-static /usr/local/bin/cloud-hypervisor",
         "buildah":          "sudo apt-get install buildah (Ubuntu) or sudo dnf install buildah (Fedora)",
         "skopeo":           "sudo apt-get install skopeo (Ubuntu) or sudo dnf install skopeo (Fedora)",
         "qemu-img":         "sudo apt-get install qemu-utils (Ubuntu) or sudo dnf install qemu-img (Fedora)",
@@ -563,7 +565,7 @@ Cocoon Dependency Check
 =======================
 
 Core Dependencies:
-✅ cloud-hypervisor v50.0 found at /usr/local/bin/cloud-hypervisor
+✅ cloud-hypervisor v38.0 found at /usr/local/bin/cloud-hypervisor
 ✅ buildah 1.35.0 found at /usr/bin/buildah
 ✅ skopeo 1.14.0 found at /usr/bin/skopeo
 ✅ qemu-img 8.2.0 found at /usr/bin/qemu-img
@@ -593,7 +595,7 @@ Cocoon supports three permission models to balance security and functionality.
 
 > **Phase 1 Scope**: Only rootful mode (Option B) is implemented. Rootless (Option A) and hybrid helper (Option C) are designed for Phase 2.
 
-### Option A: Rootless (Preferred) [Phase 2]
+### Option A: Rootless (Preferred) [Phase 2+ -- not implemented in Phase 1]
 
 **Description**: Run cocoon entirely as a regular user without sudo privileges.
 
@@ -676,7 +678,7 @@ sudo cocoon create ubuntu-22.04-cloudimg --name myvm
 
 **Not Recommended**: Use Option C (Hybrid) instead.
 
-### Option C: Hybrid (Recommended for Production) [Phase 2]
+### Option C: Hybrid (Recommended for Production) [Phase 2+ -- not implemented in Phase 1]
 
 **Description**: Run main cocoon binary as regular user, but use a privileged helper for operations requiring root.
 
@@ -690,7 +692,7 @@ cocoon (user) → cocoon-helper (setuid or sudo) → libguestfs tools
 - All features available
 - Audit trail for privileged operations
 
-#### cocoon-helper Interface Specification
+#### cocoon-helper Interface Specification (Phase 2+ -- not implemented in Phase 1)
 
 The privileged helper is a compiled Go binary (not a shell script) that provides
 a strict, auditable interface between unprivileged cocoon and root-only
@@ -735,7 +737,7 @@ cocoon-helper <subcommand> [args...]
 
 **Stderr**: Human-readable progress and debug messages (not parsed by cocoon).
 
-##### 2. Path Allowlist (Security)
+##### 2. Path Allowlist (Security) (Phase 2+)
 
 The helper MUST enforce a strict path allowlist. Any file operation on a path
 outside the allowlist MUST be rejected with exit code 2.
@@ -859,7 +861,7 @@ set -e
 sudo apt-get update
 
 # 2. Install Cloud Hypervisor
-CH_VERSION="v50.0"
+CH_VERSION="v38.0"
 curl -LO https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/${CH_VERSION}/cloud-hypervisor-static
 chmod +x cloud-hypervisor-static
 sudo mv cloud-hypervisor-static /usr/local/bin/cloud-hypervisor
@@ -913,7 +915,7 @@ sudo apt-get install -y \
     fuse-overlayfs
 
 # Download Cloud Hypervisor (same as 22.04)
-CH_VERSION="v50.0"
+CH_VERSION="v38.0"
 curl -LO https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/${CH_VERSION}/cloud-hypervisor-static
 chmod +x cloud-hypervisor-static
 sudo mv cloud-hypervisor-static /usr/local/bin/cloud-hypervisor
@@ -945,7 +947,7 @@ sudo dnf install -y \
     fuse-overlayfs
 
 # 2. Install Cloud Hypervisor
-CH_VERSION="v50.0"
+CH_VERSION="v38.0"
 curl -LO https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/${CH_VERSION}/cloud-hypervisor-static
 chmod +x cloud-hypervisor-static
 sudo mv cloud-hypervisor-static /usr/local/bin/cloud-hypervisor
@@ -1114,11 +1116,11 @@ ls -l /usr/share/edk2/ovmf/OVMF_CODE.fd
 
 | OS | Kernel | cloud-hypervisor | buildah | qemu-img | libguestfs | Status |
 |----|--------|------------------|---------|----------|------------|--------|
-| Ubuntu 22.04 | 5.15 | v50.0 | 1.35.0 | 6.2 | 1.46 | ✅ Tested |
-| Ubuntu 24.04 | 6.8 | v50.0 | 1.35.0 | 8.2 | 1.50 | ✅ Tested |
-| Fedora 39 | 6.5 | v50.0 | 1.35.3 | 8.1 | 1.50 | ✅ Tested |
-| Fedora 40 | 6.8 | v50.0 | 1.36.0 | 8.2 | 1.52 | ✅ Tested |
-| Debian 12 | 6.1 | v50.0 | 1.28.0 | 7.2 | 1.48 | ⚠️ Partial (buildah too old) |
+| Ubuntu 22.04 | 5.15 | v38.0 | 1.35.0 | 6.2 | 1.46 | ✅ Tested |
+| Ubuntu 24.04 | 6.8 | v38.0 | 1.35.0 | 8.2 | 1.50 | ✅ Tested |
+| Fedora 39 | 6.5 | v38.0 | 1.35.3 | 8.1 | 1.50 | ✅ Tested |
+| Fedora 40 | 6.8 | v38.0 | 1.36.0 | 8.2 | 1.52 | ✅ Tested |
+| Debian 12 | 6.1 | v38.0 | 1.28.0 | 7.2 | 1.48 | ⚠️ Partial (buildah too old) |
 
 ### Version Warnings
 

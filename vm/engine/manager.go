@@ -735,7 +735,7 @@ func (m *manager) ensureDeletePreconditions(ctx context.Context, vmID string, fo
 	if !force {
 		return types.ErrVMRunning
 	}
-	if stopErr := m.Stop(ctx, vmID, 10*time.Second); stopErr != nil {
+	if stopErr := m.Stop(ctx, vmID, time.Duration(m.cfg.StopTimeoutSeconds)*time.Second); stopErr != nil {
 		// Force kill the CH process directly.
 		_ = m.hyper.ForceKill(vmID)
 		_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("force stop failed: %v", stopErr))

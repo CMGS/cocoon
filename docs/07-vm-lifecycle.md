@@ -142,6 +142,8 @@ CREATING -----> CREATED -----> STARTING -----> RUNNING -----> STOPPING -----> ST
 #### STARTING
 **Purpose**: Cloud Hypervisor booting, guest OS initializing
 
+**Note**: The transition to STARTING occurs when the start flow is initiated, before the Cloud Hypervisor process is fully launched. If the launch itself fails, the VM transitions directly from STARTING to ERROR.
+
 **Activities**:
 - Cloud Hypervisor process running
 - Firmware/kernel loading (boot mode dependent):

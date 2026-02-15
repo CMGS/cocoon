@@ -20,6 +20,10 @@ func runCommand() *cli.Command {
 			Name:  "rm",
 			Usage: "automatically delete the VM when it stops",
 		},
+		&cli.IntFlag{
+			Name:  "boot-timeout",
+			Usage: "boot detection timeout in seconds (0 = skip boot detection)",
+		},
 	)
 	return &cli.Command{
 		Name:      "run",

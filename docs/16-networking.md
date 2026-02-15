@@ -130,6 +130,10 @@ VMs created without `--network` (or with `--network none`) have no TAP device, n
 
 ## 2. Design
 
+### 2.0 Design Constraints and Prerequisites
+
+**Cloud Hypervisor Version Requirement**: Phase 2 networking requires a CH version that does NOT assign default IP/mask to virtio-net devices. Older CH versions auto-assign `192.168.249.1/24`, which conflicts with CNI-managed IP assignment. The exact minimum version must be validated before implementation. `cocoon doctor` will be extended to enforce this.
+
 ### 2.1 Architecture Overview
 
 ```
@@ -1625,6 +1629,8 @@ The metadata server (169.254.169.254) described in docs/01 is a separate, future
 - **Metadata server** (future): Will handle dynamic system configuration such as SSH keys, hostname, user-data scripts, and instance identity. The metadata server runs on the host and is accessible from the guest via the link-local address 169.254.169.254.
 
 They do not compete: NoCloud provides network configuration (which must be available before the network is up), while the metadata server provides everything else (which can be fetched over the network after boot). Phase 2 implements NoCloud only; the metadata server is deferred.
+
+**Guest Network Configuration Injection**: The CNI-assigned IP, routes, and DNS are injected into the guest via cloud-init NoCloud seed ISO (network-config v2 format). Cocoon generates a seed ISO containing the network configuration and attaches it as a secondary disk during VM creation. Guest images must have cloud-init installed and configured to consume NoCloud data sources. Images without cloud-init require manual network configuration inside the guest.
 
 ### 8.3 Cloud-Init NoCloud Image Lifecycle
 

@@ -1093,6 +1093,10 @@ Optional TTL on checkpoints. Expired checkpoints are automatically cleaned up by
 
 ## 10. Limitations and Constraints
 
+### 10.0 Cloud Hypervisor Minimum Version for Snapshot/Restore
+
+Cloud Hypervisor minimum version for snapshot/restore: TBD (must be validated before implementation begins). The `cocoon doctor` check will be extended to verify this version requirement for Phase 2 warm-start features.
+
 ### 10.1 Firmware Version Compatibility
 
 A checkpoint can only be restored with the **same firmware version** used when the checkpoint was taken. Firmware version mismatches may cause memory layout differences and silent data corruption.
@@ -1130,6 +1134,10 @@ The base image referenced by the checkpoint's overlay must exist at restore time
 ### 10.9 Same-Architecture Requirement
 
 A checkpoint taken on x86_64 cannot be restored on aarch64 (and vice versa). The `arch` field in `checkpoint.json` is validated at restore time.
+
+### 10.9.1 Same-Host Constraint
+
+**Phase 2 Scope**: Warm-start is supported only on the same host with the same `rootDir` configuration. The qcow2 overlay contains an absolute backing-file path to the base image; if the base image path changes (different host, different rootDir), the overlay becomes invalid. Cross-host migration with `qemu-img rebase` is deferred to Phase 3.
 
 ### 10.10 Snapshot Invalidation Rules
 
