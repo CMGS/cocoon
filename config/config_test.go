@@ -35,9 +35,6 @@ func TestDefaultConfig(t *testing.T) {
 	}
 
 	// Firmware paths.
-	if cfg.PVHFirmwarePath != "/var/lib/cocoon/firmware/hypervisor-fw" {
-		t.Errorf("PVHFirmwarePath = %q, want /var/lib/cocoon/firmware/hypervisor-fw", cfg.PVHFirmwarePath)
-	}
 	if cfg.UEFIFirmwarePath != "/var/lib/cocoon/firmware/CLOUDHV.fd" {
 		t.Errorf("UEFIFirmwarePath = %q, want /var/lib/cocoon/firmware/CLOUDHV.fd", cfg.UEFIFirmwarePath)
 	}
@@ -126,9 +123,6 @@ func TestRebaseRootDir(t *testing.T) {
 	}
 	if cfg.BuildahRoot != "/tmp/test/buildah" {
 		t.Errorf("BuildahRoot = %q, want /tmp/test/buildah", cfg.BuildahRoot)
-	}
-	if cfg.PVHFirmwarePath != "/tmp/test/firmware/hypervisor-fw" {
-		t.Errorf("PVHFirmwarePath = %q, want /tmp/test/firmware/hypervisor-fw", cfg.PVHFirmwarePath)
 	}
 	if cfg.UEFIFirmwarePath != "/tmp/test/firmware/CLOUDHV.fd" {
 		t.Errorf("UEFIFirmwarePath = %q, want /tmp/test/firmware/CLOUDHV.fd", cfg.UEFIFirmwarePath)

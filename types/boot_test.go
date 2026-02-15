@@ -10,8 +10,8 @@ func TestParseBootStrategy_ValidValues(t *testing.T) {
 		want BootStrategy
 	}{
 		{in: "uefi", want: BootStrategyUEFI},
-		{in: "pvh", want: BootStrategyPVH},
-		{in: "  PVH  ", want: BootStrategyPVH},
+		{in: "direct", want: BootStrategyDirect},
+		{in: "  DIRECT  ", want: BootStrategyDirect},
 	}
 
 	for _, tc := range cases {

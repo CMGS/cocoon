@@ -123,10 +123,6 @@ func firmwareInstallCommand() *cli.Command {
 		Usage: "Download and install firmware files",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
-				Name:  "pvh-url",
-				Usage: "download PVH firmware (hypervisor-fw) from `URL`",
-			},
-			&cli.StringFlag{
 				Name:  "uefi-url",
 				Usage: "download UEFI firmware (CLOUDHV.fd) from `URL`",
 			},
@@ -145,10 +141,6 @@ func firmwareUpdateCommand() *cli.Command {
 		Usage: "Update firmware files (alias for install)",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
-				Name:  "pvh-url",
-				Usage: "download PVH firmware (hypervisor-fw) from `URL`",
-			},
-			&cli.StringFlag{
 				Name:  "uefi-url",
 				Usage: "download UEFI firmware (CLOUDHV.fd) from `URL`",
 			},
@@ -162,12 +154,11 @@ func firmwareUpdateCommand() *cli.Command {
 }
 
 func firmwareInstallAction(c *cli.Context) error {
-	pvhURL := c.String("pvh-url")
 	uefiURL := c.String("uefi-url")
 	force := c.Bool("force")
 
-	if pvhURL == "" && uefiURL == "" {
-		return fmt.Errorf("at least one of --pvh-url or --uefi-url must be specified")
+	if uefiURL == "" {
+		return fmt.Errorf("--uefi-url must be specified")
 	}
 
 	app, err := initApp(c)
@@ -175,15 +166,8 @@ func firmwareInstallAction(c *cli.Context) error {
 		return err
 	}
 
-	if pvhURL != "" {
-		if err := downloadFirmware(pvhURL, app.cfg.PVHFirmwarePath, 0o755, force); err != nil {
-			return fmt.Errorf("download PVH firmware: %w", err)
-		}
-	}
-	if uefiURL != "" {
-		if err := downloadFirmware(uefiURL, app.cfg.UEFIFirmwarePath, 0o644, force); err != nil {
-			return fmt.Errorf("download UEFI firmware: %w", err)
-		}
+	if err := downloadFirmware(uefiURL, app.cfg.UEFIFirmwarePath, 0o644, force); err != nil {
+		return fmt.Errorf("download UEFI firmware: %w", err)
 	}
 
 	fmt.Println("Firmware install complete.")
@@ -193,11 +177,6 @@ func firmwareInstallAction(c *cli.Context) error {
 // collectFirmwareEntries reads firmware paths from config and checks their existence.
 func collectFirmwareEntries(app *appContext) []firmwareEntry {
 	entries := []firmwareEntry{
-		{
-			Name: "hypervisor-fw",
-			Type: "PVH",
-			Path: app.cfg.PVHFirmwarePath,
-		},
 		{
 			Name: "CLOUDHV.fd",
 			Type: "UEFI",

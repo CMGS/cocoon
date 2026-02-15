@@ -43,7 +43,6 @@ Other documents MUST reference this section rather than defining their own paths
 │   │   └── tpm/                          # swtpm TPM state directory (if TPM enabled)
 │   └── ...
 ├── firmware/                             # Boot firmware binaries
-│   ├── hypervisor-fw                     # PVH firmware (rust-hypervisor-firmware)
 │   └── CLOUDHV.fd                        # UEFI firmware (OVMF for Cloud Hypervisor)
 ├── temp/                                 # Scratch space for conversions
 └── trash/                                # Soft-deleted images/overlays (for recovery)
@@ -85,8 +84,8 @@ Other documents MUST reference these definitions rather than re-defining fields.
 | `base_key` | string | `"a1b2c3d4e5f6a7b8_amd64"` | Content-addressed key: `{checksum_16}_{arch}` |
 | `base_digest_full` | string | `"a1b2c3d4e5f6a7b8..."` (64 hex) | Full SHA-256 for collision audit |
 | `arch` | string | `"amd64"` | Architecture |
-| `boot_strategy` | string | `"uefi"` | `"uefi"` (default) / `"pvh"` |
-| `firmware_path` | string | `"/var/lib/cocoon/firmware/CLOUDHV.fd"` | Firmware path (CLOUDHV.fd for UEFI, hypervisor-fw for PVH) |
+| `boot_strategy` | string | `"uefi"` | `"uefi"` (cloud images) or `"direct"` (OCI VM images) |
+| `firmware_path` | string | `"/var/lib/cocoon/firmware/CLOUDHV.fd"` | Firmware path (CLOUDHV.fd for UEFI; empty for direct kernel boot) |
 | `tpm_socket_path` | string | `"/run/cocoon/vms/{vm_id}/swtpm.sock"` | swtpm TPM socket path (omitted if TPM not configured) |
 | `cpus` | int | `2` | vCPU count |
 | `memory_mb` | int64 | `2048` | Memory in MiB |
@@ -107,8 +106,8 @@ Other documents MUST reference these definitions rather than re-defining fields.
 | `previous_state` | string | `"STARTING"` | State before last transition |
 | `process_pid` | int | `12345` | CH process PID (0 if not running) |
 | `boot_time` | string | `"2.3s"` | Duration string |
-| `last_boot_mode` | string | `"pvh"` | Actual boot mode used (`"pvh"` / `"uefi"`) |
-| `last_firmware_path` | string | `"/var/lib/cocoon/firmware/hypervisor-fw"` | Actual firmware used |
+| `last_boot_mode` | string | `"uefi"` | Actual boot mode used (`"uefi"` / `"direct"`) |
+| `last_firmware_path` | string | `"/var/lib/cocoon/firmware/CLOUDHV.fd"` | Actual firmware used (empty for direct kernel boot) |
 | `last_error` | string | `""` | Last error message (empty if none) |
 | `last_error_type` | string | `""` | Error classification (omitted if none) |
 | `last_error_at` | string | `""` | RFC 3339 timestamp of last error (omitted if none) |
@@ -218,7 +217,6 @@ type CocoonConfig struct {
 
     // Binaries and firmware
     CHBinary         string `json:"ch_binary"`           // Cloud Hypervisor binary
-    PVHFirmwarePath  string `json:"pvh_firmware_path"`   // PVH firmware path
     UEFIFirmwarePath string `json:"uefi_firmware_path"`  // UEFI firmware path
     BuildahRoot      string `json:"buildah_root"`        // Buildah storage root
 

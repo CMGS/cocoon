@@ -48,9 +48,9 @@ const (
     VMStateCreated   VMState = "CREATED"
 
     // STARTING: Cloud Hypervisor process starting, VM booting.
-    // boot_strategy determines firmware selection:
-    //   "uefi": UEFI boot with CLOUDHV.fd (default)
-    //   "pvh":  PVH boot with hypervisor-fw (faster cold boot)
+    // boot_strategy determines boot method:
+    //   "uefi":   UEFI boot with CLOUDHV.fd (default for non-OCI images)
+    //   "direct": Direct kernel boot with kernel + initramfs (auto for OCI VM images)
     // Actual mode used is recorded in metadata.last_boot_mode.
     VMStateStarting  VMState = "STARTING"
 
@@ -144,9 +144,9 @@ CREATING -----> CREATED -----> STARTING -----> RUNNING -----> STOPPING -----> ST
 
 **Activities**:
 - Cloud Hypervisor process running
-- Firmware loading (boot mode dependent):
-  - PVH mode: `hypervisor-fw` discovers disk, parses GPT/ESP, loads kernel
+- Firmware/kernel loading (boot mode dependent):
   - UEFI mode: `CLOUDHV.fd` provides full UEFI environment, loads GRUB from ESP
+  - Direct mode: Kernel and initramfs passed directly to Cloud Hypervisor (no firmware)
 - Kernel and initrd loading
 - systemd initialization
 - cloud-init executing (if enabled)
@@ -495,7 +495,7 @@ func (m *manager) transitionStateWithUpdate(vmID string, to types.VMState, reaso
 **Preconditions**:
 - VM in CREATED or STOPPED state
 - Cloud Hypervisor binary available
-- Firmware available (PVH: hypervisor-fw; UEFI: CLOUDHV.fd)
+- Firmware available (UEFI: CLOUDHV.fd) or kernel/initramfs available (Direct)
 - Sufficient system resources
 
 **State Changes**:
@@ -774,7 +774,7 @@ type InspectErrorInfo struct {
 
   "runtime": {
     "boot_time": "2.3s",
-    "last_boot_mode": "pvh",
+    "last_boot_mode": "uefi",
     "error_count": 0
   }
 }
@@ -808,7 +808,7 @@ type VMConfig struct {
     Arch            string `json:"arch"`               // Architecture: "amd64", "arm64", etc.
 
     // Boot configuration (immutable)
-    BootStrategy  BootStrategy `json:"boot_strategy"`            // "uefi" (default), "pvh"
+    BootStrategy  BootStrategy `json:"boot_strategy"`            // "uefi" (default), "direct" (OCI)
     FirmwarePath  string       `json:"firmware_path"`             // Primary firmware path resolved at creation
     TPMSocketPath string       `json:"tpm_socket_path,omitempty"` // swtpm socket path (if TPM enabled)
 
@@ -868,7 +868,7 @@ type VMMetadataFile struct {
     // Runtime (changes with each start/stop cycle)
     ProcessPID       int    `json:"process_pid,omitempty"`       // CH process PID (0 if not running)
     BootTime         string `json:"boot_time,omitempty"`         // Duration string, e.g. "2.3s"
-    LastBootMode     string `json:"last_boot_mode,omitempty"`    // Actual mode used: "pvh" or "uefi"
+    LastBootMode     string `json:"last_boot_mode,omitempty"`    // Actual mode used: "uefi" or "direct"
     LastFirmwarePath string `json:"last_firmware_path,omitempty"` // Actual firmware path used this boot
 
     // Error tracking
@@ -898,8 +898,8 @@ type VMMetadataFile struct {
   "previous_state": "STARTING",
   "process_pid": 12345,
   "boot_time": "2.3s",
-  "last_boot_mode": "pvh",
-  "last_firmware_path": "/var/lib/cocoon/firmware/hypervisor-fw",
+  "last_boot_mode": "uefi",
+  "last_firmware_path": "/var/lib/cocoon/firmware/CLOUDHV.fd",
   "last_error": "",
   "last_error_type": "",
   "last_error_at": "",

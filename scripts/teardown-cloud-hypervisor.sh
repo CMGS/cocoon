@@ -68,7 +68,6 @@ run_check_only() {
 
     echo ""
     echo -e "${BOLD}--- Firmware ---${NC}"
-    would_remove "PVH firmware" "${COCOON_ROOT}/firmware/hypervisor-fw"
     would_remove "UEFI firmware" "${COCOON_ROOT}/firmware/CLOUDHV.fd"
 
     if [[ "$PURGE" == "true" ]]; then
@@ -122,7 +121,6 @@ main() {
 
     echo ""
     echo -e "${BOLD}--- Removing firmware ---${NC}"
-    safe_remove "PVH firmware" "${COCOON_ROOT}/firmware/hypervisor-fw"
     safe_remove "UEFI firmware" "${COCOON_ROOT}/firmware/CLOUDHV.fd"
 
     if [[ "$PURGE" == "true" ]]; then

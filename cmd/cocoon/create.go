@@ -35,10 +35,9 @@ func vmCreateFlags() []cli.Flag {
 			Value: types.DefaultDiskSize,
 			Usage: "root disk overlay size (e.g., 10G, 20G)",
 		},
-		&cli.StringFlag{
-			Name:  "boot-strategy",
-			Value: string(types.DefaultBootStrategy),
-			Usage: "boot strategy: uefi (default), pvh",
+		&cli.BoolFlag{
+			Name:  "oci",
+			Usage: "use OCI VM image (direct kernel boot)",
 		},
 		&cli.BoolFlag{
 			Name:  "skip-verify",
@@ -72,9 +71,12 @@ func parseCreateOptions(c *cli.Context, cmdName string) (*vm.CreateOptions, erro
 		return nil, fmt.Errorf("IMAGE argument required\n\nUsage: cocoon %s IMAGE [flags]", cmdName)
 	}
 
-	bootStrategy, err := types.ParseBootStrategy(c.String("boot-strategy"))
-	if err != nil {
-		return nil, fmt.Errorf("invalid --boot-strategy value: %w", err)
+	// Auto-determine boot strategy: --oci uses direct kernel boot, otherwise UEFI.
+	var bootStrategy types.BootStrategy
+	if c.Bool("oci") {
+		bootStrategy = types.BootStrategyDirect
+	} else {
+		bootStrategy = types.BootStrategyUEFI
 	}
 
 	cpus := c.Int("cpus")

@@ -59,7 +59,7 @@ This document provides a concrete implementation roadmap for Cocoon Phase 1, syn
 These must be implemented correctly from the start:
 
 1. **Boot Contract Compliance** (docs/01-boot-contract.md)
-   - PVH/UEFI boot modes
+   - UEFI boot for cloud images, direct kernel boot for OCI VM images
    - systemd + cloud-init for VM initialization
    - ACPI shutdown with timeout
 
@@ -94,7 +94,7 @@ These must be implemented correctly from the start:
 - [ ] **cocoon-helper interface spec** finalized (docs/08-dependencies.md)
   - Subcommands, exit codes, path allowlist, sudoers template
 - [ ] **Boot contract** stable (docs/01-boot-contract.md)
-  - PVH/UEFI parameters, firmware paths, boot detection patterns
+  - UEFI/direct-kernel-boot parameters, firmware paths, boot detection patterns
 
 **Why This Gate Exists**: Starting implementation before these specs are frozen will result in:
 - Components A and B disagreeing on file paths and schemas
@@ -978,7 +978,6 @@ cocoon doctor
 # ✓ qemu-img 8.0 found
 # ✓ libguestfs tools found
 # ✓ /dev/kvm accessible
-# ✓ PVH firmware found at /var/lib/cocoon/firmware/hypervisor-fw
 # ✓ UEFI firmware found at /var/lib/cocoon/firmware/CLOUDHV.fd
 #
 # All dependencies satisfied!

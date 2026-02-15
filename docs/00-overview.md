@@ -25,7 +25,7 @@ Cocoon requires **bootable VM images** with a complete operating system, not app
 
 **2. Cloud Hypervisor Native Cloud Images** (recommended, faster):
 - Standard cloud images in qcow2 format (Ubuntu Cloud, Fedora Cloud, Debian Cloud)
-- Pre-configured for cloud-init and PVH/UEFI boot
+- Pre-configured for cloud-init and UEFI boot
 - Direct boot without OCI conversion overhead
 
 ### Why Regular Container Images Don't Work
@@ -99,7 +99,7 @@ See [04-oci-conversion.md § 10 Verified Images](./04-oci-conversion.md#10-verif
 | **vm_id** | Internal primary key (`vm-{ulid}`). Never reused. Used in directory names, logs, locks. |
 | **name** | User-facing VM alias. Globally unique. Optional on create. |
 | **vm-ref** | CLI argument that accepts either vm_id or name. Resolved by the CLI. |
-| **firmware** | Binary loaded by Cloud Hypervisor at boot. PVH: `hypervisor-fw`. UEFI: `CLOUDHV.fd`. |
+| **firmware** | Binary loaded by Cloud Hypervisor at boot. UEFI: `CLOUDHV.fd` for cloud images. OCI VM images use direct kernel boot (`payload.kernel`). |
 
 **Resource Units**:
 - CLI accepts human-readable units: `512M`, `1G`, `2G`, `10G`
@@ -167,14 +167,14 @@ Modern VM workloads and development environments face a challenging trade-off be
 
 ## Key Design Decisions
 
-### 1. Default Boot Strategy: UEFI with PVH Option
+### 1. Dual Boot Strategy: UEFI for Cloud Images, Direct Kernel Boot for OCI
 
-**Decision**: Use UEFI boot with CLOUDHV.fd as the default boot method. PVH (rust-hypervisor-firmware) is available via `--boot-strategy pvh` for faster cold boot when image compatibility is confirmed.
+**Decision**: Use UEFI boot with CLOUDHV.fd for cloud images (qcow2/URL), and direct kernel boot (`payload.kernel` + `payload.initramfs` + `payload.cmdline`) for OCI VM images.
 
 **Rationale**:
-- **UEFI (Default)**: Broadest compatibility with cloud images, supports secure boot, CH project recommended firmware
-- **PVH (Option)**: Faster cold boot (<100ms vs ~500ms), useful for latency-sensitive workloads with known-compatible images
-- UEFI default eliminates boot failures from images that lack a PVH-compatible kernel layout
+- **UEFI (Cloud Images)**: Broadest compatibility with cloud images, supports secure boot, CH project recommended firmware
+- **Direct Kernel Boot (OCI)**: Boots extracted kernel and initramfs directly via Cloud Hypervisor's `payload.kernel`, bypassing the need for a bootloader in the image
+- UEFI default for cloud images eliminates boot failures from images that lack specific kernel layouts
 
 ### 2. Per-VM Cloud Hypervisor Process for Isolation
 
@@ -231,7 +231,7 @@ Phase 1 delivers a complete, production-ready VM lifecycle management system.
 - ✅ VM lifecycle (create/start/stop/kill/delete) with state machine
 - ✅ Copy-on-write storage with qcow2 backing files
 - ✅ Reference counting and garbage collection
-- ✅ UEFI boot by default with PVH option (`--boot-strategy pvh`)
+- ✅ UEFI boot for cloud images, direct kernel boot for OCI VM images
 - ✅ TPM 2.0 emulation via swtpm (`--tpm` flag)
 - ✅ Reconciliation and crash recovery (`cocoon doctor`)
 - ✅ CLI tool with Docker-like interface (`cocoon run/ps/logs/inspect`)
@@ -267,7 +267,7 @@ Phase 3 extends Cocoon to hardware-accelerated workloads and broader ecosystem i
 4. **Efficient Storage**: Checksum-based caching eliminates duplicate conversions
 5. **Space Optimization**: qcow2 COW allows hundreds of VMs from single base image
 6. **Automatic Cleanup**: Garbage collection removes unused base images and orphaned overlays
-7. **Firmware Automation**: Download, configure, and manage PVH/UEFI firmware automatically
+7. **Firmware Automation**: Download, configure, and manage UEFI firmware automatically
 8. **Production Architecture**: Follow proven patterns from core project (interfaces, factories, JSON config)
 9. **Intuitive CLI**: Docker-like commands (run, create, start, stop, delete, doctor, firmware)
 
@@ -313,7 +313,7 @@ Cocoon is a general-purpose lightweight VM manager. Common use cases include:
 - **Language**: Go 1.25+ (interface-driven, factory pattern)
 - **OCI Tools**: Buildah (daemonless, rootless-capable)
 - **Storage**: qcow2 via qemu-img and libguestfs
-- **Firmware**: OVMF (UEFI) or rust-hypervisor-firmware (PVH)
+- **Firmware**: OVMF (UEFI via CLOUDHV.fd) for cloud images; direct kernel boot for OCI VM images
 - **TPM**: swtpm (optional TPM 2.0 emulation)
 - **CLI Framework**: urfave/cli/v2
 - **Configuration**: JSON with sensible defaults
@@ -385,8 +385,8 @@ For quick evaluation without dealing with rootless limitations:
    # Verify installation
    cocoon doctor
 
-   # Install PVH firmware (explicit URL required)
-   cocoon firmware install --pvh-url https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw
+   # Install UEFI firmware (explicit URL required)
+   cocoon firmware install --uefi-url https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v50.0/CLOUDHV.fd
    ```
 
 5. **Create and start a VM** (3 min):

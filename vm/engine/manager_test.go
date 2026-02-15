@@ -44,18 +44,15 @@ func setupTestManager(t *testing.T) *testDeps {
 	cfg.RebaseRootDir(rootDir)
 	cfg.RuntimeDir = runtimeDir
 	cfg.LogDir = logDir
-	cfg.PVHFirmwarePath = filepath.Join(rootDir, "firmware", "hypervisor-fw")
 	cfg.UEFIFirmwarePath = filepath.Join(rootDir, "firmware", "CLOUDHV.fd")
 
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("EnsureDirs: %v", err)
 	}
 
-	// Create dummy firmware files so resolveFirmwarePath won't fail.
-	for _, p := range []string{cfg.PVHFirmwarePath, cfg.UEFIFirmwarePath} {
-		if err := os.WriteFile(p, []byte("firmware"), 0o644); err != nil {
-			t.Fatalf("write firmware: %v", err)
-		}
+	// Create dummy firmware file so resolveFirmwarePath won't fail.
+	if err := os.WriteFile(cfg.UEFIFirmwarePath, []byte("firmware"), 0o644); err != nil {
+		t.Fatalf("write firmware: %v", err)
 	}
 
 	hyper := &hypermocks.MockClient{}
@@ -977,28 +974,35 @@ func TestBuildCHVMConfig_SetsMaxVCPUs(t *testing.T) {
 	}
 }
 
-func TestBuildCHVMConfig_PVHFirmwareInPayload(t *testing.T) {
+func TestBuildCHVMConfig_DirectKernelBoot(t *testing.T) {
 	t.Parallel()
 
 	vmCfg := &types.VMConfig{
-		CPUs:         2,
-		MemoryMB:     1024,
-		OverlayPath:  "/tmp/overlay.qcow2",
-		SerialLog:    "/tmp/serial.log",
-		BootStrategy: types.BootStrategyPVH,
-		FirmwarePath: "/usr/share/hypervisor-fw",
+		CPUs:          2,
+		MemoryMB:      1024,
+		OverlayPath:   "/tmp/overlay.qcow2",
+		SerialLog:     "/tmp/serial.log",
+		BootStrategy:  types.BootStrategyDirect,
+		KernelPath:    "/boot/vmlinuz",
+		InitramfsPath: "/boot/initrd.img",
+		CmdlinePath:   "console=ttyS0 root=/dev/vda1",
 	}
 
 	chCfg := buildCHVMConfig(vmCfg)
 	if chCfg.Payload == nil {
-		t.Fatal("expected Payload to be set for PVH boot")
+		t.Fatal("expected Payload to be set for direct kernel boot")
 	}
-	// Both PVH and UEFI use payload.firmware; CH auto-detects the format.
-	if chCfg.Payload.Firmware != "/usr/share/hypervisor-fw" {
-		t.Fatalf("payload.firmware = %q, want /usr/share/hypervisor-fw", chCfg.Payload.Firmware)
+	if chCfg.Payload.Kernel != "/boot/vmlinuz" {
+		t.Fatalf("payload.kernel = %q, want /boot/vmlinuz", chCfg.Payload.Kernel)
 	}
-	if chCfg.Payload.Kernel != "" {
-		t.Fatalf("payload.kernel should be empty, got %q", chCfg.Payload.Kernel)
+	if chCfg.Payload.Initramfs != "/boot/initrd.img" {
+		t.Fatalf("payload.initramfs = %q, want /boot/initrd.img", chCfg.Payload.Initramfs)
+	}
+	if chCfg.Payload.Cmdline != "console=ttyS0 root=/dev/vda1" {
+		t.Fatalf("payload.cmdline = %q, want \"console=ttyS0 root=/dev/vda1\"", chCfg.Payload.Cmdline)
+	}
+	if chCfg.Payload.Firmware != "" {
+		t.Fatalf("payload.firmware should be empty for direct kernel boot, got %q", chCfg.Payload.Firmware)
 	}
 }
 

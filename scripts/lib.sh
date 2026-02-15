@@ -15,7 +15,6 @@ fi
 
 # ----- Version defaults (env-overridable) -----
 CH_VERSION="${CH_VERSION:-v50.0}"
-HYPERVISOR_FW_VERSION="${HYPERVISOR_FW_VERSION:-0.5.0}"
 EDK2_CH_VERSION="${EDK2_CH_VERSION:-a54f262b09}"
 
 # ----- Path defaults (env-overridable) -----
@@ -126,19 +125,17 @@ require_root() {
 }
 
 # ----- Detect architecture -----
-# Sets: ARCH, CH_BINARY, CH_REMOTE_BINARY, FW_BINARY
+# Sets: ARCH, CH_BINARY, CH_REMOTE_BINARY
 detect_arch() {
     ARCH="$(uname -m)"
     case "$ARCH" in
         x86_64)
             CH_BINARY="cloud-hypervisor-static"
             CH_REMOTE_BINARY="ch-remote-static"
-            FW_BINARY="hypervisor-fw"
             ;;
         aarch64)
             CH_BINARY="cloud-hypervisor-static-aarch64"
             CH_REMOTE_BINARY="ch-remote-static-aarch64"
-            FW_BINARY="hypervisor-fw-aarch64"
             ;;
         *)
             error "Unsupported architecture: $ARCH"
@@ -295,17 +292,6 @@ install_firmware() {
         fi
     fi
 
-    # PVH firmware (rust-hypervisor-firmware) — optional, for --boot-strategy pvh.
-    if [[ -f "${fw_dir}/hypervisor-fw" ]]; then
-        ok "PVH firmware already present at ${fw_dir}/hypervisor-fw"
-    else
-        local fw_url="https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/${HYPERVISOR_FW_VERSION}/${FW_BINARY}"
-        info "Downloading PVH firmware (rust-hypervisor-firmware ${HYPERVISOR_FW_VERSION})..."
-        if download_binary "$fw_url" "${fw_dir}/hypervisor-fw" "PVH firmware"; then
-            chmod 755 "${fw_dir}/hypervisor-fw"
-            ok "PVH firmware installed at ${fw_dir}/hypervisor-fw"
-        fi
-    fi
 }
 
 # ----- Install system packages -----
@@ -426,7 +412,6 @@ check_ch_runtime() {
     echo ""
     echo -e "${BOLD}--- Firmware ---${NC}"
     check_file_exists "UEFI firmware" "${COCOON_ROOT}/firmware/CLOUDHV.fd"
-    check_file_exists "PVH firmware (optional)" "${COCOON_ROOT}/firmware/hypervisor-fw"
 
     echo ""
     echo -e "${BOLD}--- Directories ---${NC}"

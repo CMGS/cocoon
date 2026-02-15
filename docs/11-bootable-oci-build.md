@@ -82,7 +82,7 @@ Building bootable OCI images is **complex** and requires:
 
 This complexity is **orthogonal to Cocoon's core VM management functionality**. By using native cloud images in Phase 1, we can:
 - Validate Boot Contract requirements
-- Test PVH/UEFI boot modes
+- Test UEFI and direct kernel boot modes
 - Develop storage and lifecycle management
 - Ensure Cloud Hypervisor integration works
 

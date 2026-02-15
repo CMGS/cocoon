@@ -12,7 +12,7 @@
 **Supported Image Types**:
 1. **Cloud Hypervisor Native Cloud Images** (Recommended):
    - Ubuntu Cloud, Fedora Cloud, Debian Cloud (qcow2 format)
-   - Pre-configured for cloud-init and PVH/UEFI boot
+   - Pre-configured for cloud-init and UEFI boot
    - Direct usage without OCI conversion
 
 2. **Bootable OCI Images** (Custom-built):
@@ -32,9 +32,9 @@ See [00-overview.md § Supported Image Contract](./00-overview.md#️-supported-
 
 ## Executive Summary
 
-This document defines the command-line interface for Cocoon, a lightweight VM management tool built on Cloud Hypervisor. The CLI follows Docker-like patterns for familiarity while exposing VM-specific capabilities like PVH/UEFI boot modes, resource allocation, and lifecycle management.
+This document defines the command-line interface for Cocoon, a lightweight VM management tool built on Cloud Hypervisor. The CLI follows Docker-like patterns for familiarity while exposing VM-specific capabilities like UEFI/Direct kernel boot modes, resource allocation, and lifecycle management.
 
-The design integrates the [Boot Contract](./01-boot-contract.md) decisions, including flexible boot modes (UEFI default, PVH optional), cloud-init task injection, serial console I/O, and graceful shutdown semantics. It also leverages the [storage management](./05-storage-management.md) system for efficient copy-on-write disk handling.
+The design integrates the [Boot Contract](./01-boot-contract.md) decisions, including flexible boot modes (UEFI default for cloud images, Direct kernel boot for OCI VM images), cloud-init task injection, serial console I/O, and graceful shutdown semantics. It also leverages the [storage management](./05-storage-management.md) system for efficient copy-on-write disk handling.
 
 ## Table of Contents
 
@@ -197,7 +197,7 @@ type Client interface {
 
 The concrete implementation lives in `hypervisor/cloudhypervisor/client.go`. Key implementation details:
 - `Launch()` starts the CH binary with `--api-socket` + firmware flag only; all VM config goes via REST API.
-- `buildCHVMConfig()` sets `payload.firmware` for both UEFI (CLOUDHV.fd) and PVH (hypervisor-fw); Cloud Hypervisor auto-detects the firmware format.
+- `buildCHVMConfig()` sets `payload.firmware` for UEFI (CLOUDHV.fd) or `payload.kernel` + `payload.initramfs` + `payload.cmdline` for Direct kernel boot.
 - REST API calls use `doWithRetry()` with exponential backoff (100ms/200ms/400ms + jitter).
 - `isRetryable()`: retry on 500/503/429/connection-refused; no retry on 4xx/context.Canceled.
 
@@ -314,7 +314,7 @@ type Manager interface {
 }
 ```
 
-The concrete implementation is `vm/engine/manager.go`. `Start()` boots using the strategy stored in config.json (`uefi` by default, or `pvh` if specified at creation time).
+The concrete implementation is `vm/engine/manager.go`. `Start()` boots using the strategy stored in config.json (`uefi` by default for cloud images, or `direct` for OCI VM images).
 
 ### 2.5 Manager Initialization
 
@@ -524,10 +524,6 @@ func initCommand() *cli.Command {
                 Usage: "overwrite existing config file and re-download firmware",
             },
             &cli.StringFlag{
-                Name:  "with-pvh-firmware",
-                Usage: "download PVH firmware from `URL`",
-            },
-            &cli.StringFlag{
                 Name:  "with-uefi-firmware",
                 Usage: "download UEFI firmware from `URL`",
             },
@@ -541,10 +537,9 @@ func initCommand() *cli.Command {
 
 1. Build config from `config.DefaultConfig()`, apply `--root-dir`, `--runtime-dir`, `--log-dir` overrides
 2. Create all directories via `cfg.EnsureDirs()` (db/, cache/images/, cache/manifests/, cache/locks/, vms/, temp/, trash/, firmware/, buildah/, runtime/vms/, log/)
-3. If `--with-pvh-firmware URL`: download to `firmware/hypervisor-fw` (0755), atomic rename
-4. If `--with-uefi-firmware URL`: download to `firmware/CLOUDHV.fd` (0644), atomic rename
-5. Write `config.json` to `--config` path (default `/etc/cocoon/config.json`); skip if exists unless `--force`
-6. Print "Done. Run 'cocoon doctor' to verify system dependencies."
+3. If `--with-uefi-firmware URL`: download to `firmware/CLOUDHV.fd` (0644), atomic rename
+4. Write `config.json` to `--config` path (default `/etc/cocoon/config.json`); skip if exists unless `--force`
+5. Print "Done. Run 'cocoon doctor' to verify system dependencies."
 
 **Example Usage**:
 
@@ -552,7 +547,7 @@ func initCommand() *cli.Command {
 # Basic initialization
 sudo cocoon init
 
-# Initialize (downloads CLOUDHV.fd and hypervisor-fw automatically)
+# Initialize (downloads CLOUDHV.fd automatically)
 # Override edk2 version: EDK2_CH_VERSION=a54f262b09 sudo cocoon init
 sudo cocoon init
 
@@ -601,10 +596,9 @@ func vmCreateFlags() []cli.Flag {
             Value: types.DefaultDiskSize,
             Usage: "root disk overlay size (e.g., 10G, 20G)",
         },
-        &cli.StringFlag{
-            Name:  "boot-strategy",
-            Value: string(types.DefaultBootStrategy),
-            Usage: "boot strategy: uefi (default), pvh",
+        &cli.BoolFlag{
+            Name:  "oci",
+            Usage: "treat image as an OCI VM image (uses direct kernel boot)",
         },
         &cli.BoolFlag{
             Name:  "skip-verify",
@@ -662,8 +656,8 @@ cocoon run ubuntu-22.04-cloudimg --name myvm --cpus 4 --memory 4G
 # Run VM with auto-remove on stop
 cocoon run --rm ubuntu-22.04-cloudimg --name temp-vm
 
-# Run with PVH boot strategy (faster cold boot)
-cocoon run --boot-strategy pvh ubuntu-22.04-cloudimg
+# Run an OCI VM image (uses direct kernel boot)
+cocoon run --oci myorg/ubuntu-vm:22.04
 
 # Run with TPM 2.0 emulation enabled
 cocoon run --tpm ubuntu-22.04-cloudimg --name secure-vm
@@ -722,7 +716,7 @@ func createAction(c *cli.Context) error {
 }
 ```
 
-The `createCommand` uses the same `vmCreateFlags()` as `runCommand`, which includes `--name`, `--cpus`, `--memory` (default "2048M"), `--disk`, `--boot-strategy`, `--skip-verify`, `--boot-timeout`, and `--tpm`.
+The `createCommand` uses the same `vmCreateFlags()` as `runCommand`, which includes `--name`, `--cpus`, `--memory` (default "2048M"), `--disk`, `--oci`, `--skip-verify`, `--boot-timeout`, and `--tpm`.
 
 **Example Usage**:
 
@@ -1041,7 +1035,7 @@ When the serial log is readable, `hypervisor.serial_log_excerpt` contains the la
   },
   "runtime": {
     "boot_time": "2.3s",
-    "last_boot_mode": "pvh",
+    "last_boot_mode": "uefi",
     "error_count": 0
   }
 }
@@ -1125,11 +1119,34 @@ func imagesCommand() *cli.Command {
                 ArgsUsage: "IMAGE_REF",
                 Flags: []cli.Flag{
                     &cli.BoolFlag{
+                        Name:  "oci",
+                        Usage: "treat image as an OCI VM image",
+                    },
+                    &cli.BoolFlag{
                         Name:  "skip-verify",
                         Usage: "skip bootability verification after pull",
                     },
                 },
                 Action:    imagePullAction,
+            },
+            {
+                Name:      "build",
+                Usage:     "Build a bootable OCI VM image (see docs/04.1-oci-vm-image-build.md)",
+                ArgsUsage: "CONTEXT_DIR",
+                Flags: []cli.Flag{
+                    &cli.StringFlag{
+                        Name:    "tag",
+                        Aliases: []string{"t"},
+                        Usage:   "image tag (e.g., myorg/myvm:latest)",
+                    },
+                },
+                Action: imageBuildAction,
+            },
+            {
+                Name:      "push",
+                Usage:     "Push a built OCI VM image to a registry (see docs/04.1-oci-vm-image-build.md)",
+                ArgsUsage: "IMAGE_REF",
+                Action:    imagePushAction,
             },
             {
                 Name:      "inspect",
@@ -1199,6 +1216,9 @@ cocoon image pull /tmp/ubuntu-22.04-cloudimg.qcow2
 
 # Pull bootable OCI image (custom-built, requires root for conversion)
 cocoon image pull myorg/ubuntu-bootable:22.04
+
+# Pull OCI VM image (uses direct kernel boot)
+cocoon image pull --oci myorg/ubuntu-vm:22.04
 
 # List cached images
 cocoon image list
@@ -1358,8 +1378,7 @@ func doctorAction(c *cli.Context) error {
 **Dependency Checks** (informational, --fix does not install missing tools):
 - cloud-hypervisor binary (minimum `38.0.0`)
 - ch-remote binary (minimum `38.0.0`)
-- PVH firmware file
-- UEFI firmware file
+- UEFI firmware file (CLOUDHV.fd)
 - qemu-img binary (minimum `8.0.0`)
 - buildah binary (minimum `1.35.0`)
 - skopeo binary (minimum `1.14.0`)
@@ -1400,7 +1419,6 @@ $ cocoon doctor
 === Dependency Checks ===
 CHECK              STATUS  DETAIL
 cloud-hypervisor   pass    /usr/bin/cloud-hypervisor
-pvh-firmware       pass    /var/lib/cocoon/firmware/hypervisor-fw
 uefi-firmware      fail    not found at /var/lib/cocoon/firmware/CLOUDHV.fd
 qemu-img           pass    /usr/bin/qemu-img (version 8.2.0)
 ch-remote          pass    /usr/bin/ch-remote
@@ -1426,7 +1444,7 @@ $ cocoon doctor --fix
 === Dependency Checks ===
 CHECK              STATUS  DETAIL
 cloud-hypervisor   pass    /usr/bin/cloud-hypervisor
-pvh-firmware       pass    /var/lib/cocoon/firmware/hypervisor-fw
+uefi-firmware      pass    /var/lib/cocoon/firmware/CLOUDHV.fd
 ...
 
 All dependency checks passed.
@@ -1445,7 +1463,7 @@ Attempted to fix 2 issue(s).
 
 **Command**: `cocoon firmware <subcommand> [FLAGS]`
 
-**Purpose**: Manage hypervisor firmware files (PVH and UEFI)
+**Purpose**: Manage hypervisor firmware files (UEFI)
 
 **Implementation**: Based on [Boot Contract § 1.1](./01-boot-contract.md#11-default-boot-mode-uefi--cloudhvfd)
 
@@ -1478,10 +1496,6 @@ func firmwareCommand() *cli.Command {
                 Usage: "Download and install firmware files",
                 Flags: []cli.Flag{
                     &cli.StringFlag{
-                        Name:  "pvh-url",
-                        Usage: "download PVH firmware (hypervisor-fw) from URL",
-                    },
-                    &cli.StringFlag{
                         Name:  "uefi-url",
                         Usage: "download UEFI firmware (CLOUDHV.fd) from URL",
                     },
@@ -1496,10 +1510,6 @@ func firmwareCommand() *cli.Command {
                 Name:  "update",
                 Usage: "Update firmware files (alias for install)",
                 Flags: []cli.Flag{
-                    &cli.StringFlag{
-                        Name:  "pvh-url",
-                        Usage: "download PVH firmware (hypervisor-fw) from URL",
-                    },
                     &cli.StringFlag{
                         Name:  "uefi-url",
                         Usage: "download UEFI firmware (CLOUDHV.fd) from URL",
@@ -1525,28 +1535,19 @@ List all installed firmware files with paths and sizes.
 ```
 $ cocoon firmware list
 NAME             TYPE  PATH                                       SIZE     EXISTS
-hypervisor-fw    PVH   /var/lib/cocoon/firmware/hypervisor-fw     89.2KB   true
 CLOUDHV.fd       UEFI  /var/lib/cocoon/firmware/CLOUDHV.fd        2.1MB    true
 ```
 
 #### 4.15.2 cocoon firmware install
 
-Download and install firmware files from explicit URLs using `--pvh-url` and `--uefi-url` flags.
+Download and install firmware files from explicit URLs using the `--uefi-url` flag.
 
 ```bash
-# Install PVH firmware from URL
-cocoon firmware install --pvh-url https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw
-
 # Install UEFI firmware from URL
 cocoon firmware install --uefi-url https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v50.0/CLOUDHV.fd
 
-# Install both at once
-cocoon firmware install \
-  --pvh-url https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw \
-  --uefi-url https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v50.0/CLOUDHV.fd
-
 # Force re-download
-cocoon firmware install --pvh-url URL --force
+cocoon firmware install --uefi-url URL --force
 ```
 
 **Installation Process**:
@@ -1557,7 +1558,7 @@ cocoon firmware install --pvh-url URL --force
 **Example Output**:
 
 ```bash
-$ cocoon firmware install --pvh-url https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw
+$ cocoon firmware install --uefi-url https://github.com/cloud-hypervisor/edk2/releases/download/ch-a54f262b09/CLOUDHV.fd
 Firmware install complete.
 ```
 
@@ -1574,21 +1575,17 @@ cocoon firmware verify
 
 ```bash
 $ cocoon firmware verify
-OK    hypervisor-fw (PVH): /var/lib/cocoon/firmware/hypervisor-fw [89.2KB]
 OK    CLOUDHV.fd (UEFI): /var/lib/cocoon/firmware/CLOUDHV.fd [2.1MB]
 
 All firmware files verified.
 ```
 
 **Firmware Types**:
-- `pvh`: rust-hypervisor-firmware (PVH boot, required)
-- `uefi`: CLOUDHV.fd (UEFI boot, optional; deprecated fallback: system OVMF)
-- `all`: All firmware types
+- `uefi`: CLOUDHV.fd (UEFI boot, required for cloud images; deprecated fallback: system OVMF)
 
 **Firmware Storage**:
 ```
 /var/lib/cocoon/firmware/
-├── hypervisor-fw           # Current PVH firmware (x86_64)
 └── CLOUDHV.fd              # UEFI firmware (Cloud Hypervisor edk2)
 ```
 
@@ -1602,9 +1599,6 @@ All firmware files verified.
 # List installed firmware
 cocoon firmware list
 
-# Install PVH firmware from URL
-cocoon firmware install --pvh-url https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw
-
 # Install UEFI firmware from URL
 cocoon firmware install --uefi-url https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v50.0/CLOUDHV.fd
 
@@ -1612,7 +1606,7 @@ cocoon firmware install --uefi-url https://github.com/cloud-hypervisor/cloud-hyp
 cocoon firmware verify
 
 # Force re-download
-cocoon firmware install --pvh-url https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw --force
+cocoon firmware install --uefi-url https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v50.0/CLOUDHV.fd --force
 ```
 
 ---
@@ -1635,7 +1629,6 @@ type CocoonConfig struct {
     LogDir     string `json:"log_dir"`      // Log directory
 
     CHBinary         string `json:"ch_binary"`           // Cloud Hypervisor binary path
-    PVHFirmwarePath  string `json:"pvh_firmware_path"`   // PVH firmware path
     UEFIFirmwarePath string `json:"uefi_firmware_path"`  // UEFI firmware path
     BuildahRoot      string `json:"buildah_root"`        // Buildah storage root
 
@@ -1663,7 +1656,6 @@ type CocoonConfig struct {
   "runtime_dir": "/run/cocoon",
   "log_dir": "/var/log/cocoon",
   "ch_binary": "cloud-hypervisor",
-  "pvh_firmware_path": "/var/lib/cocoon/firmware/hypervisor-fw",
   "uefi_firmware_path": "/var/lib/cocoon/firmware/CLOUDHV.fd",
   "buildah_root": "/var/lib/cocoon/buildah",
   "default_cpus": 2,
@@ -1727,10 +1719,10 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
    ```
 10. **Start Cloud Hypervisor** (REST-first):
     ```bash
-    # Launch CH process with API socket and firmware only:
+    # Launch CH process with API socket and firmware (UEFI boot):
     cloud-hypervisor \
       --api-socket /run/cocoon/vms/{vm_id}/api.sock \
-      --firmware /var/lib/cocoon/firmware/hypervisor-fw
+      --firmware /var/lib/cocoon/firmware/CLOUDHV.fd
     ```
     Then configure the VM via CH REST API:
     ```
@@ -1911,7 +1903,7 @@ This CLI design implements the Boot Contract specification:
 
 | Boot Contract Section | CLI Implementation |
 |----------------------|-------------------|
-| §1 Boot Path Decision | `--boot-strategy` flag (default: uefi), config-level firmware paths |
+| §1 Boot Path Decision | `--oci` flag (selects direct kernel boot), config-level firmware paths |
 | §2 Guest Init Model | [Phase 2] Metadata server for cloud-init (not yet implemented) |
 | §3 I/O Mechanisms | Serial console via `--serial file=...` (CH flag), `cocoon logs` command |
 | §4 Lifecycle Semantics | `run`, `stop`, `delete`, `kill` commands |
@@ -1986,10 +1978,6 @@ This CLI design implements the Boot Contract specification:
 
 ### Phase 2: Advanced Features (P1)
 
-- [ ] **Boot Modes**:
-  - [ ] Direct kernel boot support (`--boot-strategy direct_kernel`)
-  - [ ] Kernel/initrd extraction from OCI images
-
 - [ ] **I/O Enhancements**:
   - [ ] vsock support (future)
   - [ ] virtiofs support (future)
@@ -2043,8 +2031,8 @@ For the canonical schema definitions, see [07-vm-lifecycle.md § 5](./07-vm-life
   "previous_state": "STARTING",
   "process_pid": 12345,
   "boot_time": "2.3s",
-  "last_boot_mode": "pvh",
-  "last_firmware_path": "/var/lib/cocoon/firmware/hypervisor-fw",
+  "last_boot_mode": "uefi",
+  "last_firmware_path": "/var/lib/cocoon/firmware/CLOUDHV.fd",
   "last_error": "",
   "error_count": 0,
   "auto_remove": false,

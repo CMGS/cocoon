@@ -739,8 +739,8 @@ type CHVMConfig struct {
 }
 
 // CHPayloadConfig specifies the boot firmware/kernel for the VM.
-// For PVH direct boot, set Kernel to the hypervisor-fw path.
-// For UEFI boot, set Firmware to the CLOUDHV.fd path.
+// For UEFI boot (cloud images), set Firmware to the CLOUDHV.fd path.
+// For direct kernel boot (OCI VM images), set Kernel to the extracted kernel path.
 type CHPayloadConfig struct {
     Firmware string `json:"firmware,omitempty"`
     Kernel   string `json:"kernel,omitempty"`

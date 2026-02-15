@@ -11,7 +11,6 @@
 #
 # Environment variables:
 #   CH_VERSION              Cloud Hypervisor version (default: v50.0)
-#   HYPERVISOR_FW_VERSION   PVH firmware version (default: 0.5.0)
 #   COCOON_ROOT             Root data directory (default: /var/lib/cocoon)
 #   COCOON_RUN              Runtime directory (default: /run/cocoon)
 #   COCOON_LOG              Log directory (default: /var/log/cocoon)
@@ -41,7 +40,6 @@ parse_args() {
                 echo ""
                 echo "Environment variables:"
                 echo "  CH_VERSION              Cloud Hypervisor version (default: ${CH_VERSION})"
-                echo "  HYPERVISOR_FW_VERSION   Firmware version (default: ${HYPERVISOR_FW_VERSION})"
                 echo "  COCOON_ROOT             Data directory (default: ${COCOON_ROOT})"
                 exit 0
                 ;;
@@ -161,7 +159,7 @@ main() {
     echo -e "${BOLD}  Cocoon Development Environment Setup${NC}"
     echo -e "${BOLD}================================================${NC}"
     echo ""
-    info "CH version: ${CH_VERSION}, firmware: ${HYPERVISOR_FW_VERSION}, arch: ${ARCH}"
+    info "CH version: ${CH_VERSION}, arch: ${ARCH}"
     echo ""
 
     create_cocoon_directories

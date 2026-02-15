@@ -4,7 +4,7 @@ Lightweight VM manager built on Cloud Hypervisor.
 
 ## Features
 
-- **UEFI boot** -- CLOUDHV.fd UEFI firmware by default, with PVH option for faster cold boot
+- **UEFI boot** -- CLOUDHV.fd UEFI firmware by default, with direct kernel boot for OCI VM images
 - **TPM 2.0 emulation** -- optional swtpm integration via `--tpm` flag for measured boot and guest attestation
 - **Content-addressed image cache** -- base images deduplicated by SHA-256 checksum
 - **COW overlays** -- qcow2 copy-on-write disks backed by shared base images
@@ -20,7 +20,7 @@ Lightweight VM manager built on Cloud Hypervisor.
 - Root access (sudo) -- Phase 1 requires rootful mode; rootless/hybrid helper support is planned for Phase 2
 - [Cloud Hypervisor](https://github.com/cloud-hypervisor/cloud-hypervisor) v50.0+
 - `qemu-img` (from qemu-utils package)
-- PVH firmware (`hypervisor-fw`) and/or UEFI firmware (`CLOUDHV.fd`)
+- UEFI firmware (`CLOUDHV.fd`)
 - Go 1.25+ (build only)
 
 ## Installation

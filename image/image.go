@@ -50,7 +50,7 @@ type Manager interface {
 	//   - systemd as the init system (/sbin/init -> systemd)
 	//
 	// Returns a BootCheckResult with detailed findings including supported boot
-	// modes (PVH via hypervisor-fw, UEFI via CLOUDHV.fd).
+	// modes (UEFI via CLOUDHV.fd, direct kernel boot).
 	VerifyBootability(ctx context.Context, imagePath string) (*BootCheckResult, error)
 
 	// ListCached returns all cached base images in the image cache directory.

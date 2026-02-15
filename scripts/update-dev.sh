@@ -11,7 +11,6 @@
 #
 # Environment variables:
 #   CH_VERSION              Target Cloud Hypervisor version (default: v50.0)
-#   HYPERVISOR_FW_VERSION   Target PVH firmware version (default: 0.5.0)
 #   COCOON_ROOT             Root data directory (default: /var/lib/cocoon)
 #   INSTALL_DIR             Binary install directory (default: /usr/local/bin)
 #

@@ -159,24 +159,7 @@ func runDependencyChecks(app *appContext) []checkResult {
 		"required hypervisor runtime",
 	))
 
-	// 2. Check PVH firmware file.
-	if app.cfg.PVHFirmwarePath != "" {
-		if _, err := os.Stat(app.cfg.PVHFirmwarePath); err != nil {
-			results = append(results, checkResult{
-				Name:   "pvh-firmware",
-				Status: "fail",
-				Detail: fmt.Sprintf("not found at %s", app.cfg.PVHFirmwarePath),
-			})
-		} else {
-			results = append(results, checkResult{
-				Name:   "pvh-firmware",
-				Status: "pass",
-				Detail: app.cfg.PVHFirmwarePath,
-			})
-		}
-	}
-
-	// 3. Check UEFI firmware file (with fallback probing).
+	// 2. Check UEFI firmware file (with fallback probing).
 	if app.cfg.UEFIFirmwarePath != "" {
 		results = append(results, checkUEFIFirmware(app.cfg.UEFIFirmwarePath))
 	}

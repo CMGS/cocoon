@@ -9,7 +9,7 @@ This directory contains design documents, specifications, and RFCs for Cocoon. T
 | Doc | Title | Status | Description |
 |-----|-------|--------|-------------|
 | [00-overview.md](./00-overview.md) | Project Overview | Implemented | High-level architecture, supported image contract, and deployment strategy |
-| [01-boot-contract.md](./01-boot-contract.md) | Boot Contract Specification | Implemented | Defines boot modes (PVH/UEFI), guest initialization, I/O mechanisms, and image requirements |
+| [01-boot-contract.md](./01-boot-contract.md) | Boot Contract Specification | Implemented | Defines boot modes (UEFI/direct kernel boot), guest initialization, I/O mechanisms, and image requirements |
 | [02-installation.md](./02-installation.md) | Installation | Implemented | Cloud Hypervisor installation, KVM setup, and host prerequisites |
 | [03-hypervisor-integration.md](./03-hypervisor-integration.md) | Cloud Hypervisor Integration | Implemented | Process model, socket management, HTTP API integration, and crash recovery |
 | [04-oci-conversion.md](./04-oci-conversion.md) | OCI to qcow2 Conversion | Implemented | Pipeline for converting OCI images into bootable qcow2 disk images |

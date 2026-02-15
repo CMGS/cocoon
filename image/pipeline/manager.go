@@ -352,7 +352,7 @@ func (m *manager) prepareOCI(ctx context.Context, ref string) (*image.ImageIdent
 //   - qemu-img check passes (image integrity)
 //   - qemu-img info confirms valid qcow2 format
 //   - Optimistically sets Bootable=true if qcow2 is valid
-//   - Assumes both PVH and UEFI boot modes are supported
+//   - Assumes both UEFI and direct kernel boot modes are supported
 //
 // Deep verification (platform-dependent):
 //   - Linux: uses guestfish to inspect image contents (kernel, initrd, systemd, bootloader)
@@ -397,7 +397,7 @@ func (m *manager) VerifyBootability(ctx context.Context, imagePath string) (*ima
 
 	// Basic verification passed. Optimistically assume bootable.
 	result.Bootable = true
-	result.BootModes = []string{string(types.BootModePVH), string(types.BootModeUEFI)}
+	result.BootModes = []string{string(types.BootModeUEFI), string(types.BootModeDirect)}
 
 	// Attempt deep verification (platform-specific).
 	if err := deepVerifyBoot(imagePath, result); err != nil {
@@ -446,7 +446,7 @@ func evaluateDeepVerification(result *image.BootCheckResult) {
 	// Determine boot modes from deep findings.
 	result.BootModes = nil
 	if result.KernelFound && result.BootloaderFound {
-		result.BootModes = append(result.BootModes, string(types.BootModePVH))
+		result.BootModes = append(result.BootModes, string(types.BootModeDirect))
 		result.BootModes = append(result.BootModes, string(types.BootModeUEFI))
 	}
 

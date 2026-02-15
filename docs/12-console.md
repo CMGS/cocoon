@@ -690,12 +690,12 @@ When multiple `console=` arguments are present, the Linux kernel sends output to
 
 ### 6.5 Cocoon Console Strategy
 
-Cocoon uses firmware-based boot for all boot strategies (PVH firmware via `hypervisor-fw`, UEFI firmware via `CLOUDHV.fd`). In both cases, the firmware loads the kernel from the guest disk image, and the **bootloader inside the guest** (e.g., GRUB) controls the kernel command line. Cocoon cannot inject kernel parameters such as `console=hvc0` from the host side.
+Cocoon uses two boot strategies: UEFI firmware boot via `CLOUDHV.fd` for cloud images, and direct kernel boot (`payload.kernel`) for OCI VM images. For UEFI boot, the firmware loads the kernel from the guest disk image, and the **bootloader inside the guest** (e.g., GRUB) controls the kernel command line. For direct kernel boot, the kernel command line is set by Cocoon via `payload.cmdline`. In the UEFI case, Cocoon cannot inject kernel parameters such as `console=hvc0` from the host side.
 
 | Boot Strategy | Kernel cmdline control | Console mechanism |
 |---------------|----------------------|-------------------|
-| PVH (firmware boot via `hypervisor-fw`) | Guest bootloader (GRUB) | `systemd-getty-generator` auto-detects `/dev/hvc0` |
 | UEFI (firmware boot via `CLOUDHV.fd`) | Guest bootloader (GRUB) | `systemd-getty-generator` auto-detects `/dev/hvc0` |
+| Direct kernel boot (OCI VM images) | Cocoon (`payload.cmdline`) | `systemd-getty-generator` auto-detects `/dev/hvc0` |
 
 **Default behavior (no user action required)**:
 

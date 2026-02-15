@@ -9,7 +9,7 @@
 
 This document defines the **Boot Contract** - the core specification for how Cocoon boots virtual machines using Cloud Hypervisor. The contract establishes:
 
-1. **Boot mode strategy**: UEFI (default) + PVH (option for faster cold boot)
+1. **Boot mode strategy**: UEFI (default for cloud images) + Direct kernel boot (for OCI VM images)
 2. **Guest initialization**: systemd + cloud-init with metadata server
 3. **I/O mechanisms**: Serial console, future vsock/virtiofs
 4. **Lifecycle semantics**: Start, stop, delete, crash recovery
@@ -58,53 +58,66 @@ This document defines the **Boot Contract** - the core specification for how Coc
 - Version controlled via `EDK2_CH_VERSION` environment variable (default: `a54f262b09`)
 - URL: `https://github.com/cloud-hypervisor/edk2/releases/download/ch-{version}/CLOUDHV.fd`
 
-### 1.2 Alternative Boot Mode: PVH + hypervisor-fw
+### 1.2 Alternative Boot Mode: Direct Kernel Boot (OCI VM Images)
 
-**PVH boot** is available via `--boot-strategy pvh` for workloads that benefit from faster cold boot.
+**Direct kernel boot** is used automatically when booting OCI VM images (via `--oci` flag). Instead of loading a UEFI firmware binary, Cocoon passes the kernel, initramfs, and cmdline directly to Cloud Hypervisor.
 
-**When to use PVH**:
-- Latency-sensitive workloads where ~400ms boot time difference matters
-- Known-compatible images (Ubuntu Cloud, Fedora Cloud with standard GPT+ESP layout)
-- Batch VM creation where cumulative boot time is significant
+**When Direct kernel boot is used**:
+- OCI VM images where the kernel and initramfs are extracted from the image
+- Eliminates the need for a firmware binary entirely
+- Provides fast, deterministic boot for purpose-built VM images
 
-**Trade-offs**:
-- ✅ **Fast boot**: Sub-100ms boot time (vs ~500ms for UEFI)
-- ✅ **Lightweight**: Minimal firmware footprint (~100KB vs 2MB CLOUDHV.fd)
-- ⚠️ **Narrower compatibility**: Requires kernel in ESP with BLS entries; some images may not boot
+**How it works**:
+1. Cocoon extracts the kernel and initramfs from the OCI VM image during conversion
+2. Cloud Hypervisor is configured with `payload.kernel`, `payload.initramfs`, and `payload.cmdline` (no `payload.firmware`)
+3. The kernel boots directly with the provided command line
 
-**What hypervisor-fw does**:
-1. Boots via PVH entry point (Xen PVH protocol)
-2. Discovers virtio-blk disk devices
-3. Parses GPT partition table → finds EFI System Partition (ESP)
-4. Mounts ESP (FAT32 filesystem)
-5. Reads Boot Loader Specification (BLS) entries
-6. Loads GRUB2/shim or direct kernel from ESP
-7. Transfers control to bootloader/kernel
+**Cloud Hypervisor REST payload** (Direct kernel boot):
+```json
+{
+  "payload": {
+    "kernel": "/var/lib/cocoon/vms/vm-123/vmlinuz",
+    "initramfs": "/var/lib/cocoon/vms/vm-123/initrd.img",
+    "cmdline": "root=PARTUUID=<uuid> rw console=ttyS0,115200n8 console=hvc0"
+  },
+  "cpus": {"boot_vcpus": 2, "max_vcpus": 2},
+  "memory": {"size": 2147483648},
+  "disks": [{"path": "/var/lib/cocoon/vms/vm-123/overlay.qcow2"}],
+  "serial": {"mode": "File", "file": "/var/log/cocoon/vm-123-serial.log"},
+  "console": {"mode": "Off"}
+}
+```
 
-**Firmware Management** (see [docs/09-cli-design.md](./09-cli-design.md) for authoritative CLI behavior):
-- `cocoon init` creates the directory structure but does **not** automatically download firmware
-- Install via `cocoon firmware install` (recommended) or `cocoon init --with-pvh-firmware <URL>`
-- Installed to: `/var/lib/cocoon/firmware/hypervisor-fw`
+**Kernel cmdline format**:
+```
+root=PARTUUID=<uuid> rw console=ttyS0,115200n8 console=hvc0
+```
+
+**Boot detection**: The same serial log pattern matching is used for both UEFI and Direct kernel boot (systemd target patterns, cloud-init patterns, fallback patterns).
 
 **Firmware Location**:
 ```
 /var/lib/cocoon/firmware/
-├── CLOUDHV.fd            # UEFI firmware (default)
-├── hypervisor-fw         # PVH firmware (optional)
+├── CLOUDHV.fd            # UEFI firmware (default for cloud images)
 └── (checksum metadata is optional; Cocoon Phase 1 does not read/manage it)
 ```
 
 **Architecture Support**:
 | Arch | Firmware | Status |
 |------|----------|--------|
-| x86_64 | CLOUDHV.fd (UEFI), rust-hypervisor-firmware (PVH) | ✅ Phase 1 |
-| aarch64 | CLOUDHV.fd (UEFI) | 📋 Phase 2 |
+| x86_64 | CLOUDHV.fd (UEFI) / Direct kernel boot (OCI) | Phase 1 |
+| aarch64 | CLOUDHV.fd (UEFI) | Phase 2 |
 
 ---
 
 ### 1.3 Boot Mode Selection Logic
 
-Cocoon uses the configured boot strategy directly with no automatic fallback. The boot strategy is set at VM creation time via `--boot-strategy` (default: `uefi`) and stored immutably in `config.json`.
+Cocoon selects the boot mode automatically based on the image type:
+
+- **Non-OCI images** (cloud images, local qcow2 files, URLs): **UEFI boot** with CLOUDHV.fd firmware via `payload.firmware`
+- **OCI VM images** (created with `--oci` flag): **Direct kernel boot** via `payload.kernel` + `payload.initramfs` + `payload.cmdline`
+
+The boot strategy is determined at VM creation time and stored immutably in `config.json`.
 
 ```go
 // From types/boot.go:
@@ -113,33 +126,25 @@ type BootStrategy string
 
 const (
     // BootStrategyUEFI boots with UEFI firmware (CLOUDHV.fd) via REST payload.firmware.
-    // This is the default boot strategy.
-    BootStrategyUEFI BootStrategy = "uefi"
-    // BootStrategyPVH boots with PVH firmware (hypervisor-fw) via REST payload.firmware.
-    BootStrategyPVH  BootStrategy = "pvh"
+    // This is the default boot strategy for non-OCI images.
+    BootStrategyUEFI   BootStrategy = "uefi"
+    // BootStrategyDirect boots with kernel + initramfs + cmdline via REST payload.
+    // Used automatically for OCI VM images.
+    BootStrategyDirect BootStrategy = "direct"
 )
 
-// DefaultBootStrategy is the default boot strategy for new VMs.
+// DefaultBootStrategy is the default boot strategy for new VMs (non-OCI images).
 const DefaultBootStrategy = BootStrategyUEFI
-
-// ParseBootStrategy validates and normalizes a user-provided boot strategy.
-// Empty input resolves to DefaultBootStrategy.
-func ParseBootStrategy(raw string) (BootStrategy, error) {
-    normalized := strings.ToLower(strings.TrimSpace(raw))
-    if normalized == "" {
-        return DefaultBootStrategy, nil
-    }
-    switch BootStrategy(normalized) {
-    case BootStrategyUEFI, BootStrategyPVH:
-        return BootStrategy(normalized), nil
-    default:
-        return "", fmt.Errorf("invalid boot strategy %q (must be one of: %s, %s)",
-            raw, BootStrategyPVH, BootStrategyUEFI)
-    }
-}
 ```
 
-**No automatic PVH-to-UEFI fallback**: Cocoon boots using whichever strategy is configured. If the chosen strategy fails (e.g., firmware missing, image incompatible), the boot fails with an error. Users must explicitly choose a different strategy by recreating the VM with `--boot-strategy uefi` or `--boot-strategy pvh`.
+**Boot mode matrix**:
+
+| Image Type | Boot Strategy | Payload Fields | Firmware |
+|------------|---------------|----------------|----------|
+| Cloud images (qcow2, URL) | UEFI | `payload.firmware` | CLOUDHV.fd |
+| OCI VM images (`--oci`) | Direct | `payload.kernel` + `payload.initramfs` + `payload.cmdline` | None |
+
+**No automatic fallback**: Cocoon boots using the strategy determined by the image type. If the boot fails (e.g., firmware missing, kernel not found), the boot fails with an error.
 
 ---
 
@@ -622,9 +627,9 @@ See `docs/07-vm-lifecycle.md` for complete state machine.
 
 ### 4.2 Graceful Shutdown
 
-**Step 1: ACPI Power Button (PVH mode)**
+**Step 1: ACPI Power Button**
 
-Cloud Hypervisor's ACPI support in PVH mode:
+Cloud Hypervisor's ACPI support:
 ```bash
 # Send ACPI power button event via API
 curl -X PUT http://localhost/api/v1/vm.power-button \
@@ -694,7 +699,7 @@ type VMConfig struct {
     Arch           string `json:"arch"`
 
     // Boot configuration
-    BootStrategy  BootStrategy `json:"boot_strategy"`            // "uefi" (default), "pvh"
+    BootStrategy  BootStrategy `json:"boot_strategy"`            // "uefi" (default), "direct" (OCI)
     FirmwarePath  string       `json:"firmware_path"`
     TPMSocketPath string       `json:"tpm_socket_path,omitempty"` // swtpm socket (if TPM enabled)
 
@@ -857,8 +862,8 @@ virt-customize -a image.qcow2 \
 #### x86_64
 
 **Firmware**:
-- PVH: `rust-hypervisor-firmware` (x86_64 build)
 - UEFI: CLOUDHV.fd from `/var/lib/cocoon/firmware/CLOUDHV.fd` (deprecated fallback: `/usr/share/OVMF/OVMF_CODE.fd`)
+- Direct kernel boot: No firmware needed (kernel + initramfs passed directly)
 
 **Bootloader**:
 - ESP location: `/boot/efi/EFI/BOOT/BOOTX64.EFI`
@@ -867,7 +872,6 @@ virt-customize -a image.qcow2 \
 #### aarch64 (Phase 2)
 
 **Firmware**:
-- PVH: `rust-hypervisor-firmware` (aarch64 build)
 - UEFI: AAVMF from `/usr/share/AAVMF/AAVMF_CODE.fd`
 
 **Bootloader**:
@@ -888,20 +892,19 @@ virt-customize -a image.qcow2 \
 ### Phase 1: Core Boot (P0)
 
 - [ ] **Firmware Management**:
-  - [ ] Download rust-hypervisor-firmware on install
+  - [ ] Download CLOUDHV.fd on install
   - [ ] Store in `/var/lib/cocoon/firmware/`
   - [ ] Implement `cocoon firmware` commands
   - [ ] Version management and updates
 
-- [ ] **PVH Boot**:
-  - [ ] Launch CH with `--firmware hypervisor-fw`
-  - [ ] Verify firmware can boot standard cloud images
-  - [ ] Test with Ubuntu Cloud, Fedora Cloud
-
 - [ ] **UEFI Boot**:
   - [ ] Locate UEFI firmware: primary `/var/lib/cocoon/firmware/CLOUDHV.fd`, deprecated fallback `/usr/share/OVMF/OVMF_CODE.fd`
-  - [ ] Launch CH with UEFI firmware via REST `payload.firmware` (default boot strategy)
-  - [ ] No automatic PVH-to-UEFI fallback (boot uses the configured strategy directly)
+  - [ ] Launch CH with UEFI firmware via REST `payload.firmware` (default boot strategy for non-OCI images)
+
+- [ ] **Direct Kernel Boot** (OCI VM images):
+  - [ ] Extract kernel and initramfs from OCI VM images
+  - [ ] Launch CH with `payload.kernel` + `payload.initramfs` + `payload.cmdline`
+  - [ ] Build kernel cmdline with `root=PARTUUID=<uuid> rw console=ttyS0,115200n8 console=hvc0`
 
 - [ ] **Metadata Server (Stub Implementation)** — **[Not Yet Implemented — Phase 3]**:
   - [ ] Implement lightweight HTTP server listening on 169.254.169.254:80
@@ -944,14 +947,8 @@ virt-customize -a image.qcow2 \
   - [ ] Test across Ubuntu, Fedora, Debian distributions
   - [ ] Maintain backward compatibility with pattern-only detection
 
-- [ ] **Direct Kernel Boot**:
-  - [ ] Extract kernel/initrd from images
-  - [ ] Use `--kernel` + `--initrd` + `--cmdline`
-  - [ ] Benchmark vs hypervisor-fw boot time
-
 - [ ] **Architecture Support**:
-  - [ ] aarch64 firmware (rust-hypervisor-firmware ARM64)
-  - [ ] AAVMF fallback
+  - [ ] aarch64 UEFI firmware (AAVMF)
   - [ ] ARM64-specific GRUB config
 
 - [ ] **Alternative I/O**:
@@ -964,12 +961,11 @@ virt-customize -a image.qcow2 \
 
 **Boot Contract v2.0** establishes:
 
-1. ✅ **Boot strategy**: UEFI default + PVH option
-2. ✅ **Fast boot**: <100ms with hypervisor-fw
-3. ✅ **VM initialization**: cloud-init + metadata server for setup (users, SSH, network)
-4. ✅ **Image requirements**: kernel + bootloader + systemd + cloud-init
-5. ✅ **Graceful lifecycle**: ACPI shutdown with timeout
-6. ✅ **Production ready**: Works with standard cloud images
+1. **Boot strategy**: UEFI (cloud images) + Direct kernel boot (OCI VM images)
+2. **VM initialization**: cloud-init + metadata server for setup (users, SSH, network)
+3. **Image requirements**: kernel + bootloader + systemd + cloud-init
+4. **Graceful lifecycle**: ACPI shutdown with timeout
+5. **Production ready**: Works with standard cloud images and OCI VM images
 
 **Next Steps**:
 - Read `docs/03-hypervisor-integration.md` for CH API details

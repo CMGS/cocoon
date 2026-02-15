@@ -1112,12 +1112,12 @@ type manager struct {
 
 ## 10. Compatibility
 
-### 10.1 PVH and UEFI Boot
+### 10.1 UEFI and Direct Kernel Boot
 
-Volume passthrough via virtio-fs works with both PVH and UEFI boot modes.
+Volume passthrough via virtio-fs works with both UEFI and direct kernel boot modes.
 The virtio-fs device is presented through the virtio transport layer, which
-is independent of the firmware used during boot. Both the default UEFI boot
-and the optional PVH boot mode work with virtio-fs.
+is independent of the firmware or boot method used. Both UEFI boot (cloud images)
+and direct kernel boot (OCI VM images) work with virtio-fs.
 
 ### 10.2 Guest Kernel Requirements
 

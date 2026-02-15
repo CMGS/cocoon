@@ -370,8 +370,8 @@ func (m *manager) attemptBoot(ctx context.Context, vmID string, vmCfg *types.VMC
 	switch bootMode {
 	case types.BootModeUEFI:
 		cfgCopy.BootStrategy = types.BootStrategyUEFI
-	default: // PVH
-		cfgCopy.BootStrategy = types.BootStrategyPVH
+	default: // Direct kernel boot
+		cfgCopy.BootStrategy = types.BootStrategyDirect
 	}
 
 	// Step 1: Launch Cloud Hypervisor process.
@@ -481,8 +481,8 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 	case types.BootStrategyUEFI:
 		result, bootErr = attemptBootAndWait(vmCfg.FirmwarePath, types.BootModeUEFI)
 
-	case types.BootStrategyPVH:
-		result, bootErr = attemptBootAndWait(vmCfg.FirmwarePath, types.BootModePVH)
+	case types.BootStrategyDirect:
+		result, bootErr = attemptBootAndWait(vmCfg.FirmwarePath, types.BootModeDirect)
 
 	default:
 		bootErr = fmt.Errorf("invalid boot strategy in config: %q", vmCfg.BootStrategy)
@@ -926,10 +926,16 @@ func buildCHVMConfig(vmCfg *types.VMConfig) *hypervisor.CHVMConfig {
 		},
 	}
 
-	// Firmware is always passed via REST payload.firmware, not CLI flags.
-	// Both UEFI (CLOUDHV.fd) and PVH (hypervisor-fw) use payload.firmware;
-	// Cloud Hypervisor auto-detects the format (PE vs ELF/PVH).
-	if vmCfg.FirmwarePath != "" {
+	// Build payload based on boot strategy.
+	// Direct kernel boot uses payload.kernel + payload.initramfs + payload.cmdline.
+	// UEFI boot uses payload.firmware (CLOUDHV.fd).
+	if vmCfg.KernelPath != "" {
+		cfg.Payload = &hypervisor.CHPayloadConfig{
+			Kernel:    vmCfg.KernelPath,
+			Initramfs: vmCfg.InitramfsPath,
+			Cmdline:   vmCfg.CmdlinePath,
+		}
+	} else if vmCfg.FirmwarePath != "" {
 		cfg.Payload = &hypervisor.CHPayloadConfig{
 			Firmware: vmCfg.FirmwarePath,
 		}
@@ -947,7 +953,7 @@ func buildCHVMConfig(vmCfg *types.VMConfig) *hypervisor.CHVMConfig {
 
 // resolveUEFIFirmwarePath returns a usable UEFI firmware path. It first checks
 // the configured primary path. If the primary is missing or empty, it probes
-// the deprecated system OVMF fallback paths. PVH firmware has no fallback.
+// the deprecated system OVMF fallback paths.
 func resolveUEFIFirmwarePath(cfg *config.CocoonConfig) (string, error) {
 	// Try the configured primary path first.
 	if cfg.UEFIFirmwarePath != "" {
@@ -971,18 +977,16 @@ func resolveUEFIFirmwarePath(cfg *config.CocoonConfig) (string, error) {
 }
 
 // resolveFirmwarePath determines the firmware file path based on the boot
-// strategy and architecture. For PVH-first strategies, it returns the PVH
-// firmware (hypervisor-fw). For UEFI-only, it returns the UEFI firmware
-// (CLOUDHV.fd) with fallback to system OVMF paths.
+// strategy and architecture. For UEFI, it returns the UEFI firmware
+// (CLOUDHV.fd) with fallback to system OVMF paths. For direct kernel boot,
+// no firmware is needed (kernel/initramfs come from the OCI image).
 func resolveFirmwarePath(cfg *config.CocoonConfig, strategy types.BootStrategy, arch string) (string, error) {
 	_ = arch // Reserved for future multi-arch firmware selection.
 
 	switch strategy {
-	case types.BootStrategyPVH:
-		if cfg.PVHFirmwarePath == "" {
-			return "", fmt.Errorf("%w: PVH firmware path not configured", types.ErrFirmwareNotFound)
-		}
-		return cfg.PVHFirmwarePath, nil
+	case types.BootStrategyDirect:
+		// Direct kernel boot does not use firmware; kernel path is resolved separately.
+		return "", nil
 	case types.BootStrategyUEFI:
 		return resolveUEFIFirmwarePath(cfg)
 	default:

@@ -29,7 +29,6 @@ type CocoonConfig struct {
 	CHBinary string `json:"ch_binary"`
 
 	// Firmware paths.
-	PVHFirmwarePath  string `json:"pvh_firmware_path"`
 	UEFIFirmwarePath string `json:"uefi_firmware_path"`
 
 	// Buildah storage root (for OCI operations).
@@ -65,7 +64,6 @@ func DefaultConfig() *CocoonConfig {
 		LogDir:     "/var/log/cocoon",
 
 		CHBinary:         "cloud-hypervisor",
-		PVHFirmwarePath:  "/var/lib/cocoon/firmware/hypervisor-fw",
 		UEFIFirmwarePath: "/var/lib/cocoon/firmware/CLOUDHV.fd",
 		BuildahRoot:      "/var/lib/cocoon/buildah",
 
@@ -138,7 +136,6 @@ func (c *CocoonConfig) RebaseRootDir(newRoot string) {
 	}
 
 	c.BuildahRoot = rebase(c.BuildahRoot)
-	c.PVHFirmwarePath = rebase(c.PVHFirmwarePath)
 	c.UEFIFirmwarePath = rebase(c.UEFIFirmwarePath)
 }
 

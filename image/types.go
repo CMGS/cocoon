@@ -82,7 +82,7 @@ type BootCheckResult struct {
 	Bootable bool `json:"bootable"`
 
 	// BootModes lists the boot modes the image supports.
-	// Possible values: "pvh" (hypervisor-fw), "uefi" (CLOUDHV.fd).
+	// Possible values: "uefi" (CLOUDHV.fd), "direct" (kernel boot).
 	BootModes []string `json:"boot_modes"`
 
 	// Errors lists critical issues that prevent booting.

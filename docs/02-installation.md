@@ -148,7 +148,7 @@ Cloud Hypervisor requires firmware to boot virtual machines. Cocoon supports two
 ```bash
 # Recommended — install firmware after cocoon init:
 sudo cocoon init                  # Creates directories and config (no firmware download)
-sudo cocoon firmware install      # Downloads CLOUDHV.fd + hypervisor-fw
+sudo cocoon firmware install      # Downloads CLOUDHV.fd
 
 # Convenience shortcut — download firmware during init:
 sudo cocoon init --with-uefi-firmware "https://github.com/cloud-hypervisor/edk2/releases/download/ch-a54f262b09/CLOUDHV.fd"
@@ -180,74 +180,18 @@ sudo dnf install -y edk2-ovmf
 - Recommended: CLOUDHV.fd at `/var/lib/cocoon/firmware/CLOUDHV.fd`
 - Deprecated fallback: System OVMF (`OVMF_CODE.fd`) — only probed if CLOUDHV.fd is missing
 
-#### PVH Firmware (Optional — for `--boot-strategy pvh`)
-
-**What is PVH?**
-- PVH (Paravirtualized Hardware) is a lightweight boot protocol designed for Cloud Hypervisor
-- **Fast boot**: Sub-100ms boot time (vs ~500ms for UEFI)
-- **Standard cloud images**: Works with Ubuntu Cloud, Fedora Cloud, Debian Cloud images
-- **Disk-based boot**: Loads kernel from GPT+ESP partition like standard VMs
-
-**rust-hypervisor-firmware** is the PVH firmware implementation:
-- Boots via PVH entry point (Xen PVH protocol)
-- Discovers virtio-blk disks and parses GPT
-- Mounts ESP partition and loads GRUB/kernel
-- Minimal footprint (~100KB vs 2MB CLOUDHV.fd)
-
-**Installation** (via `cocoon firmware install`, or manual):
-
-```bash
-# Recommended — install all firmware after cocoon init:
-sudo cocoon firmware install      # Downloads both CLOUDHV.fd and hypervisor-fw
-
-# Convenience shortcut — download PVH firmware during init:
-sudo cocoon init --with-pvh-firmware "https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw"
-
-# Manual download (x86_64):
-curl -L https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw \
-    -o /tmp/hypervisor-fw
-sudo mv /tmp/hypervisor-fw /var/lib/cocoon/firmware/hypervisor-fw
-sudo chmod +x /var/lib/cocoon/firmware/hypervisor-fw
-```
-
-**PVH Boot Behavior**:
-- Firmware is set as `payload.firmware` in the REST payload (same field as UEFI; CH auto-detects the format)
-- Use `--boot-strategy pvh` when creating/running VMs to select PVH boot
-
 ### Firmware Selection Guide
 
-| Boot Method | Firmware | Boot Time | OS Support | Phase |
-|-------------|----------|-----------|------------|-------|
-| **UEFI (Default)** | CLOUDHV.fd (deprecated fallback: OVMF) | ~500ms | All Linux distributions | Phase 1 ✅ |
-| **PVH (Option)** | rust-hypervisor-firmware | <100ms | Ubuntu Cloud, Fedora Cloud, Debian Cloud | Phase 1 ✅ |
+| Boot Method | Firmware | OS Support | Phase |
+|-------------|----------|------------|-------|
+| **UEFI (Default)** | CLOUDHV.fd (deprecated fallback: OVMF) | All Linux distributions and cloud images | Phase 1 |
+| **Direct kernel boot** | None (kernel + initramfs passed directly) | OCI VM images | Phase 1 |
 
 **Cocoon Default Strategy** (per Boot Contract v2.0):
-- UEFI boot by default (broadest compatibility)
-- User can select PVH with `--boot-strategy pvh` for faster cold boot
+- UEFI boot by default for cloud images (broadest compatibility)
+- Direct kernel boot automatically for OCI VM images (no firmware needed)
 
 ### Firmware Updates
-
-**Update rust-hypervisor-firmware:**
-
-```bash
-# Check current version
-ls -lh /var/lib/cocoon/firmware/
-
-# Download latest release
-LATEST_VERSION="0.5.0"  # Check GitHub for latest
-curl -L https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/${LATEST_VERSION}/hypervisor-fw \
-    -o /tmp/hypervisor-fw-${LATEST_VERSION}
-
-# Backup current firmware
-sudo cp /var/lib/cocoon/firmware/hypervisor-fw /var/lib/cocoon/firmware/hypervisor-fw.backup
-
-# Install new version
-sudo mv /tmp/hypervisor-fw-${LATEST_VERSION} /var/lib/cocoon/firmware/hypervisor-fw
-sudo chmod +x /var/lib/cocoon/firmware/hypervisor-fw
-
-# Verify
-sha256sum /var/lib/cocoon/firmware/hypervisor-fw
-```
 
 **Update OVMF (UEFI firmware):**
 
@@ -268,8 +212,7 @@ Recommended directory structure for Cocoon deployment:
 ```
 /var/lib/cocoon/                   # Cocoon root directory (per Boot Contract v2.0)
 ├── firmware/
-│   ├── CLOUDHV.fd                 # UEFI firmware (default)
-│   └── hypervisor-fw              # PVH firmware (optional)
+│   └── CLOUDHV.fd                 # UEFI firmware (default)
 ├── cache/
 │   ├── images/                    # Base image cache (qcow2)
 │   ├── manifests/                 # IMAGE_REF -> base_key alias index
@@ -372,10 +315,10 @@ mkfs.ext4 /tmp/test-disk.raw
 **2. Launch a test VM (requires a bootable kernel/image):**
 
 ```bash
-# Example: Launch with PVH firmware
+# Example: Launch with UEFI firmware
 # Note: This requires a bootable disk with kernel/bootloader
 cloud-hypervisor \
-    --firmware /var/lib/cocoon/firmware/hypervisor-fw \
+    --firmware /var/lib/cocoon/firmware/CLOUDHV.fd \
     --disk path=/tmp/test-disk.raw \
     --cpus boot=1 \
     --memory size=512M \
@@ -498,16 +441,17 @@ Error: Failed to load firmware
 
 **Solution:**
 ```bash
-# Check PVH firmware installation
-ls -l /var/lib/cocoon/firmware/hypervisor-fw
+# Check UEFI firmware installation
+ls -l /var/lib/cocoon/firmware/CLOUDHV.fd
 
 # If missing, download it
-curl -L https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw \
-    -o /tmp/hypervisor-fw
-sudo mv /tmp/hypervisor-fw /var/lib/cocoon/firmware/
-sudo chmod +x /var/lib/cocoon/firmware/hypervisor-fw
+EDK2_CH_VERSION="a54f262b09"
+curl -L "https://github.com/cloud-hypervisor/edk2/releases/download/ch-${EDK2_CH_VERSION}/CLOUDHV.fd" \
+    -o /tmp/CLOUDHV.fd
+sudo mv /tmp/CLOUDHV.fd /var/lib/cocoon/firmware/CLOUDHV.fd
+sudo chmod 644 /var/lib/cocoon/firmware/CLOUDHV.fd
 
-# Or install UEFI firmware (OVMF)
+# Or install system UEFI firmware as fallback (OVMF)
 sudo apt-get install -y ovmf
 ```
 
@@ -551,5 +495,4 @@ After successful installation:
 
 - Cloud Hypervisor GitHub: https://github.com/cloud-hypervisor/cloud-hypervisor
 - Official Documentation: https://www.cloudhypervisor.org/
-- rust-hypervisor-firmware: https://github.com/cloud-hypervisor/rust-hypervisor-firmware
 - KVM Documentation: https://www.linux-kvm.org/

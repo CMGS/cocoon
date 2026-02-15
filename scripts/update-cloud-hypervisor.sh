@@ -5,14 +5,12 @@
 # Usage:
 #   sudo bash scripts/update-cloud-hypervisor.sh                            # Update to default version
 #   sudo CH_VERSION=v50.0 bash scripts/update-cloud-hypervisor.sh           # Specific CH version
-#   sudo HYPERVISOR_FW_VERSION=0.5.0 bash scripts/update-cloud-hypervisor.sh # Specific FW version
 #   bash scripts/update-cloud-hypervisor.sh --check-only                     # Show current vs target
 #   # or via Makefile:
 #   make update-ch
 #
 # Environment variables:
 #   CH_VERSION              Target Cloud Hypervisor version (default: v50.0)
-#   HYPERVISOR_FW_VERSION   Target PVH firmware version (default: 0.5.0)
 #   COCOON_ROOT             Root data directory (default: /var/lib/cocoon)
 #   INSTALL_DIR             Binary install directory (default: /usr/local/bin)
 #
@@ -39,7 +37,7 @@ parse_args() {
                 echo ""
                 echo "Environment variables:"
                 echo "  CH_VERSION              Target CH version (default: ${CH_VERSION})"
-                echo "  HYPERVISOR_FW_VERSION   Target firmware version (default: ${HYPERVISOR_FW_VERSION})"
+                echo "  EDK2_CH_VERSION         UEFI firmware version (default: ${EDK2_CH_VERSION})"
                 exit 0
                 ;;
             *) error "Unknown argument: $1"; exit 1 ;;
@@ -78,16 +76,9 @@ run_check_only() {
     echo ""
     echo -e "${BOLD}--- Target versions ---${NC}"
     info "CH version:       ${CH_VERSION}"
-    info "Firmware version: ${HYPERVISOR_FW_VERSION}"
-
     echo ""
     echo -e "${BOLD}--- Firmware status ---${NC}"
     local fw_dir="${COCOON_ROOT}/firmware"
-    if [[ -f "${fw_dir}/hypervisor-fw" ]]; then
-        info "PVH firmware:  present (${fw_dir}/hypervisor-fw)"
-    else
-        info "PVH firmware:  not installed"
-    fi
     if [[ -f "${fw_dir}/CLOUDHV.fd" ]]; then
         info "UEFI firmware: present (${fw_dir}/CLOUDHV.fd)"
     else
@@ -140,7 +131,7 @@ main() {
     # Remove old firmware (will be re-downloaded).
     echo -e "${BOLD}--- Removing old firmware ---${NC}"
     local fw_dir="${COCOON_ROOT}/firmware"
-    for fw in hypervisor-fw CLOUDHV.fd; do
+    for fw in CLOUDHV.fd; do
         if [[ -f "${fw_dir}/${fw}" ]]; then
             rm -f "${fw_dir}/${fw}"
             ok "Removed ${fw_dir}/${fw}"

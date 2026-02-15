@@ -68,7 +68,7 @@ func writeTestVMArtifacts(t *testing.T, cfg *config.CocoonConfig, vmID, name, ba
 		BaseDigestFull: "a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8",
 		Arch:           "amd64",
 		BootStrategy:   types.DefaultBootStrategy,
-		FirmwarePath:   cfg.PVHFirmwarePath,
+		FirmwarePath:   cfg.UEFIFirmwarePath,
 		CPUs:           2,
 		MemoryMB:       2048,
 		DiskSize:       "10G",

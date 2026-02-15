@@ -51,7 +51,7 @@ func TestClassifyError(t *testing.T) {
 		// CH create VM config failure
 		{
 			name:   "create VM config failure",
-			reason: "boot failed: create VM config for vm-ABC123 (pvh): connection refused",
+			reason: "boot failed: create VM config for vm-ABC123 (uefi): connection refused",
 			want:   types.ErrorCHCrash,
 		},
 

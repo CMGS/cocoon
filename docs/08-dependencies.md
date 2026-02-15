@@ -16,7 +16,6 @@ Cocoon relies on several external tools and libraries to provide VM management w
 | cloud-hypervisor | Virtual Machine Monitor (VMM) | v50.0 | N/A (requires KVM) | Binary or source |
 | ch-remote | CH remote control (REST API client) | v50.0 | N/A | Binary (ships with CH release) |
 | edk2-cloudhv | UEFI firmware for CH (default boot mode) | ch-a54f262b09 | N/A | `cocoon firmware install` or `cocoon init --with-uefi-firmware <URL>` |
-| rust-hypervisor-firmware | PVH firmware (optional, for `--boot-strategy pvh`) | 0.5.0 | N/A | `cocoon firmware install` or `cocoon init --with-pvh-firmware <URL>` |
 | buildah | OCI image pull/extract | 1.35.0 | ✅ Yes | apt/dnf |
 | skopeo | OCI image inspection | 1.14.0 | ✅ Yes | apt/dnf |
 | qemu-img | qcow2 operations | 8.0 | ✅ Yes | apt/dnf (qemu-utils) |
@@ -68,40 +67,7 @@ cargo build --release
 sudo cp target/release/cloud-hypervisor /usr/local/bin/
 ```
 
-### 2. rust-hypervisor-firmware
-
-**Purpose**: Provides PVH (Paravirtualized Hardware) boot firmware - an alternative boot method for faster cold boot (`--boot-strategy pvh`).
-
-**Minimum Version**: 0.5.0
-
-**Installation**:
-
-```bash
-# Create firmware directory
-sudo mkdir -p /var/lib/cocoon/firmware
-
-# Download rust-hypervisor-firmware (x86_64)
-curl -L https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw \
-    -o /tmp/hypervisor-fw
-
-# Install
-sudo mv /tmp/hypervisor-fw /var/lib/cocoon/firmware/hypervisor-fw
-sudo chmod 755 /var/lib/cocoon/firmware/hypervisor-fw
-```
-
-**Verification**:
-```bash
-# Verify file exists and is executable
-ls -lh /var/lib/cocoon/firmware/hypervisor-fw
-```
-
-**Architecture Support**:
-| Architecture | Firmware Binary | Download URL |
-|--------------|----------------|--------------|
-| x86_64 | hypervisor-fw | https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw |
-| aarch64 | hypervisor-fw (ARM64) | https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw-aarch64 |
-
-### 3. CLOUDHV.fd (Cloud Hypervisor UEFI Firmware)
+### 2. CLOUDHV.fd (Cloud Hypervisor UEFI Firmware)
 
 **Purpose**: Provides UEFI firmware for the default boot mode. Installed via `cocoon firmware install` or `cocoon init --with-uefi-firmware <URL>` (`cocoon init` alone creates directories but does not download firmware).
 
@@ -142,7 +108,7 @@ ls -l /usr/share/OVMF/OVMF_CODE.fd      # Ubuntu/Debian (deprecated fallback)
 ls -l /usr/share/edk2/ovmf/OVMF_CODE.fd  # Fedora (deprecated fallback)
 ```
 
-### 4. Buildah
+### 3. Buildah
 
 **Purpose**: Pulls and extracts OCI container images without requiring a daemon.
 
@@ -180,7 +146,7 @@ grep $USER /etc/subuid || echo "$USER:100000:65536" | sudo tee -a /etc/subuid
 grep $USER /etc/subgid || echo "$USER:100000:65536" | sudo tee -a /etc/subgid
 ```
 
-### 5. Skopeo
+### 4. Skopeo
 
 **Purpose**: Inspects OCI images and manifests to calculate checksums for caching.
 
@@ -206,7 +172,7 @@ skopeo --version
 # Expected: skopeo version 1.14.0 or higher
 ```
 
-### 6. QEMU Image Tools (qemu-img)
+### 5. QEMU Image Tools (qemu-img)
 
 **Purpose**: Creates, converts, and manages qcow2 disk images.
 
@@ -232,7 +198,7 @@ qemu-img --version
 # Expected: qemu-img version 8.0.0 or higher
 ```
 
-### 7. libguestfs Tools
+### 6. libguestfs Tools
 
 **Purpose**: Formats disk images and copies files into them.
 
@@ -262,7 +228,7 @@ virt-format --version
 virt-copy-in --version
 ```
 
-### 8. swtpm (TPM 2.0 Emulator)
+### 7. swtpm (TPM 2.0 Emulator)
 
 **Purpose**: Provides software-based TPM 2.0 emulation for VMs that need TPM support (measured boot, guest attestation). Enabled via the `--tpm` flag on `cocoon create` and `cocoon run`.
 
@@ -289,7 +255,7 @@ swtpm --version
 
 **AppArmor Note**: On Ubuntu systems with AppArmor enabled, the swtpm AppArmor profile may block socket creation under `/run/cocoon/`. The `scripts/lib.sh` setup script automatically disables this profile. If swtpm fails with "Permission denied", check the AppArmor profile status.
 
-### 9. OVMF (UEFI Firmware) - DEPRECATED
+### 8. OVMF (UEFI Firmware) - DEPRECATED
 
 **⚠️ Note**: This section is deprecated. Prefer using CLOUDHV.fd from Cloud Hypervisor releases (see section 3 above).
 
@@ -323,9 +289,8 @@ ls -l /usr/share/edk2/ovmf/OVMF_CODE.fd
 **Usage Priority**:
 1. **Default**: CLOUDHV.fd (Cloud Hypervisor's edk2 UEFI firmware)
 2. **UEFI fallback**: OVMF_CODE.fd (standard OVMF, only if CLOUDHV.fd missing)
-3. **PVH option**: rust-hypervisor-firmware (via `--boot-strategy pvh`)
 
-### 10. KVM Device Access
+### 9. KVM Device Access
 
 **Purpose**: Provides hardware virtualization support via Linux kernel.
 
@@ -515,15 +480,9 @@ func checkFirmwareFiles() []DependencyStatus {
         installCmd string
     }{
         {
-            name:     "hypervisor-fw",
-            path:     "/var/lib/cocoon/firmware/hypervisor-fw",
-            required: true,
-            installCmd: "curl -L https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw -o /tmp/hypervisor-fw && sudo mv /tmp/hypervisor-fw /var/lib/cocoon/firmware/ && sudo chmod 755 /var/lib/cocoon/firmware/hypervisor-fw",
-        },
-        {
             name:     "CLOUDHV.fd",
             path:     "/var/lib/cocoon/firmware/CLOUDHV.fd",
-            required: false,
+            required: true,
             installCmd: "curl -L https://github.com/cloud-hypervisor/edk2/releases/download/ch-a54f262b09/CLOUDHV.fd -o /tmp/CLOUDHV.fd && sudo mv /tmp/CLOUDHV.fd /var/lib/cocoon/firmware/",
         },
     }
@@ -617,7 +576,6 @@ Core Dependencies:
 ✅ /dev/kvm accessible
 
 Firmware Files:
-✅ hypervisor-fw (0.5.0) found at /var/lib/cocoon/firmware/hypervisor-fw
 ✅ CLOUDHV.fd found at /var/lib/cocoon/firmware/CLOUDHV.fd (2145728 bytes)
 ✅ OVMF (deprecated fallback) available at /usr/share/OVMF/OVMF_CODE.fd
 
@@ -1122,28 +1080,7 @@ grep $USER /etc/subuid || echo "$USER:100000:65536" | sudo tee -a /etc/subuid
 grep $USER /etc/subgid || echo "$USER:100000:65536" | sudo tee -a /etc/subgid
 ```
 
-### 7. rust-hypervisor-firmware not found
-
-**Error**:
-```
-Error: Failed to load firmware: /var/lib/cocoon/firmware/hypervisor-fw: No such file or directory
-Cannot start VM with PVH boot mode
-```
-
-**Solution**:
-```bash
-# Download and install hypervisor-fw
-sudo mkdir -p /var/lib/cocoon/firmware
-curl -L https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw \
-    -o /tmp/hypervisor-fw
-sudo mv /tmp/hypervisor-fw /var/lib/cocoon/firmware/hypervisor-fw
-sudo chmod 755 /var/lib/cocoon/firmware/hypervisor-fw
-
-# Verify
-ls -l /var/lib/cocoon/firmware/hypervisor-fw
-```
-
-### 8. UEFI firmware not found
+### 7. UEFI firmware not found
 
 **Error**:
 ```

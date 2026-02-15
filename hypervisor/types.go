@@ -17,13 +17,14 @@ type CHTPMConfig struct {
 	Socket string `json:"socket"`
 }
 
-// CHPayloadConfig specifies the boot firmware for the VM.
-// Both UEFI (CLOUDHV.fd) and PVH (hypervisor-fw) use the Firmware field;
-// Cloud Hypervisor auto-detects the format.
-// The Kernel field is retained for future direct-kernel boot support.
+// CHPayloadConfig specifies the boot payload for the VM.
+// For UEFI boot, set the Firmware field (CLOUDHV.fd).
+// For direct kernel boot (OCI images), set Kernel, Initramfs, and Cmdline.
 type CHPayloadConfig struct {
-	Firmware string `json:"firmware,omitempty"`
-	Kernel   string `json:"kernel,omitempty"`
+	Firmware  string `json:"firmware,omitempty"`
+	Kernel    string `json:"kernel,omitempty"`
+	Initramfs string `json:"initramfs,omitempty"`
+	Cmdline   string `json:"cmdline,omitempty"`
 }
 
 // CHCPUConfig specifies the number of virtual CPUs.

@@ -1615,7 +1615,7 @@ Key points:
 - The `set-name` field renames the matched interface to `eth0` for consistency.
 - The MAC address is deterministically generated from the VM ID (see §4.5), so it is known at VM creation time.
 
-**Note on kernel `ip=` parameter**: Cocoon uses firmware-based boot (PVH firmware or UEFI firmware) for all boot strategies. The firmware loads the kernel from the guest disk, and the bootloader inside the guest controls the kernel command line. Cocoon cannot inject kernel parameters such as `ip=` from the host side. The cloud-init NoCloud datasource is the only supported network configuration injection mechanism.
+**Note on kernel `ip=` parameter**: Cocoon uses UEFI firmware boot (`CLOUDHV.fd`) for cloud images and direct kernel boot (`payload.kernel`) for OCI VM images. For UEFI boot, the firmware loads the kernel from the guest disk, and the bootloader inside the guest controls the kernel command line -- Cocoon cannot inject kernel parameters such as `ip=` from the host side. For direct kernel boot, Cocoon controls the kernel command line via `payload.cmdline`. In both cases, the cloud-init NoCloud datasource is the recommended network configuration injection mechanism.
 
 **Relationship to Metadata Server ([docs/01-boot-contract.md](./01-boot-contract.md))**:
 

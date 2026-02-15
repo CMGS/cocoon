@@ -25,10 +25,6 @@ func initCommand() *cli.Command {
 				Usage: "overwrite existing config file and re-download firmware",
 			},
 			&cli.StringFlag{
-				Name:  "with-pvh-firmware",
-				Usage: "download PVH firmware from `URL` (e.g. https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw)",
-			},
-			&cli.StringFlag{
 				Name:  "with-uefi-firmware",
 				Usage: "download UEFI firmware from `URL` (e.g. https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v50.0/CLOUDHV.fd)",
 			},
@@ -40,7 +36,6 @@ func initCommand() *cli.Command {
 func initAction(c *cli.Context) error {
 	cfgPath := configPath // package-level var from main.go
 	force := c.Bool("force")
-	pvhURL := c.String("with-pvh-firmware")
 	uefiURL := c.String("with-uefi-firmware")
 
 	// Build config from defaults, then apply CLI overrides.
@@ -80,11 +75,6 @@ func initAction(c *cli.Context) error {
 	}
 
 	// Download firmware if requested.
-	if pvhURL != "" {
-		if err := downloadFirmware(pvhURL, cfg.PVHFirmwarePath, 0o755, force); err != nil {
-			return fmt.Errorf("download PVH firmware: %w", err)
-		}
-	}
 	if uefiURL != "" {
 		if err := downloadFirmware(uefiURL, cfg.UEFIFirmwarePath, 0o644, force); err != nil {
 			return fmt.Errorf("download UEFI firmware: %w", err)
