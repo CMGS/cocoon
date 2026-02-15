@@ -17,7 +17,7 @@ Lightweight VM manager built on Cloud Hypervisor.
 ## Requirements
 
 - Linux with KVM (x86_64 or aarch64)
-- Root access (sudo) -- Phase 1 requires rootful mode; rootless/hybrid helper support is planned for Phase 2
+- Root access (sudo)
 - [Cloud Hypervisor](https://github.com/cloud-hypervisor/cloud-hypervisor) v50.0+
 - `qemu-img` (from qemu-utils package)
 - UEFI firmware (`CLOUDHV.fd`)

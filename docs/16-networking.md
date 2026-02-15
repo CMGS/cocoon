@@ -1904,7 +1904,7 @@ Network namespace creation and TAP device creation require elevated privileges:
 - `/dev/net/tun` (for creating TAP devices): Requires `CAP_NET_ADMIN` or root.
 - iptables modification (for portmap): Requires `CAP_NET_ADMIN` or root.
 
-Since Cocoon Phase 1 already requires root for Cloud Hypervisor operations, this does not change the privilege model. However, when Phase 2 introduces rootless operation, networking will require special handling (e.g., slirp4netns as an alternative to TAP/bridge).
+Since Cocoon requires root, all these privileges are available automatically.
 
 ### 10.3 Namespace Boundaries
 
@@ -2180,7 +2180,7 @@ func TestNetworkCreateRollback(t *testing.T) {
 - **Pause/Resume** ([13-pause-resume.md](./13-pause-resume.md)): Pausing a VM does not affect network configuration. The TAP device and namespace persist. Traffic arriving during pause is buffered (or dropped, depending on queue depth). On resume, networking resumes immediately.
 - **Checkpoint/Restore** ([15-warm-start.md](./15-warm-start.md)): On restore, the network namespace and TAP device must be recreated. The restore flow calls `AddNetwork` for each attachment before launching Cloud Hypervisor. Each restored VM gets a unique VM ID and therefore a unique MAC address, different from the source VM (because MAC = hash(vmID, ifName)). However, the deterministic generation from (vmID, ifName) ensures the MAC is stable across restarts of the same restored VM, preserving its DHCP lease.
 - **Device Passthrough** ([14-device-passthrough.md](./14-device-passthrough.md)): A physical NIC can be passed through via VFIO as an alternative to virtio-net. This is orthogonal to CNI networking. If both are used, the VM sees both a virtio-net device (from CNI/TAP) and a passthrough NIC.
-- **Volume Passthrough** ([future/volume-passthrough.md](./future/volume-passthrough.md)): Independent of networking. Both can be configured on the same VM.
+- **Volume Passthrough** ([17-volume-passthrough.md](./17-volume-passthrough.md)): Independent of networking. Both can be configured on the same VM.
 
 ### 12.3 External References
 

@@ -10,7 +10,6 @@ Once a feature is promoted to a numbered design doc (e.g., `docs/12-console.md`)
 |-----|-------|--------|--------|
 | [api-server.md](./api-server.md) | gRPC/REST API Server | Planned | Phase 2 |
 | [observability.md](./observability.md) | Monitoring & Logging | Planned | Phase 2 |
-| [volume-passthrough.md](./volume-passthrough.md) | Volume Passthrough (virtio-fs) | Draft | Phase 2 |
 | [storage-quotas.md](./storage-quotas.md) | Storage Quotas | Draft | Phase 2 |
 
 ## Superseded (Promoted to Design Docs)
@@ -23,6 +22,7 @@ The following feature requests have been promoted to numbered design documents a
 | `device-passthrough.md` | [docs/14-device-passthrough.md](../14-device-passthrough.md) | PCI Device Passthrough (VFIO) |
 | `checkpoint-restore.md` | [docs/13-pause-resume.md](../13-pause-resume.md) + [docs/15-warm-start.md](../15-warm-start.md) | Pause/Resume and Checkpoint/Restore |
 | `networking.md` | [docs/16-networking.md](../16-networking.md) | CNI-Based Networking |
+| `volume-passthrough.md` | [docs/17-volume-passthrough.md](../17-volume-passthrough.md) | Volume Passthrough (virtio-fs) |
 
 ## Phase 2 Scope
 

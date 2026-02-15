@@ -1,13 +1,15 @@
 # VM Warm Start (Checkpoint and Restore)
 
-**Version**: 1.0
+**Version**: 1.1
 **Status**: Planned
 **Phase**: Phase 2
-**Last Updated**: 2026-02-14
+**Last Updated**: 2026-02-15
 
 ## Executive Summary
 
 This document specifies the design for VM checkpoint and restore in Cocoon, with a focus on the warm start optimization. Checkpoint captures the complete runtime state of a running VM -- vCPU registers, device state, and memory contents -- to persistent storage. Restore creates a new VM from a checkpoint, resuming execution from the exact point where the checkpoint was taken. The "golden checkpoint" workflow enables sub-second VM creation by skipping the entire boot sequence, providing a 25-150x speedup over cold boot.
+
+Warm-start supports two checkpoint/restore paths depending on the VM's disk backend: **cloud image VMs** use qcow2 overlay snapshots, while **OCI VM image VMs** use overlayfs upperdir preservation. Both paths share the same CH memory/device state snapshot mechanism but differ in how disk state is captured and restored (see §3.7 and §3.8).
 
 This feature builds on the PAUSED state defined in [13-pause-resume.md](./13-pause-resume.md) and uses Cloud Hypervisor's native `vm.snapshot` and `vm.restore` capabilities.
 
@@ -23,12 +25,13 @@ This feature builds on the PAUSED state defined in [13-pause-resume.md](./13-pau
 8. [Warm Start Workflow](#8-warm-start-workflow)
 9. [GC Integration](#9-gc-integration)
 10. [Limitations and Constraints](#10-limitations-and-constraints)
-11. [Error Handling](#11-error-handling)
-12. [Security](#12-security)
-13. [Testing](#13-testing)
-14. [Implementation Plan](#14-implementation-plan)
-15. [Unresolved Questions](#15-unresolved-questions)
-16. [Cross-References](#16-cross-references)
+11. [Checkpoint Path Comparison](#11-checkpoint-path-comparison)
+12. [Error Handling](#12-error-handling)
+13. [Security](#13-security)
+14. [Testing](#14-testing)
+15. [Implementation Plan](#15-implementation-plan)
+16. [Unresolved Questions](#16-unresolved-questions)
+17. [Cross-References](#17-cross-references)
 
 ---
 
@@ -40,7 +43,7 @@ Cold booting a VM involves firmware loading, kernel initialization, systemd star
 
 ### 1.2 Key Distinction
 
-Cloud Hypervisor's `vm.snapshot` saves only the VMM state (vCPU registers, device state, memory contents). It does NOT snapshot the disk. Cocoon must handle disk snapshotting alongside the CH state capture to produce a consistent, restorable checkpoint.
+Cloud Hypervisor's `vm.snapshot` saves only the VMM state (vCPU registers, device state, memory contents). It does NOT snapshot the disk. Cocoon must handle disk snapshotting alongside the CH state capture to produce a consistent, restorable checkpoint. The disk snapshot strategy differs by VM type: cloud image VMs copy the qcow2 overlay, while OCI VM image VMs preserve the overlayfs upperdir.
 
 ### 1.3 Checkpoint/Restore vs. Pause/Resume
 
@@ -219,11 +222,83 @@ func (m *checkpointManager) ResolveCheckpointRef(ref string) (string, error) {
 | `checkpoint list`  | Yes         | Read-only                                  |
 | `checkpoint delete`| Yes         | No-op if checkpoint does not exist         |
 
+### 3.7 Checkpoint/Restore: Cloud Image VMs (qcow2)
+
+Cloud image VMs use a qcow2 overlay backed by the base cloud image. The checkpoint/restore flow for this path is the default described in §3.1-§3.4 above:
+
+**Checkpoint:**
+
+1. Pause VM (`PUT /api/v1/vm.pause`)
+2. Copy the qcow2 overlay file to the checkpoint directory (full file copy while VM is paused)
+3. Snapshot CH state (`PUT /api/v1/vm.snapshot`) -- saves memory + device state
+4. Record checkpoint metadata (`checkpoint_type: "qcow2"`, CH snapshot path, overlay path)
+5. Resume or stop VM
+
+**Restore:**
+
+1. Copy the checkpoint's `overlay.qcow2` to the new VM directory
+2. Launch CH with `--restore` (CH restores memory + device state)
+3. VM resumes from exact checkpoint state
+
+The qcow2 overlay contains an absolute `backing-file` path to the base cloud image. This means the base image must exist at the same absolute path on the restore host (see §10.9.1 for the same-host constraint).
+
+### 3.8 Checkpoint/Restore: OCI VM Images (overlayfs)
+
+OCI VM image VMs use overlayfs + virtiofsd for the rootfs instead of a qcow2 overlay. The overlayfs `upperdir` already serves as the persistent, copy-on-write disk state for the VM. This path does not involve qcow2 at all.
+
+**Checkpoint:**
+
+1. Pause VM (`PUT /api/v1/vm.pause`)
+2. Snapshot CH state (`PUT /api/v1/vm.snapshot`) -- saves memory + device state
+3. The `upperdir/` already IS the persistent disk state (no separate disk snapshot or copy needed)
+4. Copy or snapshot the `upperdir/` directory to the checkpoint directory
+5. Record checkpoint metadata (`checkpoint_type: "overlayfs"`, CH snapshot path, upperdir path)
+6. Resume or stop VM
+
+**Restore:**
+
+1. Mount overlayfs: `lowerdir=custom-N:...:rootfs, upperdir=preserved_upper, workdir=new_work`
+2. Spawn virtiofsd serving the merged overlayfs mount
+3. Launch CH with `--restore` (CH restores memory + device state; virtiofsd reconnects via the restored virtio-fs device)
+4. VM resumes from exact checkpoint state
+
+**Key difference from the qcow2 path**: The overlayfs path does NOT have the same-host backing-file constraint. Overlayfs `lowerdir` paths are specified at mount time and can point to any location where the OCI image layers have been extracted. As long as the restore host has the same OCI image layers (verified by manifest digest), the `lowerdir` paths can be remapped freely. This makes the overlayfs path suitable for cross-host restore without `qemu-img rebase` or similar tooling.
+
+**upperdir preservation**: During checkpoint, the `upperdir/` directory is copied (or snapshotted via filesystem-level mechanisms like `cp -a` or btrfs/zfs snapshots) into the checkpoint directory. The copy size depends on how many files the VM has written or modified since boot -- this is file-level COW, so only changed files are present in the upperdir.
+
 ---
 
 ## 4. Checkpoint Storage
 
 ### 4.1 Storage Layout
+
+The checkpoint directory layout depends on the checkpoint type (`checkpoint_type` field in `checkpoint.json`):
+
+**Cloud image VMs (qcow2 path):**
+
+```
+/var/lib/cocoon/checkpoints/{ckpt-id}/
+├── checkpoint.json                 # Checkpoint metadata (checkpoint_type: "qcow2")
+├── ch-snapshot/                    # CH state directory
+│   ├── config                      # CH VM config snapshot
+│   └── state                       # Memory + device + vCPU state
+└── overlay.qcow2                   # Disk state: qcow2 overlay copy
+```
+
+**OCI VM image VMs (overlayfs path):**
+
+```
+/var/lib/cocoon/checkpoints/{ckpt-id}/
+├── checkpoint.json                 # Checkpoint metadata (checkpoint_type: "overlayfs")
+├── ch-snapshot/                    # CH state directory (same as qcow2 path)
+│   ├── config                      # CH VM config snapshot
+│   └── state                       # Memory + device + vCPU state
+└── upper/                          # Disk state: preserved overlayfs upperdir copy
+```
+
+For the qcow2 path, `overlay.qcow2` is the disk state (a copy of the VM's COW overlay at checkpoint time). For the overlayfs path, `upper/` is the disk state (a copy of the VM's overlayfs upperdir containing all files written or modified since boot). The `ch-snapshot/` directory is identical for both paths -- it contains the CH memory and device state.
+
+**Full directory tree:**
 
 ```
 /var/lib/cocoon/
@@ -231,11 +306,12 @@ func (m *checkpointManager) ResolveCheckpointRef(ref string) (string, error) {
 │   ├── checkpoint-index.json               # name -> ckpt-id mapping
 │   ├── checkpoint-index.lock               # flock for index updates
 │   └── {ckpt-id}/                          # e.g., ckpt-01HXYZ.../
-│       ├── checkpoint.json                 # Checkpoint metadata (immutable)
-│       ├── ch-snapshot/                    # CH state directory
+│       ├── checkpoint.json                 # Includes checkpoint_type: "qcow2" | "overlayfs"
+│       ├── ch-snapshot/                    # CH memory + device state (both paths)
 │       │   ├── config                      # CH VM config snapshot
 │       │   └── state                       # Memory + device + vCPU state
-│       └── overlay.qcow2                   # Disk state at checkpoint time
+│       ├── overlay.qcow2                   # Only for qcow2 path: disk state
+│       └── upper/                          # Only for overlayfs path: preserved upperdir
 ├── vms/
 │   └── ...
 └── db/
@@ -250,9 +326,10 @@ func (m *checkpointManager) ResolveCheckpointRef(ref string) (string, error) {
 // CheckpointMetadata is written to checkpoint.json (immutable after creation).
 type CheckpointMetadata struct {
     // Identity
-    CheckpointID string `json:"checkpoint_id"`  // ckpt-{ulid}
-    Name         string `json:"name"`           // Human-readable name
-    Description  string `json:"description"`    // Optional description
+    CheckpointID   string `json:"checkpoint_id"`   // ckpt-{ulid}
+    Name           string `json:"name"`            // Human-readable name
+    Description    string `json:"description"`     // Optional description
+    CheckpointType string `json:"checkpoint_type"` // "qcow2" or "overlayfs"
 
     // Source VM provenance
     SourceVMID   string `json:"source_vm_id"`   // VM this was checkpointed from
@@ -272,12 +349,13 @@ type CheckpointMetadata struct {
     FirmwarePath string             `json:"firmware_path"`
 
     // Storage paths within the checkpoint directory
-    CHSnapshotDir string `json:"ch_snapshot_dir"` // Relative: "ch-snapshot"
-    OverlayFile   string `json:"overlay_file"`    // Relative: "overlay.qcow2"
+    CHSnapshotDir string `json:"ch_snapshot_dir"`          // Relative: "ch-snapshot"
+    OverlayFile   string `json:"overlay_file,omitempty"`   // Relative: "overlay.qcow2" (qcow2 path only)
+    UpperDir      string `json:"upper_dir,omitempty"`      // Relative: "upper" (overlayfs path only)
 
     // Size information
     CHSnapshotSizeBytes int64 `json:"ch_snapshot_size_bytes"` // CH state files total
-    OverlaySizeBytes    int64 `json:"overlay_size_bytes"`     // Disk snapshot size
+    DiskStateSizeBytes  int64 `json:"disk_state_size_bytes"`  // Overlay or upperdir size
     TotalSizeBytes      int64 `json:"total_size_bytes"`       // Grand total
 
     // Firmware version tracking (for compatibility validation)
@@ -1135,9 +1213,20 @@ The base image referenced by the checkpoint's overlay must exist at restore time
 
 A checkpoint taken on x86_64 cannot be restored on aarch64 (and vice versa). The `arch` field in `checkpoint.json` is validated at restore time.
 
-### 10.9.1 Same-Host Constraint
+### 10.9.1 Same-Host Constraint (qcow2 Path Only)
 
-**Phase 2 Scope**: Warm-start is supported only on the same host with the same `rootDir` configuration. The qcow2 overlay contains an absolute backing-file path to the base image; if the base image path changes (different host, different rootDir), the overlay becomes invalid. Cross-host migration with `qemu-img rebase` is deferred to Phase 3.
+**Phase 2 Scope**: For the **qcow2 path**, warm-start is supported only on the same host with the same `rootDir` configuration. The qcow2 overlay contains an absolute backing-file path to the base image; if the base image path changes (different host, different rootDir), the overlay becomes invalid. Cross-host migration with `qemu-img rebase` is deferred to Phase 3.
+
+The **overlayfs path** does NOT have this constraint. Overlayfs `lowerdir` paths are specified at mount time, so they can be remapped to wherever the OCI image layers are extracted on the restore host. As long as the restore host has the same OCI image layers (verified by manifest digest), restore can proceed regardless of absolute paths.
+
+### 10.9.2 OCI Path Constraints (overlayfs Path Only)
+
+The overlayfs checkpoint/restore path has its own set of constraints:
+
+- **virtiofsd required on restore host**: The restore host must have `virtiofsd` installed and accessible. The restore flow spawns a new virtiofsd process to serve the merged overlayfs mount to the restored VM.
+- **OCI image layers must be extracted on restore host**: The OCI image layers that form the overlayfs `lowerdir` stack must be present on the restore host. The layers are identified by manifest digest -- the same image manifest must be pulled and extracted, but the extraction path can differ from the checkpoint host.
+- **upperdir copy size**: The `upper/` directory in the checkpoint contains every file the VM has written or modified since boot (file-level COW). If the VM wrote many or large files, the upperdir copy may be substantial. Unlike qcow2 sparse files (block-level COW), the upperdir is a plain directory tree, so its on-disk size equals the sum of all modified file sizes.
+- **Filesystem metadata preservation**: The upperdir copy must preserve ownership, permissions, extended attributes, and overlayfs-specific whiteout entries. Use `cp -a` or equivalent to ensure metadata fidelity.
 
 ### 10.10 Snapshot Invalidation Rules
 
@@ -1197,9 +1286,28 @@ A VM with 2GB memory and 100MB of overlay writes produces a ~2.1GB checkpoint. W
 
 ---
 
-## 11. Error Handling
+## 11. Checkpoint Path Comparison
 
-### 11.1 Checkpoint Error Cases
+The following table summarizes the differences between the two checkpoint/restore paths:
+
+| Aspect | Cloud Image (qcow2) | OCI VM Image (overlayfs) |
+|--------|---------------------|--------------------------|
+| Disk state captured | qcow2 overlay file copy | overlayfs upperdir directory copy |
+| CH snapshot contents | Memory + device + vCPU state | Memory + device + vCPU state |
+| Same-host required | Yes (qcow2 backing-file contains absolute path to base image) | No (overlayfs lowerdir paths are remappable at mount time) |
+| Restore dependencies | Base qcow2 image at same absolute path | OCI image layers extracted on restore host (same manifest digest) |
+| Disk state size model | Sparse qcow2 file (block-level COW) | Directory tree (file-level COW) |
+| Restore disk setup | Copy overlay.qcow2 to new VM directory | Mount overlayfs with preserved upperdir, spawn virtiofsd |
+| Cross-host portability | Requires `qemu-img rebase` (Phase 3) | Supported (remap lowerdir paths to local layer extraction) |
+| virtiofsd required | No | Yes (must be spawned before CH restore) |
+
+Both paths share the same CH snapshot mechanism, CLI commands, checkpoint metadata schema, GC integration, and name resolution. The `checkpoint_type` field in `checkpoint.json` (`"qcow2"` or `"overlayfs"`) determines which path is used during restore.
+
+---
+
+## 12. Error Handling
+
+### 12.1 Checkpoint Error Cases
 
 | Condition | Error Message | Exit Code |
 |-----------|--------------|-----------|
@@ -1210,7 +1318,7 @@ A VM with 2GB memory and 100MB of overlay writes produces a ~2.1GB checkpoint. W
 | Checkpoint name already exists | `checkpoint name "golden" already exists` | 1 |
 | Disk space insufficient | `copy overlay: no space left on device` | 1 |
 
-### 11.2 Restore Error Cases
+### 12.2 Restore Error Cases
 
 | Condition | Error Message | Exit Code |
 |-----------|--------------|-----------|
@@ -1222,7 +1330,7 @@ A VM with 2GB memory and 100MB of overlay writes produces a ~2.1GB checkpoint. W
 | CH restore launch failed | `launch restore: <err>` | 1 |
 | VM name already exists | `VM name "agent-001" already exists` | 1 |
 
-### 11.3 Cleanup on Failure
+### 12.3 Cleanup on Failure
 
 Both checkpoint creation and restore use a `defer`-based cleanup pattern. If any step fails, all partially-created artifacts are removed:
 
@@ -1231,17 +1339,17 @@ Both checkpoint creation and restore use a `defer`-based cleanup pattern. If any
 
 ---
 
-## 12. Security
+## 13. Security
 
-### 12.1 Memory Contents in Checkpoints
+### 13.1 Memory Contents in Checkpoints
 
 A checkpoint contains the complete contents of VM memory, which may include encryption keys, tokens, passwords, and sensitive application data. Checkpoint directories inherit root-only filesystem permissions.
 
-### 12.2 Access Control
+### 13.2 Access Control
 
-All checkpoint operations require the same privileges as VM operations (root in Phase 1). No separate checkpoint-level ACL is introduced.
+All checkpoint operations require root privileges. No separate checkpoint-level ACL is introduced.
 
-### 12.3 Checkpoint Integrity
+### 13.3 Checkpoint Integrity
 
 Checkpoints include SHA-256 checksums for the CH state files and overlay:
 
@@ -1255,11 +1363,11 @@ type CheckpointMetadata struct {
 
 Restore validates these checksums before launching the CH process.
 
-### 12.4 Encryption at Rest (Future)
+### 13.4 Encryption at Rest (Future)
 
 A future enhancement could encrypt checkpoint state files using a host-level key. This is explicitly deferred beyond Phase 2.
 
-### 12.5 Pre-Checkpoint Guest Preparation
+### 13.5 Pre-Checkpoint Guest Preparation
 
 A checkpoint captures the complete contents of VM memory, including sensitive data that may be present in the guest at checkpoint time. When creating golden checkpoints intended for repeated restore (especially across different workloads or users), the following preparation is recommended before taking the checkpoint:
 
@@ -1280,9 +1388,9 @@ A checkpoint captures the complete contents of VM memory, including sensitive da
 
 ---
 
-## 13. Testing
+## 14. Testing
 
-### 13.1 Unit Tests
+### 14.1 Unit Tests
 
 ```go
 func TestCheckpointMetadataSchema(t *testing.T) {
@@ -1338,7 +1446,7 @@ func TestCheckpointRejectsPassthroughDevices(t *testing.T) {
 }
 ```
 
-### 13.2 Integration Tests
+### 14.2 Integration Tests
 
 ```go
 func TestCheckpointRestoreCycle(t *testing.T) {
@@ -1405,7 +1513,7 @@ func TestWarmStartPerformance(t *testing.T) {
 }
 ```
 
-### 13.3 GC Integration Tests
+### 14.3 GC Integration Tests
 
 ```go
 func TestCheckpointPinsBaseImage(t *testing.T) {
@@ -1419,7 +1527,7 @@ func TestCheckpointPinsBaseImage(t *testing.T) {
 
 ---
 
-## 14. Implementation Plan
+## 15. Implementation Plan
 
 ### Phase 2.1: Pause and Resume (prerequisite)
 
@@ -1461,7 +1569,7 @@ See [13-pause-resume.md](./13-pause-resume.md). Must be completed first.
 
 ---
 
-## 15. Unresolved Questions
+## 16. Unresolved Questions
 
 1. **Overlay copy vs. qcow2 internal snapshot**: Should we use a full file copy or leverage qcow2's internal snapshot feature? Full copy is simpler and more portable but uses more disk space. Decision: Use full copy; revisit if storage costs become a concern.
 
@@ -1481,9 +1589,9 @@ See [13-pause-resume.md](./13-pause-resume.md). Must be completed first.
 
 ---
 
-## 16. Cross-References
+## 17. Cross-References
 
-### 16.1 Related Cocoon Documents
+### 17.1 Related Cocoon Documents
 
 - [03-hypervisor-integration.md](./03-hypervisor-integration.md): CH process lifecycle. Restore launches a new CH process with `--restore` instead of `vm.create`/`vm.boot`.
 - [05-storage-management.md](./05-storage-management.md): Storage layout, COW, and GC. Checkpoints add a new directory under `/var/lib/cocoon/checkpoints/` and pin base image references.
@@ -1491,13 +1599,13 @@ See [13-pause-resume.md](./13-pause-resume.md). Must be completed first.
 - [07-vm-lifecycle.md](./07-vm-lifecycle.md): State machine. Checkpoint requires PAUSED state.
 - [09-cli-design.md](./09-cli-design.md): CLI command structure. New `cocoon checkpoint` and `cocoon restore` commands.
 
-### 16.2 Interaction with Other Phase 2 Features
+### 17.2 Interaction with Other Phase 2 Features
 
 - **Pause/Resume** ([13-pause-resume.md](./13-pause-resume.md)): Pause is a prerequisite for checkpoint. The `--live` flag automates the pause/checkpoint/resume cycle.
 - **Console** ([12-console.md](./12-console.md)): On restore, a new PTY is allocated. `cocoon console` discovers paths dynamically, so no special handling is needed.
 - **Device Passthrough** ([14-device-passthrough.md](./14-device-passthrough.md)): VMs with passthrough devices cannot be checkpointed. CH does not support snapshotting VFIO device state. `cocoon checkpoint create` returns a clear error.
 
-### 16.3 Combined CHVMConfig Target
+### 17.3 Combined CHVMConfig Target
 
 ```go
 type CHVMConfig struct {
@@ -1513,7 +1621,7 @@ type CHVMConfig struct {
 
 Note: Checkpoint/restore does not add fields to `CHVMConfig`. It uses the existing config for the source VM and the `--restore` CLI flag for the CH process.
 
-### 16.4 External References
+### 17.4 External References
 
 - Cloud Hypervisor REST API: https://github.com/cloud-hypervisor/cloud-hypervisor/blob/main/vmm/src/api/openapi/cloud-hypervisor.yaml (`vm.snapshot`, `vm.restore`)
 - Cloud Hypervisor Snapshot Documentation: https://github.com/cloud-hypervisor/cloud-hypervisor/blob/main/docs/snapshot_restore.md
@@ -1522,4 +1630,4 @@ Note: Checkpoint/restore does not add fields to `CHVMConfig`. It uses the existi
 
 ---
 
-**End of VM Warm Start Design Document v1.0**
+**End of VM Warm Start Design Document v1.1**

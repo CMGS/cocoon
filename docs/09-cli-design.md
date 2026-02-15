@@ -333,9 +333,9 @@ type appContext struct {
 }
 
 func initApp(_ *cli.Context) (*appContext, error) {
-    // Phase 1: require root on Linux.
+    // Require root on Linux.
     if runtime.GOOS == "linux" && os.Geteuid() != 0 {
-        return nil, fmt.Errorf("cocoon requires root privileges (Phase 1 rootful mode)")
+        return nil, fmt.Errorf("cocoon requires root privileges")
     }
 
     cfg, err := config.LoadConfig(configPath)
@@ -1684,10 +1684,9 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
    - Create `COWManager` for qcow2 operations
    - Create `ReferenceCounter` for tracking
 4. **Resolve and fetch image** → `ImageManager.Resolve(image)` detects source type, then `ImageManager.Pull(image)` fetches/converts/caches to local qcow2 (acquires per-image conversion lock, Level 3 — see `06-concurrency.md § Lock Hierarchy`)
-   - **Rootless constraint** *(Phase 2 — Phase 1 requires root)*: In rootless mode without a helper, OCI image conversion and libguestfs-based verification are unavailable (see [08-dependencies.md § Rootless Limitations](./08-dependencies.md)). If the image source is an OCI reference, fail fast with: `"OCI conversion requires root privileges. Use a qcow2 cloud image, pre-convert with a rootful environment, or enable the hybrid helper (08-dependencies.md § Option C)."`
 5. **Verify bootability** → `ImageManager.VerifyBootable(image)` (Boot Contract §6)
-   - qcow2 files: inspect partitions via guestfish (rootful) or skip deep inspection (rootless — rely on boot-time detection)
-   - OCI images: validate rootfs components before conversion (rootful only)
+   - qcow2 files: inspect partitions via guestfish
+   - OCI images: validate rootfs components before conversion
 6. **Pin base image reference** (short lock hold):
    - **Acquire references.lock** (Level 2)
    - `refCounter.AddReference(baseKey, vmID, digestFull, sourceRef)` — immediately adds `vmID` to `refs[]`, protecting the base image from GC

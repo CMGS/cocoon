@@ -11,17 +11,17 @@ Cocoon relies on several external tools and libraries to provide VM management w
 
 ## Dependency Matrix
 
-| Tool | Purpose | Min Version | Rootless Support | Installation Method |
-|------|---------|-------------|------------------|---------------------|
-| cloud-hypervisor | Virtual Machine Monitor (VMM) | v38.0 | N/A (requires KVM) | Binary or source |
-| ch-remote | CH remote control (REST API client) | v38.0 | N/A | Binary (ships with CH release) |
-| edk2-cloudhv | UEFI firmware for CH (default boot mode) | ch-a54f262b09 | N/A | `cocoon firmware install` or `cocoon init --with-uefi-firmware <URL>` |
-| buildah | OCI image pull/extract | 1.35.0 | ✅ Yes | apt/dnf |
-| skopeo | OCI image inspection | 1.14.0 | ✅ Yes | apt/dnf |
-| qemu-img | qcow2 operations | 8.0 | ✅ Yes | apt/dnf (qemu-utils) |
-| guestfish | OCI-to-qcow2 conversion (partition, copy rootfs) | libguestfs 1.50 | ❌ Needs root | apt/dnf (libguestfs-tools) |
-| swtpm | TPM 2.0 software emulator for VM TPM support | any | ❌ Needs root | apt/dnf (swtpm, swtpm-tools) |
-| /dev/kvm | KVM device access | kernel 5.6+ | N/A (user in kvm group) | Built-in (kernel module) |
+| Tool | Purpose | Min Version | Installation Method |
+|------|---------|-------------|---------------------|
+| cloud-hypervisor | Virtual Machine Monitor (VMM) | v38.0 | Binary or source |
+| ch-remote | CH remote control (REST API client) | v38.0 | Binary (ships with CH release) |
+| edk2-cloudhv | UEFI firmware for CH (default boot mode) | ch-a54f262b09 | `cocoon firmware install` or `cocoon init --with-uefi-firmware <URL>` |
+| buildah | OCI image pull/extract | 1.35.0 | apt/dnf |
+| skopeo | OCI image inspection | 1.14.0 | apt/dnf |
+| qemu-img | qcow2 operations | 8.0 | apt/dnf (qemu-utils) |
+| guestfish | OCI-to-qcow2 conversion (partition, copy rootfs) | libguestfs 1.50 | apt/dnf (libguestfs-tools) |
+| swtpm | TPM 2.0 software emulator for VM TPM support | any | apt/dnf (swtpm, swtpm-tools) |
+| /dev/kvm | KVM device access | kernel 5.6+ | Built-in (kernel module) |
 
 ## Core Dependencies
 
@@ -116,19 +116,17 @@ ls -l /usr/share/edk2/ovmf/OVMF_CODE.fd  # Fedora (deprecated fallback)
 
 **Minimum Version**: 1.35.0
 
-**Rootless Support**: ✅ Yes (requires fuse-overlayfs or kernel overlay support)
-
 **Installation**:
 
 **Ubuntu 22.04/24.04**:
 ```bash
 sudo apt-get update
-sudo apt-get install -y buildah fuse-overlayfs
+sudo apt-get install -y buildah
 ```
 
 **Fedora 39/40**:
 ```bash
-sudo dnf install -y buildah fuse-overlayfs
+sudo dnf install -y buildah
 ```
 
 **Verification**:
@@ -137,24 +135,11 @@ buildah version
 # Expected: Version: 1.35.0 or higher
 ```
 
-**Rootless Configuration**:
-```bash
-# Enable user namespaces
-echo "kernel.unprivileged_userns_clone=1" | sudo tee /etc/sysctl.d/99-rootless.conf
-sudo sysctl -p /etc/sysctl.d/99-rootless.conf
-
-# Configure subuid/subgid
-grep $USER /etc/subuid || echo "$USER:100000:65536" | sudo tee -a /etc/subuid
-grep $USER /etc/subgid || echo "$USER:100000:65536" | sudo tee -a /etc/subgid
-```
-
 ### 4. Skopeo
 
 **Purpose**: Inspects OCI images and manifests to calculate checksums for caching.
 
 **Minimum Version**: 1.14.0
-
-**Rootless Support**: ✅ Yes
 
 **Installation**:
 
@@ -180,8 +165,6 @@ skopeo --version
 
 **Minimum Version**: 8.0
 
-**Rootless Support**: ✅ Yes
-
 **Installation**:
 
 **Ubuntu**:
@@ -205,8 +188,6 @@ qemu-img --version
 **Purpose**: Formats disk images and copies files into them.
 
 **Minimum Version**: libguestfs 1.50
-
-**Rootless Support**: ❌ No (requires root or setuid helper)
 
 **Tools Included**:
 - `virt-format`: Formats filesystem inside disk images
@@ -236,8 +217,6 @@ virt-copy-in --version
 
 **Packages**: `swtpm`, `swtpm-tools`
 
-**Rootless Support**: No (requires root)
-
 **Installation**:
 
 **Ubuntu**:
@@ -262,8 +241,6 @@ swtpm --version
 **⚠️ Note**: This section is deprecated. Prefer using CLOUDHV.fd from Cloud Hypervisor releases (see section 3 above).
 
 **Purpose**: Provides standard OVMF UEFI firmware as a deprecated fallback option when CLOUDHV.fd (`/var/lib/cocoon/firmware/CLOUDHV.fd`) is unavailable.
-
-**Rootless Support**: N/A (system files)
 
 **Installation**:
 
@@ -391,7 +368,7 @@ func checkDependencies() []DependencyStatus {
             Command:        "virt-format",
             Args:           []string{"--version"},
             VersionPattern: `virt-format`,
-            Required:       false, // Optional for rootless
+            Required:       false, // Optional (only needed for OCI conversion)
         },
         {
             Name:           "virt-copy-in",
@@ -571,10 +548,10 @@ Core Dependencies:
 ✅ qemu-img 8.2.0 found at /usr/bin/qemu-img
 ❌ virt-format not found
    → Install: sudo apt-get install libguestfs-tools
-   → Note: Not required for rootless mode with manual disk creation
+   → Note: Only needed for OCI image conversion
 ❌ virt-copy-in not found
    → Install: sudo apt-get install libguestfs-tools
-   → Note: Not required for rootless mode with manual disk creation
+   → Note: Only needed for OCI image conversion
 ✅ /dev/kvm accessible
 
 Firmware Files:
@@ -586,85 +563,12 @@ swtpm:
 
 Summary: 8/10 required dependencies found
 Warning: 2 optional dependencies missing (libguestfs tools)
-Status: Ready to run in rootful mode
+Status: Ready to run
 ```
 
-## Permission Models
+## Privilege Model
 
-Cocoon supports three permission models to balance security and functionality.
-
-> **Phase 1 Scope**: Only rootful mode (Option B) is implemented. Rootless (Option A) and hybrid helper (Option C) are designed for Phase 2.
-
-### Option A: Rootless (Preferred) [Phase 2+ -- not implemented in Phase 1]
-
-**Description**: Run cocoon entirely as a regular user without sudo privileges.
-
-**Requirements**:
-- User must be in `kvm` group for /dev/kvm access
-- Buildah configured for rootless operation
-- Kernel must support unprivileged user namespaces
-
-**Advantages**:
-- Better security (least privilege)
-- No sudo required for daily operations
-- Recommended for multi-tenant environments
-
-**Limitations**:
-- **Cannot use libguestfs tools** (virt-format, virt-copy-in, guestfish) - they require root
-- **OCI image conversion is NOT available** in rootless mode
-- Must use alternative approaches:
-  - **Recommended**: Use cloud images (qcow2 format) directly - no conversion needed
-  - Pre-convert OCI images to qcow2 in a rootful environment, then deploy qcow2 files
-  - Use external image preparation workflow with hybrid mode
-
-**Setup**:
-
-```bash
-# 1. Add user to kvm group
-sudo usermod -aG kvm $USER
-newgrp kvm
-
-# 2. Enable unprivileged user namespaces
-echo "kernel.unprivileged_userns_clone=1" | sudo tee /etc/sysctl.d/99-rootless.conf
-sudo sysctl -p /etc/sysctl.d/99-rootless.conf
-
-# 3. Configure subuid/subgid for buildah
-grep $USER /etc/subuid || echo "$USER:100000:65536" | sudo tee -a /etc/subuid
-grep $USER /etc/subgid || echo "$USER:100000:65536" | sudo tee -a /etc/subgid
-
-# 4. Install fuse-overlayfs (for buildah storage)
-sudo apt-get install -y fuse-overlayfs  # Ubuntu
-# or
-sudo dnf install -y fuse-overlayfs      # Fedora
-
-# 5. Configure buildah storage
-mkdir -p ~/.config/containers
-cat > ~/.config/containers/storage.conf <<EOF
-[storage]
-driver = "overlay"
-graphroot = "\$HOME/.local/share/containers/storage"
-
-[storage.options.overlay]
-mount_program = "/usr/bin/fuse-overlayfs"
-EOF
-
-# 6. Verify setup
-cocoon doctor
-```
-
-### Option B: Rootful [Phase 1 Default]
-
-**Description**: Run cocoon as root user (not recommended for production).
-
-**Advantages**:
-- All tools available (including libguestfs)
-- No permission issues
-- Simpler setup
-
-**Disadvantages**:
-- Security risk (runs with full system privileges)
-- Not suitable for multi-tenant environments
-- Potential for accidental system damage
+Cocoon requires root privileges. All VM operations (hypervisor management, image conversion, storage) run as root.
 
 **Setup**:
 
@@ -674,179 +578,6 @@ sudo apt-get install -y cloud-hypervisor buildah skopeo qemu-utils libguestfs-to
 
 # Run cocoon as root
 sudo cocoon create ubuntu-22.04-cloudimg --name myvm
-```
-
-**Not Recommended**: Use Option C (Hybrid) instead.
-
-### Option C: Hybrid (Recommended for Production) [Phase 2+ -- not implemented in Phase 1]
-
-**Description**: Run main cocoon binary as regular user, but use a privileged helper for operations requiring root.
-
-**Architecture**:
-```
-cocoon (user) → cocoon-helper (setuid or sudo) → libguestfs tools
-```
-
-**Advantages**:
-- Best security (minimal privilege escalation)
-- All features available
-- Audit trail for privileged operations
-
-#### cocoon-helper Interface Specification (Phase 2+ -- not implemented in Phase 1)
-
-The privileged helper is a compiled Go binary (not a shell script) that provides
-a strict, auditable interface between unprivileged cocoon and root-only
-libguestfs operations.
-
-##### 1. Binary Interface
-
-```
-cocoon-helper <subcommand> [args...]
-```
-
-**Subcommands**:
-
-| Subcommand | Purpose | Args | Stdin | Stdout |
-|------------|---------|------|-------|--------|
-| `convert` | Full OCI rootfs to qcow2 pipeline | `--rootfs-path <path> --output <path> --size <size>` | -- | JSON result |
-| `partition` | Create GPT partition table + format | `--image <path>` | -- | JSON result |
-| `copy-rootfs` | Copy rootfs into qcow2 image | `--image <path> --rootfs <path>` | -- | JSON result |
-| `validate-boot` | Validate bootloader in qcow2 | `--image <path> --arch <arch>` | -- | JSON result |
-| `version` | Print helper version | -- | -- | Version string |
-
-**Exit Codes**:
-
-| Code | Meaning |
-|------|---------|
-| 0 | Success |
-| 1 | Validation error (image not bootable, missing component) |
-| 2 | Permission denied (not running as root, path outside allowlist) |
-| 3 | Tool missing (guestfish, virt-customize not found) |
-| 4 | I/O error (disk full, file not found) |
-| 5 | Internal error |
-
-**Stdout format** (JSON on success):
-```json
-{"status": "ok", "output_path": "/var/lib/cocoon/cache/images/abc123_amd64.qcow2"}
-```
-
-**Stdout format** (JSON on error):
-```json
-{"status": "error", "code": 1, "message": "Bootloader not found for x86_64 at /boot/efi/EFI/BOOT/BOOTX64.EFI"}
-```
-
-**Stderr**: Human-readable progress and debug messages (not parsed by cocoon).
-
-##### 2. Path Allowlist (Security) (Phase 2+)
-
-The helper MUST enforce a strict path allowlist. Any file operation on a path
-outside the allowlist MUST be rejected with exit code 2.
-
-**Allowed paths** (write):
-- `/var/lib/cocoon/cache/**`
-- `/var/lib/cocoon/temp/**`
-- `/tmp/cocoon-*`
-
-**Allowed paths** (read):
-- All write paths above
-- `/var/lib/cocoon/vms/**/overlay.qcow2` (for validate-boot)
-- Buildah mount paths: `/tmp/buildah-*` (read-only rootfs source)
-
-**Security checks** (MUST implement all five):
-
-1. `filepath.Abs()` + `filepath.EvalSymlinks()` before ANY file operation
-2. Reject if resolved path is outside allowlist
-3. Reject if any path component is `..`
-4. Reject if target is a symlink pointing outside allowlist
-5. Log every file operation to stderr for audit
-
-##### 3. Sudoers Configuration
-
-Minimal sudoers file that restricts privilege escalation to specific subcommands only:
-
-```sudoers
-# /etc/sudoers.d/cocoon-helper
-# ONLY allows cocoon-helper subcommands, nothing else
-cocoon ALL=(root) NOPASSWD: /usr/local/bin/cocoon-helper convert *
-cocoon ALL=(root) NOPASSWD: /usr/local/bin/cocoon-helper partition *
-cocoon ALL=(root) NOPASSWD: /usr/local/bin/cocoon-helper copy-rootfs *
-cocoon ALL=(root) NOPASSWD: /usr/local/bin/cocoon-helper validate-boot *
-cocoon ALL=(root) NOPASSWD: /usr/local/bin/cocoon-helper version
-```
-
-**Anti-patterns** (MUST NOT use):
-```sudoers
-# WRONG: Too permissive - grants root for everything
-cocoon ALL=(root) NOPASSWD: ALL
-# WRONG: Allows arbitrary subcommands including future ones
-cocoon ALL=(root) NOPASSWD: /usr/local/bin/cocoon-helper *
-```
-
-##### 4. Cocoon to Helper Integration
-
-The main cocoon binary invokes the helper via `sudo` and parses structured JSON
-from stdout:
-
-```go
-func (c *Converter) ConvertViaHelper(rootfsPath, outputPath, size string) error {
-    cmd := exec.Command("sudo", "/usr/local/bin/cocoon-helper",
-        "convert",
-        "--rootfs-path", rootfsPath,
-        "--output", outputPath,
-        "--size", size)
-
-    var stdout, stderr bytes.Buffer
-    cmd.Stdout = &stdout
-    cmd.Stderr = &stderr
-
-    if err := cmd.Run(); err != nil {
-        // Parse structured error from stdout
-        var result HelperResult
-        json.Unmarshal(stdout.Bytes(), &result)
-        return fmt.Errorf("helper failed (code %d): %s", result.Code, result.Message)
-    }
-
-    return nil
-}
-```
-
-##### 5. Testing Contract
-
-The following test categories are required before the helper is considered
-production-ready:
-
-- **Unit tests -- path allowlist**: Verify that `../` traversal, symlinks
-  pointing outside the allowlist, and paths not in the allowlist are all
-  rejected with exit code 2.
-- **Integration tests -- convert pipeline**: Run `sudo cocoon-helper convert`
-  end-to-end and verify the output qcow2 is valid and bootable.
-- **Security tests -- forbidden paths**: Confirm the helper refuses to write to
-  `/etc`, `/root`, `/home`, `/usr`, and any path outside the allowlist.
-- **Privilege drop tests**: After conversion, verify the output file is owned by
-  the cocoon user (not root) and has mode 0644.
-
-##### Setup
-
-```bash
-# 1. Build and install cocoon-helper
-go build -o cocoon-helper ./cmd/cocoon-helper
-sudo install -o root -g cocoon -m 0750 cocoon-helper /usr/local/bin/cocoon-helper
-
-# 2. Create cocoon group and add user
-sudo groupadd -f cocoon
-sudo usermod -aG cocoon $USER
-
-# 3. Install sudoers rule
-sudo install -m 0440 /dev/stdin /etc/sudoers.d/cocoon-helper <<'EOF'
-cocoon ALL=(root) NOPASSWD: /usr/local/bin/cocoon-helper convert *
-cocoon ALL=(root) NOPASSWD: /usr/local/bin/cocoon-helper partition *
-cocoon ALL=(root) NOPASSWD: /usr/local/bin/cocoon-helper copy-rootfs *
-cocoon ALL=(root) NOPASSWD: /usr/local/bin/cocoon-helper validate-boot *
-cocoon ALL=(root) NOPASSWD: /usr/local/bin/cocoon-helper version
-EOF
-
-# 4. Verify
-sudo -n /usr/local/bin/cocoon-helper version
 ```
 
 ## Installation Guides by Distribution
@@ -874,21 +605,12 @@ sudo apt-get install -y \
     libguestfs-tools \
     ovmf \
     swtpm \
-    swtpm-tools \
-    fuse-overlayfs
+    swtpm-tools
 
 # 4. Configure KVM access
 sudo usermod -aG kvm $USER
 
-# 5. Enable user namespaces for rootless
-echo "kernel.unprivileged_userns_clone=1" | sudo tee /etc/sysctl.d/99-rootless.conf
-sudo sysctl -p /etc/sysctl.d/99-rootless.conf
-
-# 6. Configure subuid/subgid
-grep $USER /etc/subuid || echo "$USER:100000:65536" | sudo tee -a /etc/subuid
-grep $USER /etc/subgid || echo "$USER:100000:65536" | sudo tee -a /etc/subgid
-
-# 7. Verify installation
+# 5. Verify installation
 echo "Installation complete. Log out and back in, then run:"
 echo "  cloud-hypervisor --version"
 echo "  buildah version"
@@ -911,8 +633,7 @@ sudo apt-get install -y \
     libguestfs-tools \
     ovmf \
     swtpm \
-    swtpm-tools \
-    fuse-overlayfs
+    swtpm-tools
 
 # Download Cloud Hypervisor (same as 22.04)
 CH_VERSION="v38.0"
@@ -920,13 +641,8 @@ curl -LO https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/
 chmod +x cloud-hypervisor-static
 sudo mv cloud-hypervisor-static /usr/local/bin/cloud-hypervisor
 
-# KVM and rootless setup (same as 22.04)
+# KVM access
 sudo usermod -aG kvm $USER
-echo "kernel.unprivileged_userns_clone=1" | sudo tee /etc/sysctl.d/99-rootless.conf
-sudo sysctl -p /etc/sysctl.d/99-rootless.conf
-
-grep $USER /etc/subuid || echo "$USER:100000:65536" | sudo tee -a /etc/subuid
-grep $USER /etc/subgid || echo "$USER:100000:65536" | sudo tee -a /etc/subgid
 ```
 
 ### Fedora 39
@@ -943,8 +659,7 @@ sudo dnf install -y \
     libguestfs-tools \
     edk2-ovmf \
     swtpm \
-    swtpm-tools \
-    fuse-overlayfs
+    swtpm-tools
 
 # 2. Install Cloud Hypervisor
 CH_VERSION="v38.0"
@@ -955,11 +670,7 @@ sudo mv cloud-hypervisor-static /usr/local/bin/cloud-hypervisor
 # 3. Configure KVM access
 sudo usermod -aG kvm $USER
 
-# 4. Configure subuid/subgid (usually pre-configured on Fedora)
-grep $USER /etc/subuid || echo "$USER:100000:65536" | sudo tee -a /etc/subuid
-grep $USER /etc/subgid || echo "$USER:100000:65536" | sudo tee -a /etc/subgid
-
-# 5. Verify
+# 4. Verify
 echo "Installation complete. Log out and back in, then run:"
 echo "  cloud-hypervisor --version"
 echo "  buildah version"
@@ -1015,7 +726,7 @@ Error: virt-format: command not found
 Cannot format disks. Install libguestfs-tools or use manual disk creation.
 ```
 
-**Solution (Rootful)**:
+**Solution**:
 ```bash
 # Ubuntu
 sudo apt-get install -y libguestfs-tools
@@ -1023,9 +734,6 @@ sudo apt-get install -y libguestfs-tools
 # Fedora
 sudo dnf install -y libguestfs-tools
 ```
-
-**Alternative (Rootless)**:
-Skip virt-format and use pre-built images or manual qcow2 creation.
 
 ### 4. Kernel modules not loaded
 
@@ -1064,25 +772,7 @@ Error: KVM device not found at /dev/kvm
 4. Save and reboot
 5. Verify: `grep -E '(vmx|svm)' /proc/cpuinfo`
 
-### 6. User namespaces disabled
-
-**Error**:
-```
-Error: cannot set up namespace using newuidmap: exit status 1
-```
-
-**Solution**:
-```bash
-# Enable unprivileged user namespaces
-echo "kernel.unprivileged_userns_clone=1" | sudo tee /etc/sysctl.d/99-rootless.conf
-sudo sysctl -p /etc/sysctl.d/99-rootless.conf
-
-# Configure subuid/subgid
-grep $USER /etc/subuid || echo "$USER:100000:65536" | sudo tee -a /etc/subuid
-grep $USER /etc/subgid || echo "$USER:100000:65536" | sudo tee -a /etc/subgid
-```
-
-### 7. UEFI firmware not found
+### 6. UEFI firmware not found
 
 **Error**:
 ```
@@ -1173,12 +863,7 @@ ls -l /dev/kvm
 lsmod | grep kvm
 grep -E '(vmx|svm)' /proc/cpuinfo
 
-# Check user namespaces
-sysctl kernel.unprivileged_userns_clone
-cat /etc/subuid | grep $USER
-cat /etc/subgid | grep $USER
-
-# Test buildah rootless
+# Test buildah
 buildah pull alpine:latest
 buildah images
 ```
@@ -1231,9 +916,4 @@ ls -l /dev/kvm
 
 ## Summary
 
-Cocoon's dependencies are designed for:
-- **Production deployment**: Use Hybrid mode (Option C) for best security and features
-- **Development**: Use Rootless mode (Option A) for simplicity
-- **Testing**: Use pre-installed container environments with all dependencies
-
-Run `cocoon doctor` after installation to verify all dependencies are correctly configured.
+Run cocoon as root. Run `cocoon doctor` after installation to verify all dependencies are correctly configured.

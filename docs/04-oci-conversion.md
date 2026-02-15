@@ -5,17 +5,6 @@
 **Phase**: Phase 1
 **Last Updated**: 2026-02-15
 
-## Root Access Requirement
-
-**IMPORTANT**: OCI image conversion requires root privileges due to libguestfs dependency.
-
-**Deployment Strategy**:
-- **Option A (Rootless)**: Conversion is NOT available - use cloud images (qcow2) directly
-- **Option B (Rootful)**: Run cocoon as root - NOT recommended for production
-- **Option C (Hybrid)**: Recommended - cocoon runs as user, privileged helper for conversion only
-
-See [00-overview.md Deployment Strategy](./00-overview.md#deployment-strategy) and [08-dependencies.md](./08-dependencies.md) for details.
-
 ## Executive Summary
 
 This document specifies the pipeline for converting OCI container images into bootable qcow2 disk images for Cloud Hypervisor VMs. The conversion process must produce images that satisfy the [Boot Contract](01-boot-contract.md) while maintaining efficiency through caching and deduplication.
@@ -26,8 +15,7 @@ This document specifies the pipeline for converting OCI container images into bo
 3. Convert rootfs to qcow2 format with proper partitioning (guestfish + tar-in)
 4. Validate GRUB config presence post-conversion (fail if missing)
 5. Cache images based on content checksums (atomic rename into cache)
-6. Handle rootless and rootful operation modes (conversion requires root)
-7. Provide robust error handling via ClassifiedError (transient/permanent)
+6. Provide robust error handling via ClassifiedError (transient/permanent)
 
 ---
 
@@ -88,7 +76,7 @@ Instead, Cocoon **fails fast** with clear error messages when components are mis
 6. [Checksum-Based Caching](#6-checksum-based-caching)
 7. [Manifest Refcache](#7-manifest-refcache)
 8. [Error Handling](#8-error-handling)
-9. [Rootless vs Rootful Considerations](#9-rootless-vs-rootful-considerations)
+9. [Design Principles](#9-design-principles)
 10. [Implementation Checklist](#10-implementation-checklist)
 11. [Verified Images (CI Reference)](#11-verified-images-ci-reference)
 12. [References](#12-references)
@@ -150,8 +138,7 @@ Instead, Cocoon **fails fast** with clear error messages when components are mis
 1. **Idempotent Operations**: Same input produces same output
 2. **Checksum-Based Caching**: Never convert the same image twice
 3. **Fail-Fast Validation**: Verify boot contract compliance (on-demand via `cocoon image verify`)
-4. **Rootless-First**: Design for unprivileged operation
-5. **Shell-Out Strategy**: Use external tools via `runCmd()` helper (Buildah, skopeo, qemu-img, guestfish)
+4. **Shell-Out Strategy**: Use external tools via `runCmd()` helper (Buildah, skopeo, qemu-img, guestfish)
 
 ---
 
@@ -162,7 +149,7 @@ Instead, Cocoon **fails fast** with clear error messages when components are mis
 **Decision**: Use Buildah for OCI image operations instead of Docker or containerd libraries.
 
 **Rationale**:
-- **Rootless by default**: Works without root privileges
+- **Daemonless**: No background process required
 - **OCI-compliant**: Handles any OCI-compatible registry
 - **Simple CLI interface**: Easy to shell out from Go
 - **No daemon required**: Lightweight, no background process
@@ -172,10 +159,10 @@ Instead, Cocoon **fails fast** with clear error messages when components are mis
 
 | Alternative | Pros | Cons | Decision |
 |-------------|------|------|----------|
-| Docker CLI | Familiar, widely available | Requires Docker daemon, rootful | Not selected |
+| Docker CLI | Familiar, widely available | Requires Docker daemon | Not selected |
 | containerd library | Native Go, no shell-out | Complex API, daemon required | Not selected |
 | Podman | Same CLI as Docker | Uses Buildah internally anyway | Redundant |
-| **Buildah** | **Rootless, simple, no daemon** | **None** | **Selected** |
+| **Buildah** | **Daemonless, simple, OCI-native** | **None** | **Selected** |
 
 ### 2.2 Shell-Out Pattern
 
@@ -1009,55 +996,14 @@ defer os.Remove(rootfsTarPath)
 
 ---
 
-## 9. Rootless vs Rootful Considerations
+## 9. Design Principles
 
-### 9.1 Rootless Mode (Preferred for VM Operations, Not Conversion)
+The conversion pipeline follows these key design principles:
 
-**Goal**: Run VM operations without root privileges.
-
-**What Works Rootless**:
-- VM lifecycle management (start/stop/delete)
-- Cloud Hypervisor operation (with KVM access)
-- Buildah image pulling and mounting
-- qcow2 overlay creation (qemu-img)
-
-**What Requires Root**:
-- **libguestfs operations** (guestfish, virt-customize)
-  - Partitioning and formatting disk images
-  - Copying files into disk images
-- **OCI to qcow2 conversion pipeline** (depends on libguestfs)
-
-**Implications for Rootless Deployment**:
-- **OCI image conversion is NOT available** in rootless mode
-- **Workaround 1**: Use cloud images (qcow2 format) directly - recommended
-- **Workaround 2**: Pre-convert OCI images in rootful environment, deploy qcow2 files
-- **Workaround 3**: Use hybrid mode (privileged helper for conversion only)
-
-**Requirements for Rootless VM Operations**:
-- User namespaces enabled (`/proc/sys/kernel/unprivileged_userns_clone = 1`)
-- User in `kvm` group for /dev/kvm access
-- Buildah configured for rootless
-- fuse-overlayfs installed
-
-### 9.2 Rootful Mode
-
-**When needed**:
-- libguestfs operations fail in rootless mode
-- Need to access system-wide image caches
-- Performance-critical scenarios (overlayfs faster than fuse-overlayfs)
-
-### 9.3 libguestfs Rootless Workaround
-
-libguestfs can run rootless with `--backend=direct`:
-
-```go
-// Illustrative: not yet implemented in code
-cmd := exec.Command("guestfish", "--backend=direct", "-a", imagePath)
-cmd.Stdin = strings.NewReader(script)
-return cmd.Run()
-```
-
-**Note**: Direct backend is slower but works without root.
+1. **Idempotent Operations**: Same input always produces the same output
+2. **Checksum-Based Caching**: Never convert the same image twice
+3. **Fail-Fast Validation**: Verify boot contract compliance early
+4. **Atomic Writes**: Use temp + rename for crash safety
 
 ---
 
@@ -1123,7 +1069,6 @@ return cmd.Run()
 
 - [ ] **Testing**:
   - [ ] Integration tests with real images
-  - [ ] Rootless mode tests
 
 ### 10.3 Phase 3: Advanced Features (P2) -- Future Work
 

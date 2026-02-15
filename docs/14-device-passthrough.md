@@ -155,7 +155,7 @@ ls -l /dev/vfio/14
 # crw------- 1 root root 241, 0 Feb 14 10:00 /dev/vfio/14
 ```
 
-Since Cocoon Phase 1 runs as root, this is satisfied automatically.
+Since Cocoon runs as root, this is satisfied automatically.
 
 ---
 
@@ -982,12 +982,7 @@ VFIO with IOMMU provides strong DMA isolation: the guest can only access memory 
 
 ### 9.2 /dev/vfio Permissions
 
-VFIO group device files (`/dev/vfio/N`) are owned by root with mode `0600` by default. In Phase 1 (rootful), Cocoon and CH run as root, so access is automatic. For future rootless mode, a udev rule is recommended:
-
-```
-# /etc/udev/rules.d/99-cocoon-vfio.rules
-SUBSYSTEM=="vfio", GROUP="cocoon", MODE="0660"
-```
+VFIO group device files (`/dev/vfio/N`) are owned by root with mode `0600` by default. Cocoon and CH run as root, so access is automatic.
 
 ### 9.3 Kernel Parameter Hardening
 
@@ -1216,7 +1211,7 @@ func TestVMWithGPUPassthrough(t *testing.T) {
 
 5. **ACS override kernel patch**: Many consumer motherboards have poor IOMMU grouping. The `pcie_acs_override` patch fixes this but is not upstream. Decision: Document in troubleshooting but do not require.
 
-6. **Device permissions in rootless mode**: Phase 2 rootless Cocoon will need a strategy for VFIO group access. Decision: Design when rootless mode reaches implementation.
+6. **Device permissions**: VFIO group access requires root. Cocoon runs as root, so `/dev/vfio/N` access is automatic.
 
 ---
 

@@ -311,7 +311,7 @@ Cocoon is a general-purpose lightweight VM manager. Common use cases include:
 **Core (Phase 1)**:
 - **Hypervisor**: Cloud Hypervisor (Rust-based VMM, production-grade)
 - **Language**: Go 1.25+ (interface-driven, factory pattern)
-- **OCI Tools**: Buildah (daemonless, rootless-capable)
+- **OCI Tools**: Buildah (daemonless)
 - **Storage**: qcow2 via qemu-img and libguestfs
 - **Firmware**: OVMF (UEFI via CLOUDHV.fd) for cloud images; direct kernel boot for OCI VM images
 - **TPM**: swtpm (optional TPM 2.0 emulation)
@@ -325,33 +325,13 @@ Cocoon is a general-purpose lightweight VM manager. Common use cases include:
 
 ## Deployment Strategy
 
-### Rootless vs Rootful Mode
+### Privilege Model
 
-Cocoon supports three deployment modes with different trade-offs:
-
-> **Phase 1 Scope**: Only rootful mode (Option B) is implemented. Rootless (Option A) and hybrid helper (Option C) are designed but deferred to Phase 2.
-
-**Recommended for Production: Hybrid Mode (Option C) [Phase 2]**
-- Main cocoon binary runs as regular user
-- Privileged helper (setuid or sudo) for operations requiring root
-- Best security with full feature support
-- See [08-dependencies.md § Option C: Hybrid](./08-dependencies.md#option-c-hybrid-recommended-for-production)
-
-**For Development: Rootless Mode (Option A) [Phase 2]**
-- Entire cocoon stack runs without sudo
-- **Important limitation**: libguestfs tools (virt-format, virt-copy-in) require root
-  - **OCI image conversion is NOT available in rootless mode**
-  - **Workaround**: Use cloud images (qcow2 format) directly instead
-  - Alternative: Pre-convert OCI images to qcow2 in a rootful environment
-- See [08-dependencies.md § Option A: Rootless](./08-dependencies.md#option-a-rootless-preferred)
-
-**Not Recommended: Rootful Mode (Option B)**
-- Running cocoon as root is a security risk
-- Only use for testing/development in isolated environments
+Cocoon requires root privileges. All VM operations (hypervisor management, image conversion, storage) run as root.
 
 ### 30-Minute Getting Started Path
 
-For quick evaluation without dealing with rootless limitations:
+For quick evaluation:
 
 1. **Install dependencies** (5 min):
    ```bash
@@ -405,7 +385,7 @@ For quick evaluation without dealing with rootless limitations:
    cocoon delete test-vm
    ```
 
-**Note**: This path uses cloud images directly, bypassing the OCI conversion pipeline. For OCI image support, you need libguestfs tools (requires root access via hybrid mode).
+**Note**: This path uses cloud images directly, bypassing the OCI conversion pipeline. For OCI image support, you also need libguestfs tools.
 
 ## Document Index
 

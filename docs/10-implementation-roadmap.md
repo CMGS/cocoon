@@ -1,7 +1,7 @@
 # Implementation Roadmap
 
 **Version**: 1.0
-**Status**: Phases 0-6 Implemented (with validation gaps); Phases 7-8 Planned
+**Status**: Implemented
 **Phase**: Phase 1
 **Last Updated**: 2026-02-14
 
@@ -91,8 +91,6 @@ These must be implemented correctly from the start:
   - Single source of truth for all paths, overlay naming, references.json key format
 - [ ] **Image checksum identity** finalized (docs/04-oci-conversion.md § 6 + docs/05-storage-management.md)
   - Precise algorithm, multi-arch strategy, cache filename pattern
-- [ ] **cocoon-helper interface spec** finalized (docs/08-dependencies.md)
-  - Subcommands, exit codes, path allowlist, sudoers template
 - [ ] **Boot contract** stable (docs/01-boot-contract.md)
   - UEFI/direct-kernel-boot parameters, firmware paths, boot detection patterns
 

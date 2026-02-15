@@ -1,11 +1,9 @@
-# Volume Passthrough (Phase 2)
+# Volume Passthrough
 
-**Version**: 0.1.0 (Draft)
-**Status**: Phase 2 Design
-**Priority**: P1 (Phase 2)
-**Author**: cocoon-team
-**Created**: 2026-02-14
-**Updated**: 2026-02-14
+**Version**: 1.0
+**Status**: Planned
+**Phase**: Phase 2
+**Last Updated**: 2026-02-15
 
 ---
 
@@ -932,12 +930,10 @@ During reconciliation:
 ### 7.7 Permission Model
 
 virtiofsd requires read (and optionally write) access to the shared host
-directory. When running as root (Phase 1 default), this is straightforward.
-For future rootless mode:
+directory.
 
-- virtiofsd must run as a user with access to the shared directory
-- UID/GID mapping between host and guest is configured via virtiofsd flags
-- `--uid-map` and `--gid-map` flags on virtiofsd control the mapping
+> **Note**: Cocoon requires root. virtiofsd inherits root permissions,
+> so host directory access is straightforward.
 
 ---
 
@@ -1026,8 +1022,8 @@ virtiofsd supports multiple sandboxing modes:
 - `--sandbox=chroot`: chroots into the shared directory (default, recommended)
 - `--sandbox=namespace`: uses user/mount namespaces for stronger isolation
 
-Cocoon uses `--sandbox=chroot` by default. The `namespace` mode requires
-unprivileged user namespaces, which may not be available on all hosts.
+Cocoon uses `--sandbox=chroot` by default. Cocoon requires root, so
+both sandboxing modes are available.
 
 ### 8.5 Denial of Service Prevention
 
