@@ -382,6 +382,12 @@ type VMConfig struct {
 
     // Network configuration. Empty/nil means no networking (Phase 1 default).
     Network NetworkConfig `json:"network,omitempty"`
+
+    // CloudInitImagePath is the path to the NoCloud seed image (FAT filesystem).
+    // Generated during create when --network is specified. Contains network-config
+    // for cloud-init. Stored at {vm_dir}/cloud-init.img.
+    // Empty if no networking is configured.
+    CloudInitImagePath string `json:"cloud_init_image_path,omitempty"`
 }
 ```
 
@@ -1177,7 +1183,24 @@ func (e *engine) Create(ctx context.Context, opts CreateOptions) (*types.VMConfi
             states = append(states, *state)
         }
 
-        // 4. Store network state in metadata.
+        // 5. Generate NoCloud seed image:
+        //    a. Create meta-data and network-config YAML from CNI result
+        //    b. mkdosfs -n cidata -C {vm_dir}/cloud-init.img 256
+        //    c. mcopy -i {vm_dir}/cloud-init.img meta-data ::meta-data
+        //    d. mcopy -i {vm_dir}/cloud-init.img network-config ::network-config
+        //    e. Record path in config.json as CloudInitImagePath
+        seedPath, err := network.GenerateCloudInitSeedImage(vmDir, states)
+        if err != nil {
+            // Rollback: CNI DEL all networks + delete namespace.
+            for j := len(states) - 1; j >= 0; j-- {
+                _ = e.netMgr.DeleteNetwork(ctx, vmID, nsPath, attachments[j])
+            }
+            _ = network.DeleteNetNS(nsPath)
+            return nil, fmt.Errorf("generate cloud-init seed image: %w", err)
+        }
+        cfg.CloudInitImagePath = seedPath
+
+        // 6. Store network state in metadata.
         meta.NetworkState = types.NetworkState{
             Attachments: states,
             NetNSPath:   nsPath,
@@ -1826,6 +1849,34 @@ func networkDoctorChecks() []DoctorCheck {
                 // ip is required for network namespace management.
                 if _, err := exec.LookPath("ip"); err != nil {
                     return fmt.Errorf("'ip' command not found (needed for netns management): %w", err)
+                }
+                return nil
+            },
+            Severity: "warning",
+        },
+        {
+            Name: "mkdosfs-command",
+            Check: func() error {
+                // mkdosfs (from dosfstools) is required to create the FAT filesystem
+                // for the NoCloud seed image used by cloud-init (see Section 8.3).
+                // Install: Ubuntu/Debian: apt install dosfstools
+                //          Fedora/RHEL:   dnf install dosfstools
+                if _, err := exec.LookPath("mkdosfs"); err != nil {
+                    return fmt.Errorf("'mkdosfs' command not found (needed to create cloud-init seed image): %w\n  Install: apt install dosfstools (Debian/Ubuntu) or dnf install dosfstools (Fedora/RHEL)", err)
+                }
+                return nil
+            },
+            Severity: "warning",
+        },
+        {
+            Name: "mcopy-command",
+            Check: func() error {
+                // mcopy (from mtools) is required to copy files into the FAT filesystem
+                // for the NoCloud seed image used by cloud-init (see Section 8.3).
+                // Install: Ubuntu/Debian: apt install mtools
+                //          Fedora/RHEL:   dnf install mtools
+                if _, err := exec.LookPath("mcopy"); err != nil {
+                    return fmt.Errorf("'mcopy' command not found (needed to populate cloud-init seed image): %w\n  Install: apt install mtools (Debian/Ubuntu) or dnf install mtools (Fedora/RHEL)", err)
                 }
                 return nil
             },

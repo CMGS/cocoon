@@ -147,9 +147,11 @@ cocoon restore after-setup --name "job-42"
        --api-socket /run/cocoon/vms/vm-01HZ.../api.sock \
        --restore source_url=/var/lib/cocoon/checkpoints/ckpt-01HY.../ch-snapshot
  12. Wait for socket
- 13. TransitionState("vm-01HZ...", RUNNING, "restored from ckpt-01HY...")
- 14. Update metadata with PID and restore provenance
- 15. Print: "VM vm-01HZ... (job-42) restored from checkpoint after-setup"
+ 13. TransitionState("vm-01HZ...", PAUSED, "restored from ckpt-01HY... (CH restores to paused)")
+ 14. PUT /api/v1/vm.resume
+ 15. TransitionState("vm-01HZ...", RUNNING, "resumed after restore")
+ 16. Update metadata with PID and restore provenance
+ 17. Print: "VM vm-01HZ... (job-42) restored from checkpoint after-setup"
 ```
 
 **Boot timeout and restore**: The `--boot-timeout` flag applies only to cold boot (`cocoon run` / `cocoon start`). Restore bypasses boot detection entirely — the VM resumes from a snapshot with all services already running. No boot timeout is applied during restore.
@@ -882,24 +884,43 @@ func (m *checkpointManager) Restore(
     // 9. Register VM name.
     if opts.Name != "" {
         if err := m.vmMgr.RegisterName(opts.Name, vmID); err != nil {
+            // Rollback: unpin reference.
+            _ = m.refCounter.RemoveReference(ckptMeta.BaseKey, vmID)
             return nil, fmt.Errorf("register VM name: %w", err)
         }
     }
 
-    // 10. Launch CH with --restore.
+    // 10. Launch CH with --restore (VM starts in PAUSED state).
     snapshotDir := m.cfg.CheckpointSnapshotDir(checkpointID)
     pid, err := m.hyper.LaunchRestore(ctx, vmID, snapshotDir)
     if err != nil {
+        // Rollback: unpin reference and unregister name.
+        _ = m.refCounter.RemoveReference(ckptMeta.BaseKey, vmID)
+        if opts.Name != "" {
+            _ = m.vmMgr.UnregisterName(opts.Name)
+        }
         return nil, fmt.Errorf("launch restore: %w", err)
     }
 
-    // 11. Transition to RUNNING.
-    if err := m.vmMgr.TransitionState(vmID, types.VMStateRunning,
-        fmt.Sprintf("restored from %s", checkpointID)); err != nil {
+    // 11. Transition to PAUSED (CH restores to paused state).
+    if err := m.vmMgr.TransitionState(vmID, types.VMStatePaused,
+        fmt.Sprintf("restored from %s (paused)", checkpointID)); err != nil {
         return nil, fmt.Errorf("transition state: %w", err)
     }
 
-    // 12. Update metadata with PID.
+    // 12. Resume the VM.
+    socketPath := m.cfg.VMSocketPath(vmID)
+    if err := m.hyper.ResumeVM(ctx, socketPath); err != nil {
+        return nil, fmt.Errorf("resume after restore: %w", err)
+    }
+
+    // 13. Transition to RUNNING.
+    if err := m.vmMgr.TransitionState(vmID, types.VMStateRunning,
+        "resumed after restore"); err != nil {
+        return nil, fmt.Errorf("transition state: %w", err)
+    }
+
+    // 14. Update metadata with PID.
     vmMeta.PID = pid
     _ = m.vmMgr.SaveMetadata(vmMeta)
 
@@ -997,6 +1018,10 @@ func restoreCommand() *cli.Command {
             &cli.StringFlag{
                 Name:  "name",
                 Usage: "name for the restored VM",
+            },
+            &cli.BoolFlag{
+                Name:  "force",
+                Usage: "override version compatibility warnings (firmware, CH version)",
             },
         },
         Action: restoreAction,
@@ -1486,6 +1511,8 @@ func TestCheckpointRestoreCycle(t *testing.T) {
     }
 
     // 6. Verify restored VM is running.
+    // Note: restore transitions through PAUSED (CH restores to paused) then RUNNING
+    // (after vm.resume). The final observable state should be RUNNING.
     newMeta, _ := vmMgr.LoadMetadata(newCfg.VMID)
     if newMeta.State != string(types.VMStateRunning) {
         t.Errorf("expected restored VM RUNNING, got %s", newMeta.State)
@@ -1612,10 +1639,11 @@ type CHVMConfig struct {
     CPUs    CHCPUConfig      `json:"cpus"`
     Memory  CHMemoryConfig   `json:"memory"`
     Disks   []CHDiskConfig   `json:"disks,omitempty"`
-    Fs      []CHFsConfig     `json:"fs,omitempty"`       // Volume passthrough (virtio-fs)
+    Net     []CHNetConfig    `json:"net,omitempty"`        // CNI networking (virtio-net)
+    Fs      []CHFsConfig     `json:"fs,omitempty"`         // Volume passthrough (virtio-fs)
     Serial  CHSerialConfig   `json:"serial"`
-    Console CHConsoleConfig  `json:"console"`             // Console: mode "Pty"
-    Devices []CHDeviceConfig `json:"devices,omitempty"`   // Device passthrough (VFIO)
+    Console CHConsoleConfig  `json:"console"`               // Console: mode "Pty"
+    Devices []CHDeviceConfig `json:"devices,omitempty"`     // Device passthrough (VFIO)
 }
 ```
 

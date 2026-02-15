@@ -147,7 +147,7 @@ func (s VMState) IsRunnable() bool {
 | STOPPED  | --     | yes   | --   | --   | yes    | yes     | --    | --     | --      | yes  |
 | ERROR    | --     | --    | --   | --   | yes    | yes     | --    | --     | --      | yes  |
 
-`*` = requires `--force`
+`*` = `--force` for direct kill path; without `--force`, auto-resumes then performs graceful shutdown before deletion
 `**` = PTY remains open but no guest output arrives while paused; input is buffered and delivered on resume
 
 **Note**: When Phase 2 is implemented, [docs/07-vm-lifecycle.md](./07-vm-lifecycle.md) §3.1 must be updated to include the PAUSED row shown above.
@@ -236,7 +236,12 @@ cocoon stop myvm  (state: PAUSED)
 
 ### 3.5 Delete on Paused VM
 
-Delete on a paused VM: with `--force`, sends SIGKILL then proceeds to deletion (PAUSED -> DELETED). Without `--force`, auto-resumes then performs graceful shutdown before deletion.
+Delete is permitted on a paused VM with or without `--force`:
+
+- **With `--force`**: Sends SIGKILL to the CH process, then proceeds to deletion. Transition: PAUSED → STOPPED → DELETED.
+- **Without `--force`**: Auto-resumes the VM (`PUT /api/v1/vm.resume`), then performs graceful ACPI shutdown, then deletes. Transition: PAUSED → RUNNING → STOPPING → STOPPED → DELETED.
+
+Both paths end in deletion. The `--force` path is faster but skips graceful guest shutdown.
 
 ### 3.6 Idempotency Rules
 
