@@ -1293,7 +1293,7 @@ Each Phase 2 feature adds its fields independently. All additions use `omitempty
 - [05-storage-management.md](../05-storage-management.md) -- Storage architecture and COW overlays
 - [07-vm-lifecycle.md](../07-vm-lifecycle.md) -- VM lifecycle state machine
 - [09-cli-design.md](../09-cli-design.md) -- CLI design patterns
-- [future/networking.md](./networking.md) -- Phase 2 networking (prerequisite for Option D)
+- [16-networking.md](./16-networking.md) -- CNI networking (prerequisite for Option D)
 
 ---
 

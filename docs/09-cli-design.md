@@ -604,10 +604,6 @@ func vmCreateFlags() []cli.Flag {
             Name:  "skip-verify",
             Usage: "skip bootability verification of the image",
         },
-        &cli.IntFlag{
-            Name:  "boot-timeout",
-            Usage: "boot detection timeout in seconds (0 = skip boot detection)",
-        },
         &cli.BoolFlag{
             Name:  "tpm",
             Usage: "enable TPM 2.0 emulation via swtpm",
@@ -716,7 +712,7 @@ func createAction(c *cli.Context) error {
 }
 ```
 
-The `createCommand` uses the same `vmCreateFlags()` as `runCommand`, which includes `--name`, `--cpus`, `--memory` (default "2048M"), `--disk`, `--oci`, `--skip-verify`, `--boot-timeout`, and `--tpm`.
+The `createCommand` uses the same `vmCreateFlags()` as `runCommand`, which includes `--name`, `--cpus`, `--memory` (default "2048M"), `--disk`, `--oci`, `--skip-verify`, and `--tpm`. Note: `--boot-timeout` is only available on `run` and `start` commands (not `create`, since `create` does not boot the VM).
 
 **Example Usage**:
 
@@ -854,7 +850,7 @@ func rmCommand() *cli.Command {
 **Behavior**:
 
 1. **Check VM State**: If running and no `--force`, error
-2. **Stop VM** (if `--force`): Call stop with 10s timeout
+2. **Stop VM** (if `--force`): Call stop with configured `stop_timeout_seconds` (default 30s)
 3. **Remove References**: Update reference counter ([05-storage-management.md](./05-storage-management.md))
 4. **Delete Resources**: Remove overlay, serial log, config files, VM directory
 5. **Remove from Name Index**: Remove `name → vm_id` mapping
@@ -1693,7 +1689,7 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
    - **Release references.lock**
    - This "pin" ensures the base image survives even if GC runs during the subsequent (slow) steps. On failure in later steps, the cleanup path removes this reference.
 7. **Create COW overlay** → `StorageManager.CreateOverlay(baseKey, vmID)`
-8. **[Phase 2] Metadata server** → HTTP server on 169.254.169.254 for cloud-init is not yet implemented. Phase 1 relies on NoCloud seed files or pre-baked cloud-init config in the image.
+8. **[Phase 3] Metadata server** → HTTP server on 169.254.169.254 for cloud-init is not yet implemented. Phase 1 relies on pre-baked cloud-init config; Phase 2 uses NoCloud seed disks (see [16-networking.md](./16-networking.md) §8).
 9. **Configure VM**:
    ```go
    config := &types.VMConfig{
@@ -1765,7 +1761,7 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
 1. **Resolve vm-ref** → `ResolveVMRef(vmRef)` (see § 3)
 2. **Load VM config** → Read `config.json` (get `base_key` for refcount)
 3. **Check VM state** → If running and no `--force`, error
-4. **Stop VM** (if needed) → Call stop flow with `--timeout 10s`
+4. **Stop VM** (if needed) → Call stop flow with configured `stop_timeout_seconds` (default 30s)
 5. **Acquire references.lock** (Level 2)
 6. **Remove reference** → `refCounter.RemoveReference(baseKey, vmID)`
 7. **Release references.lock**
@@ -1775,7 +1771,7 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
 11. **Delete resources**:
     - Move overlay to trash: `mv overlay.qcow2 /var/lib/cocoon/trash/`
     - Delete serial log: `rm /var/log/cocoon/{vm_id}-serial.log`
-    - [Phase 2] Stop metadata server for this VM (not yet implemented)
+    - [Phase 3] Stop metadata server for this VM (not yet implemented)
     - Delete API socket: `rm /run/cocoon/vms/{vm_id}/api.sock`
     - Delete VM directory: `rm -rf /var/lib/cocoon/vms/{vm_id}/`
 12. **Trigger GC** (optional) → If base image unreferenced, mark for collection
@@ -1903,7 +1899,7 @@ This CLI design implements the Boot Contract specification:
 | Boot Contract Section | CLI Implementation |
 |----------------------|-------------------|
 | §1 Boot Path Decision | `--oci` flag (selects direct kernel boot), config-level firmware paths |
-| §2 Guest Init Model | [Phase 2] Metadata server for cloud-init (not yet implemented) |
+| §2 Guest Init Model | [Phase 3] Metadata server for cloud-init (not yet implemented) |
 | §3 I/O Mechanisms | Serial console via `--serial file=...` (CH flag), `cocoon logs` command |
 | §4 Lifecycle Semantics | `run`, `stop`, `delete`, `kill` commands |
 | §5 VM Configuration Schema | `types.VMConfig` in Go code |
