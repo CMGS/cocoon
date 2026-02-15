@@ -149,6 +149,8 @@ cocoon restore after-setup --name "job-42"
  15. Print: "VM vm-01HZ... (job-42) restored from checkpoint after-setup"
 ```
 
+**Boot timeout and restore**: The `--boot-timeout` flag applies only to cold boot (`cocoon run` / `cocoon start`). Restore bypasses boot detection entirely — the VM resumes from a snapshot with all services already running. No boot timeout is applied during restore.
+
 ### 3.3 Disk Handling Strategy
 
 Because the VM is paused during checkpoint, no writes are in flight, so the disk is consistent with the VM state. The initial implementation uses a direct file copy of the overlay:
@@ -239,6 +241,8 @@ func (m *checkpointManager) ResolveCheckpointRef(ref string) (string, error) {
 └── db/
     └── references.json                     # Tracks both VM and checkpoint refs
 ```
+
+**Note**: Checkpoint storage is separate from the image cache ([docs/05-storage-management.md](./05-storage-management.md)). Checkpoints use their own ID namespace (`ckpt-{ulid}`) and do not use the `base_key` format. Image refcounting tracks checkpoint references via `AddReference(baseKey, checkpointID, ...)` to prevent GC of base images that checkpoints depend on.
 
 ### 4.2 Checkpoint Metadata Schema
 
@@ -579,7 +583,10 @@ func (m *checkpointManager) Checkpoint(
             }
             defer func() {
                 // Auto-resume regardless of checkpoint success/failure.
-                _ = m.vmMgr.Resume(ctx, vmID)
+                if resumeErr := m.vmMgr.Resume(ctx, vmID); resumeErr != nil {
+                    log.Errorf("failed to auto-resume VM %s after checkpoint: %v", vmID, resumeErr)
+                    // Note: checkpoint succeeded but VM remains paused. User must manually resume.
+                }
             }()
         } else if vmState != types.VMStatePaused {
             return nil, fmt.Errorf("cannot checkpoint VM in state %s (must be RUNNING or PAUSED)", meta.State)

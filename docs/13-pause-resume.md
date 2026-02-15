@@ -88,7 +88,7 @@ var ValidTransitions = map[VMState][]VMState{
     VMStateCreated:   {VMStateStarting, VMStateDeleted},
     VMStateStarting:  {VMStateRunning, VMStateError},
     VMStateRunning:   {VMStateStopping, VMStatePaused, VMStateError},
-    VMStatePaused:    {VMStateRunning, VMStateStopping, VMStateError},
+    VMStatePaused:    {VMStateRunning, VMStateStopping, VMStateStopped, VMStateDeleted, VMStateError},
     VMStateStopping:  {VMStateStopped, VMStateError},
     VMStateStopped:   {VMStateStarting, VMStateDeleted},
     VMStateError:     {VMStateDeleted},
@@ -100,6 +100,7 @@ var ValidTransitions = map[VMState][]VMState{
 - `RUNNING -> PAUSED`: `cocoon pause` freezes vCPUs via `PUT /api/v1/vm.pause`
 - `PAUSED -> RUNNING`: `cocoon resume` resumes vCPUs via `PUT /api/v1/vm.resume`
 - `PAUSED -> STOPPING`: `cocoon stop` on a paused VM (resume first, then stop gracefully)
+- `PAUSED -> STOPPED`: `cocoon kill` on a paused VM. Kill on a paused VM sends SIGKILL directly without resuming first. The frozen process is terminated immediately.
 - `PAUSED -> ERROR`: CH crash while paused
 
 ### 2.4 State Machine Diagram
@@ -148,6 +149,8 @@ func (s VMState) IsRunnable() bool {
 
 `*` = requires `--force`
 `**` = PTY remains open but no guest output arrives while paused; input is buffered and delivered on resume
+
+**Note**: When Phase 2 is implemented, [docs/07-vm-lifecycle.md](./07-vm-lifecycle.md) §3.1 must be updated to include the PAUSED row shown above.
 
 ---
 
@@ -229,9 +232,13 @@ cocoon stop myvm  (state: PAUSED)
 
 ### 3.4 Kill on Paused VM
 
-`cocoon kill` on a PAUSED VM sends SIGKILL directly to the CH process. No resume is needed because SIGKILL operates at the host process level, not the guest vCPU level.
+`cocoon kill` on a PAUSED VM sends SIGKILL directly to the CH process. No resume is needed because SIGKILL operates at the host process level, not the guest vCPU level. Transition: PAUSED -> STOPPED.
 
-### 3.5 Idempotency Rules
+### 3.5 Delete on Paused VM
+
+Delete on a paused VM: with `--force`, sends SIGKILL then proceeds to deletion (PAUSED -> DELETED). Without `--force`, auto-resumes then performs graceful shutdown before deletion.
+
+### 3.6 Idempotency Rules
 
 | Operation | Current State | Behavior |
 |-----------|--------------|----------|
@@ -242,7 +249,7 @@ cocoon stop myvm  (state: PAUSED)
 | `resume` | RUNNING | No-op, return success |
 | `resume` | Other | Error: "VM is not paused" |
 
-### 3.6 Lock Integration
+### 3.7 Lock Integration
 
 Pause and resume follow the lock ordering defined in [06-concurrency.md](./06-concurrency.md). The VM metadata lock (Level 4, per-VM) is held only during metadata reads and writes, never during CH API calls. This prevents long-running HTTP requests from blocking other operations on the same VM.
 
@@ -477,7 +484,7 @@ var ValidTransitions = map[VMState][]VMState{
     VMStateCreated:   {VMStateStarting, VMStateDeleted},
     VMStateStarting:  {VMStateRunning, VMStateError},
     VMStateRunning:   {VMStateStopping, VMStatePaused, VMStateError},
-    VMStatePaused:    {VMStateRunning, VMStateStopping, VMStateError},
+    VMStatePaused:    {VMStateRunning, VMStateStopping, VMStateStopped, VMStateDeleted, VMStateError},
     VMStateStopping:  {VMStateStopped, VMStateError},
     VMStateStopped:   {VMStateStarting, VMStateDeleted},
     VMStateError:     {VMStateDeleted},
@@ -586,7 +593,7 @@ func pauseAction(c *cli.Context) error {
 
 **Edge Case Handling:**
 
-The CLI layer translates manager-level errors into user-friendly messages. The manager's idempotency rules (§3.5) handle the no-op cases, and the CLI adds explicit messaging:
+The CLI layer translates manager-level errors into user-friendly messages. The manager's idempotency rules (§3.6) handle the no-op cases, and the CLI adds explicit messaging:
 
 | Command | VM State | Behavior |
 |---------|----------|----------|
@@ -594,8 +601,13 @@ The CLI layer translates manager-level errors into user-friendly messages. The m
 | `cocoon pause` | PAUSED | No-op, print: `VM already paused` |
 | `cocoon resume` | RUNNING | No-op, print: `VM is already running` |
 | `cocoon resume` | CREATED / STOPPED | Error: `VM is not paused (state: STOPPED)` |
+| `cocoon pause` | STARTING | Error: `VM is not in RUNNING state (current: STARTING). Wait for boot to complete before pausing.` |
 
-The CLI detects no-op returns from the manager (pause on PAUSED, resume on RUNNING) and prints the informational message instead of the standard success output. For invalid states, the manager returns an error that the CLI formats with remediation guidance:
+The CLI detects no-op returns from the manager (pause on PAUSED, resume on RUNNING) and prints the informational message instead of the standard success output. For invalid states, the manager returns an error that the CLI formats with remediation guidance.
+
+**Implementation note**: The manager's `Pause()` and `Resume()` methods handle idempotency internally and return nil for both success and no-op. The CLI detects no-ops by comparing state before and after the call. A future optimization could have the manager return a result type indicating (success, no-op) to avoid the double read.
+
+CLI code:
 
 ```go
 // In pauseAction, after Pause() returns:
@@ -792,6 +804,8 @@ Priority 1: kill -0 <pid>   -> Dead?  -> ERROR (definitive)
 Priority 2: socket connect  -> Fail?  -> Preserve metadata state + warn
 Priority 3: vm.info state   -> Mismatch? -> Use CH state as ground truth
 ```
+
+For PAUSED VMs, reconciliation checks the same signals as RUNNING (PID alive, socket connectable). If the process has crashed while paused, the VM transitions to ERROR.
 
 ---
 

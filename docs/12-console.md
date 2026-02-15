@@ -603,6 +603,9 @@ func consoleAction(c *cli.Context) error {
 
     // Print banner.
     escapeCharStr := c.String("escape-char")
+    if len(escapeCharStr) == 0 {
+        return fmt.Errorf("--escape-char must be a single character, got empty string")
+    }
     escapeChar := escapeCharStr[0]
     fmt.Fprintf(os.Stderr, "Connected to %s (escape sequence: %s.)\r\n", ref, escapeCharStr)
 
@@ -709,22 +712,17 @@ If `cocoon console` connects successfully but shows no login prompt, the guest i
 
 ### 6.5.1 Kernel Command Line Injection Strategy
 
-Phase 1's image conversion pipeline (`image/pipeline/convert_linux.go`) already injects `console=ttyS0,115200n8` into the guest GRUB configuration to ensure boot output is captured via `cocoon logs`. Phase 2 should extend this mechanism to also inject `console=hvc0` alongside the existing `ttyS0` entry, ensuring boot messages appear on both ports:
+Phase 1's image conversion pipeline (`image/pipeline/convert_linux.go`) already injects `console=ttyS0,115200n8` into the guest GRUB configuration to ensure boot output is captured via `cocoon logs`.
 
-- **Serial** (`console=ttyS0,115200n8`): captured to the serial log file for `cocoon logs`
-- **Virtio-console** (`console=hvc0`): visible in the interactive `cocoon console` session
+**Phase 2 v1.0 approach**: Phase 2 v1.0 does **not** inject `console=hvc0` into the kernel command line. The `convert_linux.go` pipeline only injects `console=ttyS0,115200n8`. Instead, the v1.0 approach relies on `systemd-getty-generator` to automatically spawn a login prompt on `/dev/hvc0` when the device is detected. Standard cloud images (Ubuntu, Fedora, Debian) ship with `systemd-getty-generator` enabled, so `cocoon console` provides an interactive login prompt immediately after boot without any kernel command line changes. However, boot messages will **not** appear on the virtio-console (only on the serial port via `cocoon logs`) until `console=hvc0` injection is implemented.
 
-The resulting GRUB kernel command line would include:
+**Future improvement**: Extend `convert_linux.go` to also inject `console=hvc0` alongside `console=ttyS0,115200n8` during image conversion, for images that do not have `systemd-getty-generator` or where boot-time console output on `/dev/hvc0` is desired. The resulting GRUB kernel command line would include:
 
 ```
 console=ttyS0,115200n8 console=hvc0
 ```
 
-When multiple `console=` arguments are present, the Linux kernel sends output to all listed consoles (see §6.4). The **last** entry becomes the primary console (`/dev/console`), so `hvc0` is listed last to make it the primary interactive console.
-
-**Phase 2 v1.0 approach**: Rely on `systemd-getty-generator` auto-detection as a fallback. Standard cloud images (Ubuntu, Fedora, Debian) auto-spawn `serial-getty@hvc0.service` when the device is detected, so `cocoon console` works without kernel command line changes in most cases. Boot messages may not appear on the virtio-console until the injection is implemented, but the login prompt will.
-
-**Future improvement**: Update `convert_linux.go` to inject `console=hvc0` alongside `console=ttyS0,115200n8` during image conversion. This ensures boot messages are visible on both `cocoon logs` and `cocoon console` from the earliest point in the boot sequence.
+When multiple `console=` arguments are present, the Linux kernel sends output to all listed consoles (see §6.4). The **last** entry becomes the primary console (`/dev/console`), so `hvc0` is listed last to make it the primary interactive console. This ensures boot messages are visible on both `cocoon logs` and `cocoon console` from the earliest point in the boot sequence.
 
 ### 6.6 Compatibility and Requirements
 
@@ -744,6 +742,7 @@ This section summarizes the hard requirements for console support and the compat
 | Fedora Cloud Image | Ready | systemd-getty-generator auto-starts getty on hvc0 |
 | Debian Cloud Image | Ready | systemd-getty-generator auto-starts getty on hvc0 |
 | Custom OCI Image | Requires Configuration | Must ensure getty runs on /dev/hvc0 |
+| Direct qcow2 (URL/local) | Depends on image configuration | Virtio-console works if guest kernel has CONFIG_VIRTIO_CONSOLE. Falls back to serial if not. |
 
 For custom images that do not include `systemd-getty-generator`, see §6.3 for init-system-specific getty configuration and §6.4 for kernel command line requirements.
 
@@ -762,6 +761,7 @@ For custom images that do not include `systemd-getty-generator`, see §6.3 for i
 | stdin is not a terminal | `stdin is not a terminal; cocoon console requires an interactive TTY` | 1 |
 | Raw mode failure | `set terminal raw mode: <err>` | 1 |
 | CH API unreachable | `get VM info for <vmID>: <err>` | 1 |
+| CH version does not support Pty mode | `Upgrade Cloud Hypervisor to v38.0 or later. Cocoon requires minimum CH v38.0.` | 1 |
 
 ### 7.2 Backward Compatibility
 
@@ -927,7 +927,7 @@ func TestConsoleLegacyVMError(t *testing.T) {
 
 ### 10.2 Interaction with Other Phase 2 Features
 
-- **Pause/Resume** ([13-pause-resume.md](./13-pause-resume.md)): Console can be attached to a PAUSED VM. The PTY remains open but no guest output arrives while paused. On resume, output resumes.
+- **Pause/Resume** ([13-pause-resume.md](./13-pause-resume.md)): Console can be attached to a PAUSED VM. The PTY remains open but no guest output arrives while paused. Input typed while the VM is paused is buffered in the kernel PTY buffer and delivered to the guest when the VM is resumed. If more than ~4 KB is typed while paused, excess input may be dropped (kernel PTY buffer limit). On resume, output resumes.
 - **Checkpoint/Restore** ([15-warm-start.md](./15-warm-start.md)): On checkpoint restore, Cloud Hypervisor allocates a new PTY with a different path. `cocoon console` discovers the PTY path dynamically via `GET /api/v1/vm.info`, so it works correctly on restored VMs without additional configuration.
 - **Device Passthrough** ([14-device-passthrough.md](./14-device-passthrough.md)): Console is independent of device passthrough. Both can coexist on the same VM.
 

@@ -68,6 +68,9 @@ const (
 
     // DELETED: Resources cleaned up, VM removed
     VMStateDeleted   VMState = "DELETED"
+
+    // PAUSED: vCPUs frozen, CH process alive (Phase 2 — see [13-pause-resume.md](./13-pause-resume.md))
+    VMStatePaused    VMState = "PAUSED"
 )
 ```
 
@@ -1558,6 +1561,12 @@ func (m *manager) determineActualState(meta *types.VMMetadataFile, vmCfg *types.
 
     case types.VMStateError:
         return types.VMStateError
+
+    case types.VMStatePaused:
+        if processValid && socketConnectable {
+            return types.VMStatePaused // Process alive + socket OK → still paused
+        }
+        return types.VMStateError // Process dead or socket gone → ERROR
 
     case types.VMStateCreating:
         return types.VMStateError // Creation did not complete

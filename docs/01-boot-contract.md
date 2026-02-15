@@ -165,7 +165,7 @@ ls -la /sbin/init  # Should be symlink to systemd
 
 ### 2.2 VM Initialization: cloud-init via Metadata Server
 
-> **Note**: The metadata server (169.254.169.254) is a Phase 2 feature and is not yet implemented in the current codebase. Phase 1 relies on pre-baked cloud-init configuration in the image or NoCloud seed files.
+> **Note**: The metadata server (169.254.169.254) is a future feature (Phase 3) and is not yet implemented. Phase 2 uses NoCloud seed disks for network configuration injection (see [16-networking.md](./16-networking.md) §8). Phase 1 relies on pre-baked cloud-init configuration in the image.
 
 **Purpose**: cloud-init is used for **VM initialization only** - setting up users, SSH keys, hostname, and network configuration. It is NOT used for task orchestration or command execution.
 
@@ -250,7 +250,7 @@ GET http://169.254.169.254/user-data
 - ❌ Advanced metadata: network config, block device mapping
 - ❌ IMDSv2 authentication (AWS-style token-based auth)
 
-**Phase 2: Full Metadata Server**
+**Phase 3: Full Metadata Server**
 - Network configuration injection
 - Block device mapping
 - IMDSv2 authentication for security
@@ -259,10 +259,10 @@ GET http://169.254.169.254/user-data
 
 ### 2.3 VM Boot Sequence
 
-> **Note**: Steps 1, 2, and 4 below describe the Phase 2 metadata server flow. In Phase 1, cloud-init is configured via pre-baked NoCloud seed files or image-embedded configuration.
+> **Note**: Steps 1, 2, and 4 below describe the future metadata server flow (Phase 3). In Phase 1 and Phase 2, cloud-init is configured via NoCloud seed disks or image-embedded configuration.
 
 ```
-1. Cocoon starts metadata server [Phase 2]
+1. Cocoon starts metadata server [Phase 3]
    └─ Listens on 169.254.169.254:80
 
 2. Cocoon launches VM with modified cmdline
@@ -903,7 +903,7 @@ virt-customize -a image.qcow2 \
   - [ ] Launch CH with UEFI firmware via REST `payload.firmware` (default boot strategy)
   - [ ] No automatic PVH-to-UEFI fallback (boot uses the configured strategy directly)
 
-- [ ] **Metadata Server (Stub Implementation)** — **[Not Yet Implemented — Phase 2]**:
+- [ ] **Metadata Server (Stub Implementation)** — **[Not Yet Implemented — Phase 3]**:
   - [ ] Implement lightweight HTTP server listening on 169.254.169.254:80
   - [ ] EC2-compatible endpoints:
     - [ ] `/meta-data/instance-id` → return VM ID

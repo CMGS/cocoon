@@ -232,6 +232,8 @@ Stopping a VM (via `cocoon stop`) does NOT tear down its network namespace, TAP 
 - **Faster restarts**: No need to re-run CNI ADD, recreate TAP, or reinstall TC rules on `cocoon start` -- the network stack is already in place.
 - **Trade-off**: Port mappings (iptables DNAT rules) remain active on stopped VMs, and the IPAM slot stays allocated even while the VM is not running. This is acceptable for the expected usage patterns (VMs are either running or deleted, not parked in STOPPED state for extended periods).
 
+IPAM allocation happens only during `cocoon create` (via CNI ADD). On subsequent `cocoon start` calls, the existing network namespace and IP assignments are reused without re-running IPAM. IP addresses persist across stop/start cycles as long as the IPAM allocation files (e.g., `/var/lib/cni/networks/<network>/<ip>`) remain on disk.
+
 Network teardown occurs only during `cocoon delete` (see Destruction above) or when the host reboots (see Section 2.4). A future `--network-cleanup-on-stop` option may be added if users require network teardown on stop.
 
 ### 2.4 Network State After Host Reboot
@@ -885,6 +887,11 @@ func SetupTAPAndRedirect(nsPath string, cniIfName string, tapName string) error 
 
 // setupTAPAndTC runs inside the target namespace.
 func setupTAPAndTC(cniIfName, tapName string) error {
+	// 0. Validate CNI interface exists before proceeding.
+	if _, err := net.InterfaceByName(cniIfName); err != nil {
+		return fmt.Errorf("CNI interface %s not found in namespace: %w (ensure CNI ADD completed before calling SetupTAPAndRedirect)", cniIfName, err)
+	}
+
 	// 1. Create persistent TAP device.
 	if err := createTAP(tapName); err != nil {
 		return fmt.Errorf("create TAP %s: %w", tapName, err)
@@ -989,13 +996,15 @@ func setInterfaceUp(name string) error {
 The TC redirect setup has strict ordering requirements relative to the CNI and CH launch steps. Violating this order can cause IP conflicts (both the netns interface and the guest respond to ARP for the same IP) or packet loss.
 
 ```
-Step 1: CNI ADD (creates veth pair, assigns IP to netns-side interface)
-Step 2: Create TAP device inside the network namespace
-Step 3: Install TC mirred redirect rules (cni-veth <-> TAP, bidirectional)
-Step 4: Validate TC rules are active:
-          tc filter show dev <cni-if> ingress   (must show mirred redirect)
-          tc filter show dev <tap-if> ingress    (must show mirred redirect)
-Step 5: Launch Cloud Hypervisor via nsenter
+Step 1:   CNI ADD (creates veth pair, assigns IP to netns-side interface)
+Step 2:   Create TAP device inside the network namespace
+Step 3:   Install TC mirred redirect rules (cni-veth <-> TAP, bidirectional)
+Step 4:   Validate TC redirect rules are active:
+            tc filter show dev <cni_if> ingress   (must show mirred redirect)
+            tc filter show dev <tap> ingress       (must show mirred redirect)
+          If either returns no rules, abort with error and roll back.
+          This prevents launching CH with broken packet redirect.
+Step 5:   Launch Cloud Hypervisor via nsenter
 ```
 
 **IP Conflict Prevention**: TC redirect MUST be active before Cloud Hypervisor starts. Without the redirect, both the netns-side interface (which holds the IP for CNI bookkeeping) and the guest (which configures the same IP via cloud-init) would respond to ARP requests for that IP, causing a Layer 2 conflict. The `tc mirred redirect` diverts all ingress packets on the netns interface to the TAP before the namespace IP stack sees them, preventing the conflict.
@@ -1011,6 +1020,8 @@ If step 5 fails -> remove TC rules -> delete TAP -> CNI DEL -> ERROR
 ```
 
 On failure, the VM transitions to the ERROR state. The network namespace is preserved (for debugging) but all devices and rules inside it are cleaned up. `cocoon delete` performs the final namespace cleanup.
+
+CNI DEL automatically frees IPAM allocations (e.g., removes the IP allocation file for host-local IPAM). If CNI DEL fails during rollback, IPAM allocations may leak. The `cocoon doctor --fix` command detects and cleans stale IPAM allocations.
 
 ### 4.5 MAC Address Generation
 
@@ -1792,6 +1803,12 @@ func networkDoctorChecks() []DoctorCheck {
                 // nsenter is required for entering the VM network namespace.
                 if _, err := exec.LookPath("nsenter"); err != nil {
                     return fmt.Errorf("'nsenter' command not found (needed for network namespace entry): %w", err)
+                }
+                // nsenter --net requires CAP_SYS_ADMIN (not CAP_NET_ADMIN) to
+                // enter network namespaces. Check that the cocoon process has
+                // sufficient privileges (root or CAP_SYS_ADMIN).
+                if os.Getuid() != 0 {
+                    return fmt.Errorf("nsenter --net requires root or CAP_SYS_ADMIN to enter network namespaces")
                 }
                 return nil
             },
