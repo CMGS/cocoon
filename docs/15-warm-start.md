@@ -106,19 +106,20 @@ cocoon checkpoint my-vm --live --name "after-setup"
      b. TransitionState(vmID, PAUSED, "checkpoint: auto-pause")
   4. Generate checkpoint ID: "ckpt-01HY..."
   5. Create /var/lib/cocoon/checkpoints/ckpt-01HY.../
-  6. Copy overlay:
-     cp /var/lib/cocoon/vms/vm-01HX.../overlay.qcow2 \
+  6. fsync overlay (flush host page cache -- see §3.3.1)
+  7. Copy overlay (cp --reflink=auto for CoW filesystems):
+     cp --reflink=auto /var/lib/cocoon/vms/vm-01HX.../overlay.qcow2 \
         /var/lib/cocoon/checkpoints/ckpt-01HY.../overlay.qcow2
-  7. CH snapshot:
+  8. CH snapshot:
      PUT /api/v1/vm.snapshot
        { "destination_url": "/var/lib/cocoon/checkpoints/ckpt-01HY.../ch-snapshot" }
-  8. Write checkpoint.json with provenance and size info
-  9. Register checkpoint name in checkpoint-index.json
- 10. Pin base image reference for the checkpoint
- 11. --live flag: auto-resume
+  9. Write checkpoint.json with provenance and size info
+ 10. Register checkpoint name in checkpoint-index.json
+ 11. Pin base image reference for the checkpoint
+ 12. --live flag: auto-resume
      a. PUT /api/v1/vm.resume
      b. TransitionState(vmID, RUNNING, "checkpoint: auto-resume")
- 12. Print: "Checkpoint ckpt-01HY... created (name: after-setup, size: 2.1 GB)"
+ 13. Print: "Checkpoint ckpt-01HY... created (name: after-setup, size: 2.1 GB)"
 ```
 
 ### 3.2 Restore Flow (End-to-End)
@@ -170,6 +171,89 @@ func snapshotOverlay(srcOverlay, dstOverlay string) error {
 **Why copy instead of internal qcow2 snapshot**: Internal qcow2 snapshots add complexity to the backing chain and complicate GC. A full copy is simpler, more portable, and avoids coupling the checkpoint's disk state to the live VM's overlay file. The cost is additional disk space and copy time, which is acceptable for Phase 2.
 
 The overlay already contains only the delta from the base image, so the copy size equals the overlay's actual disk usage (not the virtual size).
+
+### 3.3.1 Disk Consistency Guarantees
+
+This subsection specifies the engineering guarantees that ensure the checkpoint's disk state is consistent with the VM's memory and device state.
+
+#### Why Pausing Guarantees Consistency
+
+When Cloud Hypervisor pauses vCPUs (`PUT /api/v1/vm.pause`), all guest execution stops. From the guest's perspective, all in-flight disk I/O is quiesced: the guest kernel cannot issue new virtio-blk or virtio-fs requests because no vCPU is executing to run the I/O submission path. Any I/O that was in the virtio queue at the moment of pause has already been processed by CH's I/O backend (the CH I/O threads drain the virtqueue before reporting the pause as complete). The result is that the qcow2 overlay (or overlayfs upperdir) is in a state that is fully consistent with the VM's memory and device state -- there are no partially-written blocks or torn writes.
+
+**Note**: This guarantee applies to I/O issued through CH's virtio layer. It does NOT guarantee filesystem-level consistency inside the guest (e.g., the guest's ext4 journal may have uncommitted transactions in memory). However, because memory is also captured in the checkpoint, the guest's filesystem driver will replay its journal on resume, producing a consistent filesystem state. The combination of paused-state disk + captured memory = consistent checkpoint.
+
+#### Host-Side Flush Requirements
+
+After pausing the VM, Cocoon SHOULD call `fsync()` on the overlay file descriptor (or invoke `sync` on the overlay path) before copying it to the checkpoint directory. This ensures that the host's page cache is flushed to the physical storage device:
+
+```go
+// flushOverlay ensures all pending writes from the host page cache
+// are flushed to stable storage before copying the overlay.
+func flushOverlay(overlayPath string) error {
+    f, err := os.Open(overlayPath)
+    if err != nil {
+        return fmt.Errorf("open overlay for fsync: %w", err)
+    }
+    defer f.Close()
+    if err := f.Sync(); err != nil {
+        return fmt.Errorf("fsync overlay: %w", err)
+    }
+    return nil
+}
+```
+
+Without this flush, a host crash after checkpoint creation but before the page cache is written back could leave the checkpoint's overlay copy containing data that was never persisted to the source file. The `fsync()` call closes this window.
+
+#### Copy Method Requirements
+
+Cocoon should prefer copy-on-write (reflink) copies where the filesystem supports them, falling back to a standard full copy otherwise:
+
+- **`cp --reflink=auto`** (preferred): On filesystems that support CoW reflinks (btrfs, XFS with reflink enabled), this creates a near-instant, space-efficient copy. The copy shares physical blocks with the source and only allocates new blocks when either file is subsequently modified. This is ideal for checkpoint overlays because the source overlay is not modified while the VM is paused, and the checkpoint copy is never modified after creation.
+- **`cp` (standard)**: Fallback for ext4 and other non-CoW filesystems. Performs a full data copy. Copy time is proportional to overlay size (see Section 8.4 for performance characteristics).
+
+```go
+// copyOverlay copies the overlay file, preferring reflink for CoW filesystems.
+func copyOverlay(src, dst string) error {
+    // Try reflink copy first (instant on btrfs/XFS with reflink).
+    if err := exec.Command("cp", "--reflink=auto", src, dst).Run(); err != nil {
+        // Fallback: cp --reflink=auto gracefully degrades to full copy
+        // on filesystems that do not support reflinks, so this error
+        // indicates a real failure (permissions, disk full, etc.).
+        return fmt.Errorf("copy overlay %s -> %s: %w", src, dst, err)
+    }
+    return nil
+}
+```
+
+The `--reflink=auto` flag is safe on all Linux filesystems: it attempts a reflink and silently falls back to a full copy if the filesystem does not support it. Cocoon does not need to detect the filesystem type.
+
+#### Ordering Guarantee
+
+The checkpoint sequence MUST follow this strict order while the VM is paused:
+
+```
+1. Pause VM            (PUT /api/v1/vm.pause)
+2. fsync overlay       (flush host page cache to disk)
+3. Copy overlay        (cp --reflink=auto to checkpoint directory)
+4. Save VM state       (PUT /api/v1/vm.snapshot -- captures memory + device state)
+5. Unpause VM          (PUT /api/v1/vm.resume, or keep paused if not --live)
+```
+
+**Steps 2, 3, and 4 MUST all happen while the VM is paused.** If the VM were resumed between the overlay copy and the VM state snapshot, the guest could issue new writes that change the overlay without those writes being reflected in the captured memory state. This would produce an inconsistent checkpoint: the disk would be ahead of memory.
+
+The order of steps 3 and 4 (overlay copy before VM state snapshot) is chosen for safety: if the overlay copy succeeds but the VM snapshot fails, the deferred cleanup removes the partial checkpoint directory. The reverse order (snapshot first, then overlay copy) would also be correct for consistency -- both happen while paused -- but copying the overlay first allows earlier failure detection (disk full errors surface before the potentially slower memory snapshot).
+
+#### Restore Consistency
+
+When restoring from a checkpoint, the overlay is placed in the new VM's directory **before** CH is launched with `--restore`. The restore sequence is:
+
+```
+1. Copy checkpoint overlay to new VM directory
+2. Launch CH with --restore (CH loads memory + device state from snapshot)
+3. CH resumes execution -- the VM sees the exact disk state from checkpoint time
+```
+
+Because CH's `--restore` flag loads the memory and device state from the snapshot, the restored VM's in-memory filesystem state (page cache, journal, pending writes) exactly matches the checkpoint-time overlay. The guest resumes as if no time has passed -- all filesystem structures are coherent.
 
 ### 3.4 CH Process Lifecycle for Restore
 
@@ -230,16 +314,17 @@ Cloud image VMs use a qcow2 overlay backed by the base cloud image. The checkpoi
 **Checkpoint:**
 
 1. Pause VM (`PUT /api/v1/vm.pause`)
-2. Copy the qcow2 overlay file to the checkpoint directory (full file copy while VM is paused)
-3. Snapshot CH state (`PUT /api/v1/vm.snapshot`) -- saves memory + device state
-4. Record checkpoint metadata (`checkpoint_type: "qcow2"`, CH snapshot path, overlay path)
-5. Resume or stop VM
+2. `fsync()` the qcow2 overlay to flush host page cache (see Section 3.3.1)
+3. Copy the qcow2 overlay file to the checkpoint directory (`cp --reflink=auto` while VM is paused)
+4. Snapshot CH state (`PUT /api/v1/vm.snapshot`) -- saves memory + device state
+5. Record checkpoint metadata (`checkpoint_type: "qcow2"`, CH snapshot path, overlay path)
+6. Resume or stop VM
 
 **Restore:**
 
 1. Copy the checkpoint's `overlay.qcow2` to the new VM directory
 2. Launch CH with `--restore` (CH restores memory + device state)
-3. VM resumes from exact checkpoint state
+3. VM resumes from exact checkpoint state with disk state matching the checkpoint
 
 The qcow2 overlay contains an absolute `backing-file` path to the base cloud image. This means the base image must exist at the same absolute path on the restore host (see §10.9.1 for the same-host constraint).
 
@@ -250,11 +335,12 @@ OCI VM image VMs use overlayfs + virtiofsd for the rootfs instead of a qcow2 ove
 **Checkpoint:**
 
 1. Pause VM (`PUT /api/v1/vm.pause`)
-2. Snapshot CH state (`PUT /api/v1/vm.snapshot`) -- saves memory + device state
-3. The `upperdir/` already IS the persistent disk state (no separate disk snapshot or copy needed)
-4. Copy or snapshot the `upperdir/` directory to the checkpoint directory
-5. Record checkpoint metadata (`checkpoint_type: "overlayfs"`, CH snapshot path, upperdir path)
-6. Resume or stop VM
+2. `sync` the upperdir to flush host page cache (see Section 3.3.1)
+3. Snapshot CH state (`PUT /api/v1/vm.snapshot`) -- saves memory + device state
+4. The `upperdir/` already IS the persistent disk state (no separate disk snapshot or copy needed)
+5. Copy or snapshot the `upperdir/` directory to the checkpoint directory (`cp -a` to preserve metadata)
+6. Record checkpoint metadata (`checkpoint_type: "overlayfs"`, CH snapshot path, upperdir path)
+7. Resume or stop VM
 
 **Restore:**
 
@@ -708,14 +794,19 @@ func (m *checkpointManager) Checkpoint(
         }
     }()
 
-    // 5. Copy overlay disk.
+    // 5. Flush host page cache for the overlay (see §3.3.1).
+    if err := flushOverlay(cfg.OverlayPath); err != nil {
+        return nil, fmt.Errorf("fsync overlay before copy: %w", err)
+    }
+
+    // 6. Copy overlay disk (prefer reflink for CoW filesystems).
     srcOverlay := cfg.OverlayPath
     dstOverlay := m.cfg.CheckpointOverlayPath(ckptID)
-    if err := copyFile(srcOverlay, dstOverlay); err != nil {
+    if err := copyOverlay(srcOverlay, dstOverlay); err != nil {
         return nil, fmt.Errorf("copy overlay: %w", err)
     }
 
-    // 6. Capture CH snapshot.
+    // 7. Capture CH snapshot.
     snapshotDir := m.cfg.CheckpointSnapshotDir(ckptID)
     if err := os.MkdirAll(snapshotDir, 0o755); err != nil {
         return nil, fmt.Errorf("create snapshot directory: %w", err)
@@ -724,11 +815,11 @@ func (m *checkpointManager) Checkpoint(
         return nil, fmt.Errorf("CH snapshot: %w", err)
     }
 
-    // 7. Compute sizes and checksums.
+    // 8. Compute sizes and checksums.
     overlaySize := fileSize(dstOverlay)
     snapshotSize := dirSize(snapshotDir)
 
-    // 8. Build metadata.
+    // 9. Build metadata.
     ckptMeta := &types.CheckpointMetadata{
         CheckpointID:        ckptID,
         Name:                opts.Name,
@@ -753,20 +844,20 @@ func (m *checkpointManager) Checkpoint(
         SchemaVersion:       types.CurrentCheckpointSchemaVersion,
     }
 
-    // 9. Write checkpoint.json.
+    // 10. Write checkpoint.json.
     metaPath := m.cfg.CheckpointMetadataPath(ckptID)
     if err := writeJSON(metaPath, ckptMeta); err != nil {
         return nil, fmt.Errorf("write checkpoint metadata: %w", err)
     }
 
-    // 10. Register name in checkpoint index.
+    // 11. Register name in checkpoint index.
     if opts.Name != "" {
         if err := m.registerCheckpointName(opts.Name, ckptID); err != nil {
             return nil, fmt.Errorf("register checkpoint name: %w", err)
         }
     }
 
-    // 11. Pin base image reference for the checkpoint.
+    // 12. Pin base image reference for the checkpoint.
     // If pinning fails, roll back the checkpoint-index registration
     // so the directory cleanup (deferred above) leaves no dangling index entry.
     if err := m.refCounter.AddReference(
@@ -778,7 +869,7 @@ func (m *checkpointManager) Checkpoint(
         return nil, fmt.Errorf("pin base image reference: %w", err)
     }
 
-    // 12. Update source VM metadata.
+    // 13. Update source VM metadata.
     meta.LastCheckpointID = ckptID
     _ = m.vmMgr.SaveMetadata(meta)
 
@@ -1197,7 +1288,9 @@ Optional TTL on checkpoints. Expired checkpoints are automatically cleaned up by
 
 ### 10.0 Cloud Hypervisor Minimum Version for Snapshot/Restore
 
-Cloud Hypervisor minimum version for snapshot/restore: TBD (must be validated before implementation begins). The `cocoon doctor` check will be extended to verify this version requirement for Phase 2 warm-start features.
+The minimum Cloud Hypervisor version for snapshot/restore API support must be validated during Phase 2 implementation. The `vm.snapshot` and `vm.restore` APIs have been available since CH v26.0, but the exact minimum version that provides stable, production-quality snapshot/restore behavior (including correct device state serialization and restore-to-paused semantics) will be confirmed through integration testing at the start of Phase 2 development.
+
+The `cocoon doctor` command will enforce this version gate: it will check the installed CH version against the validated minimum and report an error if the version is too old for warm-start features. This validation is separate from the existing CH binary presence check (Phase 1) and specifically gates the checkpoint/restore functionality.
 
 ### 10.1 Firmware Version Compatibility
 

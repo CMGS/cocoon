@@ -210,9 +210,9 @@ cocoon resume myvm
 [7] Print: "VM myvm resumed"
 ```
 
-### 3.3 Stop on Paused VM
+### 3.3 Stop on Paused VM (PAUSED -> STOPPING Semantics)
 
-When `cocoon stop` is called on a PAUSED VM, Cocoon first resumes the VM so that the guest can receive and process the ACPI shutdown signal. A frozen guest cannot execute the shutdown sequence.
+When `cocoon stop` is called on a PAUSED VM, Cocoon **must** resume the VM before sending the ACPI shutdown signal. Cloud Hypervisor cannot deliver ACPI events while vCPUs are frozen -- the guest kernel never receives the power button press, so the shutdown sequence never begins. The full sequence is:
 
 ```
 cocoon stop myvm  (state: PAUSED)
@@ -221,20 +221,54 @@ cocoon stop myvm  (state: PAUSED)
 [1] Detect VM is PAUSED
     |
     v
-[2] PUT /api/v1/vm.resume  (unfreeze vCPUs)
-    |
+[2] PUT /api/v1/vm.resume  (unfreeze vCPUs so guest can process ACPI)
+    |       |
+    |       +-- If resume fails: TransitionState -> ERROR, return error
+    |           (CH may have crashed while paused; cannot proceed with graceful shutdown)
     v
 [3] TransitionState(vmID, RUNNING, "stop: auto-resume for shutdown")
     |
     v
-[4] Proceed with normal stop flow (ACPI shutdown, wait, force kill on timeout)
+[4] TransitionState(vmID, STOPPING, "user: cocoon stop")
+    |
+    v
+[5] Send ACPI shutdown (PUT /api/v1/vm.power-button)
+    |
+    v
+[6] Wait for CH process to exit (up to --stop-timeout, default 15s)
+    |       |
+    |       +-- If timeout: TransitionState -> ERROR, return error
+    |           (consistent with Phase 1 -- Stop() does NOT auto-kill on timeout)
+    v
+[7] CH process exited -> TransitionState(vmID, STOPPED, "graceful shutdown complete")
 ```
+
+**Key semantics**:
+
+- **Resume is mandatory**: Cocoon MUST resume the VM before sending ACPI shutdown. CH cannot process ACPI power button events while vCPUs are frozen. Attempting to send `vm.power-button` to a paused VM has no effect -- the guest never processes the interrupt.
+- **Resume failure -> ERROR**: If `PUT /api/v1/vm.resume` fails (e.g., the CH process crashed while the VM was paused, or the API socket is unresponsive), the VM transitions to ERROR. Cocoon does not attempt further shutdown steps because the guest is unreachable. The user can then use `cocoon kill` or `cocoon delete --force` to clean up.
+- **Timeout -> ERROR (no auto-kill)**: Consistent with Phase 1 behavior, if the guest does not shut down within the timeout, `Stop()` returns an error and transitions the VM to ERROR. Cocoon does **not** automatically escalate to SIGKILL. This is a deliberate design choice: auto-kill could cause data loss, and the user should explicitly choose `cocoon kill` if forceful termination is acceptable.
+- **Sequence is atomic from the caller's perspective**: The resume-then-stop sequence is a single `Stop()` call. The intermediate RUNNING state is visible in metadata briefly but is not a user-initiated transition.
 
 ### 3.4 Kill on Paused VM
 
-`cocoon kill` on a PAUSED VM sends SIGKILL directly to the CH process. No resume is needed because SIGKILL operates at the host process level, not the guest vCPU level. Transition: PAUSED -> STOPPED.
+`cocoon kill` on a PAUSED VM sends SIGKILL directly to the CH process **without resuming first**. No resume is needed because SIGKILL operates at the host process level, not the guest vCPU level. The frozen vCPUs are terminated immediately along with the CH process. Transition: PAUSED -> STOPPED.
 
-### 3.5 Delete on Paused VM
+This is the fastest way to terminate a paused VM but skips any graceful guest shutdown (filesystem sync, service cleanup, etc.).
+
+### 3.5 Source of Truth for Paused State
+
+**Metadata.json is the authoritative source** for whether a VM is in the PAUSED state. The `state` field in `metadata.json` is updated by Cocoon after each successful CH API call and state transition.
+
+- **Primary source**: `metadata.json` `state` field. All Cocoon commands check this field to determine the current VM state before performing operations.
+- **Verification source**: CH `GET /api/v1/vm.info` returns a `state` field (e.g., `"Paused"`, `"Running"`). This is used by reconciliation (`cocoon doctor`) to verify that the metadata state matches the actual hypervisor state.
+- **Reconciliation rules for paused state**:
+  - If `metadata.json` says PAUSED and the CH process is alive and `vm.info` reports `"Paused"`: state is consistent, no action needed.
+  - If `metadata.json` says PAUSED but the CH process is gone (PID not running): reconcile to ERROR with reason "process died while paused". The VM cannot be resumed and must be cleaned up.
+  - If `metadata.json` says PAUSED but `vm.info` reports `"Running"`: metadata is stale. Reconciliation updates metadata to RUNNING and logs a warning. This can happen if a resume API call succeeded but the metadata write failed.
+  - If `metadata.json` says RUNNING but `vm.info` reports `"Paused"`: metadata is stale. Reconciliation updates metadata to PAUSED and logs a warning. This can happen if a pause API call succeeded but the metadata write failed.
+
+### 3.6 Delete on Paused VM
 
 Delete is permitted on a paused VM with or without `--force`:
 
@@ -243,7 +277,7 @@ Delete is permitted on a paused VM with or without `--force`:
 
 Both paths end in deletion. The `--force` path is faster but skips graceful guest shutdown.
 
-### 3.6 Idempotency Rules
+### 3.7 Idempotency Rules
 
 | Operation | Current State | Behavior |
 |-----------|--------------|----------|
@@ -254,7 +288,7 @@ Both paths end in deletion. The `--force` path is faster but skips graceful gues
 | `resume` | RUNNING | No-op, return success |
 | `resume` | Other | Error: "VM is not paused" |
 
-### 3.7 Lock Integration
+### 3.8 Lock Integration
 
 Pause and resume follow the lock ordering defined in [06-concurrency.md](./06-concurrency.md). The VM metadata lock (Level 4, per-VM) is held only during metadata reads and writes, never during CH API calls. This prevents long-running HTTP requests from blocking other operations on the same VM.
 
@@ -499,7 +533,7 @@ var ValidTransitions = map[VMState][]VMState{
 
 ### 4.5 Stop Command Update
 
-Update the stop implementation to handle PAUSED VMs:
+Update the stop implementation to handle PAUSED VMs. See Section 3.3 for the full PAUSED -> STOPPING semantics including resume failure and timeout behavior:
 
 ```go
 func (m *Manager) Stop(ctx context.Context, vmID string, timeout time.Duration) error {
@@ -514,21 +548,29 @@ func (m *Manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
     }
 
     // If PAUSED, resume first so the guest can process ACPI shutdown.
+    // CH cannot deliver ACPI events while vCPUs are frozen.
     if types.VMState(meta.State) == types.VMStatePaused {
         cfg, err := m.LoadConfig(vmID)
         if err != nil {
             return err
         }
         if err := m.hyper.ResumeVM(ctx, cfg.SocketPath); err != nil {
-            return fmt.Errorf("resume before stop: %w", err)
+            // Resume failed: CH may have crashed while paused.
+            // Transition to ERROR -- cannot proceed with graceful shutdown.
+            _ = m.TransitionState(vmID, types.VMStateError,
+                fmt.Sprintf("resume before stop failed: %v", err))
+            return fmt.Errorf("resume before stop: %w (VM transitioned to ERROR)", err)
         }
         if err := m.TransitionState(vmID, types.VMStateRunning, "stop: auto-resume for shutdown"); err != nil {
             return err
         }
     }
 
-    // Proceed with normal stop flow.
-    // ... existing stop logic (ACPI shutdown, wait, force kill) ...
+    // Proceed with normal stop flow (ACPI shutdown, wait for process exit).
+    // If the guest does not shut down within the timeout, Stop() returns
+    // an error and the VM transitions to ERROR. Cocoon does NOT auto-kill
+    // on timeout -- the user must explicitly call 'cocoon kill'.
+    // ... existing stop logic ...
 }
 ```
 

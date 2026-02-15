@@ -59,7 +59,7 @@ This document provides a concrete implementation roadmap for Cocoon Phase 1, syn
 These must be implemented correctly from the start:
 
 1. **Boot Contract Compliance** (docs/01-boot-contract.md)
-   - UEFI boot for cloud images, direct kernel boot for OCI VM images
+   - UEFI boot for cloud images (Phase 1); direct kernel boot for OCI VM images (Phase 2 planned)
    - systemd for VM initialization
    - ACPI shutdown with timeout
 
@@ -1253,8 +1253,9 @@ qemu-img >= 8.0
 - [x] UEFI boot mode implemented (`types/boot.go`, `vm/engine/manager.go`, `hypervisor/cloudhypervisor/client.go`)
 - [x] systemd boot detection implemented
 - [x] Serial console capture functional (`hypervisor/cloudhypervisor/client.go`, `vm/engine/boot_detect.go`)
-- [x] ACPI shutdown with 30s timeout (`vm/engine/manager.go`, `hypervisor/cloudhypervisor/client.go`)
-- [x] Force kill after timeout (`vm/engine/manager.go`, `hypervisor/hypervisor.go`)
+- [x] ACPI shutdown with configurable timeout (`vm/engine/manager.go`, `hypervisor/cloudhypervisor/client.go`)
+- [x] Stop() on timeout returns error and transitions VM to ERROR state — does **not** auto-kill the CH process (`vm/engine/manager.go`)
+- [x] Force-kill is a separate explicit operation via `cocoon kill` (`vm/engine/manager.go`, `hypervisor/hypervisor.go`)
 
 **Hypervisor Integration**:
 - [x] One CH process per VM (`hypervisor/cloudhypervisor/client.go`)

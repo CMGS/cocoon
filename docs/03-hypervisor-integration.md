@@ -741,9 +741,12 @@ type CHVMConfig struct {
 // CHPayloadConfig specifies the boot firmware/kernel for the VM.
 // For UEFI boot (cloud images), set Firmware to the CLOUDHV.fd path.
 // For direct kernel boot (OCI VM images), set Kernel to the extracted kernel path.
+// Initramfs and Cmdline are used for direct kernel boot (Phase 2).
 type CHPayloadConfig struct {
-    Firmware string `json:"firmware,omitempty"`
-    Kernel   string `json:"kernel,omitempty"`
+    Firmware  string `json:"firmware,omitempty"`
+    Kernel    string `json:"kernel,omitempty"`
+    Initramfs string `json:"initramfs,omitempty"`
+    Cmdline   string `json:"cmdline,omitempty"`
 }
 
 type CHCPUConfig struct {

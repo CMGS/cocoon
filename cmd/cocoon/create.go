@@ -36,8 +36,9 @@ func vmCreateFlags() []cli.Flag {
 			Usage: "root disk overlay size (e.g., 10G, 20G)",
 		},
 		&cli.BoolFlag{
-			Name:  "oci",
-			Usage: "use OCI VM image (direct kernel boot)",
+			Name:   "oci",
+			Usage:  "use OCI VM image (direct kernel boot)",
+			Hidden: true,
 		},
 		&cli.BoolFlag{
 			Name:  "skip-verify",
@@ -70,7 +71,7 @@ func parseCreateOptions(c *cli.Context, cmdName string) (*vm.CreateOptions, erro
 	// Auto-determine boot strategy: --oci uses direct kernel boot, otherwise UEFI.
 	var bootStrategy types.BootStrategy
 	if c.Bool("oci") {
-		bootStrategy = types.BootStrategyDirect
+		return nil, fmt.Errorf("--oci (direct kernel boot) is not yet implemented; planned for Phase 2 (see docs/04.1-oci-vm-images.md)")
 	} else {
 		bootStrategy = types.BootStrategyUEFI
 	}

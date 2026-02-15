@@ -86,6 +86,9 @@ Other documents MUST reference these definitions rather than re-defining fields.
 | `arch` | string | `"amd64"` | Architecture |
 | `boot_strategy` | string | `"uefi"` | `"uefi"` (cloud images) or `"direct"` (OCI VM images) |
 | `firmware_path` | string | `"/var/lib/cocoon/firmware/CLOUDHV.fd"` | Firmware path (CLOUDHV.fd for UEFI; empty for direct kernel boot) |
+| `kernel_path` | string | `""` | Kernel path for direct boot (Phase 2, omitted when empty) |
+| `initramfs_path` | string | `""` | Initramfs path for direct boot (Phase 2, omitted when empty) |
+| `cmdline` | string | `""` | Kernel command line for direct boot (Phase 2, omitted when empty) |
 | `tpm_socket_path` | string | `"/run/cocoon/vms/{vm_id}/swtpm.sock"` | swtpm TPM socket path (omitted if TPM not configured) |
 | `cpus` | int | `2` | vCPU count |
 | `memory_mb` | int64 | `2048` | Memory in MiB |
@@ -115,7 +118,7 @@ Other documents MUST reference these definitions rather than re-defining fields.
 | `auto_remove` | bool | `false` | If true, VM is auto-deleted on stop (omitted if false) |
 | `updated_at` | string | `"2026-02-12T10:01:30Z"` | Last metadata write |
 | `started_at` | string | `"2026-02-12T10:01:00Z"` | Last start timestamp |
-| `stopped_at` | string | `null` | Last stop timestamp |
+| `stopped_at` | string | `""` | Omitted when VM has not been stopped; RFC 3339 timestamp when set |
 | `schema_version` | int | `1` | Schema version for migration |
 
 #### references.json (Global — tracks base image usage)

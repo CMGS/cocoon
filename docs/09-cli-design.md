@@ -547,9 +547,8 @@ func initCommand() *cli.Command {
 # Basic initialization
 sudo cocoon init
 
-# Initialize (downloads CLOUDHV.fd automatically)
-# Override edk2 version: EDK2_CH_VERSION=a54f262b09 sudo cocoon init
-sudo cocoon init
+# Initialize with UEFI firmware download
+sudo cocoon init --with-uefi-firmware https://github.com/cloud-hypervisor/edk2/releases/download/ch-a54f262b09/CLOUDHV.fd
 
 # Force re-initialization
 sudo cocoon init --force
@@ -1114,10 +1113,8 @@ func imagesCommand() *cli.Command {
                 Usage:     "Pull and cache an image without creating a VM",
                 ArgsUsage: "IMAGE_REF",
                 Flags: []cli.Flag{
-                    &cli.BoolFlag{
-                        Name:  "oci",
-                        Usage: "treat image as an OCI VM image",
-                    },
+                    // Note: --oci flag on pull is Phase 2 (not yet implemented).
+                    // Image type is auto-detected from the reference format.
                     &cli.BoolFlag{
                         Name:  "skip-verify",
                         Usage: "skip bootability verification after pull",
@@ -1125,25 +1122,26 @@ func imagesCommand() *cli.Command {
                 },
                 Action:    imagePullAction,
             },
-            {
-                Name:      "build",
-                Usage:     "Build a bootable OCI VM image (see docs/04.1-oci-vm-image-build.md)",
-                ArgsUsage: "CONTEXT_DIR",
-                Flags: []cli.Flag{
-                    &cli.StringFlag{
-                        Name:    "tag",
-                        Aliases: []string{"t"},
-                        Usage:   "image tag (e.g., myorg/myvm:latest)",
-                    },
-                },
-                Action: imageBuildAction,
-            },
-            {
-                Name:      "push",
-                Usage:     "Push a built OCI VM image to a registry (see docs/04.1-oci-vm-image-build.md)",
-                ArgsUsage: "IMAGE_REF",
-                Action:    imagePushAction,
-            },
+            // Phase 2: image build and push are planned but not yet implemented.
+            // {
+            //     Name:      "build",
+            //     Usage:     "Build a bootable OCI VM image (Phase 2)",
+            //     ArgsUsage: "CONTEXT_DIR",
+            //     Flags: []cli.Flag{
+            //         &cli.StringFlag{
+            //             Name:    "tag",
+            //             Aliases: []string{"t"},
+            //             Usage:   "image tag (e.g., myorg/myvm:latest)",
+            //         },
+            //     },
+            //     Action: imageBuildAction,
+            // },
+            // {
+            //     Name:      "push",
+            //     Usage:     "Push a built OCI VM image to a registry (Phase 2)",
+            //     ArgsUsage: "IMAGE_REF",
+            //     Action:    imagePushAction,
+            // },
             {
                 Name:      "inspect",
                 Usage:     "Show details of a cached image (size, checksum, ref count)",
@@ -1213,8 +1211,8 @@ cocoon image pull /tmp/ubuntu-22.04-cloudimg.qcow2
 # Pull bootable OCI image (custom-built, requires root for conversion)
 cocoon image pull myorg/ubuntu-bootable:22.04
 
-# Pull OCI VM image (uses direct kernel boot)
-cocoon image pull --oci myorg/ubuntu-vm:22.04
+# Pull OCI VM image (Phase 2: --oci flag not yet implemented; type is auto-detected)
+# cocoon image pull --oci myorg/ubuntu-vm:22.04
 
 # List cached images
 cocoon image list
@@ -1258,8 +1256,8 @@ Solutions:
   1. Use Cloud Hypervisor native cloud images (recommended):
      cocoon image pull https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img
 
-  2. [Phase 2] Build a bootable OCI image with:
-     cocoon image build-bootable --base ubuntu:22.04 --output myorg/ubuntu-bootable:22.04
+  2. (Phase 2) Build a bootable OCI image with:
+     cocoon image build --base ubuntu:22.04 --tag myorg/ubuntu-bootable:22.04
 
   3. See docs/00-overview.md#supported-image-contract for details
 

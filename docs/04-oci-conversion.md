@@ -1104,7 +1104,7 @@ Phase 1 requires at least one **pinned reference image** per source type for ful
 | **Pinned URL** | `https://cloud-images.ubuntu.com/releases/22.04/release-20240126/ubuntu-22.04-server-cloudimg-amd64.img` |
 | **SHA256** | Pin in `test/fixtures/verified-images.sha256` -- placeholder until Phase 1 CI setup (update on deliberate image bump only) |
 | **Format** | qcow2 (direct use, no conversion) |
-| **Boot Mode** | UEFI (default), PVH (option) |
+| **Boot Mode** | UEFI (default), direct kernel boot (Phase 2) |
 | **Guest init** | Users may optionally install cloud-init for guest initialization |
 
 **CI Usage**:
@@ -1161,7 +1161,7 @@ The following pipeline stages MUST pass for every PR:
 | **Image fetch** | Download + SHA256 verify | Pull by digest |
 | **OCI->qcow2 conversion** | N/A (already qcow2) | Buildah extract -> guestfish convert |
 | **Bootability verification** | `cocoon image verify` (post-conversion) | `cocoon image verify` (post-conversion) |
-| **PVH boot** | Boot with `hypervisor-fw` | Boot with `hypervisor-fw` |
+| **Direct kernel boot** | Boot with `payload.kernel` + `payload.initramfs` | Boot with `payload.kernel` + `payload.initramfs` |
 | **Boot detection** | Serial log -> systemd markers | Serial log -> systemd markers |
 | **Lifecycle** | create -> start -> inspect -> stop -> delete | create -> start -> inspect -> stop -> delete |
 | **Crash recovery** | kill -9 CH -> `cocoon doctor --fix` | kill -9 CH -> `cocoon doctor --fix` |

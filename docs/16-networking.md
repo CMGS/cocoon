@@ -131,7 +131,7 @@ VMs created without `--network` (or with `--network none`) have no TAP device, n
 
 ### 2.0 Design Constraints and Prerequisites
 
-**Cloud Hypervisor Version Requirement**: Phase 2 networking requires a CH version that does NOT assign default IP/mask to virtio-net devices. Older CH versions auto-assign `192.168.249.1/24`, which conflicts with CNI-managed IP assignment. The exact minimum version must be validated before implementation. `cocoon doctor` will be extended to enforce this.
+**Cloud Hypervisor Version Requirement**: Phase 2 networking requires Cloud Hypervisor v38.0 or later (the same minimum version as Phase 1; see [08-dependencies.md](./08-dependencies.md)). Older CH versions auto-assigned a default `192.168.249.1/24` address to virtio-net devices, which conflicts with CNI-managed IP assignment. CH v38.0 no longer applies this default when a TAP device is provided via `--net tap=...`, so no version bump is required beyond the existing Phase 1 minimum. `cocoon doctor` already enforces `>= v38.0`; the Phase 2 networking check reuses this existing validation.
 
 ### 2.1 Architecture Overview
 
@@ -1884,7 +1884,55 @@ The VM is not created if network setup fails. This maintains the invariant that 
 
 Network cleanup during `cocoon delete` is best-effort. If CNI DEL fails, the namespace is still deleted (which destroys all devices inside it), and the VM deletion proceeds. Stale IPAM allocations may remain in `/var/lib/cni/networks/` and can be cleaned up via `cocoon doctor --fix`.
 
-### 9.4 Doctor Integration
+### 9.4 Dependencies and Prerequisites
+
+Phase 2 networking relies on several external tools beyond the Phase 1 dependency set (see [08-dependencies.md](./08-dependencies.md) for Phase 1 dependencies). The table below consolidates all networking-specific dependencies.
+
+| Dependency | Package | Required | Purpose | Install (Debian/Ubuntu) | Install (Fedora/RHEL) |
+|------------|---------|----------|---------|------------------------|----------------------|
+| `ip` | iproute2 | Yes | TAP device management, bridge inspection, interface configuration | `apt install iproute2` | `dnf install iproute` |
+| `nsenter` | util-linux | Yes | Network namespace entry for Cloud Hypervisor launch (`nsenter --net=<path>`) | `apt install util-linux` | `dnf install util-linux` |
+| CNI plugins (`bridge`, `host-local`, `portmap`, etc.) | containernetworking-plugins | Yes | Network plumbing: bridge creation, IP allocation, port forwarding | See [containernetworking/plugins releases](https://github.com/containernetworking/plugins/releases) | See [containernetworking/plugins releases](https://github.com/containernetworking/plugins/releases) |
+| `dnsmasq` | dnsmasq / dnsmasq-base | Yes | Per-bridge DHCP server for guest IP assignment (static leases from CNI IPAM result) | `apt install dnsmasq-base` | `dnf install dnsmasq` |
+| `iptables` or `nftables` | iptables / nftables | Yes | NAT/masquerade for outbound traffic, port forwarding via CNI portmap plugin | `apt install iptables` | `dnf install iptables-nft` |
+| `tc` | iproute2 | Yes | TC mirred redirect rules between CNI veth and TAP device (core to the networking model) | (included with iproute2) | (included with iproute) |
+| `/dev/net/tun` | (kernel) | Yes | TUN/TAP device creation for virtio-net backend | Built-in (kernel module `tun`) | Built-in (kernel module `tun`) |
+| CNI config directory | (user-provided) | Yes | CNI network configuration files (`/etc/cni/net.d/*.conflist`) | Create manually or install from CNI quickstart | Create manually or install from CNI quickstart |
+
+**Notes**:
+
+- `ip`, `tc`, and `nsenter` are typically pre-installed on all modern Linux distributions. `iproute2` and `util-linux` are part of the minimal install on Ubuntu, Debian, and Fedora.
+- CNI plugins must be installed separately. The standard location is `/opt/cni/bin/`. Cocoon also searches `/usr/lib/cni` and `/usr/libexec/cni`. See Section 3.7 for the plugin search path.
+- `dnsmasq-base` (Debian/Ubuntu) is preferred over `dnsmasq` because it does not install a system-wide dnsmasq service. Cocoon manages its own per-bridge dnsmasq instances.
+- Cloud Hypervisor (v38.0+) is a Phase 1 dependency and is not repeated here. See [08-dependencies.md](./08-dependencies.md).
+
+**CNI Plugin Installation**:
+
+```bash
+# Download and install standard CNI plugins
+CNI_VERSION="v1.4.0"
+curl -LO https://github.com/containernetworking/plugins/releases/download/${CNI_VERSION}/cni-plugins-linux-amd64-${CNI_VERSION}.tgz
+sudo mkdir -p /opt/cni/bin
+sudo tar -xzf cni-plugins-linux-amd64-${CNI_VERSION}.tgz -C /opt/cni/bin
+```
+
+**Corresponding `cocoon doctor` Checks**:
+
+Each dependency above has a corresponding `cocoon doctor` check (see Section 9.5 below). The checks are severity `warning` rather than `error` because networking is optional -- VMs without `--network` do not require any networking dependencies.
+
+| Doctor Check | What It Verifies | Severity |
+|-------------|------------------|----------|
+| `ip-command` | `ip` binary exists in PATH | warning |
+| `nsenter-command` | `nsenter` binary exists in PATH; process has root or `CAP_SYS_ADMIN` | warning |
+| `cni-plugins` | At least one CNI plugin directory contains binaries | warning |
+| `cni-config-dir` | `/etc/cni/net.d/` directory exists | warning |
+| `dnsmasq-command` | `dnsmasq` binary exists in PATH | warning |
+| `tc-command` | `tc` binary exists in PATH | warning |
+| `tun-device` | `/dev/net/tun` device exists | warning |
+| `ch-cap-net-admin` | CH binary has `CAP_NET_ADMIN` (informational; root bypasses) | info |
+| `stale-ipam-allocations` | No IPAM allocation files referencing deleted VMs | info |
+
+### 9.5 Doctor Integration
 
 `cocoon doctor` is extended with network health checks:
 

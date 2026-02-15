@@ -15,6 +15,7 @@ const (
 	BootStrategyUEFI BootStrategy = "uefi"
 	// BootStrategyDirect boots an OCI VM image using direct kernel boot via
 	// REST payload.kernel + payload.initramfs + payload.cmdline.
+	// Phase 2: not yet wired to the image pipeline. See docs/04.1-oci-vm-images.md.
 	BootStrategyDirect BootStrategy = "direct"
 )
 

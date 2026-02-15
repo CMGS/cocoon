@@ -95,7 +95,7 @@ See [04-oci-conversion.md § 10 Verified Images](./04-oci-conversion.md#10-verif
 | **vm_id** | Internal primary key (`vm-{ulid}`). Never reused. Used in directory names, logs, locks. |
 | **name** | User-facing VM alias. Globally unique. Optional on create. |
 | **vm-ref** | CLI argument that accepts either vm_id or name. Resolved by the CLI. |
-| **firmware** | Binary loaded by Cloud Hypervisor at boot. UEFI: `CLOUDHV.fd` for cloud images. OCI VM images use direct kernel boot (`payload.kernel`). |
+| **firmware** | Binary loaded by Cloud Hypervisor at boot. UEFI: `CLOUDHV.fd` for cloud images. Phase 2 will add direct kernel boot (`payload.kernel`) for OCI VM images. |
 
 **Resource Units**:
 - CLI accepts human-readable units: `512M`, `1G`, `2G`, `10G`
@@ -163,13 +163,13 @@ Modern VM workloads and development environments face a challenging trade-off be
 
 ## Key Design Decisions
 
-### 1. Dual Boot Strategy: UEFI for Cloud Images, Direct Kernel Boot for OCI
+### 1. Boot Strategy: UEFI for Cloud Images (Phase 1), Direct Kernel Boot for OCI (Phase 2)
 
-**Decision**: Use UEFI boot with CLOUDHV.fd for cloud images (qcow2/URL), and direct kernel boot (`payload.kernel` + `payload.initramfs` + `payload.cmdline`) for OCI VM images.
+**Decision**: Phase 1 supports UEFI boot with CLOUDHV.fd for cloud images (qcow2/URL). Direct kernel boot (`payload.kernel` + `payload.initramfs` + `payload.cmdline`) for OCI VM images is designed in [docs/04.1-oci-vm-images.md](./04.1-oci-vm-images.md) and planned for Phase 2.
 
 **Rationale**:
-- **UEFI (Cloud Images)**: Broadest compatibility with cloud images, supports secure boot, CH project recommended firmware
-- **Direct Kernel Boot (OCI)**: Boots extracted kernel and initramfs directly via Cloud Hypervisor's `payload.kernel`, bypassing the need for a bootloader in the image
+- **UEFI (Cloud Images — Phase 1)**: Broadest compatibility with cloud images, supports secure boot, CH project recommended firmware
+- **Direct Kernel Boot (OCI — Phase 2)**: Will boot extracted kernel and initramfs directly via Cloud Hypervisor's `payload.kernel`, bypassing the need for a bootloader in the image. This is not yet implemented.
 - UEFI default for cloud images eliminates boot failures from images that lack specific kernel layouts
 
 ### 2. Per-VM Cloud Hypervisor Process for Isolation
@@ -227,7 +227,7 @@ Phase 1 delivers a complete, production-ready VM lifecycle management system.
 - ✅ VM lifecycle (create/start/stop/kill/delete) with state machine
 - ✅ Copy-on-write storage with qcow2 backing files
 - ✅ Reference counting and garbage collection
-- ✅ UEFI boot for cloud images, direct kernel boot for OCI VM images
+- ✅ UEFI boot for cloud images (direct kernel boot for OCI VM images is Phase 2)
 - ✅ TPM 2.0 emulation via swtpm (`--tpm` flag)
 - ✅ Reconciliation and crash recovery (`cocoon doctor`)
 - ✅ CLI tool with Docker-like interface (`cocoon run/ps/logs/inspect`)
@@ -309,7 +309,7 @@ Cocoon is a general-purpose lightweight VM manager. Common use cases include:
 - **Language**: Go 1.25+ (interface-driven, factory pattern)
 - **OCI Tools**: Buildah (daemonless)
 - **Storage**: qcow2 via qemu-img and libguestfs
-- **Firmware**: OVMF (UEFI via CLOUDHV.fd) for cloud images; direct kernel boot for OCI VM images
+- **Firmware**: OVMF (UEFI via CLOUDHV.fd) for cloud images; direct kernel boot for OCI VM images (Phase 2)
 - **TPM**: swtpm (optional TPM 2.0 emulation)
 - **CLI Framework**: urfave/cli/v2
 - **Configuration**: JSON with sensible defaults

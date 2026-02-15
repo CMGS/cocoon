@@ -212,6 +212,12 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 		bootStrategy = types.DefaultBootStrategy
 	}
 
+	// Defense-in-depth: reject direct kernel boot until Phase 2 wires it
+	// to the image pipeline. See docs/04.1-oci-vm-images.md.
+	if bootStrategy == types.BootStrategyDirect {
+		return nil, fmt.Errorf("direct kernel boot is not yet implemented (Phase 2)")
+	}
+
 	// Generate name if not provided.
 	name := opts.Name
 	if name == "" {

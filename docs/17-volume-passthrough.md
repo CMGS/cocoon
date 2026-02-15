@@ -76,7 +76,7 @@ Share source code from the host into a VM for in-VM compilation and testing.
 Edits on the host are immediately visible in the guest without restart or copy.
 
 ```bash
-cocoon run --volume /home/user/project:/mnt/src myimage
+cocoon run --volume /home/user/project:/mnt/src:rw myimage
 # Inside guest: cd /mnt/src && make test
 ```
 
@@ -109,8 +109,8 @@ Share build caches (ccache, Go module cache, pip cache) between the host
 and guest VMs to avoid redundant downloads and compilations.
 
 ```bash
-cocoon run --volume /var/cache/ccache:/mnt/ccache \
-           --volume /home/user/.cache/go-mod:/mnt/gomod:ro \
+cocoon run --volume /var/cache/ccache:/mnt/ccache:rw \
+           --volume /home/user/.cache/go-mod:/mnt/gomod \
            build-image
 ```
 
@@ -121,7 +121,7 @@ results, or log files are written directly to the host filesystem. The
 files survive VM deletion.
 
 ```bash
-cocoon run --volume /var/log/vm-output:/mnt/output results-image
+cocoon run --volume /var/log/vm-output:/mnt/output:rw results-image
 # After VM stops, results are at /var/log/vm-output/
 ```
 
@@ -270,19 +270,22 @@ Volume passthrough uses Docker-like syntax on `create` and `run` commands:
 Short form: `-v`
 
 **Options**:
-- `ro` -- read-only mount (default: read-write)
-- `rw` -- explicitly read-write (default)
+- `ro` -- read-only mount (default)
+- `rw` -- explicitly read-write (must be specified)
 
 **Examples**:
 
 ```bash
-# Single read-write volume
+# Single read-only volume (default mode)
 cocoon create --volume /host/src:/mnt/src myimage
+
+# Single read-write volume (explicit :rw required)
+cocoon create --volume /host/src:/mnt/src:rw myimage
 
 # Multiple volumes with mixed modes
 cocoon run \
-  --volume /data/models:/mnt/models:ro \
-  --volume /output:/mnt/output \
+  --volume /data/models:/mnt/models \
+  --volume /output:/mnt/output:rw \
   --name worker \
   ai-image
 
@@ -303,7 +306,11 @@ cocoon run -v /src:/mnt/src -v /data:/mnt/data:ro myimage
 &cli.StringSliceFlag{
     Name:    "volume",
     Aliases: []string{"v"},
-    Usage:   "bind mount a host directory into the guest (HOST:GUEST[:ro])",
+    Usage:   "bind mount a host directory into the guest (HOST:GUEST[:ro|:rw], default ro)",
+},
+&cli.BoolFlag{
+    Name:  "allow-dangerous-paths",
+    Usage: "allow mounting sensitive host paths (/, /etc, /var/run) as volumes",
 },
 ```
 
@@ -323,7 +330,7 @@ func ParseVolumeFlag(spec string) (*VolumeMount, error) {
     vm := &VolumeMount{
         HostPath:   parts[0],
         GuestMount: parts[1],
-        ReadOnly:   false,
+        ReadOnly:   true, // Default: read-only for security (see §8.2)
     }
 
     if len(parts) == 3 {
@@ -593,13 +600,13 @@ baked into their images. Defer Strategy C to a later phase.
 ### 5.7 Complete Example Flow
 
 ```bash
-$ cocoon run -v /home/user/src:/mnt/src -v /data/models:/mnt/models:ro ai-image
+$ cocoon run -v /home/user/src:/mnt/src:rw -v /data/models:/mnt/models ai-image
 ```
 
 Step-by-step:
 
 1. Parse `--volume` flags into `[]VolumeMount`
-2. Validate host paths exist, guest paths are absolute, no duplicates
+2. Validate host paths exist and are in the allowlist, guest paths are absolute, no duplicates
 3. Create VM (generate ID, prepare image, create overlay, write config)
 4. Record volumes in config.json (immutable after creation)
 5. Start VM:
@@ -612,8 +619,8 @@ Step-by-step:
    g. Wait for boot detection (serial log patterns)
 6. Guest kernel discovers two virtio-fs devices: `mnt-src`, `mnt-models`
 7. Guest auto-mounts them via tag convention (or user mounts manually):
-   - `mount -t virtiofs mnt-src /mnt/src`
-   - `mount -t virtiofs mnt-models /mnt/models -o ro`
+   - `mount -t virtiofs mnt-src /mnt/src` (rw, explicit)
+   - `mount -t virtiofs mnt-models /mnt/models -o ro` (ro, default)
 8. Guest can read/write `/mnt/src`, read `/mnt/models`
 
 ---
@@ -739,7 +746,7 @@ func (c *CocoonConfig) VMVirtiofsPIDPath(vmID, tag string) string {
 
 ### 6.7 CocoonConfig Changes
 
-Add virtiofsd binary path to global config:
+Add virtiofsd binary path and volume security settings to global config:
 
 ```go
 type CocoonConfig struct {
@@ -748,6 +755,14 @@ type CocoonConfig struct {
     // VirtiofsdBinary is the path to the virtiofsd binary.
     // Defaults to "virtiofsd" (resolved via PATH).
     VirtiofsdBinary string `json:"virtiofsd_binary"`
+
+    // VolumeAllowedPaths is the list of host path prefixes that are allowed
+    // as volume sources without --allow-dangerous-paths. See §8.1.
+    VolumeAllowedPaths []string `json:"volume_allowed_paths"`
+
+    // AllowDangerousVolumePaths, if true, disables the volume path allowlist
+    // globally. Equivalent to always passing --allow-dangerous-paths.
+    AllowDangerousVolumePaths bool `json:"allow_dangerous_volume_paths,omitempty"`
 }
 ```
 
@@ -758,6 +773,11 @@ func DefaultConfig() *CocoonConfig {
     return &CocoonConfig{
         // ... existing defaults ...
         VirtiofsdBinary: "virtiofsd",
+        VolumeAllowedPaths: []string{
+            "/var/lib/cocoon/shares/",
+            "/home/",
+            "/tmp/",
+        },
     }
 }
 ```
@@ -954,14 +974,46 @@ directory.
 
 ## 8. Security
 
-### 8.1 Path Validation
+### 8.1 Host Path Allowlist Policy
 
-Host paths provided via `--volume` must be validated to prevent directory
-traversal and symlink attacks:
+By default, Cocoon restricts volume source paths to a configurable allowlist.
+This prevents accidental or malicious exposure of sensitive host directories
+to guest VMs.
+
+**Default allowlist**:
+
+- `/var/lib/cocoon/shares/` -- Cocoon-managed shared data directory
+- `/home/` -- User home directories (for development workflows)
+- `/tmp/` -- Temporary files
+
+**Configuration** (`cocoon.json`):
+
+```json
+{
+    "volume_allowed_paths": [
+        "/var/lib/cocoon/shares/",
+        "/home/",
+        "/tmp/"
+    ]
+}
+```
+
+**Dangerous path protection**: Mounting sensitive host paths requires explicit
+opt-in. The following paths are ALWAYS denied unless the user passes
+`--allow-dangerous-paths` on the CLI or sets `allow_dangerous_volume_paths: true`
+in `cocoon.json`:
+
+- `/` (root filesystem)
+- `/etc` (system configuration)
+- `/var/run` and `/run` (runtime state, sockets)
+- `/proc`, `/sys`, `/dev` (kernel interfaces)
+- `/boot` (bootloader and kernel images)
+- `/root` (root user home directory)
 
 ```go
 // ValidateHostPath ensures a host path is safe for sharing.
-func ValidateHostPath(hostPath string) error {
+// It enforces the allowlist and deny-list policies.
+func ValidateHostPath(hostPath string, cfg *CocoonConfig, allowDangerous bool) error {
     // Must be absolute.
     if !filepath.IsAbs(hostPath) {
         return fmt.Errorf("host path must be absolute: %s", hostPath)
@@ -984,19 +1036,40 @@ func ValidateHostPath(hostPath string) error {
         return fmt.Errorf("host path must be a directory: %s", resolved)
     }
 
-    // Deny sharing sensitive host paths.
-    deniedPrefixes := []string{
-        "/proc",
-        "/sys",
-        "/dev",
-        "/boot",
-        "/etc/shadow",
-        "/etc/passwd",
-        "/root",
+    // Always-denied paths (cannot be overridden even with --allow-dangerous-paths).
+    hardDenied := []string{"/proc", "/sys", "/dev"}
+    for _, prefix := range hardDenied {
+        if resolved == prefix || strings.HasPrefix(resolved, prefix+"/") {
+            return fmt.Errorf("sharing %s is never allowed (kernel interface path)", resolved)
+        }
     }
-    for _, prefix := range deniedPrefixes {
-        if strings.HasPrefix(resolved, prefix) {
-            return fmt.Errorf("sharing %s is not allowed for security reasons", resolved)
+
+    // Dangerous paths require explicit opt-in.
+    dangerousPrefixes := []string{"/", "/etc", "/var/run", "/run", "/boot", "/root"}
+    for _, prefix := range dangerousPrefixes {
+        if resolved == prefix || (prefix != "/" && strings.HasPrefix(resolved, prefix+"/")) {
+            if !allowDangerous {
+                return fmt.Errorf(
+                    "sharing %s is restricted for security reasons; "+
+                        "use --allow-dangerous-paths to override", resolved)
+            }
+        }
+    }
+
+    // Check against configurable allowlist.
+    if !allowDangerous {
+        allowed := false
+        for _, allowedPath := range cfg.VolumeAllowedPaths {
+            if strings.HasPrefix(resolved, allowedPath) {
+                allowed = true
+                break
+            }
+        }
+        if !allowed {
+            return fmt.Errorf(
+                "host path %s is not in the volume allowlist %v; "+
+                    "add the path to volume_allowed_paths in cocoon.json "+
+                    "or use --allow-dangerous-paths", resolved, cfg.VolumeAllowedPaths)
         }
     }
 
@@ -1004,50 +1077,199 @@ func ValidateHostPath(hostPath string) error {
 }
 ```
 
-### 8.2 Read-Only Enforcement
+**CLI flag**:
 
-Read-only is enforced at multiple layers:
-
-1. **virtiofsd**: Launched with restricted permissions on the shared directory
-2. **Cloud Hypervisor**: The `fs` config can specify read-only mode
-3. **Guest mount**: Mount options include `ro` flag
-4. **Defense in depth**: Even if guest attempts `remount,rw`, the virtiofsd
-   process rejects write operations
-
-### 8.3 UID/GID Mapping
-
-By default, virtiofsd maps the host user running virtiofsd to root (UID 0)
-inside the guest. This means files created by the guest appear owned by the
-host user.
-
-For multi-tenant environments, explicit UID/GID mapping should be configured:
-
-```bash
-# Future: explicit mapping via CLI flags
-cocoon run --volume /data:/mnt/data --volume-uid-map 1000:0 myimage
+```go
+&cli.BoolFlag{
+    Name:  "allow-dangerous-paths",
+    Usage: "allow mounting sensitive host paths (/, /etc, /var/run, etc.) as volumes",
+},
 ```
 
-Phase 2.1 uses the default mapping (host UID = guest root). Explicit mapping
-is deferred to Phase 2.3.
+### 8.2 Read-Only vs Read-Write Policy
+
+**Default: read-only**. Volumes are mounted read-only unless explicitly
+specified as `rw`. This follows the principle of least privilege -- most
+volume use cases (config injection, model weights, static assets) require
+only read access.
+
+```bash
+# Read-only (default behavior when no option specified)
+cocoon run -v /data/models:/mnt/models myimage
+cocoon run -v /data/models:/mnt/models:ro myimage   # Explicit read-only
+
+# Read-write (requires explicit :rw option)
+cocoon run -v /var/log/output:/mnt/output:rw myimage
+```
+
+Read-only is enforced at multiple layers (defense in depth):
+
+1. **virtiofsd**: Launched with `--sandbox=chroot`. For read-only volumes,
+   virtiofsd is additionally started with the shared directory bind-mounted
+   read-only, so even if the guest bypasses virtio-fs semantics, the host
+   filesystem layer rejects writes.
+2. **Cloud Hypervisor**: The `fs` config does not have a native read-only
+   flag, but the virtiofsd backend enforces it.
+3. **Guest mount**: The guest auto-mount convention includes `ro` in the
+   mount options when the volume tag encodes read-only status.
+4. **Defense in depth**: Even if the guest attempts `mount -o remount,rw`,
+   the virtiofsd process rejects write operations at the FUSE layer.
+
+**Use cases by access mode**:
+
+| Access Mode | Use Cases | Risk Level |
+|-------------|-----------|------------|
+| Read-only (`ro`, default) | Config injection, model weights, static assets, shared libraries, reference data | Low -- guest cannot modify host files |
+| Read-write (`rw`) | Log directories, build output, data processing pipelines, development source code | Medium -- guest can create, modify, and delete files on host |
+
+**Recommendation**: Use read-only mounts for all volumes where the guest does
+not need to write data back to the host. For untrusted workloads, always use
+read-only mounts combined with `--sandbox chroot` (the default).
+
+### 8.3 Permission Mapping (UID/GID)
+
+#### Default Behavior: No Mapping (Pass-Through)
+
+By default, virtiofsd does not remap UIDs or GIDs. Host UIDs pass through
+to the guest unmodified. This means:
+
+- **Guest root (UID 0) has root-equivalent access** to shared files on the
+  host. If the virtiofsd process runs as root (which it does in Cocoon,
+  since Cocoon requires root), guest root can read and write any file in the
+  shared directory that host root can access.
+- Files created by guest UID 1000 appear as UID 1000 on the host.
+- Files created by guest root (UID 0) appear as root-owned on the host.
+
+**Security implication**: Without UID mapping, a compromised guest with root
+access can modify or delete any file in a read-write shared directory. This is
+acceptable for single-user development workflows but is a security concern for
+multi-tenant deployments.
+
+#### Mitigation Strategies
+
+1. **Read-only mounts** (primary defense): Use `:ro` for all volumes where
+   the guest does not need write access. Even guest root cannot modify
+   read-only shared directories.
+
+2. **virtiofsd sandbox** (`--sandbox=chroot`, default): The chroot sandbox
+   prevents virtiofsd from accessing any host path outside the shared directory
+   tree. Guest root can only affect files within the shared mount, not arbitrary
+   host paths.
+
+3. **UID/GID mapping** (Phase 2.5, optional): For multi-tenant scenarios,
+   explicit UID/GID mapping remaps guest UIDs to unprivileged host UIDs:
+
+```bash
+# Future: explicit mapping via CLI flags (Phase 2.5)
+cocoon run --volume /data:/mnt/data:rw \
+           --volume-uid-map 0:100000 \
+           --volume-gid-map 0:100000 \
+           myimage
+```
+
+With `--uid-map 0:100000`, guest UID 0 maps to host UID 100000 (unprivileged),
+preventing privilege escalation from guest to host. virtiofsd supports
+`--uid-map` and `--gid-map` flags for this purpose.
+
+4. **Namespace sandbox** (`--sandbox=namespace`): Uses user and mount namespaces
+   for stronger isolation than chroot. This is available but not the default
+   because it adds complexity and may conflict with some host configurations.
+
+#### Recommendation by Deployment Model
+
+| Deployment | UID Mapping | Recommended Mount Mode | Notes |
+|------------|-------------|----------------------|-------|
+| Single-user development | None (default) | `:rw` for source code, `:ro` for everything else | Simplest setup, acceptable trust level |
+| CI/CD pipelines | None (default) | `:rw` for build output, `:ro` for inputs | VMs are ephemeral, blast radius is limited |
+| Multi-tenant / untrusted | `--uid-map 0:100000` (Phase 2.5) | `:ro` wherever possible | Prevents guest root from writing as host root |
+| Production serving | None (default) | `:ro` only | Never mount read-write into production VMs |
 
 ### 8.4 Sandboxing virtiofsd
 
 virtiofsd supports multiple sandboxing modes:
 
-- `--sandbox=chroot`: chroots into the shared directory (default, recommended)
-- `--sandbox=namespace`: uses user/mount namespaces for stronger isolation
+- `--sandbox=chroot`: chroots into the shared directory (default, recommended).
+  The virtiofsd process cannot access any host path outside the shared directory.
+  This is the primary defense against directory traversal from the guest.
+- `--sandbox=namespace`: Uses user/mount namespaces for stronger isolation.
+  Provides additional protection via kernel namespace boundaries but may
+  conflict with some host security configurations (e.g., user namespace
+  restrictions).
 
-Cocoon uses `--sandbox=chroot` by default. Cocoon requires root, so
-both sandboxing modes are available.
+Cocoon uses `--sandbox=chroot` by default. Since Cocoon requires root, both
+sandboxing modes are available.
+
+**virtiofsd launch with sandbox**:
+
+```go
+args := []string{
+    "--socket-path", socketPath,
+    "--shared-dir", vol.HostPath,
+    "--cache=auto",
+    "--sandbox=chroot",     // Always enabled by default
+}
+```
 
 ### 8.5 Denial of Service Prevention
 
 - **Max volumes per VM**: Configurable limit (default: 16) to prevent
-  excessive virtiofsd process spawning
+  excessive virtiofsd process spawning.
 - **Socket path length**: Unix socket paths are limited to 108 characters;
-  tag derivation ensures paths stay within this limit
+  tag derivation ensures paths stay within this limit.
 - **virtiofsd resource limits**: Future enhancement to set cgroup limits on
-  virtiofsd processes
+  virtiofsd processes.
+
+### 8.6 Normative Security Rules
+
+> **Security Policy for Volume Passthrough**
+>
+> The following normative rules govern volume passthrough behavior. Rules use
+> RFC 2119 language: MUST (required), SHOULD (recommended), MAY (optional).
+>
+> **MUST**:
+>
+> 1. virtiofsd MUST be launched with `--sandbox=chroot` (or `--sandbox=namespace`)
+>    enabled. Disabling the sandbox (`--sandbox=none`) is not permitted by Cocoon.
+>
+> 2. Host paths MUST be validated against the allowlist before any volume mount
+>    is created. Paths outside the allowlist are rejected unless
+>    `--allow-dangerous-paths` is explicitly provided.
+>
+> 3. Volumes MUST default to read-only (`:ro`). Read-write access requires
+>    explicit `:rw` in the volume specification.
+>
+> 4. Host paths MUST be resolved (symlinks evaluated, path cleaned) before
+>    validation. This prevents symlink-based escapes where a symlink inside
+>    an allowed path points to a disallowed path.
+>
+> 5. `/proc`, `/sys`, and `/dev` MUST never be shared as volumes, even with
+>    `--allow-dangerous-paths`. These kernel interface paths present
+>    unacceptable host compromise risk.
+>
+> **SHOULD**:
+>
+> 6. UID/GID mapping SHOULD be documented and recommended for multi-tenant
+>    deployments where guest VMs are not fully trusted. The default
+>    no-mapping behavior SHOULD be clearly communicated as "guest root
+>    equals host root on shared files."
+>
+> 7. `cocoon doctor` SHOULD check for virtiofsd availability and version
+>    compatibility. The check SHOULD warn if virtiofsd is not found or is
+>    older than v1.7.0 (the minimum supported Rust virtiofsd version).
+>
+> 8. `cocoon doctor` SHOULD verify that `/dev/fuse` is available on the host,
+>    as virtiofsd requires FUSE support.
+>
+> 9. Volume-related errors SHOULD include actionable remediation guidance
+>    (e.g., "add path to volume_allowed_paths" or "use --allow-dangerous-paths").
+>
+> **MAY**:
+>
+> 10. Cocoon MAY support `--sandbox=namespace` as an alternative to the default
+>     `--sandbox=chroot` for environments that require stronger isolation.
+>
+> 11. Cocoon MAY log a warning when a read-write volume is mounted for
+>     informational purposes, to encourage read-only usage where possible.
 
 ---
 
@@ -1110,14 +1332,59 @@ type manager struct {
 
 ### 9.4 Doctor Command
 
-`cocoon doctor` is extended to check for virtiofsd availability:
+`cocoon doctor` is extended to check for virtiofsd availability and related
+prerequisites:
 
 ```go
-// In doctor checks:
-// - Verify virtiofsd binary exists and is executable
-// - Verify virtiofsd version is compatible (>= 1.7.0 recommended)
-// - Check /dev/fuse is available (required by virtiofsd)
+// Volume-related doctor checks (added to existing doctor command):
+func volumeDoctorChecks() []DoctorCheck {
+    return []DoctorCheck{
+        {
+            Name: "virtiofsd-binary",
+            Check: func() error {
+                path, err := exec.LookPath("virtiofsd")
+                if err != nil {
+                    return fmt.Errorf(
+                        "'virtiofsd' not found in PATH (needed for volume passthrough): %w\n"+
+                        "  Install: see https://gitlab.com/virtio-fs/virtiofsd/-/releases", err)
+                }
+                // Check version: virtiofsd --version -> "virtiofsd X.Y.Z"
+                out, err := exec.Command(path, "--version").CombinedOutput()
+                if err != nil {
+                    return fmt.Errorf("cannot determine virtiofsd version: %w", err)
+                }
+                // Parse and verify >= 1.7.0
+                if !isVersionAtLeast(string(out), "1.7.0") {
+                    return fmt.Errorf(
+                        "virtiofsd version too old (need >= 1.7.0, got %s); "+
+                        "the older C-based QEMU virtiofsd is not supported", strings.TrimSpace(string(out)))
+                }
+                return nil
+            },
+            Severity: "warning", // Volume support is optional.
+        },
+        {
+            Name: "fuse-device",
+            Check: func() error {
+                if _, err := os.Stat("/dev/fuse"); err != nil {
+                    return fmt.Errorf(
+                        "/dev/fuse not available (required by virtiofsd): %w\n"+
+                        "  Load kernel module: modprobe fuse", err)
+                }
+                return nil
+            },
+            Severity: "warning",
+        },
+    }
+}
 ```
+
+**Doctor check summary for volumes**:
+
+| Doctor Check | What It Verifies | Severity |
+|-------------|------------------|----------|
+| `virtiofsd-binary` | virtiofsd exists in PATH and version >= 1.7.0 (Rust virtiofsd) | warning |
+| `fuse-device` | `/dev/fuse` device exists (kernel FUSE support) | warning |
 
 ---
 
