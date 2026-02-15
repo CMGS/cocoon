@@ -707,6 +707,46 @@ If `cocoon console` connects successfully but shows no login prompt, the guest i
 2. Enable getty: `systemctl enable --now serial-getty@hvc0.service`
 3. For custom images: ensure `console=hvc0` is in the guest's GRUB config (`/etc/default/grub` → `GRUB_CMDLINE_LINUX`) and getty is configured (see §6.3 and §6.4).
 
+### 6.5.1 Kernel Command Line Injection Strategy
+
+Phase 1's image conversion pipeline (`image/pipeline/convert_linux.go`) already injects `console=ttyS0,115200n8` into the guest GRUB configuration to ensure boot output is captured via `cocoon logs`. Phase 2 should extend this mechanism to also inject `console=hvc0` alongside the existing `ttyS0` entry, ensuring boot messages appear on both ports:
+
+- **Serial** (`console=ttyS0,115200n8`): captured to the serial log file for `cocoon logs`
+- **Virtio-console** (`console=hvc0`): visible in the interactive `cocoon console` session
+
+The resulting GRUB kernel command line would include:
+
+```
+console=ttyS0,115200n8 console=hvc0
+```
+
+When multiple `console=` arguments are present, the Linux kernel sends output to all listed consoles (see §6.4). The **last** entry becomes the primary console (`/dev/console`), so `hvc0` is listed last to make it the primary interactive console.
+
+**Phase 2 v1.0 approach**: Rely on `systemd-getty-generator` auto-detection as a fallback. Standard cloud images (Ubuntu, Fedora, Debian) auto-spawn `serial-getty@hvc0.service` when the device is detected, so `cocoon console` works without kernel command line changes in most cases. Boot messages may not appear on the virtio-console until the injection is implemented, but the login prompt will.
+
+**Future improvement**: Update `convert_linux.go` to inject `console=hvc0` alongside `console=ttyS0,115200n8` during image conversion. This ensures boot messages are visible on both `cocoon logs` and `cocoon console` from the earliest point in the boot sequence.
+
+### 6.6 Compatibility and Requirements
+
+This section summarizes the hard requirements for console support and the compatibility status of common guest images.
+
+**Hard Requirements for Console Support:**
+
+1. **Kernel**: `CONFIG_VIRTIO_CONSOLE=y` (auto-satisfied by standard cloud images)
+2. **Init System**: Must run `getty` on `/dev/hvc0` (auto-satisfied by `systemd-getty-generator` in Ubuntu/Fedora/Debian cloud images)
+3. **Kernel Command Line**: Should include `console=hvc0` for boot output visibility
+
+**Compatibility Matrix:**
+
+| Image Source | Console Support | Notes |
+|---|---|---|
+| Ubuntu Cloud Image | Ready | systemd-getty-generator auto-starts getty on hvc0 |
+| Fedora Cloud Image | Ready | systemd-getty-generator auto-starts getty on hvc0 |
+| Debian Cloud Image | Ready | systemd-getty-generator auto-starts getty on hvc0 |
+| Custom OCI Image | Requires Configuration | Must ensure getty runs on /dev/hvc0 |
+
+For custom images that do not include `systemd-getty-generator`, see §6.3 for init-system-specific getty configuration and §6.4 for kernel command line requirements.
+
 ---
 
 ## 7. Error Handling

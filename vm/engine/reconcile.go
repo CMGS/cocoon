@@ -566,7 +566,9 @@ func (m *manager) fixStateMismatch(inc *vm.Inconsistency, force bool) error {
 	case types.VMStateError:
 		meta.PreviousState = meta.State
 		meta.State = string(types.VMStateError)
-		meta.LastError = fmt.Sprintf("reconciliation: was %s but actual state is ERROR (%s)", inc.ExpectedState, inc.Details)
+		errorReason := fmt.Sprintf("reconciliation: was %s but actual state is ERROR (%s)", inc.ExpectedState, inc.Details)
+		meta.LastError = errorReason
+		meta.LastErrorType = string(classifyError(errorReason))
 		meta.ErrorCount++
 
 		// Kill zombie process if present and force is set.

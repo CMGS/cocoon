@@ -466,6 +466,8 @@ func (c *client) SnapshotVM(ctx context.Context, socketPath string, destinationD
 }
 ```
 
+**Note on `destination_url` and `source_url` naming**: Despite the `_url` suffix in the JSON field names, Cloud Hypervisor's snapshot/restore REST API accepts **plain filesystem paths** -- no `file://` prefix is needed. For example, `"destination_url": "/var/lib/cocoon/checkpoints/ckpt-01HY.../ch-snapshot"` is a plain path, not a URL. The same applies to `source_url` in the `--restore` CLI flag (e.g., `source_url=/var/lib/cocoon/checkpoints/ckpt-01HY.../ch-snapshot`). This naming convention comes from Cloud Hypervisor's API schema, which uses "url" loosely to mean "location".
+
 Implementation of `LaunchRestore`:
 
 ```go
@@ -1028,6 +1030,17 @@ cocoon delete "job-$BUILD_NUMBER"
 
 The dominant cost in warm start is the overlay copy. For minimal overlays (few MB of delta after boot), restore completes in under 200ms. For VMs with large overlays (GB of disk writes), the copy time dominates.
 
+**Overlay copy cost during checkpoint**: The overlay copy is also the dominant cost during checkpoint creation, not just restore. While the VM is paused (step 6 in the checkpoint flow, Section 3.1), the overlay file is copied synchronously. The pause duration is proportional to the overlay file size:
+
+| Overlay Size | Approximate Pause Duration | Notes |
+|-------------|---------------------------|-------|
+| < 100 MB | < 0.5s | Minimal writes after boot |
+| 100 MB - 1 GB | 0.5 - 2s | Typical development VM |
+| 1 GB - 5 GB | 2 - 10s | Package installation, model loading |
+| > 5 GB | 10s+ | Large dataset writes |
+
+For VMs with large overlays, the pause duration may be significant. The `--live` flag (Section 3.1) auto-manages the pause/resume cycle to minimize impact -- the VM is paused only for the duration of the copy and CH snapshot, then immediately resumed. A `--background` option that copies the overlay while the VM remains running (using filesystem-level snapshots or copy-on-write) is deferred to a future phase.
+
 Strategies for minimizing overlay size:
 - Take the checkpoint as early as possible after boot (before large writes)
 - Use thin-provisioned base images
@@ -1057,6 +1070,13 @@ A base image cannot be garbage collected while any checkpoint or VM references i
 ### 9.2 Orphaned Checkpoint Cleanup
 
 GC detects checkpoint directories with missing or corrupt `checkpoint.json` and cleans them up.
+
+**Orphaned checkpoint reference recovery**: A checkpoint directory may be deleted externally (manual `rm -rf`, disk failure) while `references.json` still holds a reference with the `ckpt-` prefix (e.g., `ckpt-01HYABC123`). This leaves an orphaned reference that pins the base image unnecessarily.
+
+- **Detection**: `cocoon doctor` checks every `ckpt-`-prefixed reference in `references.json` and verifies the corresponding checkpoint directory exists under `/var/lib/cocoon/checkpoints/`. References pointing to non-existent checkpoint directories are reported as orphaned.
+- **Repair**: `cocoon doctor --fix` removes orphaned checkpoint references from `references.json`. This unpins the base image, allowing GC to collect it if no other references remain.
+- **GC resilience**: When GC iterates references in `references.json`, it must tolerate missing checkpoint directories gracefully. If a `ckpt-`-prefixed reference points to a non-existent directory, GC skips it (logs a warning) rather than crashing. The orphaned reference is left for `cocoon doctor --fix` to clean up.
+- **Naming convention**: Checkpoint references use the `ckpt-` prefix to distinguish them from VM references (`vm-`) in `references.json`. This allows both GC and doctor to identify the reference type and validate it against the correct directory (`/var/lib/cocoon/checkpoints/` for checkpoints, `/var/lib/cocoon/vms/` for VMs).
 
 ### 9.3 Checkpoint Expiry (Future)
 

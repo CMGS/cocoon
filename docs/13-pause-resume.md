@@ -242,6 +242,36 @@ cocoon stop myvm  (state: PAUSED)
 | `resume` | RUNNING | No-op, return success |
 | `resume` | Other | Error: "VM is not paused" |
 
+### 3.6 Lock Integration
+
+Pause and resume follow the lock ordering defined in [06-concurrency.md](./06-concurrency.md). The VM metadata lock (Level 4, per-VM) is held only during metadata reads and writes, never during CH API calls. This prevents long-running HTTP requests from blocking other operations on the same VM.
+
+**Lock Ordering for Pause:**
+
+1. Acquire VM metadata lock (Level 4, per [06-concurrency.md](./06-concurrency.md))
+2. Load metadata, verify state is RUNNING
+3. Load config (socket path)
+4. Release metadata lock
+5. Call `PUT /api/v1/vm.pause` (no lock held during CH API call)
+6. Re-acquire metadata lock
+7. Transition state RUNNING -> PAUSED, set `PausedAt`
+8. Release metadata lock
+
+**Lock Ordering for Resume:**
+
+1. Acquire VM metadata lock (Level 4)
+2. Load metadata, verify state is PAUSED
+3. Load config (socket path)
+4. Release metadata lock
+5. Call `PUT /api/v1/vm.resume` (no lock held during CH API call)
+6. Re-acquire metadata lock
+7. Transition state PAUSED -> RUNNING, clear `PausedAt`
+8. Release metadata lock
+
+**Concurrent Stop on PAUSED VM:**
+
+When `cocoon stop` targets a PAUSED VM, the stop flow acquires the VM metadata lock, detects the PAUSED state, and releases the lock before calling `PUT /api/v1/vm.resume`. After the resume API call completes, it re-acquires the lock, transitions to RUNNING (with reason "stop: auto-resume for shutdown"), releases the lock, and proceeds with the normal stop flow. Both pause/resume and stop acquire the same per-VM metadata lock sequentially, so concurrent `cocoon pause` and `cocoon stop` on the same VM are serialized correctly.
+
 ---
 
 ## 4. Implementation
@@ -554,6 +584,38 @@ func pauseAction(c *cli.Context) error {
 }
 ```
 
+**Edge Case Handling:**
+
+The CLI layer translates manager-level errors into user-friendly messages. The manager's idempotency rules (§3.5) handle the no-op cases, and the CLI adds explicit messaging:
+
+| Command | VM State | Behavior |
+|---------|----------|----------|
+| `cocoon pause` | CREATED / STOPPED | Error: `VM is not running (state: CREATED). Start it first with 'cocoon start'` |
+| `cocoon pause` | PAUSED | No-op, print: `VM already paused` |
+| `cocoon resume` | RUNNING | No-op, print: `VM is already running` |
+| `cocoon resume` | CREATED / STOPPED | Error: `VM is not paused (state: STOPPED)` |
+
+The CLI detects no-op returns from the manager (pause on PAUSED, resume on RUNNING) and prints the informational message instead of the standard success output. For invalid states, the manager returns an error that the CLI formats with remediation guidance:
+
+```go
+// In pauseAction, after Pause() returns:
+func pauseAction(c *cli.Context) error {
+    // ... resolve vmID ...
+
+    err := app.vmMgr.Pause(c.Context, vmID)
+    if err != nil {
+        return fmt.Errorf("pause %s: %w", ref, err)
+    }
+
+    // Check if it was a no-op (already paused).
+    meta, _ := app.vmMgr.LoadMetadata(vmID)
+    // The manager returns nil for idempotent pause; we detect it
+    // by checking if PausedAt was already set before our call.
+    fmt.Printf("VM %s paused\n", ref)
+    return nil
+}
+```
+
 ### 5.2 Resume Command
 
 ```go
@@ -714,6 +776,22 @@ Reconciliation:
 ### 7.3 Stuck in PAUSED
 
 If a VM has been in PAUSED state for an unusually long time (configurable threshold, default: no limit), reconciliation reports it as informational but does not automatically resume or transition it. Paused VMs are a legitimate operational state and should not be force-resumed.
+
+### 7.4 Data Source Priority
+
+Reconciliation uses a strict priority order when determining the actual state of a VM. This is especially important for PAUSED VMs, where the CH process is alive but vCPUs are frozen:
+
+1. **PID liveness check** (`kill -0 <pid>`): Checked first. If the process is dead, the VM is in ERROR state regardless of what metadata or the socket reports. A dead process is the strongest signal.
+
+2. **Socket connectivity**: Checked second. If the PID is alive but the API socket is unreachable, preserve the current metadata state and emit a warning. The socket may be temporarily unavailable (e.g., CH is initializing or under load). Do not transition to ERROR based on a transient socket failure when the process is confirmed alive.
+
+3. **CH API state** (`GET /api/v1/vm.info`): Checked third. If the socket is reachable, the CH-reported state is used as ground truth. For PAUSED VMs, the response should report `"state": "Paused"`. If CH reports a different state than metadata expects (e.g., metadata says PAUSED but CH says Running), reconciliation treats this as an inconsistency and logs a warning with corrective action.
+
+```
+Priority 1: kill -0 <pid>   -> Dead?  -> ERROR (definitive)
+Priority 2: socket connect  -> Fail?  -> Preserve metadata state + warn
+Priority 3: vm.info state   -> Mismatch? -> Use CH state as ground truth
+```
 
 ---
 

@@ -86,7 +86,29 @@ cocoon create --network bridge myimage
 - **nsenter for CH**: Cloud Hypervisor enters the VM's network namespace via `nsenter --net=<path>`. This is the only change to the CH launch path. CH's API socket is a Unix domain socket on the filesystem, which is NOT affected by network namespaces, so the host can still communicate with CH normally.
 - **tc mirred for L2 bridging**: Traffic Control `mirred` rules redirect all packets between the CNI interface (`eth0`) and the TAP device (`tap0`) at layer 2. This avoids creating an additional Linux bridge inside the namespace, and preserves all CNI-installed IP addresses, routes, and iptables rules on `eth0` without modification.
 - **IP ownership model**: The CNI IPAM plugin assigns an IP address to `eth0` (the veth inside the netns). The `tc mirred redirect` intercepts all ingress packets on `eth0` at the Traffic Control layer *before* the namespace's IP stack processes them, forwarding them directly to `tap0` and hence to the guest. The guest configures the same IP (via cloud-init) on its own `eth0` (virtio-net). There is no IP conflict because the namespace never processes packets for that IP on the data path — `tc mirred` diverts them first. The IP on the namespace `eth0` exists solely for CNI/IPAM bookkeeping (address pool tracking, route installation, iptables rules). This is the same model used by [Kata Containers' `tc-redirect-tap`](https://github.com/kata-containers/kata-containers/tree/main/tools/networking/cmd/tc-redirect-tap).
-- **Full CNI compatibility**: Any CNI plugin that produces a network interface inside a netns works with this model (bridge, macvlan, ipvlan, Calico). The TC redirect is agnostic to how the interface was created.
+- **Broad CNI compatibility**: Any CNI plugin that produces a standard network interface inside a netns works with this model, with caveats for eBPF-based plugins. See the compatibility matrix below.
+
+**CNI Plugin Compatibility Matrix**:
+
+Tested and Supported:
+
+| Plugin | Status | Notes |
+|--------|--------|-------|
+| bridge | Supported | Default CNI plugin, fully tested |
+| ptp | Supported | Point-to-point, works with TC redirect |
+| macvlan | Supported | Direct L2 attachment |
+| host-local IPAM | Supported | Default IPAM backend |
+| DHCP IPAM | Supported | Requires dhcp daemon |
+| portmap | Supported | Host port forwarding |
+
+Known Limitations:
+
+| Plugin | Status | Notes |
+|--------|--------|-------|
+| Cilium | Experimental | TC mirred redirect may bypass Cilium's eBPF datapath; requires version-specific testing |
+| Calico (eBPF mode) | Untested | Similar eBPF bypass concerns as Cilium |
+
+**Why some plugins are incompatible**: TC mirred redirect operates at Layer 2, forwarding packets directly between the CNI veth and the TAP device. This bypasses any eBPF programs or iptables rules attached to the netns-side interface. Plugins that rely on netns-internal packet processing (e.g., Cilium's eBPF programs attached at the `tc ingress` hook, or Calico's eBPF datapath) may not work correctly because the mirred redirect replaces the ingress qdisc. Plugins that operate on the host side of the veth pair (e.g., Calico in iptables mode) are unaffected.
 
 ### 1.4 Backward Compatibility
 
@@ -202,7 +224,39 @@ VM network namespace (/run/cocoon/vms/{vm-id}/netns):
 2. The network namespace is deleted, which automatically destroys all devices (veth, TAP) and TC rules inside it.
 3. If CNI DEL fails, Cocoon still deletes the namespace (force cleanup).
 
-### 2.4 CNI Plugin Chain
+**Network Persistence Across Stop/Start (Design Decision)**:
+
+Stopping a VM (via `cocoon stop`) does NOT tear down its network namespace, TAP device, or CNI allocation. This is intentional:
+
+- **IP address stability**: The VM retains its IPAM allocation across stop/start cycles, avoiding IP churn and DHCP lease renegotiation.
+- **Faster restarts**: No need to re-run CNI ADD, recreate TAP, or reinstall TC rules on `cocoon start` -- the network stack is already in place.
+- **Trade-off**: Port mappings (iptables DNAT rules) remain active on stopped VMs, and the IPAM slot stays allocated even while the VM is not running. This is acceptable for the expected usage patterns (VMs are either running or deleted, not parked in STOPPED state for extended periods).
+
+Network teardown occurs only during `cocoon delete` (see Destruction above) or when the host reboots (see Section 2.4). A future `--network-cleanup-on-stop` option may be added if users require network teardown on stop.
+
+### 2.4 Network State After Host Reboot
+
+`/run/cocoon/` is a tmpfs mount, so all network namespace files, veth/TAP devices, bind mounts, and TC redirect rules are lost on host reboot. However, persistent state may partially survive:
+
+- **Lost**: Network namespace bind mounts (`/run/cocoon/vms/{vm-id}/netns`), all veth pairs, TAP devices, TC rules, and iptables entries installed by CNI plugins.
+- **Persists**: IPAM state on disk (if using `host-local` IPAM, allocations in `/var/lib/cni/networks/` survive). VM metadata on disk (`metadata.json`) still records `network_state.netns_path`, but the path no longer exists.
+
+**Start() Idempotency (Network Recreation)**:
+
+When `Start()` is called on a STOPPED VM whose network namespace no longer exists (detected by stat-ing the `netns_path` from metadata), the network layer must transparently recreate the full network stack. The recreation sequence:
+
+1. **Detect missing netns**: Stat `metadata.NetworkState.NetNSPath`. If it returns `ENOENT`, proceed with recreation.
+2. **Recreate network namespace**: Call `CreateNetNS(vmID)` to create a new namespace at the same path as the original.
+3. **Re-run CNI ADD**: Invoke `AddNetwork()` for each attachment in `config.Network.Networks`. The IPAM plugin may return the same IP (if `host-local` allocation files survived) or a new IP (if they were cleaned up or if using `dhcp` IPAM).
+4. **Recreate TAP device and TC redirect rules**: Call `SetupTAPAndRedirect()` for each attachment, restoring the bidirectional mirred rules.
+5. **Update metadata**: Write the new `NetworkState` (which may have new IPs) to `metadata.json`.
+6. **Proceed with CH launch**: Launch Cloud Hypervisor via `nsenter --net=<netns_path>` as normal.
+
+This must be **idempotent**: calling `Start()` when the network is already fully set up (namespace exists, TAP present, TC rules active) must be a no-op for the network layer. The implementation checks for the existence of each resource before creating it.
+
+**Note**: If the IPAM plugin assigns a different IP after reboot, the guest's cloud-init configuration (baked into the NoCloud seed disk at creation time) will contain the original IP. The guest will configure the stale IP, causing a mismatch. This is an inherent limitation of static cloud-init injection and is documented in Section 8.2. For environments where IP stability across reboots is critical, use `dhcp` IPAM with a DHCP server that provides stable leases.
+
+### 2.5 CNI Plugin Chain
 
 Cocoon supports chained CNI plugins, where multiple plugins execute in sequence. A typical chain:
 
@@ -214,7 +268,7 @@ bridge (creates veth + bridge attachment)
 
 The chain is defined in the CNI network configuration file, not in Cocoon's code. Cocoon invokes the chain as an opaque unit via `libcni`.
 
-### 2.5 Multiple Networks Per VM
+### 2.6 Multiple Networks Per VM
 
 A VM can be attached to multiple CNI networks via repeated `--network` flags:
 
@@ -930,6 +984,34 @@ func setInterfaceUp(name string) error {
 }
 ```
 
+**Required Installation Order and Validation**:
+
+The TC redirect setup has strict ordering requirements relative to the CNI and CH launch steps. Violating this order can cause IP conflicts (both the netns interface and the guest respond to ARP for the same IP) or packet loss.
+
+```
+Step 1: CNI ADD (creates veth pair, assigns IP to netns-side interface)
+Step 2: Create TAP device inside the network namespace
+Step 3: Install TC mirred redirect rules (cni-veth <-> TAP, bidirectional)
+Step 4: Validate TC rules are active:
+          tc filter show dev <cni-if> ingress   (must show mirred redirect)
+          tc filter show dev <tap-if> ingress    (must show mirred redirect)
+Step 5: Launch Cloud Hypervisor via nsenter
+```
+
+**IP Conflict Prevention**: TC redirect MUST be active before Cloud Hypervisor starts. Without the redirect, both the netns-side interface (which holds the IP for CNI bookkeeping) and the guest (which configures the same IP via cloud-init) would respond to ARP requests for that IP, causing a Layer 2 conflict. The `tc mirred redirect` diverts all ingress packets on the netns interface to the TAP before the namespace IP stack sees them, preventing the conflict.
+
+**Rollback on Failure**:
+
+If any step fails, all previously completed steps are reversed in order:
+
+```
+If step 3 fails -> delete TAP (step 2 rollback) -> CNI DEL (step 1 rollback) -> ERROR
+If step 4 fails -> remove TC rules -> delete TAP -> CNI DEL -> ERROR
+If step 5 fails -> remove TC rules -> delete TAP -> CNI DEL -> ERROR
+```
+
+On failure, the VM transitions to the ERROR state. The network namespace is preserved (for debugging) but all devices and rules inside it are cleaned up. `cocoon delete` performs the final namespace cleanup.
+
 ### 4.5 MAC Address Generation
 
 ```go
@@ -1524,6 +1606,15 @@ Key points:
 
 **Note on kernel `ip=` parameter**: Cocoon uses firmware-based boot (PVH firmware or UEFI firmware) for all boot strategies. The firmware loads the kernel from the guest disk, and the bootloader inside the guest controls the kernel command line. Cocoon cannot inject kernel parameters such as `ip=` from the host side. The cloud-init NoCloud datasource is the only supported network configuration injection mechanism.
 
+**Relationship to Metadata Server ([docs/01-boot-contract.md](./01-boot-contract.md))**:
+
+The metadata server (169.254.169.254) described in docs/01 is a separate, future feature -- not part of Phase 2 scope. NoCloud and the metadata server are complementary mechanisms that serve different purposes:
+
+- **NoCloud seed disk** (Phase 2): Handles network configuration injection. This is a static, creation-time mechanism -- network config is baked into a FAT image attached to the VM at creation and cannot be updated while the VM is running.
+- **Metadata server** (future): Will handle dynamic system configuration such as SSH keys, hostname, user-data scripts, and instance identity. The metadata server runs on the host and is accessible from the guest via the link-local address 169.254.169.254.
+
+They do not compete: NoCloud provides network configuration (which must be available before the network is up), while the metadata server provides everything else (which can be fetched over the network after boot). Phase 2 implements NoCloud only; the metadata server is deferred.
+
 ### 8.3 Cloud-Init NoCloud Image Lifecycle
 
 The NoCloud datasource requires a FAT filesystem image containing the cloud-init seed files. This section describes the concrete implementation for creating, attaching, and cleaning up the image.
@@ -1822,22 +1913,24 @@ CNI plugins execute as root on the host. Cocoon trusts plugins found in the conf
 
 ### 10.6 CNI Plugin Compatibility with TC Redirect
 
-The tc mirred redirect model works with any CNI plugin that produces a standard network interface inside the namespace. Compatibility status:
+The tc mirred redirect model works with any CNI plugin that produces a standard network interface inside the namespace, with caveats for eBPF-based plugins. See also the compatibility matrix in Section 1.3.
 
 | CNI Plugin | Compatible | Notes |
 |------------|-----------|-------|
 | bridge | Yes | Primary plugin. Produces veth pair. Fully tested. |
+| ptp | Yes | Point-to-point veth pair. TC redirect works identically. |
 | macvlan | Yes | Produces macvlan interface. TC redirect works identically. |
 | ipvlan | Yes | Produces ipvlan interface. TC redirect works identically. |
 | host-local (IPAM) | Yes | Pure IPAM plugin, no interaction with TC redirect. |
 | dhcp (IPAM) | Yes | DHCP lease acquired on the CNI interface. Guest receives IP via cloud-init, not DHCP. |
 | portmap | Yes | Installs iptables DNAT rules keyed on IP address. TC redirect does not move the IP, so portmap rules remain valid. |
 | static (IPAM) | Yes | Fixed IP assignment. No interaction with TC redirect. |
-| Calico | Yes | Creates veth pair with BGP routing on host side. TC redirect operates inside netns only. |
+| Calico (iptables mode) | Yes | Creates veth pair with BGP routing on host side. TC redirect operates inside netns only. |
+| Calico (eBPF mode) | Untested | eBPF datapath may be bypassed by TC mirred redirect. Same concerns as Cilium. |
 | Cilium | Experimental | Cilium attaches eBPF programs to the veth interface. TC mirred redirect may bypass Cilium's eBPF datapath depending on hook points. Requires testing with specific Cilium version. |
 | SR-IOV | N/A | SR-IOV VFs should use PCI passthrough (see [14-device-passthrough.md](./14-device-passthrough.md)), not TAP/TC redirect. |
 
-**Cilium note**: If Cilium's eBPF programs are attached at the `tc ingress` hook on the CNI interface, the mirred redirect replaces the ingress qdisc and may conflict. For Cilium environments, an alternative integration path (e.g., Cilium's native VM support or a dedicated tap plugin) may be required. This is deferred beyond Phase 2.
+**eBPF bypass note**: TC mirred redirect operates at Layer 2, forwarding packets directly between the CNI veth and the TAP device. This bypasses any eBPF programs or iptables rules attached to the netns-side interface. For Cilium and Calico eBPF mode, the mirred redirect replaces the ingress qdisc and may conflict with eBPF hook points. An alternative integration path (e.g., Cilium's native VM support or a dedicated tap plugin) may be required for these environments. This is deferred beyond Phase 2.
 
 ---
 

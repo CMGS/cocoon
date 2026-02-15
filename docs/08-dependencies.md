@@ -15,8 +15,8 @@ Cocoon relies on several external tools and libraries to provide VM management w
 |------|---------|-------------|------------------|---------------------|
 | cloud-hypervisor | Virtual Machine Monitor (VMM) | v50.0 | N/A (requires KVM) | Binary or source |
 | ch-remote | CH remote control (REST API client) | v50.0 | N/A | Binary (ships with CH release) |
-| edk2-cloudhv | UEFI firmware for CH (default boot mode) | ch-a54f262b09 | N/A | Auto-downloaded by `cocoon init` from edk2 releases |
-| rust-hypervisor-firmware | PVH firmware (optional, for `--boot-strategy pvh`) | 0.5.0 | N/A | Auto-downloaded by `cocoon init` from GitHub |
+| edk2-cloudhv | UEFI firmware for CH (default boot mode) | ch-a54f262b09 | N/A | `cocoon firmware install` or `cocoon init --with-uefi-firmware <URL>` |
+| rust-hypervisor-firmware | PVH firmware (optional, for `--boot-strategy pvh`) | 0.5.0 | N/A | `cocoon firmware install` or `cocoon init --with-pvh-firmware <URL>` |
 | buildah | OCI image pull/extract | 1.35.0 | ✅ Yes | apt/dnf |
 | skopeo | OCI image inspection | 1.14.0 | ✅ Yes | apt/dnf |
 | qemu-img | qcow2 operations | 8.0 | ✅ Yes | apt/dnf (qemu-utils) |
@@ -103,7 +103,7 @@ ls -lh /var/lib/cocoon/firmware/hypervisor-fw
 
 ### 3. CLOUDHV.fd (Cloud Hypervisor UEFI Firmware)
 
-**Purpose**: Provides UEFI firmware for the default boot mode. Downloaded automatically by `cocoon init`.
+**Purpose**: Provides UEFI firmware for the default boot mode. Installed via `cocoon firmware install` or `cocoon init --with-uefi-firmware <URL>` (`cocoon init` alone creates directories but does not download firmware).
 
 **Default Version**: edk2 ch-a54f262b09 (configurable via `EDK2_CH_VERSION` env var)
 

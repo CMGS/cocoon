@@ -451,7 +451,7 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 	// attemptBootAndWait runs attemptBoot + waitForBoot as a single unit.
 	// If the CH API calls succeed but boot-time monitoring detects a failure
 	// (e.g., kernel panic), it kills the CH process and returns the error so
-	// the fallback logic can retry with a different boot mode.
+	// the caller handles the boot result.
 	attemptBootAndWait := func(firmwarePath string, bootMode types.BootMode) (*bootResult, error) {
 		res, err := m.attemptBoot(ctx, vmID, vmCfg, firmwarePath, bootMode)
 		if err != nil {
@@ -473,7 +473,7 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 		return res, nil
 	}
 
-	// Attempt boot with fallback logic based on boot strategy.
+	// Attempt boot with the configured strategy (no fallback).
 	var result *bootResult
 	var bootErr error
 
@@ -855,6 +855,7 @@ func (m *manager) transitionStateWithUpdate(vmID string, to types.VMState, reaso
 	// Auto-track errors: when entering ERROR, record reason and increment count.
 	if to == types.VMStateError {
 		meta.LastError = reason
+		meta.LastErrorType = string(classifyError(reason))
 		meta.LastErrorAt = time.Now().UTC().Format(time.RFC3339)
 		meta.ErrorCount++
 	}

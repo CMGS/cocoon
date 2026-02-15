@@ -143,11 +143,15 @@ Cloud Hypervisor requires firmware to boot virtual machines. Cocoon supports two
 - **Secure boot ready**: Supports secure boot for production workloads
 - CLOUDHV.fd is the Cloud Hypervisor project's own edk2 build, optimized for CH
 
-**Installation** (automatic via `cocoon init`, or manual):
+**Installation** (via `cocoon firmware install`, or manual):
 
 ```bash
-# Automatic (recommended) — cocoon init downloads CLOUDHV.fd:
-sudo cocoon init
+# Recommended — install firmware after cocoon init:
+sudo cocoon init                  # Creates directories and config (no firmware download)
+sudo cocoon firmware install      # Downloads CLOUDHV.fd + hypervisor-fw
+
+# Convenience shortcut — download firmware during init:
+sudo cocoon init --with-uefi-firmware "https://github.com/cloud-hypervisor/edk2/releases/download/ch-a54f262b09/CLOUDHV.fd"
 
 # Manual download from edk2-cloudhv releases:
 EDK2_CH_VERSION="a54f262b09"
@@ -190,9 +194,15 @@ sudo dnf install -y edk2-ovmf
 - Mounts ESP partition and loads GRUB/kernel
 - Minimal footprint (~100KB vs 2MB CLOUDHV.fd)
 
-**Installation** (also automatic via `cocoon init`):
+**Installation** (via `cocoon firmware install`, or manual):
 
 ```bash
+# Recommended — install all firmware after cocoon init:
+sudo cocoon firmware install      # Downloads both CLOUDHV.fd and hypervisor-fw
+
+# Convenience shortcut — download PVH firmware during init:
+sudo cocoon init --with-pvh-firmware "https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw"
+
 # Manual download (x86_64):
 curl -L https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/hypervisor-fw \
     -o /tmp/hypervisor-fw

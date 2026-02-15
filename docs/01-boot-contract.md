@@ -53,7 +53,8 @@ This document defines the **Boot Contract** - the core specification for how Coc
 ```
 
 **Firmware Management** (see [docs/09-cli-design.md](./09-cli-design.md) for authoritative CLI behavior):
-- Downloaded automatically by `cocoon init` from the edk2-cloudhv GitHub releases
+- `cocoon init` creates the directory structure and configuration but does **not** automatically download firmware
+- Install firmware via `cocoon firmware install` (recommended) or `cocoon init --with-uefi-firmware <URL>`
 - Version controlled via `EDK2_CH_VERSION` environment variable (default: `a54f262b09`)
 - URL: `https://github.com/cloud-hypervisor/edk2/releases/download/ch-{version}/CLOUDHV.fd`
 
@@ -81,7 +82,8 @@ This document defines the **Boot Contract** - the core specification for how Coc
 7. Transfers control to bootloader/kernel
 
 **Firmware Management** (see [docs/09-cli-design.md](./09-cli-design.md) for authoritative CLI behavior):
-- Downloaded automatically by `cocoon init`
+- `cocoon init` creates the directory structure but does **not** automatically download firmware
+- Install via `cocoon firmware install` (recommended) or `cocoon init --with-pvh-firmware <URL>`
 - Installed to: `/var/lib/cocoon/firmware/hypervisor-fw`
 
 **Firmware Location**:

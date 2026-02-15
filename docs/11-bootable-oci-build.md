@@ -1,8 +1,8 @@
 # Building Bootable OCI Images
 
 **Version**: 1.0
-**Status**: Implemented
-**Phase**: Phase 1
+**Status**: Planned
+**Phase**: Phase 2
 **Last Updated**: 2026-02-14
 
 ## Overview
