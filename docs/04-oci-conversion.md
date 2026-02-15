@@ -47,14 +47,13 @@ Examples marked as "**MUST**" or "**Implementation-Required**" define mandatory 
 
 **Cocoon's Role**:
 - **Validate**: Check if image has required components (kernel, bootloader) -- post-conversion via `cocoon image verify`
-- **Warn**: Alert if cloud-init missing (VM will boot but NoCloud configuration injection disabled) [Phase 2]
 - **Configure**: Modify GRUB config, inject serial console settings (if GRUB config present)
-- **Does NOT Install**: Does NOT install missing packages (kernel, GRUB, cloud-init)
+- **Does NOT Install**: Does NOT install missing packages (kernel, GRUB)
 
 **User's Role** (Image Provider):
 - **MUST provide**: kernel, bootloader **pre-installed**
-- **SHOULD provide**: cloud-init **pre-installed** (required for NoCloud initialization) [Phase 2]
 - Cocoon only verifies and configures existing components
+- Users may optionally install cloud-init in their images for guest initialization
 
 **Rationale**: Installing packages during conversion would require:
 - Network access (package repos)
@@ -368,7 +367,6 @@ The `VerifyBootability()` method on the `manager` performs a two-tier check:
 - Initrd/initramfs: glob-expand `/boot/initr*` and `/boot/initramfs*`
 - systemd: readlink `/sbin/init` for "systemd", or check `/lib/systemd/systemd`
 - UEFI bootloader: check multiple ESP paths (BOOTX64.EFI, BOOTAA64.EFI, shimx64.efi, grubx64.efi, etc.)
-- cloud-init: check `/usr/bin/cloud-init` (warning if missing, not error)
 
 ```go
 // Actual implementation (image/pipeline/verify_linux.go)
@@ -380,7 +378,6 @@ func deepVerifyBoot(imagePath string, result *image.BootCheckResult) error {
     // Check systemd via: guestfish --ro -a <image> -i readlink /sbin/init
     // Check bootloader via: guestfish --ro -a <image> -i is-file <path>
     //   (checks BOOTX64.EFI, BOOTAA64.EFI, shimx64.efi, grubx64.efi, etc.)
-    // Check cloud-init via: guestfish --ro -a <image> -i is-file /usr/bin/cloud-init
     ...
 }
 ```
@@ -1039,7 +1036,7 @@ The conversion pipeline follows these key design principles:
 
 - [x] **Bootability Verification** (on-demand):
   - [x] Basic verification (qemu-img check + format detection)
-  - [x] Deep verification via guestfish (kernel, initrd, systemd, bootloader, cloud-init)
+  - [x] Deep verification via guestfish (kernel, initrd, systemd, bootloader)
 
 - [x] **Error Handling**:
   - [x] ClassifiedError (transient/permanent)
@@ -1108,7 +1105,7 @@ Phase 1 requires at least one **pinned reference image** per source type for ful
 | **SHA256** | Pin in `test/fixtures/verified-images.sha256` -- placeholder until Phase 1 CI setup (update on deliberate image bump only) |
 | **Format** | qcow2 (direct use, no conversion) |
 | **Boot Mode** | UEFI (default), PVH (option) |
-| **cloud-init** | Pre-installed, NoCloud-Net datasource |
+| **Guest init** | Users may optionally install cloud-init for guest initialization |
 
 **CI Usage**:
 ```bash
@@ -1134,7 +1131,7 @@ cocoon delete ci-boot-test
 | **Registry** | `ghcr.io/CMGS/cocoon-test-images/ubuntu-bootable` |
 | **Tag** | `22.04` |
 | **Pinned Digest** | Pin as `ghcr.io/CMGS/cocoon-test-images/ubuntu-bootable@sha256:<digest>` in CI config |
-| **Contents** | Ubuntu 22.04 + kernel + GRUB + systemd + cloud-init |
+| **Contents** | Ubuntu 22.04 + kernel + GRUB + systemd |
 | **Architecture** | `linux/amd64` |
 
 **CI Usage**:
@@ -1149,7 +1146,7 @@ cocoon image verify "ghcr.io/CMGS/cocoon-test-images/ubuntu-bootable@sha256:${PI
 cocoon create "ghcr.io/CMGS/cocoon-test-images/ubuntu-bootable@sha256:${PINNED_DIGEST}" \
   --name ci-oci-test --cpus 1 --memory 1G --disk 5G
 cocoon start ci-oci-test --boot-timeout 180
-cocoon logs ci-oci-test --tail 20     # Verify systemd + cloud-init markers
+cocoon logs ci-oci-test --tail 20     # Verify systemd boot markers
 cocoon inspect ci-oci-test            # Verify state == RUNNING
 cocoon stop ci-oci-test
 cocoon delete ci-oci-test
@@ -1165,7 +1162,7 @@ The following pipeline stages MUST pass for every PR:
 | **OCI->qcow2 conversion** | N/A (already qcow2) | Buildah extract -> guestfish convert |
 | **Bootability verification** | `cocoon image verify` (post-conversion) | `cocoon image verify` (post-conversion) |
 | **PVH boot** | Boot with `hypervisor-fw` | Boot with `hypervisor-fw` |
-| **Boot detection** | Serial log -> systemd markers | Serial log -> systemd + cloud-init markers |
+| **Boot detection** | Serial log -> systemd markers | Serial log -> systemd markers |
 | **Lifecycle** | create -> start -> inspect -> stop -> delete | create -> start -> inspect -> stop -> delete |
 | **Crash recovery** | kill -9 CH -> `cocoon doctor --fix` | kill -9 CH -> `cocoon doctor --fix` |
 | **GC** | Delete VM -> `cocoon gc --dry-run` | Delete VM -> `cocoon gc --dry-run` |
@@ -1174,7 +1171,6 @@ The following pipeline stages MUST pass for every PR:
 
 **When to bump**:
 - Kernel CVE fix in upstream cloud image
-- Cloud-init version incompatibility discovered
 - New distro release needed for coverage
 
 **How to bump**:

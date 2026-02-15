@@ -97,11 +97,5 @@ func deepVerifyBoot(imagePath string, result *image.BootCheckResult) error {
 		}
 	}
 
-	// Check for cloud-init.
-	cloudInitOut, err := exec.Command("guestfish", "--ro", "-a", imagePath, "-i", "is-file", "/usr/bin/cloud-init").Output()
-	if err == nil && strings.TrimSpace(string(cloudInitOut)) == guestfishTrue {
-		result.CloudInitFound = true
-	}
-
 	return nil
 }

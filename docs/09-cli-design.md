@@ -12,7 +12,7 @@
 **Supported Image Types**:
 1. **Cloud Hypervisor Native Cloud Images** (Recommended):
    - Ubuntu Cloud, Fedora Cloud, Debian Cloud (qcow2 format)
-   - Pre-configured for cloud-init and UEFI boot
+   - Pre-configured for UEFI boot
    - Direct usage without OCI conversion
 
 2. **Bootable OCI Images** (Custom-built):
@@ -34,7 +34,7 @@ See [00-overview.md § Supported Image Contract](./00-overview.md#️-supported-
 
 This document defines the command-line interface for Cocoon, a lightweight VM management tool built on Cloud Hypervisor. The CLI follows Docker-like patterns for familiarity while exposing VM-specific capabilities like UEFI/Direct kernel boot modes, resource allocation, and lifecycle management.
 
-The design integrates the [Boot Contract](./01-boot-contract.md) decisions, including flexible boot modes (UEFI default for cloud images, Direct kernel boot for OCI VM images), cloud-init task injection, serial console I/O, and graceful shutdown semantics. It also leverages the [storage management](./05-storage-management.md) system for efficient copy-on-write disk handling.
+The design integrates the [Boot Contract](./01-boot-contract.md) decisions, including flexible boot modes (UEFI default for cloud images, Direct kernel boot for OCI VM images), serial console I/O, and graceful shutdown semantics. It also leverages the [storage management](./05-storage-management.md) system for efficient copy-on-write disk handling.
 
 ## Table of Contents
 
@@ -1014,7 +1014,7 @@ When the serial log is readable, `hypervisor.serial_log_excerpt` contains the la
     "serial_log": "/var/log/cocoon/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K-serial.log",
     "serial_log_excerpt": [
       "[    0.000000] Linux version 6.8.0...",
-      "[    2.134221] cloud-init[741]: Cloud-init v.24.1 finished",
+      "[    2.134221] systemd[1]: Reached target Multi-User System.",
       "Ubuntu 22.04.5 LTS ready"
     ]
   },
@@ -1897,7 +1897,7 @@ This CLI design implements the Boot Contract specification:
 | Boot Contract Section | CLI Implementation |
 |----------------------|-------------------|
 | §1 Boot Path Decision | `--oci` flag (selects direct kernel boot), config-level firmware paths |
-| §2 Guest Init Model | NoCloud seed disks for cloud-init initialization (Phase 2: [16-networking.md](./16-networking.md)) |
+| §2 Guest Init Model | Guest initialization is the user's responsibility; DHCP-based network config planned for Phase 2 ([16-networking.md](./16-networking.md)) |
 | §3 I/O Mechanisms | Serial console via `--serial file=...` (CH flag), `cocoon logs` command |
 | §4 Lifecycle Semantics | `run`, `stop`, `delete`, `kill` commands |
 | §5 VM Configuration Schema | `types.VMConfig` in Go code |
@@ -1915,7 +1915,6 @@ This CLI design implements the Boot Contract specification:
 ### 8.4 External References
 
 - **Cloud Hypervisor API**: https://github.com/cloud-hypervisor/cloud-hypervisor/blob/main/vmm/src/api/openapi/cloud-hypervisor.yaml
-- **cloud-init NoCloud**: https://cloudinit.readthedocs.io/en/latest/topics/datasources/nocloud.html
 - **urfave/cli/v2**: https://cli.urfave.org/v2/
 - **qemu-img**: https://www.qemu.org/docs/master/tools/qemu-img.html
 

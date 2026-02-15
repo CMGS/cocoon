@@ -15,7 +15,7 @@ This document will provide comprehensive guidance on building custom bootable OC
 
 1. **Minimum Requirements**
    - Package lists per distribution (Ubuntu, Fedora, Debian)
-   - Kernel, initrd, systemd, cloud-init, GRUB configuration
+   - Kernel, initrd, systemd, GRUB configuration
 
 2. **Build Process**
    - Dockerfile multi-stage build examples
@@ -67,7 +67,7 @@ cocoon create Fedora-Cloud-Base-39-1.5.x86_64.qcow2 --name fedora-vm
 **Why Cloud Images Work**:
 - ✅ Pre-installed kernel, initrd, systemd
 - ✅ GRUB bootloader configured
-- ✅ cloud-init pre-configured
+- ✅ Users may optionally install cloud-init for guest initialization
 - ✅ GPT + ESP partition layout
 - ✅ Optimized for Cloud Hypervisor/KVM
 

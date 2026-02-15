@@ -147,7 +147,6 @@ func (c *CocoonConfig) BootSuccessPatternsOrDefault() []string {
 	}
 	return []string{
 		`login:`,
-		`Cloud-init .* finished`,
 		`Reached target.*Login`,
 		`systemd .* running`,
 	}

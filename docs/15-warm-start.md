@@ -39,7 +39,7 @@ This feature builds on the PAUSED state defined in [13-pause-resume.md](./13-pau
 
 ### 1.1 Problem Statement
 
-Cold booting a VM involves firmware loading, kernel initialization, systemd startup, and cloud-init execution. This takes 5-30 seconds depending on image complexity. For use cases that create and destroy VMs frequently -- AI agent sandboxes, CI/CD jobs, function-as-a-service -- this boot latency is a significant bottleneck.
+Cold booting a VM involves firmware loading, kernel initialization, and systemd startup. This takes 5-30 seconds depending on image complexity. For use cases that create and destroy VMs frequently -- AI agent sandboxes, CI/CD jobs, function-as-a-service -- this boot latency is a significant bottleneck.
 
 ### 1.2 Key Distinction
 
@@ -69,7 +69,6 @@ A checkpoint taken after boot completes can be restored in approximately 200ms, 
 | Firmware load | 0.5-2s | 0ms (skipped) |
 | Kernel boot | 2-5s | 0ms (skipped) |
 | systemd init | 2-10s | 0ms (skipped) |
-| cloud-init | 1-15s | 0ms (skipped) |
 | CH process launch | 0.1s | 0.1s |
 | State restore | 0ms | 0.05-0.1s |
 | Overlay copy | 0ms | 0.01-0.5s (depends on size) |
@@ -1053,7 +1052,7 @@ cocoon create --from-checkpoint ubuntu-agent-golden --name fast-vm
 # Create a golden checkpoint
 cocoon create myorg/ubuntu-agent:latest --name golden-source
 cocoon start golden-source
-# ... wait for boot + cloud-init ...
+# ... wait for boot to complete ...
 cocoon checkpoint create golden-source --live --name "ubuntu-agent-golden"
 
 # List checkpoints
@@ -1275,11 +1274,11 @@ A checkpoint captures the complete VM memory, including the guest's network stac
 
 - **Default (`--network none`)**: No issue. The AI Agent sandbox use case has no networking, so there is no identity conflict. This is the recommended mode for golden checkpoints.
 
-- **Networked VMs**: Each restore creates a new VM with a new CNI allocation (different IP from IPAM). However, the guest's memory still contains the old network configuration from the checkpoint. Cloud-init has already run during the original boot and will NOT re-run on restore (restore resumes execution, it does not re-boot). The guest retains the checkpoint's IP, causing conflicts when multiple VMs are restored from the same checkpoint.
+- **Networked VMs**: Each restore creates a new VM with a new CNI allocation (different IP from IPAM). However, the guest's memory still contains the old network configuration from the checkpoint. The guest retains the checkpoint's IP (obtained via DHCP during the original boot), causing conflicts when multiple VMs are restored from the same checkpoint.
 
 **Mitigation for networked golden checkpoints**:
 
-1. **Use DHCP-based networking**: Configure the guest to obtain IP via DHCP rather than static cloud-init assignment. On restore, the DHCP lease will have expired (clock skew, §10.7), and the guest's DHCP client will request a new lease. This requires the CNI network to use the `dhcp` IPAM plugin.
+1. **Use DHCP-based networking**: The guest obtains its IP via DHCP from the host-side dnsmasq instance. On restore, the DHCP lease will have expired (clock skew, §10.7), and the guest's DHCP client will request a new lease, receiving the correct IP for the new VM's tap interface.
 2. **Post-restore reconfiguration (future)**: A Phase 3 post-restore hook mechanism will allow running scripts inside the guest after restore to reconfigure networking, regenerate machine-id, and refresh SSH host keys.
 3. **Single restore per checkpoint**: If each checkpoint is restored only once, there is no identity conflict (the restored VM inherits the checkpoint's network identity).
 

@@ -115,7 +115,6 @@ CREATING -----> CREATED -----> STARTING -----> RUNNING -----> STOPPING -----> ST
 **Activities**:
 - Convert OCI image to qcow2 base image
 - Create copy-on-write overlay disk
-- Prepare cloud-init configuration for VM initialization
 - Allocate VM ID and create working directory
 - Generate VM configuration file
 
@@ -131,7 +130,6 @@ CREATING -----> CREATED -----> STARTING -----> RUNNING -----> STOPPING -----> ST
 **State**:
 - Overlay disk exists at `/var/lib/cocoon/vms/{vm-id}/overlay.qcow2`
 - Metadata stored in `/var/lib/cocoon/vms/{vm-id}/metadata.json`
-- NoCloud seed disk prepared when --network is specified (see [16-networking.md](./16-networking.md))
 - No Cloud Hypervisor process running
 
 **Allowed Operations**:
@@ -151,12 +149,11 @@ CREATING -----> CREATED -----> STARTING -----> RUNNING -----> STOPPING -----> ST
   - Direct mode: Kernel and initramfs passed directly to Cloud Hypervisor (no firmware)
 - Kernel and initrd loading
 - systemd initialization
-- cloud-init executing (if enabled)
 
 **Duration**: 5-60 seconds (configurable timeout)
 
 **Exit Conditions**:
-- Boot success (cloud-init complete) → `RUNNING`
+- Boot success (systemd targets reached / login prompt) → `RUNNING`
 - Boot timeout → `ERROR`
 - Boot failure → `ERROR`
 
@@ -483,7 +480,6 @@ func (m *manager) transitionStateWithUpdate(vmID string, to types.VMState, reaso
 **Postconditions**:
 - VM metadata created
 - Overlay disk created
-- NoCloud seed disk prepared when --network is specified
 - VM in CREATED state
 
 **Idempotency**:
@@ -652,7 +648,7 @@ This section defines the **merged view** struct returned by `cocoon inspect`. It
 > **Phase 1 note:** The actual implementation uses a lean `VMInspect` struct
 > (`types/inspect.go`) that groups fields into nested sub-structs: `image`,
 > `storage`, `hypervisor`, `boot_config`, `timestamps`, `runtime`, and `error`.
-> Fields like `state_history`, `cloud_init`, and extended storage/hypervisor
+> Fields like `state_history` and extended storage/hypervisor
 > metadata (`used_bytes`, `filesystem`, `version`, `api_version`) are not
 > included in Phase 1.
 

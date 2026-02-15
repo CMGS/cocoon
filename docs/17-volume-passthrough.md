@@ -133,7 +133,7 @@ cocoon run --volume /var/log/vm-output:/mnt/output results-image
 
 - No virtio-fs, no 9p, no shared directories
 - All data lives inside the qcow2 overlay or base image
-- Files must be baked into the image at build time or injected via cloud-init
+- Files must be baked into the image at build time or copied in manually
 - No `--volume` flag on `cocoon create` or `cocoon run`
 
 This is intentional for Phase 1, which focuses on core VM lifecycle management.
@@ -531,29 +531,41 @@ if len(vmCfg.Volumes) > 0 {
 Shared filesystems appear inside the guest as virtio-fs devices but are not
 automatically mounted. There are three strategies for guest-side mounting:
 
-**Strategy A: cloud-init runcmd (recommended for cloud images)**
+**Strategy A: Tag-convention auto-mount (recommended)**
 
-Inject mount commands via cloud-init user-data:
+Cocoon derives virtio-fs tags from the guest mount path (e.g., tag `mnt-data`
+for mount point `/mnt/data`). A guest-side udev rule or systemd generator
+discovers virtio-fs devices and auto-mounts them by converting the tag back
+to a path (`-` becomes `/`):
 
-```yaml
-#cloud-config
-runcmd:
-  - mkdir -p /mnt/data
-  - mount -t virtiofs mnt-data /mnt/data
-  - mkdir -p /mnt/src
-  - mount -t virtiofs mnt-src /mnt/src
+```bash
+# /etc/udev/rules.d/99-virtiofs-automount.rules
+# When a virtiofs device appears, derive mount path from tag and mount it.
+ACTION=="add", SUBSYSTEM=="virtio", ATTR{name}=="?*", \
+  RUN+="/bin/sh -c 'TAG=%k; MPATH=/$$(echo $$TAG | sed s/-/\\//g); mkdir -p $$MPATH && mount -t virtiofs $$TAG $$MPATH'"
 ```
 
-**Strategy B: systemd mount units**
+Alternatively, a simple systemd generator script placed in the guest image at
+`/etc/systemd/system-generators/virtiofs-mount-generator` can enumerate
+virtio-fs tags at boot and emit `.mount` units dynamically. This approach
+requires no per-VM configuration and works with any guest image that includes
+the generator.
 
-Generate systemd `.mount` unit files and inject them via cloud-init
-`write_files`:
+The tag-to-path convention is deterministic: tag `mnt-data` always mounts at
+`/mnt/data`, tag `mnt-src` always mounts at `/mnt/src`. Users who need
+non-standard mount points can mount manually.
+
+**Strategy B: systemd mount units (baked into image)**
+
+For production workloads with known mount points, systemd `.mount` unit files
+can be baked directly into the guest image:
 
 ```ini
-# mnt-data.mount
+# /etc/systemd/system/mnt-data.mount
 [Unit]
 Description=Mount virtiofs share (mnt-data)
 After=local-fs.target
+ConditionPathExists=/sys/fs/virtiofs
 
 [Mount]
 What=mnt-data
@@ -565,15 +577,18 @@ Options=defaults
 WantedBy=multi-user.target
 ```
 
+This is the user's responsibility to include in their guest image. Cocoon
+does not inject files into the guest filesystem.
+
 **Strategy C: Guest agent (future)**
 
 A lightweight Cocoon guest agent could discover virtio-fs devices and
 auto-mount them. This is the most seamless approach but requires agent
 installation in the guest image.
 
-**Recommendation**: Start with Strategy A (cloud-init runcmd) for Phase 2.1.
-Add Strategy B as an option for production workloads. Defer Strategy C to a
-later phase.
+**Recommendation**: Start with Strategy A (tag-convention auto-mount) for
+Phase 2.1. Strategy B is available for users who prefer explicit systemd units
+baked into their images. Defer Strategy C to a later phase.
 
 ### 5.7 Complete Example Flow
 
@@ -596,7 +611,7 @@ Step-by-step:
    f. Send `PUT /api/v1/vm.boot`
    g. Wait for boot detection (serial log patterns)
 6. Guest kernel discovers two virtio-fs devices: `mnt-src`, `mnt-models`
-7. cloud-init (or user) mounts them:
+7. Guest auto-mounts them via tag convention (or user mounts manually):
    - `mount -t virtiofs mnt-src /mnt/src`
    - `mount -t virtiofs mnt-models /mnt/models -o ro`
 8. Guest can read/write `/mnt/src`, read `/mnt/models`
@@ -1178,17 +1193,16 @@ maintenance status and security concerns.
 
 **Estimated effort**: 1 week
 
-### Phase 2.3: Guest Auto-Mount via cloud-init
+### Phase 2.3: Guest Auto-Mount via Tag Convention
 
 **Scope**: Automatic guest-side mounting without manual intervention.
 
-1. Generate cloud-init user-data with mount commands for each volume
-2. Inject cloud-init config via a second disk (NoCloud datasource) or
-   existing cloud-init integration
-3. Support both runcmd and systemd mount unit strategies
-4. Test with Ubuntu, Fedora, and Debian cloud images
+1. Document the tag-to-path convention (`mnt-data` -> `/mnt/data`)
+2. Provide a reference udev rule and/or systemd generator script for guest images
+3. Test auto-mount with Ubuntu, Fedora, and Debian guest images
+4. Document manual mount instructions for users who prefer explicit control
 
-**Estimated effort**: 1-2 weeks
+**Estimated effort**: 1 week
 
 ### Phase 2.4: Hot-Add Volumes (Future)
 
@@ -1236,10 +1250,10 @@ maintenance status and security concerns.
    binary, so bundling is feasible. The `cocoon doctor --fix` command could
    download it, similar to firmware management.
 
-5. **Cloud-init integration depth**: How tightly should volume auto-mount
-   integrate with cloud-init? Should Cocoon generate a full NoCloud
-   datasource, or only append to existing user-data? This intersects with
-   future cloud-init / NoCloud integration.
+5. **Auto-mount mechanism**: Should Cocoon provide a reference guest image
+   with the virtiofs auto-mount generator pre-installed, or leave it entirely
+   to the user? A reference udev rule or systemd generator simplifies the
+   out-of-box experience, but some users may prefer explicit mount control.
 
 6. **Concurrent volume access**: What happens when multiple VMs share the
    same host directory in read-write mode? virtiofsd supports this, but

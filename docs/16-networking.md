@@ -35,8 +35,7 @@ Cocoon Phase 1 VMs boot with no network interfaces. This is intentional for AI A
 1. **Package installation**: VMs that need to install software from upstream repositories require outbound internet access. Without networking, all packages must be baked into the base image at build time.
 2. **Service hosting**: Running a web server, database, or API inside a VM requires inbound connectivity from the host or other VMs.
 3. **Multi-VM communication**: Workloads spanning multiple VMs (e.g., a frontend VM and a backend VM) need a private network segment for inter-VM traffic.
-4. **Cloud-init network datasource**: Some cloud-init configurations require network connectivity for package installation or external service access.
-5. **Development workflows**: Developers iterating on VM-based applications need SSH or HTTP access into the guest without rebuilding the image.
+4. **Development workflows**: Developers iterating on VM-based applications need SSH or HTTP access into the guest without rebuilding the image.
 
 ### 1.2 Approach: CNI Plugin Integration
 
@@ -77,7 +76,7 @@ cocoon create --network bridge myimage
     |
     v
 [5] Guest sees eth0 (virtio-net)
-    |-- IP configured via cloud-init from CNI IPAM result
+    |-- IP configured via DHCP from dnsmasq (serving CNI IPAM result)
     |-- Gateway and DNS set from CNI result
 ```
 
@@ -85,7 +84,7 @@ cocoon create --network bridge myimage
 
 - **nsenter for CH**: Cloud Hypervisor enters the VM's network namespace via `nsenter --net=<path>`. This is the only change to the CH launch path. CH's API socket is a Unix domain socket on the filesystem, which is NOT affected by network namespaces, so the host can still communicate with CH normally.
 - **tc mirred for L2 bridging**: Traffic Control `mirred` rules redirect all packets between the CNI interface (`eth0`) and the TAP device (`tap0`) at layer 2. This avoids creating an additional Linux bridge inside the namespace, and preserves all CNI-installed IP addresses, routes, and iptables rules on `eth0` without modification.
-- **IP ownership model**: The CNI IPAM plugin assigns an IP address to `eth0` (the veth inside the netns). The `tc mirred redirect` intercepts all ingress packets on `eth0` at the Traffic Control layer *before* the namespace's IP stack processes them, forwarding them directly to `tap0` and hence to the guest. The guest configures the same IP (via cloud-init) on its own `eth0` (virtio-net). There is no IP conflict because the namespace never processes packets for that IP on the data path — `tc mirred` diverts them first. The IP on the namespace `eth0` exists solely for CNI/IPAM bookkeeping (address pool tracking, route installation, iptables rules). This is the same model used by [Kata Containers' `tc-redirect-tap`](https://github.com/kata-containers/kata-containers/tree/main/tools/networking/cmd/tc-redirect-tap).
+- **IP ownership model**: The CNI IPAM plugin assigns an IP address to `eth0` (the veth inside the netns). The `tc mirred redirect` intercepts all ingress packets on `eth0` at the Traffic Control layer *before* the namespace's IP stack processes them, forwarding them directly to `tap0` and hence to the guest. The guest obtains the same IP via DHCP from a per-bridge dnsmasq instance that serves static leases matching the CNI IPAM allocation. There is no IP conflict because the namespace never processes packets for that IP on the data path — `tc mirred` diverts them first. The IP on the namespace `eth0` exists solely for CNI/IPAM bookkeeping (address pool tracking, route installation, iptables rules). This is the same model used by [Kata Containers' `tc-redirect-tap`](https://github.com/kata-containers/kata-containers/tree/main/tools/networking/cmd/tc-redirect-tap).
 - **Broad CNI compatibility**: Any CNI plugin that produces a standard network interface inside a netns works with this model, with caveats for eBPF-based plugins. See the compatibility matrix below.
 
 **CNI Plugin Compatibility Matrix**:
@@ -260,7 +259,7 @@ When `Start()` is called on a STOPPED VM whose network namespace no longer exist
 
 This must be **idempotent**: calling `Start()` when the network is already fully set up (namespace exists, TAP present, TC rules active) must be a no-op for the network layer. The implementation checks for the existence of each resource before creating it.
 
-**Note**: If the IPAM plugin assigns a different IP after reboot, the guest's cloud-init configuration (baked into the NoCloud seed disk at creation time) will contain the original IP. The guest will configure the stale IP, causing a mismatch. This is an inherent limitation of static cloud-init injection and is documented in Section 8.2. For environments where IP stability across reboots is critical, use `dhcp` IPAM with a DHCP server that provides stable leases.
+**Note**: If the IPAM plugin assigns a different IP after reboot, Cocoon updates the dnsmasq static lease for the VM's MAC address to reflect the new IP. The guest's DHCP client obtains the updated IP on boot, so there is no stale-IP mismatch. This is an advantage of DHCP-based configuration over static injection approaches.
 
 ### 2.5 CNI Plugin Chain
 
@@ -382,12 +381,6 @@ type VMConfig struct {
 
     // Network configuration. Empty/nil means no networking (Phase 1 default).
     Network NetworkConfig `json:"network,omitempty"`
-
-    // CloudInitImagePath is the path to the NoCloud seed image (FAT filesystem).
-    // Generated during create when --network is specified. Contains network-config
-    // for cloud-init. Stored at {vm_dir}/cloud-init.img.
-    // Empty if no networking is configured.
-    CloudInitImagePath string `json:"cloud_init_image_path,omitempty"`
 }
 ```
 
@@ -1017,7 +1010,7 @@ Step 4:   Validate TC redirect rules are active:
 Step 5:   Launch Cloud Hypervisor via nsenter
 ```
 
-**IP Conflict Prevention**: TC redirect MUST be active before Cloud Hypervisor starts. Without the redirect, both the netns-side interface (which holds the IP for CNI bookkeeping) and the guest (which configures the same IP via cloud-init) would respond to ARP requests for that IP, causing a Layer 2 conflict. The `tc mirred redirect` diverts all ingress packets on the netns interface to the TAP before the namespace IP stack sees them, preventing the conflict.
+**IP Conflict Prevention**: TC redirect MUST be active before Cloud Hypervisor starts. Without the redirect, both the netns-side interface (which holds the IP for CNI bookkeeping) and the guest (which obtains the same IP via DHCP from dnsmasq) would respond to ARP requests for that IP, causing a Layer 2 conflict. The `tc mirred redirect` diverts all ingress packets on the netns interface to the TAP before the namespace IP stack sees them, preventing the conflict.
 
 **Rollback on Failure**:
 
@@ -1183,22 +1176,31 @@ func (e *engine) Create(ctx context.Context, opts CreateOptions) (*types.VMConfi
             states = append(states, *state)
         }
 
-        // 5. Generate NoCloud seed image:
-        //    a. Create meta-data and network-config YAML from CNI result
-        //    b. mkdosfs -n cidata -C {vm_dir}/cloud-init.img 256
-        //    c. mcopy -i {vm_dir}/cloud-init.img meta-data ::meta-data
-        //    d. mcopy -i {vm_dir}/cloud-init.img network-config ::network-config
-        //    e. Record path in config.json as CloudInitImagePath
-        seedPath, err := network.GenerateCloudInitSeedImage(vmDir, states)
-        if err != nil {
-            // Rollback: CNI DEL all networks + delete namespace.
-            for j := len(states) - 1; j >= 0; j-- {
-                _ = e.netMgr.DeleteNetwork(ctx, vmID, nsPath, attachments[j])
+        // 5. Register DHCP leases with dnsmasq:
+        //    a. Ensure per-bridge dnsmasq is running (startDnsmasq if needed)
+        //    b. For each attachment, add a static DHCP lease:
+        //       addDHCPLease(bridge, mac, ip, hostname)
+        //    c. dnsmasq serves the lease to the guest on boot via standard DHCP
+        for _, s := range states {
+            bridge := s.BridgeName
+            if err := network.StartDnsmasq(bridge); err != nil {
+                // Rollback: CNI DEL all networks + delete namespace.
+                for j := len(states) - 1; j >= 0; j-- {
+                    _ = e.netMgr.DeleteNetwork(ctx, vmID, nsPath, attachments[j])
+                }
+                _ = network.DeleteNetNS(nsPath)
+                return nil, fmt.Errorf("start dnsmasq on bridge %s: %w", bridge, err)
             }
-            _ = network.DeleteNetNS(nsPath)
-            return nil, fmt.Errorf("generate cloud-init seed image: %w", err)
+            if err := network.AddDHCPLease(bridge, s.MACAddress, s.IPs[0], vmID); err != nil {
+                // Rollback: stop dnsmasq if we just started it, CNI DEL, delete namespace.
+                for j := len(states) - 1; j >= 0; j-- {
+                    _ = network.RemoveDHCPLease(states[j].BridgeName, states[j].MACAddress)
+                    _ = e.netMgr.DeleteNetwork(ctx, vmID, nsPath, attachments[j])
+                }
+                _ = network.DeleteNetNS(nsPath)
+                return nil, fmt.Errorf("add DHCP lease for %s on bridge %s: %w", s.MACAddress, bridge, err)
+            }
         }
-        cfg.CloudInitImagePath = seedPath
 
         // 6. Store network state in metadata.
         meta.NetworkState = types.NetworkState{
@@ -1500,7 +1502,7 @@ IP addresses allocated by IPAM plugins are:
 1. **Returned in the CNI result** (captured by Cocoon during `AddNetwork`).
 2. **Stored in metadata.json** (in `NetworkAttachmentState.IPs`).
 3. **Visible in `cocoon inspect`** output.
-4. **Injected into the guest** via cloud-init or kernel cmdline (see Section 8).
+4. **Served to the guest** via DHCP from a per-bridge dnsmasq instance (see Section 8).
 
 ```bash
 $ cocoon inspect myvm --format json | jq '.network.attachments[0].ips'
@@ -1598,143 +1600,250 @@ DNS server addresses come from two sources:
 1. **CNI result**: The CNI plugin chain may return DNS server addresses in its result. This is common with the `dhcp` IPAM plugin.
 2. **CNI network config**: The network configuration file can include a `dns` block with nameservers.
 
-### 8.2 DNS Injection Strategies
+### 8.2 Guest Network Configuration via DHCP
 
-DNS configuration must be injected into the guest so that `/etc/resolv.conf` reflects the CNI-assigned nameservers. Two strategies are supported:
+Cocoon configures guest networking via standard DHCP, using a per-bridge **dnsmasq** instance that serves static leases matching the CNI IPAM allocation. This eliminates the need for cloud-init, seed disks, or any guest-side agent.
 
-#### Strategy 1: Cloud-Init via NoCloud Datasource (Preferred)
-
-When cloud-init is available in the guest image (which is the case for all standard cloud images), network configuration is injected via the **NoCloud datasource**. Cocoon generates a small FAT filesystem image containing the cloud-init metadata and attaches it as a second virtio-blk device at VM creation time.
-
-The NoCloud seed image contains:
+#### Architecture
 
 ```
-/meta-data       # instance-id, local-hostname
-/network-config  # cloud-init network-config v2 (netplan format)
+                                     CNI bridge (e.g., cni0)
+                                            |
+                 +----------+----------+----+----+----------+
+                 |          |          |         |          |
+               veth1      veth2      veth3    dnsmasq    (host)
+              (VM-A)     (VM-B)     (VM-C)   listening
+                                              on bridge
 ```
 
-Cloud-init inside the guest detects the NoCloud datasource label (`cidata`) and applies the network configuration on first boot.
+Cocoon runs one dnsmasq process per CNI bridge interface. dnsmasq is configured to:
 
-**Network-config v2 example** (generated by Cocoon from the CNI result):
+1. **Listen only on the bridge interface** (e.g., `--interface=cni0 --bind-interfaces`).
+2. **Serve static DHCP leases** derived from the CNI IPAM result. Each VM's MAC address is mapped to the IP allocated by the IPAM plugin.
+3. **Provide DNS forwarding** using the host's `/etc/resolv.conf` or CNI-specified nameservers.
+4. **Set gateway and search domain** via DHCP options matching the CNI result.
 
-```yaml
-# cloud-init network-config v2 (netplan format)
-network:
-  version: 2
-  ethernets:
-    cocoon-eth0:
-      match:
-        macaddress: "02:a3:b5:c7:d9:e1"
-      set-name: eth0
-      addresses:
-        - 10.88.0.5/16
-      gateway4: 10.88.0.1
-      nameservers:
-        addresses:
-          - 10.88.0.1
-          - 8.8.8.8
-        search:
-          - cocoon.local
+#### DHCP Lease Example
+
+When CNI allocates IP `10.88.0.5/16` with gateway `10.88.0.1` for a VM with MAC `02:a3:b5:c7:d9:e1`, Cocoon writes the following static lease entry to the dnsmasq hosts file:
+
+```
+# /var/lib/cocoon/dnsmasq/cni0/hosts
+02:a3:b5:c7:d9:e1,10.88.0.5,vm-abc123
 ```
 
-Key points:
-- The `match.macaddress` field ensures the config applies to the correct interface regardless of the guest's udev naming scheme (which may assign names like `ens3`, `enp0s3` instead of `eth0`).
-- The `set-name` field renames the matched interface to `eth0` for consistency.
-- The MAC address is deterministically generated from the VM ID (see §4.5), so it is known at VM creation time.
+dnsmasq serves this as a DHCP response to the matching MAC address, including:
+- IP address: `10.88.0.5`
+- Subnet mask: `255.255.0.0` (derived from `/16`)
+- Gateway: `10.88.0.1`
+- DNS servers: `10.88.0.1`, `8.8.8.8`
+- Search domain: `cocoon.local`
+- Lease time: infinite (static lease)
 
-**Note on kernel `ip=` parameter**: Cocoon uses UEFI firmware boot (`CLOUDHV.fd`) for cloud images and direct kernel boot (`payload.kernel`) for OCI VM images. For UEFI boot, the firmware loads the kernel from the guest disk, and the bootloader inside the guest controls the kernel command line -- Cocoon cannot inject kernel parameters such as `ip=` from the host side. For direct kernel boot, Cocoon controls the kernel command line via `payload.cmdline`. In both cases, the cloud-init NoCloud datasource is the recommended network configuration injection mechanism.
+#### Key Advantages
 
-**Guest Network Configuration Injection**: The CNI-assigned IP, routes, and DNS are injected into the guest via cloud-init NoCloud seed ISO (network-config v2 format). Cocoon generates a seed ISO containing the network configuration and attaches it as a secondary disk during VM creation. Guest images must have cloud-init installed and configured to consume NoCloud data sources. Images without cloud-init require manual network configuration inside the guest.
+- **Works with ANY Linux guest**: No cloud-init, no guest agent, no special image requirements. Any distro with a DHCP client (dhclient, systemd-networkd, NetworkManager) works out of the box.
+- **No seed disk tooling**: Eliminates mkdosfs, mcopy, dosfstools, and mtools dependencies.
+- **No secondary disk device**: The VM needs only its root disk. No virtio-blk device for seed data.
+- **Debuggable with standard tools**: `dhclient -v`, `tcpdump -i cni0 port 67`, `journalctl -u dnsmasq` all work as expected.
+- **Handles IP changes on reboot**: If the IPAM plugin assigns a new IP after reboot, Cocoon updates the dnsmasq lease file. The guest's DHCP client picks up the new IP automatically.
+- **Same approach as libvirt/QEMU**: This is the standard mechanism used by libvirt's default network, making it familiar to most virtualization engineers.
 
-### 8.3 Cloud-Init NoCloud Image Lifecycle
+#### dnsmasq Configuration Template
 
-The NoCloud datasource requires a FAT filesystem image containing the cloud-init seed files. This section describes the concrete implementation for creating, attaching, and cleaning up the image.
-
-**Creation** (during `cocoon create --network`):
-
-1. Generate the `meta-data` and `network-config` YAML files from the CNI result (see Section 8.2 and 8.4).
-2. Create a FAT filesystem image at `{vm_dir}/cloud-init.img` using `mkdosfs` and `mcopy`:
-   ```bash
-   # Create a small FAT12 image with the "cidata" label (detected by cloud-init).
-   mkdosfs -n cidata -C {vm_dir}/cloud-init.img 256   # 256 KB
-   mcopy -i {vm_dir}/cloud-init.img meta-data ::meta-data
-   mcopy -i {vm_dir}/cloud-init.img network-config ::network-config
-   ```
-3. The image path is recorded in `config.json` as `CloudInitImagePath`.
-
-**Attachment** (during CH launch):
-
-The cloud-init image is attached as a second entry in the `disks` array of the CH REST payload, marked as read-only:
-
-```go
-Disks: []hypervisor.CHDiskConfig{
-    {Path: cfg.OverlayPath},                           // Primary disk (read-write)
-    {Path: cfg.CloudInitImagePath, ReadOnly: true},    // NoCloud seed (read-only)
-},
+```ini
+# /var/lib/cocoon/dnsmasq/cni0/dnsmasq.conf
+interface=cni0
+bind-interfaces
+except-interface=lo
+dhcp-range=10.88.0.2,static,infinite
+dhcp-hostsfile=/var/lib/cocoon/dnsmasq/cni0/hosts
+dhcp-option=option:router,10.88.0.1
+dhcp-option=option:dns-server,10.88.0.1,8.8.8.8
+dhcp-option=option:domain-search,cocoon.local
+dhcp-authoritative
+no-resolv
+server=8.8.8.8
+server=8.8.4.4
+pid-file=/var/lib/cocoon/dnsmasq/cni0/dnsmasq.pid
+log-dhcp
 ```
 
-Cloud Hypervisor exposes this as a second virtio-blk device. The guest kernel enumerates it as `/dev/vdb` (or equivalent), and cloud-init detects the `cidata` filesystem label on first boot.
+The `dhcp-range=<start>,static,infinite` directive tells dnsmasq to only serve leases for MAC addresses listed in the hosts file. Unknown MACs are ignored, preventing rogue devices from obtaining addresses.
+
+### 8.3 dnsmasq Lifecycle
+
+Cocoon manages one dnsmasq process per CNI bridge interface. The lifecycle is tied to VMs using that bridge, not to individual VM lifecycles.
+
+**State directory**: `/var/lib/cocoon/dnsmasq/{bridge}/` contains:
+- `dnsmasq.conf` — Generated configuration file.
+- `dnsmasq.pid` — PID file for the running dnsmasq process.
+- `hosts` — Static DHCP lease entries (one per line: `<mac>,<ip>,<hostname>`).
+
+**Start** (when first VM on a bridge needs networking):
+
+1. Create the state directory `/var/lib/cocoon/dnsmasq/{bridge}/`.
+2. Generate `dnsmasq.conf` from the bridge's subnet configuration (gateway, DNS, search domain).
+3. Create an empty `hosts` file.
+4. Start dnsmasq: `dnsmasq --conf-file=/var/lib/cocoon/dnsmasq/{bridge}/dnsmasq.conf`
+5. Verify dnsmasq started successfully by checking the PID file.
+
+If dnsmasq is already running for this bridge (PID file exists and process is alive), this step is a no-op.
+
+**Update** (when a VM is created or deleted on the bridge):
+
+1. Add or remove the static lease line in the `hosts` file.
+2. Send `SIGHUP` to the running dnsmasq process (read from PID file). dnsmasq re-reads the hosts file without restarting, so existing leases for other VMs are unaffected.
+
+```bash
+# Example: add a lease
+echo "02:a3:b5:c7:d9:e1,10.88.0.5,vm-abc123" >> /var/lib/cocoon/dnsmasq/cni0/hosts
+kill -HUP $(cat /var/lib/cocoon/dnsmasq/cni0/dnsmasq.pid)
+```
+
+**Stop** (when last VM on a bridge is removed):
+
+1. Send `SIGTERM` to the dnsmasq process (from PID file).
+2. Wait for the process to exit (with a short timeout).
+3. Remove the state directory `/var/lib/cocoon/dnsmasq/{bridge}/`.
+
+If other VMs still reference the bridge, the dnsmasq process is kept running. The stop logic checks the number of remaining lease entries in the hosts file.
 
 **Cleanup** (during `cocoon delete`):
 
-The `cloud-init.img` file resides inside the VM directory (`{vm_dir}/`). It is removed along with the overlay and other VM files when the VM directory is deleted during `cocoon delete`. No separate cleanup step is needed.
+1. Call `removeDHCPLease(bridge, mac)` to remove the VM's lease entry from the hosts file.
+2. Send `SIGHUP` to dnsmasq so it drops the lease.
+3. If the hosts file is now empty (no more VMs on this bridge), stop and clean up dnsmasq for this bridge.
 
-### 8.4 DNS Configuration in Code
+No per-VM disk artifacts are created. The only state is the centralized hosts file per bridge.
+
+### 8.4 dnsmasq Management in Code
 
 ```go
-// generateCloudInitNetworkConfig produces a cloud-init network-config v2 YAML
-// from the CNI result state. The output follows the netplan format with MAC-based
-// matching and interface renaming for reliable device identification.
-func generateCloudInitNetworkConfig(attachments []NetworkAttachmentState) ([]byte, error) {
-    type nameservers struct {
-        Addresses []string `yaml:"addresses,omitempty"`
-        Search    []string `yaml:"search,omitempty"`
-    }
+const dnsmasqStateDir = "/var/lib/cocoon/dnsmasq"
 
-    type matchConfig struct {
-        MACAddress string `yaml:"macaddress"`
-    }
+// startDnsmasq ensures a dnsmasq instance is running for the given bridge.
+// If dnsmasq is already running (PID file exists, process alive), this is a no-op.
+// The dnsmasq instance listens only on the bridge interface and serves static
+// DHCP leases from the hosts file.
+func startDnsmasq(bridge string) error {
+    dir := filepath.Join(dnsmasqStateDir, bridge)
+    pidFile := filepath.Join(dir, "dnsmasq.pid")
 
-    type ethConfig struct {
-        Match       matchConfig  `yaml:"match"`
-        SetName     string       `yaml:"set-name"`
-        Addresses   []string     `yaml:"addresses"`
-        Gateway4    string       `yaml:"gateway4,omitempty"`
-        Nameservers *nameservers `yaml:"nameservers,omitempty"`
-    }
-
-    netConfig := map[string]interface{}{
-        "version":   2,
-        "ethernets": map[string]ethConfig{},
-    }
-
-    ethernets := netConfig["ethernets"].(map[string]ethConfig)
-
-    for _, att := range attachments {
-        // Use an arbitrary ID (cocoon-ethN) as the key, with match.macaddress
-        // to identify the device and set-name to rename it to the desired name.
-        // This avoids reliance on udev device naming (ens3, enp0s3, etc.).
-        id := "cocoon-" + att.InterfaceName
-        eth := ethConfig{
-            Match:     matchConfig{MACAddress: att.MACAddress},
-            SetName:   att.InterfaceName,
-            Addresses: att.IPs,
-            Gateway4:  att.Gateway,
+    // Check if already running.
+    if pid, err := readPIDFile(pidFile); err == nil {
+        if processAlive(pid) {
+            return nil // Already running.
         }
-        if len(att.DNS) > 0 {
-            eth.Nameservers = &nameservers{
-                Addresses: att.DNS,
-                Search:    []string{"cocoon.local"},
-            }
+        // Stale PID file; clean up and restart.
+    }
+
+    if err := os.MkdirAll(dir, 0755); err != nil {
+        return fmt.Errorf("create dnsmasq state dir: %w", err)
+    }
+
+    confPath := filepath.Join(dir, "dnsmasq.conf")
+    hostsPath := filepath.Join(dir, "hosts")
+
+    // Create empty hosts file if it does not exist.
+    if _, err := os.Stat(hostsPath); os.IsNotExist(err) {
+        if err := os.WriteFile(hostsPath, nil, 0644); err != nil {
+            return fmt.Errorf("create hosts file: %w", err)
         }
-        ethernets[id] = eth
     }
 
-    data := map[string]interface{}{
-        "network": netConfig,
+    // Generate dnsmasq config from bridge network parameters.
+    conf := generateDnsmasqConf(bridge, hostsPath, pidFile)
+    if err := os.WriteFile(confPath, []byte(conf), 0644); err != nil {
+        return fmt.Errorf("write dnsmasq config: %w", err)
     }
 
-    return yaml.Marshal(data)
+    cmd := exec.Command("dnsmasq", "--conf-file="+confPath)
+    if err := cmd.Run(); err != nil {
+        return fmt.Errorf("start dnsmasq on bridge %s: %w", bridge, err)
+    }
+
+    return nil
+}
+
+// stopDnsmasq stops the dnsmasq instance for the given bridge and cleans up
+// its state directory. Called when the last VM on the bridge is removed.
+func stopDnsmasq(bridge string) error {
+    dir := filepath.Join(dnsmasqStateDir, bridge)
+    pidFile := filepath.Join(dir, "dnsmasq.pid")
+
+    if pid, err := readPIDFile(pidFile); err == nil {
+        if processAlive(pid) {
+            syscall.Kill(pid, syscall.SIGTERM)
+            // Wait briefly for clean shutdown.
+            waitForExit(pid, 5*time.Second)
+        }
+    }
+
+    return os.RemoveAll(dir)
+}
+
+// addDHCPLease adds a static DHCP lease entry to the dnsmasq hosts file for
+// the given bridge and sends SIGHUP to dnsmasq so it picks up the change.
+// The lease maps the VM's MAC address to the CNI-allocated IP and hostname.
+func addDHCPLease(bridge, mac, ip, hostname string) error {
+    dir := filepath.Join(dnsmasqStateDir, bridge)
+    hostsPath := filepath.Join(dir, "hosts")
+
+    // Format: <mac>,<ip>,<hostname>
+    entry := fmt.Sprintf("%s,%s,%s\n", mac, ip, hostname)
+
+    f, err := os.OpenFile(hostsPath, os.O_APPEND|os.O_WRONLY, 0644)
+    if err != nil {
+        return fmt.Errorf("open hosts file: %w", err)
+    }
+    defer f.Close()
+
+    if _, err := f.WriteString(entry); err != nil {
+        return fmt.Errorf("write lease entry: %w", err)
+    }
+
+    // SIGHUP causes dnsmasq to re-read the hosts file.
+    return signalDnsmasq(bridge, syscall.SIGHUP)
+}
+
+// removeDHCPLease removes the static DHCP lease for the given MAC address
+// from the dnsmasq hosts file and sends SIGHUP. If the hosts file is now
+// empty, the dnsmasq instance is stopped.
+func removeDHCPLease(bridge, mac string) error {
+    dir := filepath.Join(dnsmasqStateDir, bridge)
+    hostsPath := filepath.Join(dir, "hosts")
+
+    // Read, filter out the line matching the MAC, write back.
+    data, err := os.ReadFile(hostsPath)
+    if err != nil {
+        return fmt.Errorf("read hosts file: %w", err)
+    }
+
+    var remaining []string
+    for _, line := range strings.Split(string(data), "\n") {
+        line = strings.TrimSpace(line)
+        if line == "" || strings.HasPrefix(line, mac+",") {
+            continue
+        }
+        remaining = append(remaining, line)
+    }
+
+    newData := strings.Join(remaining, "\n")
+    if len(remaining) > 0 {
+        newData += "\n"
+    }
+    if err := os.WriteFile(hostsPath, []byte(newData), 0644); err != nil {
+        return fmt.Errorf("write hosts file: %w", err)
+    }
+
+    if len(remaining) == 0 {
+        // No more VMs on this bridge; stop dnsmasq entirely.
+        return stopDnsmasq(bridge)
+    }
+
+    // SIGHUP causes dnsmasq to re-read the hosts file.
+    return signalDnsmasq(bridge, syscall.SIGHUP)
 }
 ```
 
@@ -1846,28 +1955,16 @@ func networkDoctorChecks() []DoctorCheck {
             Severity: "warning",
         },
         {
-            Name: "mkdosfs-command",
+            Name: "dnsmasq-command",
             Check: func() error {
-                // mkdosfs (from dosfstools) is required to create the FAT filesystem
-                // for the NoCloud seed image used by cloud-init (see Section 8.3).
-                // Install: Ubuntu/Debian: apt install dosfstools
-                //          Fedora/RHEL:   dnf install dosfstools
-                if _, err := exec.LookPath("mkdosfs"); err != nil {
-                    return fmt.Errorf("'mkdosfs' command not found (needed to create cloud-init seed image): %w\n  Install: apt install dosfstools (Debian/Ubuntu) or dnf install dosfstools (Fedora/RHEL)", err)
-                }
-                return nil
-            },
-            Severity: "warning",
-        },
-        {
-            Name: "mcopy-command",
-            Check: func() error {
-                // mcopy (from mtools) is required to copy files into the FAT filesystem
-                // for the NoCloud seed image used by cloud-init (see Section 8.3).
-                // Install: Ubuntu/Debian: apt install mtools
-                //          Fedora/RHEL:   dnf install mtools
-                if _, err := exec.LookPath("mcopy"); err != nil {
-                    return fmt.Errorf("'mcopy' command not found (needed to populate cloud-init seed image): %w\n  Install: apt install mtools (Debian/Ubuntu) or dnf install mtools (Fedora/RHEL)", err)
+                // dnsmasq is required to serve DHCP leases to guest VMs.
+                // Cocoon runs a per-bridge dnsmasq instance that provides
+                // static DHCP leases matching CNI IPAM allocations (see Section 8.2).
+                // Install: Ubuntu/Debian: apt install dnsmasq-base
+                //          Fedora/RHEL:   dnf install dnsmasq
+                //          macOS:         brew install dnsmasq
+                if _, err := exec.LookPath("dnsmasq"); err != nil {
+                    return fmt.Errorf("'dnsmasq' command not found (needed to serve DHCP leases to guest VMs): %w\n  Install: apt install dnsmasq-base (Debian/Ubuntu) or dnf install dnsmasq (Fedora/RHEL)", err)
                 }
                 return nil
             },
@@ -1987,7 +2084,7 @@ The tc mirred redirect model works with any CNI plugin that produces a standard 
 | macvlan | Yes | Produces macvlan interface. TC redirect works identically. |
 | ipvlan | Yes | Produces ipvlan interface. TC redirect works identically. |
 | host-local (IPAM) | Yes | Pure IPAM plugin, no interaction with TC redirect. |
-| dhcp (IPAM) | Yes | DHCP lease acquired on the CNI interface. Guest receives IP via cloud-init, not DHCP. |
+| dhcp (IPAM) | Yes | DHCP lease acquired on the CNI interface. Guest receives IP via dnsmasq DHCP on the bridge. |
 | portmap | Yes | Installs iptables DNAT rules keyed on IP address. TC redirect does not move the IP, so portmap rules remain valid. |
 | static (IPAM) | Yes | Fixed IP assignment. No interaction with TC redirect. |
 | Calico (iptables mode) | Yes | Creates veth pair with BGP routing on host side. TC redirect operates inside netns only. |
@@ -2233,7 +2330,8 @@ func TestNetworkCreateRollback(t *testing.T) {
 - Cloud Hypervisor API schema (net section): https://github.com/cloud-hypervisor/cloud-hypervisor/blob/main/vmm/src/api/openapi/cloud-hypervisor.yaml
 - Linux TAP/TUN documentation: `man 4 tun`
 - Linux network namespaces: `man 7 network_namespaces`
-- cloud-init network-config v2: https://cloudinit.readthedocs.io/en/latest/reference/network-config-format-v2.html
+- dnsmasq documentation: https://thekelleys.org.uk/dnsmasq/doc.html
+- dnsmasq man page: https://thekelleys.org.uk/dnsmasq/docs/dnsmasq-man.html
 
 ---
 

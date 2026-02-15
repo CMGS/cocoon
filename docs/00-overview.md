@@ -16,16 +16,12 @@ Cocoon requires **bootable VM images** with a complete operating system, not app
 **1. Bootable OCI Images** (Custom-built OS images packaged as OCI):
 - **MUST contain**: kernel (`/boot/vmlinuz*`), initrd/initramfs, init system (`/sbin/init` → systemd)
 - **MUST have**: GRUB bootloader in ESP (EFI System Partition), GPT partition table
-- **cloud-init: CONDITIONAL**:
-  - **REQUIRED**: For VM initialization via NoCloud (SSH/user setup, hostname, network config)
-  - **OPTIONAL**: For standalone VMs with pre-configured credentials
-  - **DEFAULT**: Standard cloud images include it by default
-  - **FALLBACK**: VMs without cloud-init will boot but cannot receive NoCloud configuration
+- **Guest initialization**: SSH keys, users, and hostname setup is the user's responsibility. Cocoon does not depend on cloud-init.
 - **Reality**: Building bootable OCI images is complex - see [11-bootable-oci-build.md](./11-bootable-oci-build.md)
 
 **2. Cloud Hypervisor Native Cloud Images** (recommended, faster):
 - Standard cloud images in qcow2 format (Ubuntu Cloud, Fedora Cloud, Debian Cloud)
-- Pre-configured for cloud-init and UEFI boot
+- Pre-configured for UEFI boot
 - Direct boot without OCI conversion overhead
 
 ### Why Regular Container Images Don't Work
@@ -68,7 +64,7 @@ See [04-oci-conversion.md § 10 Verified Images](./04-oci-conversion.md#10-verif
 
 **Option 1: Cloud Images (Recommended for Phase 1)**:
 - Download: Ubuntu Cloud, Fedora Cloud, Debian Cloud (qcow2 format)
-- Pre-configured with kernel, bootloader, systemd, cloud-init
+- Pre-configured with kernel, bootloader, systemd
 - Works immediately with Cocoon (no conversion needed)
 - Sources:
   - Ubuntu: https://cloud-images.ubuntu.com/
@@ -77,7 +73,7 @@ See [04-oci-conversion.md § 10 Verified Images](./04-oci-conversion.md#10-verif
 
 **Option 2: Build Custom Bootable OCI (Advanced - Phase 2)**:
 - Requires multi-stage Dockerfile with package installation
-- Must install: kernel, initrd, systemd, GRUB, cloud-init
+- Must install: kernel, initrd, systemd, GRUB (cloud-init is optional for the user's use case)
 - Must configure: ESP partition, GRUB config, bootloader installation
 - See [11-bootable-oci-build.md](./11-bootable-oci-build.md) for build process
 

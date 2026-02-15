@@ -31,7 +31,7 @@ func writeToFile(t *testing.T, path, content string) {
 
 func TestCompilePatterns_Valid(t *testing.T) {
 	t.Parallel()
-	patterns := []string{`login:`, `Cloud-init .* finished`, `^boot\s+ok$`}
+	patterns := []string{`login:`, `Reached target.*Login`, `^boot\s+ok$`}
 	compiled, err := compilePatterns(patterns)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)

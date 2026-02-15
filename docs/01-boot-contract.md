@@ -10,7 +10,7 @@
 This document defines the **Boot Contract** - the core specification for how Cocoon boots virtual machines using Cloud Hypervisor. The contract establishes:
 
 1. **Boot mode strategy**: UEFI (default for cloud images) + Direct kernel boot (for OCI VM images)
-2. **Guest initialization**: systemd + cloud-init (NoCloud seed disks for initialization)
+2. **Guest initialization**: systemd (guest image setup is user responsibility)
 3. **I/O mechanisms**: Serial console, future vsock/virtiofs
 4. **Lifecycle semantics**: Start, stop, delete, crash recovery
 5. **Image requirements**: What constitutes a bootable image
@@ -93,7 +93,7 @@ This document defines the **Boot Contract** - the core specification for how Coc
 root=PARTUUID=<uuid> rw console=ttyS0,115200n8 console=hvc0
 ```
 
-**Boot detection**: The same serial log pattern matching is used for both UEFI and Direct kernel boot (systemd target patterns, cloud-init patterns, fallback patterns).
+**Boot detection**: The same serial log pattern matching is used for both UEFI and Direct kernel boot (systemd target patterns, login prompt fallback patterns).
 
 **Firmware Location**:
 ```
@@ -156,7 +156,7 @@ const DefaultBootStrategy = BootStrategyUEFI
 
 **Why systemd**:
 - ✅ Universal: Ubuntu, Fedora, Debian, RHEL all use systemd
-- ✅ cloud-init integration: Native support via systemd units
+- ✅ Service orchestration: Native service dependency management
 - ✅ Service management: Easy to inject and monitor agent tasks
 - ✅ Logging: journald provides structured logging
 
@@ -168,54 +168,40 @@ ls -la /sbin/init  # Should be symlink to systemd
 
 ---
 
-### 2.2 VM Initialization: cloud-init
+### 2.2 Guest Initialization (User Responsibility)
 
-**Purpose**: cloud-init is used for **VM initialization only** - setting up users, SSH keys, hostname, and network configuration. It is NOT used for task orchestration or command execution.
+**Cocoon does NOT perform guest initialization.** Users are responsible for preparing their own images with the desired configuration baked in.
 
-**Architecture**:
-```
-┌─────────────┐
-│   Cocoon    │  1. Attach NoCloud seed disk (if --network specified)
-│    Host     │  2. Launch VM
-└──────┬──────┘
-       │
-       ▼
-┌─────────────┐
-│  Guest VM   │  3. cloud-init reads NoCloud seed disk
-│             │  4. Configures users, SSH, hostname, network
-│ cloud-init  │  5. VM ready for external access
-└─────────────┘
-```
+**What "guest initialization" means**: Setting up SSH keys, root/user passwords, hostname, network configuration, and any other first-boot customization.
 
-**cloud-init Datasource Configuration**:
+**User responsibilities**:
+- Bake SSH keys, user accounts, and passwords into cloud images or OCI images before use
+- Configure hostname, network settings, and any other guest-level setup in the image
+- Use whatever initialization tooling they prefer (cloud-init, ignition, custom scripts, etc.)
 
-**cloud-init: CONDITIONAL**
-- **REQUIRED**: For VM initialization (SSH/user setup, hostname, network config via NoCloud)
-- **OPTIONAL**: For standalone VMs with pre-configured credentials
-- **DEFAULT**: Standard cloud images (Ubuntu Cloud, Fedora Cloud) include it by default
-- **FALLBACK**: VMs without cloud-init will boot but cannot receive NoCloud configuration
+**Cloud-init in guest images**: Cloud-init may be present in guest images (e.g., standard Ubuntu Cloud or Fedora Cloud images ship with it). This is the user's choice. Cocoon does not depend on cloud-init, does not interact with it, and does not inject any datasource or seed disk. If cloud-init runs inside the guest, it operates independently of Cocoon.
+
+**Recommended approaches for image preparation**:
+- Pre-configure images using `virt-customize`, `guestfish`, or similar tools
+- Build custom OCI VM images with all configuration baked in
+- Use Packer or similar tooling to produce ready-to-boot images
 
 ---
 
 ### 2.3 VM Boot Sequence
 
 ```
-1. Cocoon attaches NoCloud seed disk (if --network specified)
+1. Cocoon launches VM with Cloud Hypervisor
 
-2. Cocoon launches VM
+2. Firmware/bootloader loads kernel
+   └─ UEFI: CLOUDHV.fd → GRUB → vmlinuz
+   └─ Direct: kernel + initramfs passed directly
 
-3. VM boots → systemd starts cloud-init.service
+3. systemd initializes services
+   └─ Mounts filesystems, starts networking, reaches multi-user target
 
-4. cloud-init reads NoCloud seed disk for network/meta-data
-
-5. cloud-init configures VM
-   └─ Create users, set hostname, configure SSH keys, apply network config
-
-6. VM initialization complete
-   └─ VM is ready for external access (console, SSH, API)
-
-7. Upper layer can now orchestrate via API
-   └─ External RPC/gRPC can attach, send files, run commands
+4. Login prompt appears (boot complete)
+   └─ Cocoon detects boot completion via serial log pattern matching
 ```
 
 ---
@@ -227,7 +213,6 @@ ls -la /sbin/init  # Should be symlink to systemd
 **Purpose**:
 - Boot messages capture
 - Kernel/systemd logs
-- cloud-init initialization logs
 - Error diagnostics and debugging
 
 **Configuration**:
@@ -240,13 +225,12 @@ cloud-hypervisor \
 **Serial Log Format**:
 ```
 [    0.123456] Linux version 5.15.0-87-generic ...
-[    0.234567] Command line: BOOT_IMAGE=/vmlinuz root=/dev/vda1 ds=nocloud-net;...
-[    1.456789] cloud-init[234]: Cloud-init v. 23.3.1 running ...
-[    2.567890] cloud-init[234]: Reading NoCloud seed disk for user-data
-[    3.678901] cloud-init[234]: Creating user 'cocoon'
-[    4.789012] cloud-init[234]: Setting hostname to 'vm-abc-123'
-[    5.890123] systemd[1]: Reached target Multi-User System
-[    6.901234] systemd[1]: Reached target Graphical Interface
+[    0.234567] Command line: BOOT_IMAGE=/vmlinuz root=/dev/vda1 ...
+[    1.456789] systemd[1]: Started Journal Service.
+[    2.567890] systemd[1]: Reached target Network.
+[    3.678901] systemd[1]: Reached target Multi-User System.
+[    4.789012] systemd[1]: Startup finished in 4.5s.
+[    5.890123] ubuntu login:
 ```
 
 **Boot Completion Detection**:
@@ -255,9 +239,8 @@ Cocoon uses multi-pattern detection with fallback sequences to ensure robust boo
 
 **Detection Strategy**:
 1. **Primary patterns**: Systemd target markers (multi-user or graphical)
-2. **Cloud-init patterns**: Verify cloud-init completion (if enabled)
-3. **Fallback patterns**: Login prompts, systemd startup finished messages
-4. **Future enhancement**: cocoon-ready.service injection via user-data
+2. **Fallback patterns**: Login prompts, systemd startup finished messages
+3. **Future enhancement**: cocoon-ready.service (Phase 2, baked into images)
 
 **Implementation**:
 ```go
@@ -266,17 +249,11 @@ type BootDetectionConfig struct {
     // Systemd target patterns (any one indicates boot complete)
     SystemdTargetPatterns []string
 
-    // Cloud-init completion patterns (optional, checked if cloud-init is enabled)
-    CloudInitPatterns []string
-
     // Fallback patterns (used if primary patterns not found within timeout)
     FallbackPatterns []string
 
     // Timeout for boot detection
     Timeout time.Duration
-
-    // Whether cloud-init is enabled for this VM
-    CloudInitEnabled bool
 }
 
 // DefaultBootDetectionConfig returns the default boot detection configuration
@@ -284,34 +261,24 @@ func DefaultBootDetectionConfig() BootDetectionConfig {
     return BootDetectionConfig{
         // Systemd target patterns (ordered by priority)
         SystemdTargetPatterns: []string{
-            "Reached target Multi-User System",        // Ubuntu, Debian, Fedora
-            "Reached target Graphical Interface",      // Desktop images
-            "multi-user.target: Startup finished",     // Alternative format
-            "graphical.target: Startup finished",      // Desktop alternative
-        },
-
-        // Cloud-init completion patterns
-        CloudInitPatterns: []string{
-            "Cloud-init v.",                           // Generic version message
-            "finished at",                             // cloud-init finish timestamp
-            "cloud-init.target: Succeeded",            // systemd unit succeeded
+            "login:",                                  // Login prompt (most universal)
+            "Reached target.*Login",                   // systemd login target
+            "systemd .* running",                      // systemd running message
         },
 
         // Fallback patterns (login prompt indicates boot complete)
         FallbackPatterns: []string{
-            "login:",                                  // Login prompt
             "Welcome to",                              // Distribution welcome message
+            "Startup finished",                        // systemd startup finished
         },
 
-        Timeout:          60 * time.Second,
-        CloudInitEnabled: true,
+        Timeout: 60 * time.Second,
     }
 }
 
 // BootCompletionState tracks detection state
 type BootCompletionState struct {
     SystemdTargetReached bool
-    CloudInitFinished    bool
     BootCompleteTime     time.Time
 }
 
@@ -322,10 +289,7 @@ func WaitForBootCompletion(vmID string, config BootDetectionConfig) error {
     ctx, cancel := context.WithTimeout(context.Background(), config.Timeout)
     defer cancel()
 
-    state := &BootCompletionState{
-        SystemdTargetReached: false,
-        CloudInitFinished:    !config.CloudInitEnabled, // Skip if disabled
-    }
+    state := &BootCompletionState{}
 
     // Tail serial log for boot completion markers
     for line := range tailFile(ctx, logPath) {
@@ -333,29 +297,13 @@ func WaitForBootCompletion(vmID string, config BootDetectionConfig) error {
         if !state.SystemdTargetReached {
             for _, pattern := range config.SystemdTargetPatterns {
                 if strings.Contains(line, pattern) {
-                    log.Info("VM %s: Systemd target reached: %s", vmID, pattern)
+                    log.Info("VM %s: Boot pattern matched: %s", vmID, pattern)
                     state.SystemdTargetReached = true
-                    break
+                    state.BootCompleteTime = time.Now()
+                    log.Info("VM %s: Boot completed successfully", vmID)
+                    return nil
                 }
             }
-        }
-
-        // Check cloud-init completion patterns (if enabled)
-        if config.CloudInitEnabled && !state.CloudInitFinished {
-            for _, pattern := range config.CloudInitPatterns {
-                if strings.Contains(line, pattern) {
-                    log.Info("VM %s: cloud-init finished: %s", vmID, pattern)
-                    state.CloudInitFinished = true
-                    break
-                }
-            }
-        }
-
-        // Boot is complete when both conditions are met
-        if state.SystemdTargetReached && state.CloudInitFinished {
-            state.BootCompleteTime = time.Now()
-            log.Info("VM %s: Boot completed successfully", vmID)
-            return nil
         }
 
         // Fallback: check fallback patterns (only after timeout/2)
@@ -371,8 +319,8 @@ func WaitForBootCompletion(vmID string, config BootDetectionConfig) error {
     }
 
     // Timeout exceeded
-    return fmt.Errorf("boot timeout exceeded: systemd=%v, cloud-init=%v",
-        state.SystemdTargetReached, state.CloudInitFinished)
+    return fmt.Errorf("boot timeout exceeded: systemd_target_reached=%v",
+        state.SystemdTargetReached)
 }
 
 // tailFile tails a log file and returns lines via channel
@@ -422,47 +370,28 @@ func tailFile(ctx context.Context, path string) <-chan string {
 
 ### 3.2 cocoon-ready.service: Definitive Boot Signal (Phase 2)
 
-**Purpose**: Inject a custom systemd service that provides a definitive "VM is ready" signal, independent of distribution-specific boot messages.
+**Purpose**: A custom systemd service that provides a definitive "VM is ready" signal, independent of distribution-specific boot messages.
 
-**Architecture**:
-```
-┌─────────────────────────────────────────────────────────┐
-│ NoCloud seed disk (user-data)                           │
-│ ↓                                                       │
-│ cloud-init writes /etc/systemd/system/cocoon-ready.service│
-│ ↓                                                       │
-│ systemd starts cocoon-ready.service                    │
-│   (after cloud-init.target + multi-user.target)       │
-│ ↓                                                       │
-│ Service prints "COCOON_READY" to serial console       │
-└─────────────────────────────────────────────────────────┘
-```
+**Phase 2 concept**: `cocoon-ready.service` is NOT injected at runtime by Cocoon. Instead, it will be:
+- **Baked into OCI images** at build time (as part of the image build process)
+- **Injected via virtiofs shared directories** (when virtiofs support is added in Phase 3)
 
-**user-data injection** (via NoCloud seed disk):
-```yaml
-#cloud-config
-write_files:
-  - path: /etc/systemd/system/cocoon-ready.service
-    owner: root:root
-    permissions: '0644'
-    content: |
-      [Unit]
-      Description=Cocoon Boot Completion Marker
-      After=multi-user.target cloud-init.target network-online.target
-      Wants=network-online.target
+Cocoon does not modify guest images at boot time. The service must be pre-installed in the image by the user.
 
-      [Service]
-      Type=oneshot
-      ExecStart=/bin/sh -c 'echo "COCOON_READY" > /dev/ttyS0'
-      RemainAfterExit=yes
+**Service definition** (to be baked into images):
+```ini
+[Unit]
+Description=Cocoon Boot Completion Marker
+After=multi-user.target network-online.target
+Wants=network-online.target
 
-      [Install]
-      WantedBy=multi-user.target
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'echo "COCOON_READY" > /dev/ttyS0'
+RemainAfterExit=yes
 
-runcmd:
-  - systemctl daemon-reload
-  - systemctl enable cocoon-ready.service
-  - systemctl start cocoon-ready.service
+[Install]
+WantedBy=multi-user.target
 ```
 
 **Enhanced boot detection with cocoon-ready**:
@@ -504,7 +433,7 @@ func WaitForBootCompletion(vmID string, config BootDetectionConfig) error {
             return nil
         }
 
-        // Priority 2: Check systemd + cloud-init patterns (fallback)
+        // Priority 2: Check systemd patterns (fallback)
         // ... existing pattern detection logic ...
     }
 
@@ -513,15 +442,15 @@ func WaitForBootCompletion(vmID string, config BootDetectionConfig) error {
 ```
 
 **Benefits**:
-- ✅ **Distribution-agnostic**: Works across Ubuntu, Fedora, Debian, etc.
-- ✅ **Reliable**: Explicit signal instead of inferring from log messages
-- ✅ **Deterministic**: Runs after all critical services (cloud-init, network, multi-user)
-- ✅ **No image modification**: Injected via cloud-init user-data at runtime
-- ✅ **Backward compatible**: Falls back to pattern matching if service fails
+- Distribution-agnostic: Works across Ubuntu, Fedora, Debian, etc.
+- Reliable: Explicit signal instead of inferring from log messages
+- Deterministic: Runs after all critical services (network, multi-user)
+- Backward compatible: Falls back to pattern matching if service is not present
 
 **Rollout Strategy**:
-- **Phase 1 (MVP)**: Use multi-pattern detection (current implementation)
-- **Phase 2**: Enable cocoon-ready.service by default, keep pattern matching as fallback
+- **Phase 1 (current)**: Use multi-pattern detection (systemd + login prompt patterns)
+- **Phase 2**: Users bake cocoon-ready.service into images; Cocoon detects COCOON_READY as primary signal
+- **Phase 3**: virtiofs injection as an alternative delivery mechanism
 
 ---
 
@@ -692,11 +621,10 @@ An image is **bootable** if it satisfies these requirements:
 
 > **Phase 1 implementation note**: `VerifyBootability()` performs a two-tier check. The basic tier (qcow2 integrity) is always available. The deep tier (guestfish) checks each component independently and sets `KernelFound`, `InitrdFound`, `SystemdFound`, `BootloaderFound` booleans. When deep verification runs, the function evaluates results: missing MUST components are added to `Errors` and `Bootable` is set to `false`. However, `VerifyBootability()` never returns a Go `error` for missing components — it returns the `BootCheckResult` struct and callers decide whether to proceed (e.g. `--skip-verify` bypasses the check entirely). Strict caller-side enforcement is deferred to Phase 2.
 
-**SHOULD Have (Recommended for VM Initialization)**:
-- 🔵 **cloud-init**: `/usr/bin/cloud-init` + datasource config
-  - **Purpose**: VM initialization (users, SSH keys, hostname, network)
-  - **NOT mandatory**: Can boot without it, but NoCloud configuration injection requires it
-  - **For basic boot testing**: Not required
+**Guest Initialization (User Responsibility)**:
+- Guest-level setup (SSH keys, users, passwords, hostname, network) is the user's responsibility
+- Users should bake this configuration into their images before booting with Cocoon
+- Cocoon does not inject or manage any guest initialization tooling
 
 **Path Hierarchy Clarification**:
 ```
@@ -734,37 +662,13 @@ func ValidateBootability(rootfs string) error {
         return fmt.Errorf("init system must be systemd, got: %s", initTarget)
     }
 
-    // SHOULD check (warning, not error)
-    if !pathExists(filepath.Join(rootfs, "/usr/bin/cloud-init")) {
-        log.Warn("cloud-init not found - VM will boot but NoCloud configuration injection disabled")
-    }
-
     return nil
 }
 ```
 
 ---
 
-### 6.2 cloud-init Configuration Requirements
-
-**cloud-init: CONDITIONAL** (see § 2.2 for details)
-
-**IF using cloud-init with NoCloud**, images MUST have cloud-init datasource config:
-
-```yaml
-# /etc/cloud/cloud.cfg.d/99-cocoon.cfg
-datasource_list: [ NoCloud ]
-```
-
-**MUST have NoCloud support**:
-```bash
-# Verify cloud-init has NoCloud module
-cloud-init query -l  # Should list NoCloud
-```
-
----
-
-### 6.3 Architecture-Specific Requirements
+### 6.2 Architecture-Specific Requirements
 
 #### x86_64
 
@@ -814,27 +718,22 @@ cloud-init query -l  # Should list NoCloud
   - [ ] Build kernel cmdline with `root=PARTUUID=<uuid> rw console=ttyS0,115200n8 console=hvc0`
 
 - [ ] **Image Conversion**:
-  - [ ] Validate cloud-init installed
-  - [ ] Inject cloud-init datasource config
-  - [ ] Modify GRUB cmdline for NoCloudNet
-  - [ ] Regenerate GRUB config
+  - [ ] Regenerate GRUB config (if needed for console settings)
 
-- [ ] **VM Initialization**:
-  - [ ] Generate user-data with users/SSH keys
+- [ ] **Boot Detection**:
   - [ ] Monitor serial log for boot completion
   - [ ] Implement multi-pattern boot detection:
-    - [ ] Systemd target patterns (multi-user, graphical)
-    - [ ] Cloud-init completion patterns
-    - [ ] Fallback patterns (login prompt, welcome message)
-  - [ ] Handle cloud-init enabled/disabled scenarios
+    - [ ] Login prompt patterns
+    - [ ] Systemd target patterns (login target, running message)
+    - [ ] Fallback patterns (welcome message, startup finished)
   - [ ] Timeout handling with detailed error reporting
 
 ### Phase 2: Advanced Features (P1)
 
 - [ ] **cocoon-ready.service Boot Marker**:
-  - [ ] Add cocoon-ready.service to user-data generation
+  - [ ] Document cocoon-ready.service for users to bake into images
   - [ ] Update WaitForBootCompletion to check for COCOON_READY pattern
-  - [ ] Add priority-based pattern matching (cocoon-ready → systemd+cloud-init → fallback)
+  - [ ] Add priority-based pattern matching (cocoon-ready → systemd → fallback)
   - [ ] Test across Ubuntu, Fedora, Debian distributions
   - [ ] Maintain backward compatibility with pattern-only detection
 
@@ -853,8 +752,8 @@ cloud-init query -l  # Should list NoCloud
 **Boot Contract v2.0** establishes:
 
 1. **Boot strategy**: UEFI (cloud images) + Direct kernel boot (OCI VM images)
-2. **VM initialization**: cloud-init + NoCloud seed disks for initialization (users, SSH, network)
-3. **Image requirements**: kernel + bootloader + systemd + cloud-init
+2. **Guest initialization**: User responsibility (Cocoon does not perform guest init)
+3. **Image requirements**: kernel + bootloader + systemd
 4. **Graceful lifecycle**: ACPI shutdown with timeout
 5. **Production ready**: Works with standard cloud images and OCI VM images
 

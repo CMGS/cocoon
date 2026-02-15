@@ -60,7 +60,7 @@ These must be implemented correctly from the start:
 
 1. **Boot Contract Compliance** (docs/01-boot-contract.md)
    - UEFI boot for cloud images, direct kernel boot for OCI VM images
-   - systemd + cloud-init for VM initialization
+   - systemd for VM initialization
    - ACPI shutdown with timeout
 
 2. **Concurrency Safety** (docs/06-concurrency.md)
@@ -1251,7 +1251,7 @@ qemu-img >= 8.0
 
 **Boot Contract**:
 - [x] UEFI boot mode implemented (`types/boot.go`, `vm/engine/manager.go`, `hypervisor/cloudhypervisor/client.go`)
-- [ ] systemd + cloud-init integration working (boot detection implemented; NoCloud seed disks in Phase 2)
+- [x] systemd boot detection implemented
 - [x] Serial console capture functional (`hypervisor/cloudhypervisor/client.go`, `vm/engine/boot_detect.go`)
 - [x] ACPI shutdown with 30s timeout (`vm/engine/manager.go`, `hypervisor/cloudhypervisor/client.go`)
 - [x] Force kill after timeout (`vm/engine/manager.go`, `hypervisor/hypervisor.go`)
@@ -1337,7 +1337,7 @@ qemu-img >= 8.0
 - [ ] `cocoon cp` command (copy files to/from VM)
 - [ ] `cocoon attach` command (interactive console)
 - [ ] VM resource limits (CPU pinning, memory limits)
-- [ ] Custom cloud-init templates
+- [ ] Guest initialization helpers (virtiofs shared directories)
 
 **Operations**:
 - [ ] Prometheus metrics endpoint

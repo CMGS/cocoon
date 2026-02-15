@@ -89,7 +89,7 @@ type BootCheckResult struct {
 	// If any errors are present, Bootable will be false.
 	Errors []string `json:"errors,omitempty"`
 
-	// Warnings lists non-critical issues (e.g., missing cloud-init).
+	// Warnings lists non-critical issues detected during verification.
 	// Warnings do not prevent booting but may affect functionality.
 	Warnings []string `json:"warnings,omitempty"`
 
@@ -104,9 +104,6 @@ type BootCheckResult struct {
 
 	// BootloaderFound indicates whether a UEFI bootloader (GRUB) was detected.
 	BootloaderFound bool `json:"bootloader_found"`
-
-	// CloudInitFound indicates whether cloud-init was detected.
-	CloudInitFound bool `json:"cloud_init_found"`
 }
 
 // CachedImage describes a base image stored in the image cache.

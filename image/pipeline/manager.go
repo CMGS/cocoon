@@ -439,10 +439,6 @@ func evaluateDeepVerification(result *image.BootCheckResult) {
 	if !result.BootloaderFound {
 		result.Errors = append(result.Errors, "UEFI bootloader not found in ESP")
 	}
-	if !result.CloudInitFound {
-		result.Warnings = append(result.Warnings, "cloud-init not found: VM will boot but NoCloud configuration injection will be disabled")
-	}
-
 	// Determine boot modes from deep findings.
 	result.BootModes = nil
 	if result.KernelFound && result.BootloaderFound {
