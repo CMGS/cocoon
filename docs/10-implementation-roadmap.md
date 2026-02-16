@@ -1,9 +1,9 @@
 # Implementation Roadmap
 
 **Version**: 1.0
-**Status**: Complete (code implemented; validation checklist tracks remaining verification tasks)
+**Status**: Historical draft — package paths (`pkg/...`) and code skeletons below reflect the original planning structure, not the current implementation. See actual module layout: `config/`, `image/`, `storage/`, `vm/`, `hypervisor/`, `cmd/cocoon/`, `lock/`, `types/`, `utils/`.
 **Phase**: Phase 1
-**Last Updated**: 2026-02-14
+**Last Updated**: 2026-02-17
 
 ## Executive Summary
 

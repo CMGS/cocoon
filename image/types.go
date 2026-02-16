@@ -78,7 +78,7 @@ func (id *ImageIdentity) CacheFilename() string {
 // BootCheckResult reports the findings from a bootability verification.
 type BootCheckResult struct {
 	// Bootable indicates whether the image meets the minimum boot contract
-	// requirements (kernel + initrd/bootloader + systemd).
+	// requirements (kernel + initrd + UEFI bootloader + systemd).
 	Bootable bool `json:"bootable"`
 
 	// BootModes lists the boot modes the image supports.

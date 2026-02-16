@@ -1716,7 +1716,12 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
    - This "pin" ensures the base image survives even if GC runs during the subsequent (slow) steps. On failure in later steps, the cleanup path removes this reference.
    - Metadata must exist before pin so reconciliation can find the VM if we crash after pinning.
 8. **Create COW overlay** → `COWManager.CreateOverlay(baseKey, vmID, diskSize)`
-9. **Start Cloud Hypervisor** (REST-first):
+9. **Register name** → `AddName(cfg, name, vmID)` acquires `name-index.lock` (Level 2), adds `name → vm_id` to `name-index.json`, release lock. Fails with `ErrVMAlreadyExists` if name is taken.
+10. **Transition CREATING → CREATED** → Atomically updates `metadata.json` state. At this point the VM is fully persisted and discoverable via `cocoon inspect`/`cocoon list`, but not yet running.
+
+    **--- End of `Create()` phase; `Start()` phase begins ---**
+
+11. **Start Cloud Hypervisor** (REST-first):
     ```bash
     # Launch CH process with API socket only (no firmware/config on CLI):
     cloud-hypervisor --api-socket /run/cocoon/vms/{vm_id}/api.sock
@@ -1734,17 +1739,18 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
     }
     ```
     Followed by `PUT /api/v1/vm.boot` to start the VM.
-10. **Wait for boot** → Poll serial log for boot completion marker (timeout: 60s)
-11. **Save VM metadata** → Write `config.json` (immutable) and `metadata.json` (mutable) to VM directory (acquires per-VM `metadata.lock`, Level 4)
-12. **Acquire name-index.lock** (Level 2) → Add `name → vm_id` to `name-index.json`, release lock
-13. **Print VM ID** → Output `vm_id` to stdout for scripting
-14. **Auto-remove bookkeeping** → If `--rm`, set `AutoRemove=true` in metadata; delete is triggered when the VM is later stopped via `cocoon stop` (crash/external-kill: `cocoon doctor --fix` performs state reconciliation; automatic deletion of crashed `auto_remove` VMs is a future enhancement)
+12. **Wait for boot** → Poll serial log for boot completion marker (timeout: 60s)
+13. **Update metadata** → Transition to RUNNING state, write runtime fields (PID, socket path) to `metadata.json`. Note: `config.json` is immutable after step 6 and is never rewritten.
+14. **Print VM ID** → Output `vm_id` to stdout for scripting
+15. **Auto-remove bookkeeping** → If `--rm`, set `AutoRemove=true` in metadata; delete is triggered when the VM is later stopped via `cocoon stop` (crash/external-kill: `cocoon doctor --fix` performs state reconciliation; automatic deletion of crashed `auto_remove` VMs is a future enhancement)
 
-**Failure cleanup**: If any step after 6 fails, the cleanup path must:
+**Failure cleanup**: If any step after 6 (in Create) fails, the cleanup path must:
+- `RemoveName(cfg, name)` — release the name-index entry
 - **Acquire references.lock** (Level 2)
 - `refCounter.RemoveReference(baseKey, vmID)` — remove the pinned reference
 - **Release references.lock**
-- Delete overlay, VM directory, and any partial resources
+- `cowMgr.RemoveOverlay(vmID)` — remove overlay if created
+- Delete VM directory and any partial resources
 
 ### 6.2 VM Stop Flow (`cocoon stop`)
 
@@ -1911,7 +1917,7 @@ This CLI design implements the Boot Contract specification:
 
 | Storage Document Section | CLI Implementation |
 |-------------------------|-------------------|
-| COW Strategy | `StorageManager.CreateOverlay()` in VM creation flow |
+| COW Strategy | `COWManager.CreateOverlay()` in VM creation flow |
 | Reference Counting | Automatic in `create` and `delete` flows |
 | Garbage Collection | `cocoon gc` command |
 | Storage Layout | Configured via `root_dir` / `runtime_dir` / `log_dir` in JSON config |
