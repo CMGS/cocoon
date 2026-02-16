@@ -89,16 +89,21 @@ cocoon create --network bridge myimage
 
 **CNI Plugin Compatibility Matrix**:
 
-Tested and Supported:
+Phase 2 Scope (Tested and Supported):
 
 | Plugin | Status | Notes |
 |--------|--------|-------|
-| bridge | Supported | Default CNI plugin, fully tested |
-| ptp | Supported | Point-to-point, works with TC redirect |
-| macvlan | Supported | Direct L2 attachment |
-| host-local IPAM | Supported | Default IPAM backend |
-| DHCP IPAM | Supported | Requires dhcp daemon |
-| portmap | Supported | Host port forwarding |
+| bridge | **Supported** | Default CNI plugin, primary implementation target |
+| host-local IPAM | **Supported** | Default IPAM backend for bridge mode |
+| portmap | **Supported** | Host port forwarding (works with bridge) |
+
+Future / Experimental (not covered by Phase 2 implementation):
+
+| Plugin | Status | Notes |
+|--------|--------|-------|
+| ptp | Experimental | Point-to-point; requires separate validation |
+| macvlan | Experimental | Direct L2 attachment; TAP redirect path untested |
+| DHCP IPAM | Experimental | Requires external dhcp daemon; dnsmasq covers bridge DHCP |
 
 Known Limitations:
 

@@ -69,7 +69,7 @@ Device passthrough uses the VFIO (Virtual Function I/O) framework, which provide
 
 ### 1.3 Scope
 
-**Phase 2 (this document)**:
+**Phase 3 (this document)**:
 - VFIO PCI device passthrough at VM creation time (`--device` flag)
 - GPU convenience flag (`--gpu`)
 - Automatic vfio-pci driver bind/unbind
@@ -338,7 +338,7 @@ type CHVMConfig struct {
     Disks   []CHDiskConfig  `json:"disks,omitempty"`
     Serial  CHSerialConfig  `json:"serial"`
     Console CHConsoleConfig `json:"console"`
-    // Phase 2: VFIO device passthrough
+    // Phase 3: VFIO device passthrough
     Devices []CHDeviceConfig `json:"devices,omitempty"`
 }
 
@@ -691,7 +691,7 @@ type appContext struct {
     refCtr storage.ReferenceCounter
     cowMgr storage.COWManager
     gc     storage.GarbageCollector
-    devMgr device.Manager  // Phase 2: device passthrough
+    devMgr device.Manager  // Phase 3: device passthrough
 }
 ```
 
@@ -1161,7 +1161,7 @@ func TestVMWithGPUPassthrough(t *testing.T) {
 
 ## 11. Implementation Plan
 
-### Phase 2.1: VFIO Basic Passthrough (2-3 weeks)
+### Stage 1: VFIO Basic Passthrough (2-3 weeks)
 
 1. Add `DeviceConfig` type to `types/device.go`
 2. Add `Devices` field to `VMConfig` and `CHVMConfig`
@@ -1174,7 +1174,7 @@ func TestVMWithGPUPassthrough(t *testing.T) {
 9. Extend `cocoon doctor` for device reconciliation
 10. Unit and integration tests
 
-### Phase 2.2: GPU Convenience (1 week)
+### Stage 2: GPU Convenience (1 week)
 
 1. Add `--gpu` flag with PCI class validation
 2. Implement `resolveGPUDevices()` for multi-function expansion
@@ -1182,7 +1182,7 @@ func TestVMWithGPUPassthrough(t *testing.T) {
 4. Add `cocoon device list-host` for discovering available devices
 5. Documentation and examples for common GPU models
 
-### Phase 2.3: Hotplug Support (1-2 weeks)
+### Stage 3: Hotplug Support (1-2 weeks)
 
 1. Add `AddDevice` / `RemoveDevice` to `hypervisor.Client`
 2. Implement `cocoon device add` / `cocoon device remove` commands
@@ -1190,7 +1190,7 @@ func TestVMWithGPUPassthrough(t *testing.T) {
 4. Handle cleanup of hotplugged devices on VM stop/delete
 5. Integration tests with device hotplug
 
-### Phase 2.4: SR-IOV Awareness (1 week, stretch)
+### Stage 4: SR-IOV Awareness (1 week, stretch)
 
 1. Detect VF/PF relationships from sysfs
 2. Warn when passing through a PF that has active VFs
@@ -1225,7 +1225,7 @@ func TestVMWithGPUPassthrough(t *testing.T) {
 - [07-vm-lifecycle.md](./07-vm-lifecycle.md): VM state machine and delete flow. Device cleanup extends the delete sequence.
 - [09-cli-design.md](./09-cli-design.md): CLI command structure. New `--device`/`--gpu` flags and `cocoon device` subcommand.
 
-### 13.2 Interaction with Other Phase 2 Features
+### 13.2 Interaction with Other Advanced Features
 
 - **Console** ([12-console.md](./12-console.md)): Device passthrough is independent of console. Both can coexist on the same VM.
 - **Pause/Resume** ([13-pause-resume.md](./13-pause-resume.md)): VMs with passthrough devices can be paused and resumed. VFIO binding is maintained across pause/resume.
@@ -1233,7 +1233,7 @@ func TestVMWithGPUPassthrough(t *testing.T) {
 
 ### 13.3 Combined CHVMConfig Target
 
-When all Phase 2 features are implemented, the unified `CHVMConfig`:
+When all advanced features (Phase 2 + Phase 3) are implemented, the unified `CHVMConfig`:
 
 ```go
 type CHVMConfig struct {
