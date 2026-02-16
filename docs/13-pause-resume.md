@@ -106,7 +106,7 @@ var ValidTransitions = map[VMState][]VMState{
 - `PAUSED -> STOPPING`: `cocoon stop` on a paused VM (resume first, then stop gracefully)
 - `PAUSED -> ERROR`: CH crash while paused
 
-Note: There is no direct `PAUSED -> DELETED` transition. To delete a paused VM, first stop it (`PAUSED -> STOPPING -> STOPPED`), then delete (`STOPPED -> DELETED`). Kill on a paused VM force-kills the CH process: `PAUSED -> STOPPED` on success, `PAUSED -> ERROR` on failure (no STOPPING intermediate state).
+Note: There is no direct `PAUSED → DELETED` transition. To delete a paused VM, first stop it (`PAUSED → STOPPING → STOPPED`), then delete (`STOPPED → DELETED`). `cocoon kill` on a paused VM force-kills the CH process: `PAUSED → STOPPED` on success, `PAUSED → ERROR` on failure (no STOPPING intermediate state).
 
 ### 2.4 State Machine Diagram
 

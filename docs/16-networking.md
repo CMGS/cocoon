@@ -98,7 +98,7 @@ Phase 2 Scope (Tested and Supported):
 | DHCP IPAM | **Supported** | dnsmasq provides DHCP on the bridge; no external daemon required |
 | portmap | **Supported** | Host port forwarding (works with bridge) |
 
-Future / Experimental (not covered by Phase 2 implementation):
+#### Future / Experimental (not covered by Phase 2 implementation)
 
 | Plugin | Status | Notes |
 |--------|--------|-------|
