@@ -125,7 +125,7 @@ cocoon create --network none myimage  # Explicit no network
 
 # Phase 2 additions
 cocoon create --network bridge myimage  # Bridge network
-cocoon create --network bridge --network macvlan0 myimage  # Multiple networks
+cocoon create --network bridge --network bridge myimage  # Multiple bridge networks (macvlan is future/experimental)
 ```
 
 VMs created without `--network` (or with `--network none`) have no TAP device, no `--net` argument to Cloud Hypervisor, and no CNI invocations. This is a zero-cost path with no behavioral change.
@@ -2160,9 +2160,9 @@ The tc mirred redirect model works with any CNI plugin that produces a standard 
 | CNI Plugin | Compatible | Notes |
 |------------|-----------|-------|
 | bridge | Yes | Primary plugin. Produces veth pair. Fully tested. |
-| ptp | Yes | Point-to-point veth pair. TC redirect works identically. |
-| macvlan | Yes | Produces macvlan interface. TC redirect works identically. |
-| ipvlan | Yes | Produces ipvlan interface. TC redirect works identically. |
+| ptp | Planned | Point-to-point veth pair. TC redirect expected to work; not validated in Phase 2. |
+| macvlan | Planned | Produces macvlan interface. TC redirect path untested; future/experimental. |
+| ipvlan | Planned | Produces ipvlan interface. TC redirect path untested; future/experimental. |
 | host-local (IPAM) | Yes | Pure IPAM plugin, no interaction with TC redirect. |
 | dhcp (IPAM) | Yes | DHCP lease acquired on the CNI interface. Guest receives IP via dnsmasq DHCP on the bridge. |
 | portmap | Yes | Installs iptables DNAT rules keyed on IP address. TC redirect does not move the IP, so portmap rules remain valid. |

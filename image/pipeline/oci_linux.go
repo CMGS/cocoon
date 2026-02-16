@@ -118,6 +118,7 @@ func pullAndMountOCIPlatform(ctx context.Context, cfg *config.CocoonConfig, iden
 		return classifyBuildahError(fmt.Errorf("buildah from %s: %w", ref, err))
 	}
 	containerID := strings.TrimSpace(string(containerOut))
+	identity.ContainerID = containerID // Assign immediately so callers can clean up on later failures
 
 	// 4. Mount container to get rootfs path.
 	mountOut, err := runCmd(ctx, "buildah", "--root", root, "mount", containerID)
@@ -128,7 +129,6 @@ func pullAndMountOCIPlatform(ctx context.Context, cfg *config.CocoonConfig, iden
 
 	// 5. Populate the identity with transient paths.
 	identity.TempPath = mountPath
-	identity.ContainerID = containerID
 	return nil
 }
 

@@ -352,7 +352,10 @@ Cleanup is called:
 
 ### 4.3 Bootability Verification
 
-> **Important timing note**: Bootability verification happens **post-conversion** on the resulting qcow2 image, NOT pre-conversion on the mounted rootfs. It is invoked on-demand via `cocoon image verify`, not automatically during the conversion pipeline.
+> **Important timing note**: Bootability verification happens **post-conversion** on the resulting qcow2 image, NOT pre-conversion on the mounted rootfs. The conversion pipeline itself does not verify bootability. Verification is triggered in two ways:
+>
+> 1. **Automatically at VM creation time**: `cocoon create` and `cocoon run` auto-verify bootability of the base image by default. Use `--skip-verify` to bypass this check.
+> 2. **Explicitly via standalone command**: `cocoon image verify` runs full verification on demand (it does not accept `--skip-verify` — it always runs the complete check).
 
 The `VerifyBootability()` method on the `manager` performs a two-tier check:
 

@@ -148,7 +148,7 @@ Cloud Hypervisor requires firmware to boot virtual machines. Cocoon supports two
 ```bash
 # Recommended — install firmware after cocoon init:
 sudo cocoon init                  # Creates directories and config (no firmware download)
-sudo cocoon firmware install      # Downloads CLOUDHV.fd
+sudo cocoon firmware install      # Downloads CLOUDHV.fd from the default edk2 release URL
 
 # Convenience shortcut — download firmware during init:
 sudo cocoon init --with-uefi-firmware "https://github.com/cloud-hypervisor/edk2/releases/download/ch-a54f262b09/CLOUDHV.fd"
@@ -444,7 +444,7 @@ Error: Failed to load firmware
 ls -l /var/lib/cocoon/firmware/CLOUDHV.fd
 
 # If missing, download it (recommended: use 'cocoon firmware install')
-cocoon firmware install
+cocoon firmware install   # Downloads from the default edk2 release URL; use --uefi-url to override
 # Or manually:
 curl -L "https://github.com/cloud-hypervisor/edk2/releases/latest/download/CLOUDHV.fd" \
     -o /tmp/CLOUDHV.fd

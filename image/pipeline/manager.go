@@ -121,6 +121,10 @@ func (m *manager) Convert(ctx context.Context, identity *image.ImageIdentity) (s
 
 		diskSize := "10G" // Default size for OCI conversion
 		if err := convertOCI(ctx, srcPath, tmpPath, diskSize); err != nil {
+			// Clean up buildah container on conversion failure.
+			if identity.ContainerID != "" {
+				cleanupBuildahContainer(identity.ContainerID, m.cfg)
+			}
 			return "", types.NewPermanentError(fmt.Errorf("convert OCI %s: %w", baseKey, err))
 		}
 
@@ -199,29 +203,35 @@ func (m *manager) Convert(ctx context.Context, identity *image.ImageIdentity) (s
 // the per-image conversion lock so that concurrent creates for the same image
 // result in only one pull. See docs/06-concurrency.md Section 1 for details.
 func (m *manager) Prepare(ctx context.Context, ref string) (*image.ImageIdentity, string, error) {
+	// Fast path: check refcache first for any ref format (handles short names, aliases, etc.).
+	// This prevents short names like "ubuntu-22.04-cloudimg" from being misclassified as OCI
+	// refs and sent into the buildah/skopeo pipeline when they already exist in the cache.
+	if baseKey, found, _ := refcache.ResolveBaseKey(m.cfg, ref); found {
+		basePath := m.cfg.BaseImagePath(baseKey)
+		if _, statErr := os.Stat(basePath); statErr == nil {
+			log.Printf("image %s: cache hit for %q, skipping pull", baseKey, ref)
+			checksum, arch := parseBaseKey(baseKey)
+			// Retrieve FullDigest from refcache entry via RefsForBaseKey.
+			var fullDigest string
+			if _, digest, err := refcache.RefsForBaseKey(m.cfg, baseKey); err == nil {
+				fullDigest = digest
+			}
+			return &image.ImageIdentity{
+				Checksum:   checksum,
+				Arch:       arch,
+				FullDigest: fullDigest,
+				SourceRef:  ref,
+				ImageType:  classifyRef(ref),
+			}, basePath, nil
+		}
+	}
+
 	imgType := classifyRef(ref)
 
 	// OCI images use a special two-phase flow: identify outside lock,
 	// pull+mount+convert inside lock.
 	if imgType == image.ImageTypeOCI {
 		return m.prepareOCI(ctx, ref)
-	}
-
-	// Non-OCI path (URL, local file): check manifest cache before pulling.
-	// The refcache maps IMAGE_REF -> base_key from prior successful pulls.
-	// If the base image file still exists, skip the expensive download.
-	if baseKey, found, _ := refcache.ResolveBaseKey(m.cfg, ref); found {
-		basePath := m.cfg.BaseImagePath(baseKey)
-		if _, statErr := os.Stat(basePath); statErr == nil {
-			log.Printf("image %s: manifest cache hit for %q, skipping pull", baseKey, ref)
-			checksum, arch := parseBaseKey(baseKey)
-			return &image.ImageIdentity{
-				Checksum:  checksum,
-				Arch:      arch,
-				SourceRef: ref,
-				ImageType: imgType,
-			}, basePath, nil
-		}
 	}
 
 	// Cache miss: Pull determines identity and provides the source file path.
@@ -327,6 +337,10 @@ func (m *manager) prepareOCI(ctx context.Context, ref string) (*image.ImageIdent
 
 	diskSize := "10G" // Default size for OCI conversion
 	if err := convertOCI(ctx, srcPath, tmpPath, diskSize); err != nil {
+		// Clean up buildah container on conversion failure.
+		if identity.ContainerID != "" {
+			cleanupBuildahContainer(identity.ContainerID, m.cfg)
+		}
 		return nil, "", types.NewPermanentError(fmt.Errorf("convert OCI %s: %w", baseKey, err))
 	}
 
@@ -352,7 +366,7 @@ func (m *manager) prepareOCI(ctx context.Context, ref string) (*image.ImageIdent
 //   - qemu-img check passes (image integrity)
 //   - qemu-img info confirms valid qcow2 format
 //   - Optimistically sets Bootable=true if qcow2 is valid
-//   - Assumes both UEFI and direct kernel boot modes are supported
+//   - Assumes UEFI boot mode is supported (Phase 1 only supports UEFI)
 //
 // Deep verification (platform-dependent):
 //   - Linux: uses guestfish to inspect image contents (kernel, initrd, systemd, bootloader)
@@ -397,7 +411,7 @@ func (m *manager) VerifyBootability(ctx context.Context, imagePath string) (*ima
 
 	// Basic verification passed. Optimistically assume bootable.
 	result.Bootable = true
-	result.BootModes = []string{string(types.BootModeUEFI), string(types.BootModeDirect)}
+	result.BootModes = []string{string(types.BootModeUEFI)}
 
 	// Attempt deep verification (platform-specific).
 	if err := deepVerifyBoot(imagePath, result); err != nil {

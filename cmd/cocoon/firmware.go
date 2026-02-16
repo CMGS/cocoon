@@ -2,10 +2,13 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 
 	cli "github.com/urfave/cli/v2"
 )
+
+const defaultFirmwareURL = "https://github.com/cloud-hypervisor/edk2/releases/latest/download/CLOUDHV.fd"
 
 func firmwareCommand() *cli.Command {
 	return &cli.Command{
@@ -124,7 +127,7 @@ func firmwareInstallCommand() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "uefi-url",
-				Usage: "download UEFI firmware (CLOUDHV.fd) from `URL`",
+				Usage: "download UEFI firmware (CLOUDHV.fd) from `URL` (default: latest edk2 release)",
 			},
 			&cli.BoolFlag{
 				Name:  "force",
@@ -142,7 +145,7 @@ func firmwareUpdateCommand() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "uefi-url",
-				Usage: "download UEFI firmware (CLOUDHV.fd) from `URL`",
+				Usage: "download UEFI firmware (CLOUDHV.fd) from `URL` (default: latest edk2 release)",
 			},
 			&cli.BoolFlag{
 				Name:  "force",
@@ -158,7 +161,8 @@ func firmwareInstallAction(c *cli.Context) error {
 	force := c.Bool("force")
 
 	if uefiURL == "" {
-		return fmt.Errorf("--uefi-url must be specified")
+		uefiURL = defaultFirmwareURL
+		log.Printf("No --uefi-url specified, using default: %s", uefiURL)
 	}
 
 	app, err := initApp(c)
