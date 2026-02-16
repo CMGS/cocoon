@@ -206,47 +206,19 @@ sudo dnf upgrade edk2-ovmf
 
 ### Recommended Structure
 
-Recommended directory structure for Cocoon deployment:
+Cocoon uses three top-level directories:
 
-```
-/var/lib/cocoon/                   # Cocoon root directory (per Boot Contract v2.0)
-├── firmware/
-│   └── CLOUDHV.fd                 # UEFI firmware (default)
-├── cache/
-│   ├── images/                    # Base image cache (qcow2)
-│   ├── manifests/                 # IMAGE_REF -> base_key alias index
-│   └── locks/                     # Per-image conversion locks
-├── db/                            # Runtime metadata indexes
-│   ├── references.json            # base_key -> vm references
-│   └── name-index.json            # vm name -> vm_id
-├── vms/                           # VM instances
-│   ├── vm-01JMXXXXXXXXXXXXXXXXXX/
-│   │   ├── overlay.qcow2          # COW overlay disk
-│   │   ├── config.json            # VM configuration
-│   │   └── metadata.json          # VM metadata
-│   └── vm-01JNYYYYYYYYYYYYYYYYYY/
-├── temp/                          # Temporary conversion files
-└── trash/                         # Soft-deleted GC artifacts (image/overlay)
+| Directory | Purpose | Lifetime |
+|-----------|---------|----------|
+| `/var/lib/cocoon/` | Persistent data (images, VMs, firmware, metadata) | Survives reboot |
+| `/run/cocoon/` | Runtime sockets and PID files | Cleared on reboot (tmpfs) |
+| `/var/log/cocoon/` | Per-VM logs (serial, CH stderr, swtpm) | Persistent |
 
-/var/log/cocoon/                   # Logs ({vmID}-{type}.log)
-├── vm-01JMXXXXXXXXXXXXXXXXXX-serial.log   # VM serial console output
-├── vm-01JMXXXXXXXXXXXXXXXXXX-ch.log       # Cloud Hypervisor process output
-├── vm-01JMXXXXXXXXXXXXXXXXXX-swtpm.log    # TPM emulator output (when --tpm enabled)
-├── vm-01JNYYYYYYYYYYYYYYYYYY-serial.log
-└── vm-01JNYYYYYYYYYYYYYYYYYY-ch.log
+For the complete filesystem layout, see [05-storage-management.md](./05-storage-management.md).
 
-/run/cocoon/                       # Runtime sockets
-└── vms/
-    ├── vm-01JMXXXXXXXXXXXXXXXXXX/
-    │   ├── api.sock               # Cloud Hypervisor API socket
-    │   └── ch.pid                 # Process ID file
-    └── vm-01JNYYYYYYYYYYYYYYYYYY/
+**Root privileges required**: Cocoon requires root privileges on Linux. All directories are created and owned by `root:root`. Run all `cocoon` commands with `sudo` or as the root user.
 
-/etc/cocoon/                       # Configuration (optional)
-└── config.json                    # Global Cocoon config
-```
-
-**Setup commands:**
+**Setup commands** (or use `sudo cocoon init` to create directories automatically):
 
 ```bash
 # Create Cocoon directories
@@ -258,11 +230,7 @@ sudo mkdir -p /var/lib/cocoon/temp
 sudo mkdir -p /var/log/cocoon
 sudo mkdir -p /run/cocoon/vms
 
-# Set appropriate permissions
-sudo chown -R $USER:$USER /var/lib/cocoon
-sudo chown -R $USER:$USER /var/log/cocoon
-sudo chown -R $USER:$USER /run/cocoon
-
+# Set appropriate permissions (directories owned by root:root)
 sudo chmod -R 755 /var/lib/cocoon
 sudo chmod -R 755 /var/log/cocoon
 sudo chmod -R 755 /run/cocoon
@@ -373,19 +341,19 @@ rm /tmp/ch-api.sock
 
 ### File Permissions
 
-Set appropriate permissions for sensitive components:
+Set appropriate permissions for sensitive components (run as root):
 
 ```bash
-# Firmware (read-only for users)
-sudo chmod 644 /var/lib/cocoon/firmware/*
+# Firmware (read-only)
+chmod 644 /var/lib/cocoon/firmware/*
 
-# VM overlays (read-write for owner only)
+# VM overlays (read-write for root only)
 chmod 600 /var/lib/cocoon/vms/*/overlay.qcow2
 
 # Base images (read-only after creation)
-chmod 644 /var/lib/cocoon/cache/images/*.qcow2
+chmod 444 /var/lib/cocoon/cache/images/*.qcow2
 
-# Logs (read-only for owner)
+# Logs (read-only)
 chmod 644 /var/log/cocoon/*.log
 ```
 

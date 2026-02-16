@@ -73,50 +73,22 @@ This document specifies how Cocoon integrates with Cloud Hypervisor to manage VM
 
 ### 2.1 Directory Structure
 
-> See [05-storage-management.md § Canonical Filesystem Layout](./05-storage-management.md#canonical-filesystem-layout-normative) for the authoritative filesystem layout specification.
+> For the complete filesystem layout, see [05-storage-management.md § Canonical Filesystem Layout](./05-storage-management.md#canonical-filesystem-layout-normative) (single source of truth for all paths).
 
 VM data is split across two locations by data lifetime:
 
-**Persistent state** (`/var/lib/cocoon/`) — survives reboot, used by reconcile/GC:
-```
-/var/lib/cocoon/vms/
-├── vm-abc-123/
-│   ├── overlay.qcow2          # VM's COW overlay disk
-│   ├── config.json            # VM configuration (immutable)
-│   ├── metadata.json          # Runtime metadata (authoritative)
-│   ├── metadata.lock          # File lock for atomic updates
-│   └── tpm/                   # TPM 2.0 persistent state (when TPM enabled)
-├── vm-def-456/
-│   ├── overlay.qcow2
-│   ├── config.json
-│   ├── metadata.json
-│   └── metadata.lock
-└── ...
-```
+| Location | Purpose | Lifetime |
+|----------|---------|----------|
+| `/var/lib/cocoon/vms/{vm-id}/` | Persistent state (overlay, config, metadata) | Survives reboot |
+| `/run/cocoon/vms/{vm-id}/` | Runtime files (API socket, PID files, swtpm socket) | Cleared on reboot (tmpfs) |
+| `/var/log/cocoon/` | Per-VM logs (serial, CH stderr, swtpm stderr) | Persistent |
 
-**Runtime/ephemeral** (`/run/cocoon/`) — cleared on reboot, rebuilt by reconcile:
-```
-/run/cocoon/vms/
-├── vm-abc-123/
-│   ├── api.sock               # Cloud Hypervisor API socket
-│   ├── ch.pid                 # CH process PID file
-│   ├── swtpm.sock             # swtpm Unix socket (when TPM enabled)
-│   └── swtpm.pid              # swtpm process PID file (when TPM enabled)
-├── vm-def-456/
-│   ├── api.sock
-│   └── ch.pid
-└── ...
-```
+The key runtime files used by the hypervisor integration layer are:
 
-**Logs** (`/var/log/cocoon/`) — persisted across reboots:
-```
-/var/log/cocoon/
-├── vm-abc-123-serial.log      # Serial console output
-├── vm-abc-123-ch.log          # Cloud Hypervisor stderr (startup diagnostics)
-├── vm-abc-123-swtpm.log       # swtpm stderr (when TPM enabled)
-├── vm-def-456-serial.log
-└── ...
-```
+- **`/run/cocoon/vms/{vm-id}/api.sock`** -- Cloud Hypervisor REST API socket (one per VM)
+- **`/run/cocoon/vms/{vm-id}/ch.pid`** -- CH process PID file
+- **`/run/cocoon/vms/{vm-id}/swtpm.sock`** -- swtpm TPM socket (when TPM enabled)
+- **`/run/cocoon/vms/{vm-id}/swtpm.pid`** -- swtpm PID file (when TPM enabled)
 
 **Why this separation?**
 - **Crash recovery**: Metadata in `/var/lib` survives power loss; `/run` is tmpfs and cleared on reboot
