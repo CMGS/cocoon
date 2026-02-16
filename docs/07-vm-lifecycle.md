@@ -195,7 +195,7 @@ CREATING -----> CREATED -----> STARTING -----> RUNNING -----> STOPPING -----> ST
 
 **Exit Conditions**:
 - Graceful shutdown complete → `STOPPED`
-- Timeout or failure → `ERROR` (the `hypervisor.Shutdown()` method handles force kill internally on timeout; `Stop` transitions to ERROR if `Shutdown` returns an error)
+- Timeout → force kill attempted: if force kill succeeds → `STOPPED`; if force kill fails → `ERROR` (the `hypervisor.Shutdown()` method handles force kill internally on timeout; `Stop` transitions to STOPPED on successful force kill, or ERROR only if force kill itself fails)
 
 **Monitoring**:
 - Monitor Cloud Hypervisor process exit
@@ -360,8 +360,8 @@ var ValidTransitions = map[VMState][]VMState{
         VMStateError,    // crash, kill, timeout
     },
     VMStateStopping: {
-        VMStateStopped,  // Graceful shutdown
-        VMStateError,    // Force kill or timeout
+        VMStateStopped,  // Graceful shutdown or successful force kill after timeout
+        VMStateError,    // Force kill failed after timeout
     },
     VMStateStopped: {
         VMStateStarting, // restart command
@@ -1106,7 +1106,9 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 
     // Proceed with stop: RUNNING -> STOPPING via TransitionState,
     // then m.hyper.Shutdown() for graceful ACPI shutdown.
-    // If Shutdown fails, transition to ERROR (not force kill inline).
+    // On timeout, Shutdown() internally calls ForceKill():
+    //   - ForceKill succeeds → transition to STOPPED
+    //   - ForceKill fails → transition to ERROR
     // ...
 }
 ```
@@ -1560,11 +1562,12 @@ func (m *manager) determineActualState(meta *types.VMMetadataFile, vmCfg *types.
     case types.VMStateError:
         return types.VMStateError
 
+    // Phase 2 — PAUSED state handling (see [13-pause-resume.md](./13-pause-resume.md))
     case types.VMStatePaused:
         if processValid && socketConnectable {
-            return types.VMStatePaused // Process alive + socket OK → still paused
+            return types.VMStatePaused // Process alive + socket OK → still paused (Phase 2)
         }
-        return types.VMStateError // Process dead or socket gone → ERROR
+        return types.VMStateError // Process dead or socket gone → ERROR (Phase 2)
 
     case types.VMStateCreating:
         return types.VMStateError // Creation did not complete

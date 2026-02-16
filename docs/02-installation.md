@@ -229,8 +229,10 @@ Recommended directory structure for Cocoon deployment:
 └── trash/                         # Soft-deleted GC artifacts (image/overlay)
 
 /var/log/cocoon/                   # Logs
-├── vm-abc-123.log                 # Serial console logs (per-VM)
-└── vm-def-456.log
+├── vm-abc-123-serial.log          # Serial console output (per-VM)
+├── vm-abc-123-ch.log              # Cloud Hypervisor log (per-VM)
+├── vm-def-456-serial.log
+└── vm-def-456-ch.log
 
 /run/cocoon/                       # Runtime sockets
 └── vms/

@@ -986,7 +986,7 @@ to guest VMs.
 - `/home/` -- User home directories (for development workflows)
 - `/tmp/` -- Temporary files
 
-**Configuration** (`cocoon.json`):
+**Configuration** (`config.json`):
 
 ```json
 {
@@ -1001,7 +1001,7 @@ to guest VMs.
 **Dangerous path protection**: Mounting sensitive host paths requires explicit
 opt-in. The following paths are ALWAYS denied unless the user passes
 `--allow-dangerous-paths` on the CLI or sets `allow_dangerous_volume_paths: true`
-in `cocoon.json`:
+in `config.json`:
 
 - `/` (root filesystem)
 - `/etc` (system configuration)
@@ -1068,7 +1068,7 @@ func ValidateHostPath(hostPath string, cfg *CocoonConfig, allowDangerous bool) e
         if !allowed {
             return fmt.Errorf(
                 "host path %s is not in the volume allowlist %v; "+
-                    "add the path to volume_allowed_paths in cocoon.json "+
+                    "add the path to volume_allowed_paths in config.json "+
                     "or use --allow-dangerous-paths", resolved, cfg.VolumeAllowedPaths)
         }
     }
@@ -1504,7 +1504,7 @@ maintenance status and security concerns.
 |---|----------|-------|-------------------|
 | Q1 | DAX support | Phase 2.1 (defer) | Defer; disable by default. Revisit when hugepages config is streamlined. |
 | Q2 | File-level sharing | Phase 2.1 (defer) | Defer; directories only for now. |
-| Q3 | Max volume count | **Phase 2.0** (must decide) | Default 16, configurable via `cocoon.json`. |
+| Q3 | Max volume count | **Phase 2.0** (must decide) | Default 16, configurable via `config.json`. |
 | Q4 | virtiofsd distribution | **Phase 2.0** (must decide) | Require user install; `cocoon doctor` checks availability and version. |
 | Q5 | Auto-mount mechanism | Phase 2.1 (defer) | Defer; manual guest config initially. Provide reference udev rule in docs. |
 | Q6 | Concurrent volume access | **Phase 2.0** (must decide) | Warn on multi-VM RW sharing of the same path; allow with `--allow-shared-rw` flag. |

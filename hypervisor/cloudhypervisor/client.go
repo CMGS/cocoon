@@ -105,8 +105,8 @@ func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (
 	}
 
 	// Build CH command-line arguments.
-	// Only pass --api-socket and firmware flag on the CLI. All VM resource
-	// configuration (cpus, memory, disks, serial, console) is sent via the
+	// Only --api-socket is passed on the CLI. All VM configuration including
+	// firmware, cpus, memory, disks, serial, and console is sent via the
 	// PUT /api/v1/vm.create REST call so there is no conflict between CLI
 	// flags and the REST API.
 	args := buildLaunchArgs(socketPath)

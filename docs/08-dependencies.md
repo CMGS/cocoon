@@ -368,7 +368,7 @@ func checkDependencies() []DependencyStatus {
             Command:        "guestfish",
             Args:           []string{"--version"},
             VersionPattern: `guestfish`,
-            Required:       false, // Optional (only needed for OCI conversion and deep bootability verification)
+            Required:       true, // Required for OCI-to-qcow2 conversion and deep bootability verification; cocoon doctor exits with failure if missing
         },
     }
 
@@ -538,9 +538,9 @@ Core Dependencies:
 ✅ buildah 1.35.0 found at /usr/bin/buildah
 ✅ skopeo 1.14.0 found at /usr/bin/skopeo
 ✅ qemu-img 8.2.0 found at /usr/bin/qemu-img
-⚠️ guestfish not found (optional)
+❌ guestfish not found (required)
    → Install: sudo apt-get install libguestfs-tools
-   → Note: Only needed for deep bootability verification and OCI image conversion
+   → Note: Required for OCI-to-qcow2 conversion and deep bootability verification
 ✅ /dev/kvm accessible
 
 Firmware Files:
@@ -550,9 +550,9 @@ Firmware Files:
 swtpm:
 ✅ swtpm 0.9.0 found at /usr/bin/swtpm
 
-Summary: 8/10 required dependencies found
-Warning: 2 optional dependencies missing (libguestfs tools)
-Status: Ready to run
+Summary: 9/10 required dependencies found
+1 required dependency missing (guestfish)
+Status: Not ready (install missing dependencies)
 ```
 
 ## Privilege Model
@@ -801,17 +801,17 @@ ls -l /usr/share/edk2/ovmf/OVMF_CODE.fd
 | Fedora 40 | 6.8 | v38.0 | 1.36.0 | 8.2 | 1.52 | ✅ Tested |
 | Debian 12 | 6.1 | v38.0 | 1.28.0 | 7.2 | 1.48 | ⚠️ Partial (buildah too old) |
 
-### Version Warnings
+### Version Failures
 
-Cocoon will warn if dependency versions are below recommended minimums:
+Cocoon will fail if dependency versions are below recommended minimums:
 
 ```
-⚠️  buildah 1.28.0 detected (minimum: 1.35.0)
-   Some features may not work correctly.
+❌  buildah 1.28.0 detected (minimum: 1.35.0)
+   cocoon doctor reports status: fail
    Consider upgrading: sudo apt-get install -t bookworm-backports buildah
 
-⚠️  qemu-img 7.2 detected (minimum: 8.0)
-   qcow2 operations may have limited functionality.
+❌  qemu-img 7.2 detected (minimum: 8.0)
+   cocoon doctor reports status: fail
    Consider upgrading from backports or upstream.
 ```
 

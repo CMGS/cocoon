@@ -467,7 +467,8 @@ func evaluateDeepVerification(result *image.BootCheckResult) {
 	// Determine boot modes from deep findings.
 	result.BootModes = nil
 	if result.KernelFound && result.BootloaderFound {
-		result.BootModes = append(result.BootModes, string(types.BootModeDirect))
+		// Phase 1: Only UEFI boot is supported. Direct kernel boot will be added in Phase 2
+		// when OCI VM images with extracted kernel/initramfs are implemented.
 		result.BootModes = append(result.BootModes, string(types.BootModeUEFI))
 	}
 

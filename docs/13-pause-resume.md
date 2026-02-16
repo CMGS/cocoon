@@ -88,7 +88,7 @@ var ValidTransitions = map[VMState][]VMState{
     VMStateCreated:   {VMStateStarting, VMStateDeleted},
     VMStateStarting:  {VMStateRunning, VMStateError},
     VMStateRunning:   {VMStateStopping, VMStatePaused, VMStateError},
-    VMStatePaused:    {VMStateRunning, VMStateStopping, VMStateStopped, VMStateDeleted, VMStateError},
+    VMStatePaused:    {VMStateRunning, VMStateStopping, VMStateError},
     VMStateStopping:  {VMStateStopped, VMStateError},
     VMStateStopped:   {VMStateStarting, VMStateDeleted},
     VMStateError:     {VMStateStopped, VMStateDeleted},
@@ -100,8 +100,9 @@ var ValidTransitions = map[VMState][]VMState{
 - `RUNNING -> PAUSED`: `cocoon pause` freezes vCPUs via `PUT /api/v1/vm.pause`
 - `PAUSED -> RUNNING`: `cocoon resume` resumes vCPUs via `PUT /api/v1/vm.resume`
 - `PAUSED -> STOPPING`: `cocoon stop` on a paused VM (resume first, then stop gracefully)
-- `PAUSED -> STOPPED`: `cocoon kill` on a paused VM. Kill on a paused VM sends SIGKILL directly without resuming first. The frozen process is terminated immediately.
 - `PAUSED -> ERROR`: CH crash while paused
+
+Note: There is no direct `PAUSED -> DELETED` transition. To delete a paused VM, first stop it (`PAUSED -> STOPPING -> STOPPED`), then delete (`STOPPED -> DELETED`). Similarly, `cocoon kill` on a paused VM goes through `PAUSED -> STOPPING -> STOPPED`.
 
 ### 2.4 State Machine Diagram
 
@@ -235,7 +236,7 @@ cocoon stop myvm  (state: PAUSED)
 [5] Send ACPI shutdown (PUT /api/v1/vm.power-button)
     |
     v
-[6] Wait for CH process to exit (up to --stop-timeout, default 15s)
+[6] Wait for CH process to exit (up to --timeout, default 30s)
     |       |
     |       +-- If timeout: Stop() force-kills the CH process on timeout and transitions VM to ERROR state
     v
@@ -522,7 +523,7 @@ var ValidTransitions = map[VMState][]VMState{
     VMStateCreated:   {VMStateStarting, VMStateDeleted},
     VMStateStarting:  {VMStateRunning, VMStateError},
     VMStateRunning:   {VMStateStopping, VMStatePaused, VMStateError},
-    VMStatePaused:    {VMStateRunning, VMStateStopping, VMStateStopped, VMStateDeleted, VMStateError},
+    VMStatePaused:    {VMStateRunning, VMStateStopping, VMStateError},
     VMStateStopping:  {VMStateStopped, VMStateError},
     VMStateStopped:   {VMStateStarting, VMStateDeleted},
     VMStateError:     {VMStateStopped, VMStateDeleted},
@@ -566,9 +567,9 @@ func (m *Manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
     }
 
     // Proceed with normal stop flow (ACPI shutdown, wait for process exit).
-    // If the guest does not shut down within the timeout, Stop() returns
-    // an error and the VM transitions to ERROR. Cocoon does NOT auto-kill
-    // on timeout -- the user must explicitly call 'cocoon kill'.
+    // If the guest does not shut down within the timeout, Stop() force-kills
+    // the CH process and transitions the VM to ERROR state, same as stopping
+    // from RUNNING (see §3.3 timeout behavior).
     // ... existing stop logic ...
 }
 ```

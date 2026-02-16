@@ -31,6 +31,12 @@ Level 2: Name Index Lock (global, same level as references — never held togeth
 Level 3: Image Conversion Lock (per-checksum)
     ↓
 Level 4: VM Metadata Lock (per-VM)
+    ↓
+Level 5: Checkpoint Lock (per-VM) — Phase 2, docs/15-warm-start.md
+    ↓
+Level 5: Network Lock (per-VM) — Phase 2, docs/16-networking.md
+    ↓
+Level 6: dnsmasq Lock (global) — Phase 2, docs/16-networking.md
 ```
 
 **Lock File Locations**:
@@ -39,6 +45,9 @@ Level 4: VM Metadata Lock (per-VM)
 - Name Index Lock: `/var/lib/cocoon/db/name-index.lock`
 - Image Conversion Lock: `/var/lib/cocoon/cache/locks/{checksum}_{arch}.lock`
 - VM Metadata Lock: `/var/lib/cocoon/vms/{vm-id}/metadata.lock`
+- Checkpoint Lock (Phase 2): `/var/lib/cocoon/vms/{vm-id}/checkpoint.lock`
+- Network Lock (Phase 2): `/run/cocoon/vms/{vm-id}/network.lock`
+- dnsmasq Lock (Phase 2): `/run/cocoon/dnsmasq/dnsmasq.lock`
 
 **Name Index Lock Notes**:
 - `name-index.json` is a derived cache (can be rebuilt from scanning `config.json` files)
@@ -984,6 +993,57 @@ VM metadata locks are automatically released on process crash, just like image c
 3. Next operation succeeds normally
 4. Temp files can be cleaned up by GC
 
+## Phase 2 Planned Locks
+
+The following locks are planned for Phase 2 features. They are not yet implemented
+but are documented here to reserve their positions in the lock hierarchy and ensure
+consistency across design documents.
+
+### Checkpoint Lock (Per-VM) — Phase 2
+
+**Purpose**: Protects VM checkpoint/restore operations for warm-start functionality.
+
+- **Lock file**: `/var/lib/cocoon/vms/{vm-id}/checkpoint.lock`
+- **Level**: 5 (after VM Metadata Lock)
+- **Scope**: Per-VM
+- **Held during**: `vm.snapshot` and `vm.restore` API calls
+- **Design doc**: [15-warm-start.md](./15-warm-start.md)
+
+The checkpoint lock must be acquired AFTER the VM state lock (Level 4) to prevent
+deadlocks. A checkpoint operation first transitions the VM to a CHECKPOINTING state
+(under the metadata lock), then acquires the checkpoint lock for the actual
+snapshot/restore I/O.
+
+### Network Lock (Per-VM) — Phase 2
+
+**Purpose**: Protects CNI ADD/DEL operations and TAP device lifecycle for a single VM.
+
+- **Lock file**: `/run/cocoon/vms/{vm-id}/network.lock`
+- **Level**: 5 (same level as Checkpoint Lock; never held together for the same VM)
+- **Scope**: Per-VM
+- **Held during**: TAP device creation/deletion and CNI plugin invocation
+- **Design doc**: [16-networking.md](./16-networking.md)
+
+The network lock must be acquired AFTER the VM state lock (Level 4). Network setup
+occurs after the VM transitions to STARTING state. The lock lives under `/run/cocoon/`
+(ephemeral) because network state is reconstructed on reboot.
+
+### dnsmasq Lock (Global) — Phase 2
+
+**Purpose**: Protects dnsmasq configuration updates (DHCP lease file writes and SIGHUP).
+
+- **Lock file**: `/run/cocoon/dnsmasq/dnsmasq.lock`
+- **Level**: 6 (after Network Lock)
+- **Scope**: Global
+- **Held during**: Adding/removing DHCP leases from the lease file and sending SIGHUP to dnsmasq
+- **Design doc**: [16-networking.md](./16-networking.md)
+
+The dnsmasq lock must be acquired AFTER the network lock (Level 5). A typical
+network setup sequence is: acquire network lock → create TAP device → acquire
+dnsmasq lock → add DHCP lease → SIGHUP dnsmasq → release dnsmasq lock → release
+network lock. The lock lives under `/run/cocoon/` (ephemeral) because dnsmasq
+state is reconstructed on reboot.
+
 ## 6. GC Locking Strategy
 
 ### Problem: TOCTOU Race
@@ -1250,7 +1310,7 @@ func lockWithTimeout(mu *sync.Mutex, timeout time.Duration) error {
 4. **VM metadata**: Per-VM locks prevent concurrent update conflicts
 5. **GC safety**: Global GC lock + atomic check-and-delete prevents deletion of in-use resources
 6. **Crash recovery**: File locks auto-released by kernel, orphan detection handles incomplete operations
-7. **Deadlock-free**: Strict lock hierarchy (GC → Ref → Image → VM) prevents deadlocks
+7. **Deadlock-free**: Strict lock hierarchy (GC → Ref → Image → VM; Phase 2: → Checkpoint/Network → dnsmasq) prevents deadlocks
 
 ### File Lock Locations Summary
 
@@ -1260,7 +1320,10 @@ func lockWithTimeout(mu *sync.Mutex, timeout time.Duration) error {
 | Reference counter | `/var/lib/cocoon/db/references.lock` | Level 2 |
 | Name index | `/var/lib/cocoon/db/name-index.lock` | Level 2 (never held with references.lock) |
 | Image conversion | `/var/lib/cocoon/cache/locks/{checksum}_{arch}.lock` | Level 3 |
-| VM metadata | `/var/lib/cocoon/vms/{vm-id}/metadata.lock` | Level 4 (lowest) |
+| VM metadata | `/var/lib/cocoon/vms/{vm-id}/metadata.lock` | Level 4 |
+| Checkpoint (Phase 2) | `/var/lib/cocoon/vms/{vm-id}/checkpoint.lock` | Level 5 |
+| Network (Phase 2) | `/run/cocoon/vms/{vm-id}/network.lock` | Level 5 |
+| dnsmasq (Phase 2) | `/run/cocoon/dnsmasq/dnsmasq.lock` | Level 6 (lowest) |
 
 ### Crash Consistency
 

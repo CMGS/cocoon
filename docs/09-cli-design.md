@@ -833,7 +833,7 @@ func rmCommand() *cli.Command {
         Name:      "delete",
         Aliases:   []string{"rm"},
         Usage:     "Remove a VM and cleanup storage",
-        ArgsUsage: "VM_REF",
+        ArgsUsage: "VM_REF [VM_REF...]",
         Flags: []cli.Flag{
             &cli.BoolFlag{
                 Name:    "force",

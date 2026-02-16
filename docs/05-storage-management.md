@@ -63,6 +63,14 @@ Other documents MUST reference this section rather than defining their own paths
 ```
 
 **Phase 2 Additions (Planned)**:
+
+Persistent paths (`/var/lib/cocoon/`):
+- `/var/lib/cocoon/checkpoints/` — VM checkpoint snapshots for warm-start (Phase 2, see [15-warm-start.md](./15-warm-start.md))
+  - `/var/lib/cocoon/checkpoints/{vm-id}/` — Per-VM checkpoint data
+- `/var/lib/cocoon/cache/oci/` — Extracted OCI layers and rootfs for OCI VM images (Phase 2, see [04.1-oci-vm-images.md](./04.1-oci-vm-images.md))
+- `/var/lib/cocoon/vms/{vm-id}/rootfs/` — OverlayFS mount point for OCI VM images (Phase 2, see [04.1-oci-vm-images.md](./04.1-oci-vm-images.md))
+
+Runtime paths (`/run/cocoon/`):
 - `/run/cocoon/dnsmasq/` — dnsmasq PID files and lease state for per-bridge DHCP (see [16-networking.md](./16-networking.md))
 - `/run/cocoon/vms/{vm-id}/netns` — network namespace bind mount for CNI (see [16-networking.md](./16-networking.md))
 - `/run/cocoon/vms/{vm-id}/virtiofs/` — virtiofsd socket files for volume passthrough (see [17-volume-passthrough.md](./17-volume-passthrough.md))
@@ -272,17 +280,27 @@ implemented but are documented here to reserve the namespace and ensure
 consistency across design documents.
 
 ```go
+// Phase 2 — Warm Start (docs/15-warm-start.md)
+func (c *CocoonConfig) CheckpointsDir() string             // RootDir/checkpoints
+func (c *CocoonConfig) VMCheckpointDir(vmID string) string // RootDir/checkpoints/{vmID}
+
+// Phase 2 — OCI VM Images (docs/04.1-oci-vm-images.md)
+func (c *CocoonConfig) OCICacheDir() string                // RootDir/cache/oci
+func (c *CocoonConfig) VMRootfsDir(vmID string) string     // RootDir/vms/{vmID}/rootfs
+
 // Phase 2 — Networking (docs/16-networking.md)
-func (c *CocoonConfig) DnsmasqRunDir() string    // RuntimeDir/dnsmasq (PID files, lease state)
-func (c *CocoonConfig) VMNetNSPath(vmID string) string  // RuntimeDir/vms/{vmID}/netns
+func (c *CocoonConfig) DnsmasqRunDir() string              // RuntimeDir/dnsmasq (PID files, lease state)
+func (c *CocoonConfig) VMNetNSPath(vmID string) string     // RuntimeDir/vms/{vmID}/netns
 
 // Phase 2 — Volume Passthrough (docs/17-volume-passthrough.md)
-func (c *CocoonConfig) VMVirtiofsDir(vmID string) string // RuntimeDir/vms/{vmID}/virtiofs
+func (c *CocoonConfig) VMVirtiofsDir(vmID string) string   // RuntimeDir/vms/{vmID}/virtiofs
 ```
 
-`EnsureDirs()` will be extended to create `RuntimeDir/dnsmasq` when networking
-is enabled. Per-VM directories (`netns`, `virtiofs/`) are created on demand
-during VM setup rather than at startup.
+`EnsureDirs()` will be extended to create `RootDir/checkpoints` and
+`RootDir/cache/oci` at startup, and `RuntimeDir/dnsmasq` when networking
+is enabled. Per-VM directories (`checkpoints/{vmID}`, `vms/{vmID}/rootfs`,
+`netns`, `virtiofs/`) are created on demand during VM setup rather than at
+startup.
 
 ## Copy-on-Write (COW) Strategy
 

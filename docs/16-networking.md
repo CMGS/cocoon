@@ -103,7 +103,7 @@ Future / Experimental (not covered by Phase 2 implementation):
 |--------|--------|-------|
 | ptp | Experimental | Point-to-point; requires separate validation |
 | macvlan | Experimental | Direct L2 attachment; TAP redirect path untested |
-| DHCP IPAM | Experimental | Requires external dhcp daemon; dnsmasq covers bridge DHCP |
+| DHCP IPAM | Yes | dnsmasq provides DHCP on the bridge; no external daemon required |
 
 Known Limitations:
 
@@ -496,7 +496,7 @@ CNI plugins are searched in the following directories, in order:
 2. `/usr/lib/cni` (distribution packages, e.g., Fedora)
 3. `/usr/libexec/cni` (alternative distribution location)
 
-The search path is configurable via the `COCOON_CNI_PATH` environment variable or the `cni_plugin_path` field in Cocoon's global configuration (`/etc/cocoon/config.toml`).
+The search path is configurable via the `COCOON_CNI_PATH` environment variable or the `cni_plugin_path` field in Cocoon's global configuration (`/etc/cocoon/config.json`).
 
 ---
 
