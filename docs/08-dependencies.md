@@ -73,15 +73,17 @@ sudo cp target/release/cloud-hypervisor /usr/local/bin/
 
 **Purpose**: Provides UEFI firmware for the default boot mode. Installed via `cocoon firmware install` or `cocoon init --with-uefi-firmware <URL>` (`cocoon init` alone creates directories but does not download firmware).
 
-**Default Version**: edk2 ch-a54f262b09 (configurable via `EDK2_CH_VERSION` env var)
+**Default Version**: edk2 CLOUDHV.fd from the [cloud-hypervisor/edk2 releases](https://github.com/cloud-hypervisor/edk2/releases)
 
 **Installation**:
 
 **Option 1: From edk2-cloudhv releases** (recommended):
 ```bash
-# Download CLOUDHV.fd from the edk2 Cloud Hypervisor releases
-EDK2_CH_VERSION="a54f262b09"
-curl -L https://github.com/cloud-hypervisor/edk2/releases/download/ch-${EDK2_CH_VERSION}/CLOUDHV.fd \
+# Recommended: use 'cocoon firmware install'
+cocoon firmware install
+
+# Or manually download from the edk2 Cloud Hypervisor releases:
+curl -L https://github.com/cloud-hypervisor/edk2/releases/latest/download/CLOUDHV.fd \
     -o /tmp/CLOUDHV.fd
 
 # Install to firmware directory

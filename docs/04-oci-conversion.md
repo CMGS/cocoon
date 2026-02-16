@@ -220,7 +220,7 @@ runCmd(ctx, "buildah", "--root", root, "mount", containerID)
 |   +-- storage.lock
 +-- cache/
 |   +-- images/           # Converted qcow2 base images
-|   +-- manifest/         # Manifest refcache (index.json)
+|   +-- manifests/        # Manifest refcache (index.json)
 |   +-- locks/            # Per-image conversion locks
 +-- vms/                  # Per-VM overlay disks
 ```
@@ -381,6 +381,8 @@ func deepVerifyBoot(imagePath string, result *image.BootCheckResult) error {
     ...
 }
 ```
+
+> **Known Limitation (False-Positive Bootability)**: When `libguestfs` (`guestfish`) is not available on the host, deep verification is skipped and the image is optimistically marked as bootable (`Bootable=true`) after basic qcow2 integrity checks pass. This means non-bootable images -- those missing a kernel, initrd, or UEFI bootloader -- may pass verification without warning when guestfish is not installed. The `--skip-verify` flag on `cocoon image verify` makes this trade-off explicit. For production use, ensure `libguestfs-tools` is installed to enable deep verification of boot components. Run `cocoon doctor` to check whether all required dependencies (including guestfish) are available.
 
 ### 4.4 Architecture Detection
 
@@ -788,7 +790,7 @@ func (m *manager) prepareOCI(ctx context.Context, ref string) (*image.ImageIdent
 
 The refcache (`image/refcache/index.go`) provides a persistent mapping from IMAGE_REF strings to base_key values. This allows fast cache lookups without re-inspecting remote registries.
 
-**File location**: `{ManifestCacheDir}/index.json` (typically `/var/lib/cocoon/cache/manifest/index.json`)
+**File location**: `{ManifestCacheDir}/index.json` (typically `/var/lib/cocoon/cache/manifests/index.json`)
 
 ### 7.2 Entry Structure
 

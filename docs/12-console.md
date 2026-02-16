@@ -917,6 +917,48 @@ func TestConsoleLegacyVMError(t *testing.T) {
 
 ---
 
+## Design Notes
+
+### Console-Serial / Boot-Detection Relationship
+
+The serial console output (`/dev/ttyS0`, written to `{vmID}-serial.log` via
+`--serial file=...`) is the same serial log that boot detection monitors
+(see [01-boot-contract.md](./01-boot-contract.md) Section 3). The relationship
+between the three consumers of serial output:
+
+- **Boot detection** tail-reads the serial log file looking for success/failure
+  regex patterns (`BootSuccessPatterns`, `BootFailurePatterns`). This operates
+  on the `--serial` device, which writes to a file.
+- **`cocoon logs`** reads the same serial log file for display to the user.
+- **`cocoon console`** connects to the `--console` PTY device (`/dev/hvc0`),
+  which is a **separate** device from `--serial`. Console and serial are
+  independent I/O channels in Cloud Hypervisor.
+
+Boot detection and `cocoon logs` share the serial port (`/dev/ttyS0` in the
+guest). `cocoon console` uses the virtio-console port (`/dev/hvc0` in the
+guest). These are distinct streams -- attaching to the console does not
+interfere with boot detection or serial log capture.
+
+### Multi-Attach Policy
+
+Cloud Hypervisor allocates a single PTY pair for the `--console pty` device.
+Only one file descriptor can meaningfully read from the secondary (slave) side
+of the PTY at a time. If two processes open the same PTY path concurrently,
+they race on reads and each receives an unpredictable subset of the output
+bytes. Writes from both processes are interleaved into the guest input stream.
+
+**Current policy**: Cocoon does not enforce single-attach at the application
+level. If a user runs `cocoon console myvm` twice in separate terminals, both
+sessions open the same PTY and produce garbled output. This is a known
+limitation shared with other PTY-based console tools (e.g., `virsh console`).
+
+**Mitigation**: A future improvement could use an advisory lock file
+(`/run/cocoon/vms/{vmID}/console.lock`) to prevent concurrent attach, returning
+a clear error: `"console is already attached by PID {pid}"`. This is deferred
+beyond Phase 2 v1.0.
+
+---
+
 ## 10. Cross-References
 
 ### 10.1 Related Cocoon Documents

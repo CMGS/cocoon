@@ -596,8 +596,9 @@ func vmCreateFlags() []cli.Flag {
             Usage: "root disk overlay size (e.g., 10G, 20G)",
         },
         &cli.BoolFlag{
-            Name:  "oci",
-            Usage: "treat image as an OCI VM image (uses direct kernel boot)",
+            Name:   "oci",
+            Hidden: true,
+            Usage:  "treat image as an OCI VM image — Phase 2, not yet implemented",
         },
         &cli.BoolFlag{
             Name:  "skip-verify",
@@ -711,7 +712,7 @@ func createAction(c *cli.Context) error {
 }
 ```
 
-The `createCommand` uses the same `vmCreateFlags()` as `runCommand`, which includes `--name`, `--cpus`, `--memory` (default "2048M"), `--disk`, `--oci`, `--skip-verify`, and `--tpm`. Note: `--boot-timeout` is only available on `run` and `start` commands (not `create`, since `create` does not boot the VM).
+The `createCommand` uses the same `vmCreateFlags()` as `runCommand`, which includes `--name`, `--cpus`, `--memory` (default "2048M"), `--disk`, `--skip-verify`, and `--tpm`. The `--oci` flag is defined but hidden (Phase 2 — not yet implemented). Note: `--boot-timeout` is only available on `run` and `start` commands (not `create`, since `create` does not boot the VM).
 
 **Example Usage**:
 

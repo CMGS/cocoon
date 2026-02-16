@@ -2098,6 +2098,33 @@ Network namespace creation and TAP device creation require elevated privileges:
 
 Since Cocoon requires root, all these privileges are available automatically.
 
+#### Detailed Capability and Permission Requirements
+
+The following is a comprehensive list of Linux capabilities and file permissions
+required by Cocoon's networking operations. Cocoon currently assumes root
+execution for all networking paths.
+
+| Operation | System Call / Resource | Required Capability | Notes |
+|-----------|----------------------|--------------------|----|
+| Create network namespace | `unshare(CLONE_NEWNET)` | `CAP_SYS_ADMIN` | Also needed for bind-mounting the netns |
+| Create bridge device | `SIOCBRADDIF` ioctl / `ip link add type bridge` | `CAP_NET_ADMIN` | CNI bridge plugin creates `cni0` |
+| Create veth pair | `RTM_NEWLINK` netlink | `CAP_NET_ADMIN` | CNI bridge plugin creates veth pairs |
+| Create TAP device | open `/dev/net/tun` + `TUNSETIFF` ioctl | `CAP_NET_ADMIN` | Requires read/write access to `/dev/net/tun` |
+| Set interface UP | `SIOCSIFFLAGS` ioctl | `CAP_NET_ADMIN` | Applied to TAP and veth devices |
+| Install TC mirred rules | `tc qdisc add` / `tc filter add` (netlink) | `CAP_NET_ADMIN` | Bidirectional redirect between veth and TAP |
+| Modify iptables (portmap, MASQUERADE) | `iptables` / nftables | `CAP_NET_ADMIN` + `CAP_NET_RAW` | CNI portmap plugin and ipMasq |
+| dnsmasq bind to port 67 (DHCP) | `bind()` on UDP port 67 | `CAP_NET_BIND_SERVICE` | Privileged port; also needs `CAP_NET_ADMIN` for raw sockets |
+| dnsmasq bind to port 53 (DNS) | `bind()` on UDP/TCP port 53 | `CAP_NET_BIND_SERVICE` | Privileged port |
+| `nsenter --net=<path>` | `setns(CLONE_NEWNET)` | `CAP_SYS_ADMIN` | CH launch enters VM network namespace |
+
+**Phase 2 design debt**: Cocoon currently runs as root, which implicitly grants
+all capabilities above. A future hardening effort should document the minimum
+capability set required for rootless or reduced-privilege operation. The minimum
+set for networking is approximately: `CAP_SYS_ADMIN` (namespaces),
+`CAP_NET_ADMIN` (device and route management), `CAP_NET_BIND_SERVICE`
+(dnsmasq privileged ports), and `CAP_NET_RAW` (raw sockets for DHCP/iptables).
+This is tracked as a Phase 2 follow-up item.
+
 ### 10.3 Namespace Boundaries
 
 Each VM's network namespace provides kernel-level isolation:

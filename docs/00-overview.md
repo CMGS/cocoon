@@ -400,7 +400,7 @@ For quick evaluation:
 | [08-dependencies.md](./08-dependencies.md) | Dependencies and Requirements | Implemented |
 | [09-cli-design.md](./09-cli-design.md) | CLI Design and Commands | Implemented |
 | [10-implementation-roadmap.md](./10-implementation-roadmap.md) | Implementation Roadmap | Implemented |
-| [11-bootable-oci-build.md](./11-bootable-oci-build.md) | Building Bootable OCI Images | Implemented |
+| [11-bootable-oci-build.md](./11-bootable-oci-build.md) | Building Bootable OCI Images | Planned |
 
 ### Phase 2: Advanced Features
 

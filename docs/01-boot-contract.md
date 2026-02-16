@@ -55,8 +55,8 @@ This document defines the **Boot Contract** - the core specification for how Coc
 **Firmware Management** (see [docs/09-cli-design.md](./09-cli-design.md) for authoritative CLI behavior):
 - `cocoon init` creates the directory structure and configuration but does **not** automatically download firmware
 - Install firmware via `cocoon firmware install` (recommended) or `cocoon init --with-uefi-firmware <URL>`
-- Version controlled via `EDK2_CH_VERSION` environment variable (default: `a54f262b09`)
-- URL: `https://github.com/cloud-hypervisor/edk2/releases/download/ch-{version}/CLOUDHV.fd`
+- Firmware binary: `CLOUDHV.fd` from the [cloud-hypervisor/edk2 releases](https://github.com/cloud-hypervisor/edk2/releases)
+- Installed to: `/var/lib/cocoon/firmware/CLOUDHV.fd`
 
 ### 1.2 Alternative Boot Mode: Direct Kernel Boot (OCI VM Images) (Phase 2 — Not Yet Implemented)
 

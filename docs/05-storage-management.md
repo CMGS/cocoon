@@ -62,6 +62,11 @@ Other documents MUST reference this section rather than defining their own paths
 └── cocoon.log                            # Main cocoon log (optional)
 ```
 
+**Phase 2 Additions (Planned)**:
+- `/run/cocoon/dnsmasq/` — dnsmasq PID files and lease state for per-bridge DHCP (see [16-networking.md](./16-networking.md))
+- `/run/cocoon/vms/{vm-id}/netns` — network namespace bind mount for CNI (see [16-networking.md](./16-networking.md))
+- `/run/cocoon/vms/{vm-id}/virtiofs/` — virtiofsd socket files for volume passthrough (see [17-volume-passthrough.md](./17-volume-passthrough.md))
+
 **Key rules**:
 - Overlay is ALWAYS `overlay.qcow2` inside the VM directory (not `{vm_id}.qcow2`)
 - Base images are ALWAYS `{checksum}_{arch}.qcow2` (content-addressed)
@@ -259,6 +264,25 @@ func (c *CocoonConfig) DBDir() string              // RootDir/db
 // RuntimeDir/vms, LogDir).
 func (c *CocoonConfig) EnsureDirs() error { ... }
 ```
+
+#### Phase 2 Planned Path Helpers
+
+The following path helpers are planned for Phase 2 features. They are not yet
+implemented but are documented here to reserve the namespace and ensure
+consistency across design documents.
+
+```go
+// Phase 2 — Networking (docs/16-networking.md)
+func (c *CocoonConfig) DnsmasqRunDir() string    // RuntimeDir/dnsmasq (PID files, lease state)
+func (c *CocoonConfig) VMNetNSPath(vmID string) string  // RuntimeDir/vms/{vmID}/netns
+
+// Phase 2 — Volume Passthrough (docs/17-volume-passthrough.md)
+func (c *CocoonConfig) VMVirtiofsDir(vmID string) string // RuntimeDir/vms/{vmID}/virtiofs
+```
+
+`EnsureDirs()` will be extended to create `RuntimeDir/dnsmasq` when networking
+is enabled. Per-VM directories (`netns`, `virtiofs/`) are created on demand
+during VM setup rather than at startup.
 
 ## Copy-on-Write (COW) Strategy
 

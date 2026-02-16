@@ -154,8 +154,7 @@ sudo cocoon firmware install      # Downloads CLOUDHV.fd
 sudo cocoon init --with-uefi-firmware "https://github.com/cloud-hypervisor/edk2/releases/download/ch-a54f262b09/CLOUDHV.fd"
 
 # Manual download from edk2-cloudhv releases:
-EDK2_CH_VERSION="a54f262b09"
-curl -L "https://github.com/cloud-hypervisor/edk2/releases/download/ch-${EDK2_CH_VERSION}/CLOUDHV.fd" \
+curl -L "https://github.com/cloud-hypervisor/edk2/releases/latest/download/CLOUDHV.fd" \
     -o /tmp/CLOUDHV.fd
 sudo mkdir -p /var/lib/cocoon/firmware
 sudo mv /tmp/CLOUDHV.fd /var/lib/cocoon/firmware/CLOUDHV.fd
@@ -444,9 +443,10 @@ Error: Failed to load firmware
 # Check UEFI firmware installation
 ls -l /var/lib/cocoon/firmware/CLOUDHV.fd
 
-# If missing, download it
-EDK2_CH_VERSION="a54f262b09"
-curl -L "https://github.com/cloud-hypervisor/edk2/releases/download/ch-${EDK2_CH_VERSION}/CLOUDHV.fd" \
+# If missing, download it (recommended: use 'cocoon firmware install')
+cocoon firmware install
+# Or manually:
+curl -L "https://github.com/cloud-hypervisor/edk2/releases/latest/download/CLOUDHV.fd" \
     -o /tmp/CLOUDHV.fd
 sudo mv /tmp/CLOUDHV.fd /var/lib/cocoon/firmware/CLOUDHV.fd
 sudo chmod 644 /var/lib/cocoon/firmware/CLOUDHV.fd
