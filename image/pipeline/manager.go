@@ -156,7 +156,7 @@ func (m *manager) Convert(ctx context.Context, identity *image.ImageIdentity) (s
 	if err := os.Rename(tmpPath, basePath); err != nil {
 		return "", fmt.Errorf("convert %s: rename to cache path: %w", baseKey, err)
 	}
-	if err := os.Chmod(basePath, 0o444); err != nil {
+	if err := os.Chmod(basePath, 0o444); err != nil { //nolint:gosec // G302: intentionally world-readable — base images are shared immutable backing files for COW overlays
 		return "", fmt.Errorf("convert %s: chmod read-only: %w", baseKey, err)
 	}
 
