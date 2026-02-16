@@ -667,8 +667,10 @@ type VMConfig struct {
 }
 ```
 
-Schema version bumps from `1` to `2` when volumes are present. VMs created
-without volumes remain at schema version 1 for backward compatibility.
+SchemaVersion stays at `1`. The new `Volumes` field uses `omitempty`, so it is
+omitted for VMs without volumes and additive for VMs with volumes. This follows
+the additive-fields strategy from [04.1-oci-vm-images.md](./04.1-oci-vm-images.md)
+— no schema version bump is needed for backward-compatible additions.
 
 ### 6.3 CreateOptions Changes (in `vm/types.go`)
 
@@ -1563,6 +1565,7 @@ When all Phase 2 features are implemented, the unified `CHVMConfig` in `hypervis
         CPUs    CHCPUConfig      `json:"cpus"`
         Memory  CHMemoryConfig   `json:"memory"`
         Disks   []CHDiskConfig   `json:"disks,omitempty"`
+        Net     []CHNetConfig    `json:"net,omitempty"`      // Networking (tap/macvtap)
         Fs      []CHFsConfig     `json:"fs,omitempty"`       // Volume passthrough (virtio-fs)
         Serial  CHSerialConfig   `json:"serial"`
         Console CHConsoleConfig  `json:"console"`             // Console: mode changes to "Pty"

@@ -31,7 +31,18 @@ Cocoon relies on several external tools and libraries to provide VM management w
 
 **Minimum Version**: v38.0
 
-Phase 2 features (snapshot/restore, pause/resume) may require a higher minimum version; see individual Phase 2 design documents for version requirements.
+Phase 2 features may require additional dependencies beyond Phase 1. Each is
+documented in detail in its respective design document, but they are listed here
+for discoverability:
+
+- **virtiofsd** (v1.7.0+) — virtio-fs daemon for OCI rootfs and volume passthrough. See [docs/04.1](./04.1-oci-vm-images.md), [docs/17](./17-volume-passthrough.md).
+- **dnsmasq** — lightweight DHCP/DNS server for VM networking. See [docs/16](./16-networking.md).
+- **CNI plugins** (bridge, host-local, portmap) — Container Network Interface plugins for VM network setup. See [docs/16](./16-networking.md).
+- **nsenter** (util-linux) — enters network namespaces for TAP device creation. See [docs/16](./16-networking.md).
+- **tc** (iproute2) — configures traffic control for TAP-to-veth packet mirroring. See [docs/16](./16-networking.md).
+- **/dev/net/tun** — kernel TUN/TAP device required for TAP interface creation. See [docs/16](./16-networking.md).
+
+Phase 2 features (snapshot/restore, pause/resume) may also require a higher minimum Cloud Hypervisor version; see individual Phase 2 design documents for version requirements.
 
 **Installation**:
 

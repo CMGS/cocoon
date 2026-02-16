@@ -28,7 +28,13 @@ Level 2: Reference Counter Lock (global)
     ↓
 Level 2: Name Index Lock (global, same level as references — never held together)
     ↓
+Level 2: OCI Reference Lock (global, same level — never held with references or name-index) — Phase 2, docs/04.1-oci-vm-images.md
+    ↓
+Level 2: Checkpoint Index Lock (global, same level — never held with name-index or references) — Phase 2, docs/15-warm-start.md
+    ↓
 Level 3: Image Conversion Lock (per-checksum)
+    ↓
+Level 3: OCI Cache Lock (per-manifest-digest) — Phase 2, docs/04.1-oci-vm-images.md
     ↓
 Level 4: VM Metadata Lock (per-VM)
     ↓
@@ -47,6 +53,9 @@ Level 6: dnsmasq Lock (global) — Phase 2, docs/16-networking.md
 - VM Metadata Lock: `/var/lib/cocoon/vms/{vm-id}/metadata.lock`
 - Checkpoint Lock (Phase 2): `/var/lib/cocoon/vms/{vm-id}/checkpoint.lock`
 - Network Lock (Phase 2): `/run/cocoon/vms/{vm-id}/network.lock`
+- OCI Reference Lock (Phase 2): `/var/lib/cocoon/db/oci-references.lock`
+- Checkpoint Index Lock (Phase 2): `/var/lib/cocoon/checkpoints/checkpoint-index.lock`
+- OCI Cache Lock (Phase 2): `/var/lib/cocoon/cache/oci/{digest}.lock`
 - dnsmasq Lock (Phase 2): `/run/cocoon/dnsmasq/dnsmasq.lock`
 
 **Name Index Lock Notes**:
@@ -1034,6 +1043,48 @@ network setup sequence is: acquire network lock → create TAP device → acquir
 dnsmasq lock → add DHCP lease → SIGHUP dnsmasq → release dnsmasq lock → release
 network lock. The lock lives under `/run/cocoon/` (ephemeral) because dnsmasq
 state is reconstructed on reboot.
+
+### OCI Reference Lock (Global) — Phase 2
+
+**Purpose**: Protects `oci-references.json` (manifest-digest to VM-ID reference tracking).
+
+- **Lock file**: `/var/lib/cocoon/db/oci-references.lock`
+- **Level**: 2 (same level as Reference Counter Lock and Name Index Lock — never held together)
+- **Scope**: Global
+- **Held during**: Adding/removing VM references in `oci-references.json`
+- **Design doc**: [04.1-oci-vm-images.md](./04.1-oci-vm-images.md)
+
+The OCI Reference Lock is at the same level as the existing Reference Counter Lock
+and Name Index Lock. They protect different files and are never held simultaneously.
+This lock follows the same read-modify-write pattern as the Phase 1 references lock.
+
+### OCI Cache Lock (Per-Manifest-Digest) — Phase 2
+
+**Purpose**: Protects `cache/oci/{digest}/` during OCI layer extraction.
+
+- **Lock file**: `/var/lib/cocoon/cache/oci/{digest}.lock`
+- **Level**: 3 (same level as Image Conversion Lock)
+- **Scope**: Per-manifest-digest
+- **Held during**: OCI layer extraction into the cache directory
+- **Design doc**: [04.1-oci-vm-images.md](./04.1-oci-vm-images.md)
+
+The per-digest OCI Cache Lock prevents concurrent layer extractions for the same
+manifest digest. This follows the same pattern as the per-checksum Image Conversion
+Lock for qcow2 images. If GC encounters a held cache lock, it skips that entry.
+
+### Checkpoint Index Lock (Global) — Phase 2
+
+**Purpose**: Protects `checkpoint-index.json` (name to checkpoint-ID mapping).
+
+- **Lock file**: `/var/lib/cocoon/checkpoints/checkpoint-index.lock`
+- **Level**: 2 (same level as Name Index Lock and Reference Counter Lock — never held together)
+- **Scope**: Global
+- **Held during**: Updates to `checkpoint-index.json` (adding/removing checkpoint name mappings)
+- **Design doc**: [15-warm-start.md](./15-warm-start.md)
+
+The checkpoint index lock is never held simultaneously with the name index lock or
+references lock. It follows the same Level 2 mutual-exclusion pattern used by the
+other index/reference locks.
 
 ## 6. GC Locking Strategy
 

@@ -572,6 +572,16 @@ func NewManager(confDir string, pluginDirs []string) Manager {
 }
 
 func (m *cniManager) AddNetwork(ctx context.Context, vmID string, netNSPath string, attachment NetworkAttachment) (*NetworkAttachmentState, error) {
+    // Acquire per-VM Network Lock (L5) — see docs/06-concurrency.md lock hierarchy.
+    // Held for the duration of CNI ADD + TAP setup to prevent concurrent network
+    // operations on the same VM.
+    networkLockPath := filepath.Join("/run/cocoon/vms", vmID, "network.lock")
+    networkLock, err := acquireFileLock(networkLockPath)
+    if err != nil {
+        return nil, fmt.Errorf("acquire network lock for %s: %w", vmID, err)
+    }
+    defer releaseFileLock(networkLock)
+
     // 1. Load CNI network config.
     netConf, err := m.GetNetworkConfig(attachment.Name)
     if err != nil {
@@ -635,6 +645,14 @@ func (m *cniManager) AddNetwork(ctx context.Context, vmID string, netNSPath stri
 }
 
 func (m *cniManager) DeleteNetwork(ctx context.Context, vmID string, netNSPath string, attachment NetworkAttachment) error {
+    // Acquire per-VM Network Lock (L5) — see docs/06-concurrency.md lock hierarchy.
+    networkLockPath := filepath.Join("/run/cocoon/vms", vmID, "network.lock")
+    networkLock, err := acquireFileLock(networkLockPath)
+    if err != nil {
+        return fmt.Errorf("acquire network lock for %s: %w", vmID, err)
+    }
+    defer releaseFileLock(networkLock)
+
     netConf, err := m.GetNetworkConfig(attachment.Name)
     if err != nil {
         return fmt.Errorf("load CNI config %q: %w", attachment.Name, err)
@@ -1785,6 +1803,15 @@ func stopDnsmasq(bridge string) error {
 // the given bridge and sends SIGHUP to dnsmasq so it picks up the change.
 // The lease maps the VM's MAC address to the CNI-allocated IP and hostname.
 func addDHCPLease(bridge, mac, ip, hostname string) error {
+    // Acquire global dnsmasq Lock (L6) — see docs/06-concurrency.md lock hierarchy.
+    // Must be acquired AFTER Network Lock (L5). Protects hosts file + SIGHUP.
+    dnsmasqLockPath := "/run/cocoon/dnsmasq/dnsmasq.lock"
+    dnsmasqLock, err := acquireFileLock(dnsmasqLockPath)
+    if err != nil {
+        return fmt.Errorf("acquire dnsmasq lock: %w", err)
+    }
+    defer releaseFileLock(dnsmasqLock)
+
     dir := filepath.Join(dnsmasqStateDir, bridge)
     hostsPath := filepath.Join(dir, "hosts")
 
@@ -1809,6 +1836,15 @@ func addDHCPLease(bridge, mac, ip, hostname string) error {
 // from the dnsmasq hosts file and sends SIGHUP. If the hosts file is now
 // empty, the dnsmasq instance is stopped.
 func removeDHCPLease(bridge, mac string) error {
+    // Acquire global dnsmasq Lock (L6) — see docs/06-concurrency.md lock hierarchy.
+    // Must be acquired AFTER Network Lock (L5). Protects hosts file + SIGHUP.
+    dnsmasqLockPath := "/run/cocoon/dnsmasq/dnsmasq.lock"
+    dnsmasqLock, err := acquireFileLock(dnsmasqLockPath)
+    if err != nil {
+        return fmt.Errorf("acquire dnsmasq lock: %w", err)
+    }
+    defer releaseFileLock(dnsmasqLock)
+
     dir := filepath.Join(dnsmasqStateDir, bridge)
     hostsPath := filepath.Join(dir, "hosts")
 

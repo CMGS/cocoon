@@ -205,14 +205,18 @@ type VMMetadataFile struct {
 // types/config.go (immutable, written once at creation)
 
 type VMConfig struct {
-    VMID          string `json:"vm_id"`
-    Name          string `json:"name"`
-    ImageRef      string `json:"image_ref"`
-    BaseKey       string `json:"base_key"`
-    Arch          string `json:"arch"`
-    BootStrategy  string `json:"boot_strategy"`
-    FirmwarePath  string `json:"firmware_path"`
-    TPMSocketPath string `json:"tpm_socket_path,omitempty"`
+    VMID           string `json:"vm_id"`
+    Name           string `json:"name"`
+    ImageRef       string `json:"image_ref"`
+    BaseKey        string `json:"base_key"`
+    BaseDigestFull string `json:"base_digest_full"`
+    Arch           string `json:"arch"`
+    BootStrategy  BootStrategy `json:"boot_strategy"`
+    FirmwarePath  string       `json:"firmware_path"`
+    KernelPath    string       `json:"kernel_path,omitempty"`
+    InitramfsPath string       `json:"initramfs_path,omitempty"`
+    Cmdline       string       `json:"cmdline,omitempty"`
+    TPMSocketPath string       `json:"tpm_socket_path,omitempty"`
     CPUs          int    `json:"cpus"`
     MemoryMB      int64  `json:"memory_mb"`
     DiskSize      string `json:"disk_size"`

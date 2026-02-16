@@ -96,7 +96,8 @@ Phase 2 Planned Paths:
 │   │   │       ├── custom-1/                   # First customization layer (read-only, if present)
 │   │   │       └── custom-N/                   # Nth customization layer (read-only, if present)
 │   │   └── db/
-│   │       └── oci-references.json             # manifest-digest -> [vm-id] ref tracking
+│   │       ├── oci-references.json             # manifest-digest -> [vm-id] ref tracking
+│   │       └── oci-references.lock             # flock for oci-references.json updates
 │   │
 │   ├── Per-VM OCI Rootfs State (docs/04.1-oci-vm-images.md)
 │   │   └── vms/{vm-id}/

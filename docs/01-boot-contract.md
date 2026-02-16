@@ -238,134 +238,111 @@ cloud-hypervisor \
 
 **Boot Completion Detection**:
 
-Cocoon uses multi-pattern detection with fallback sequences to ensure robust boot detection across different Linux distributions and configurations.
+Cocoon uses single-pass pattern detection with configurable success and failure patterns to ensure robust boot detection across different Linux distributions and configurations.
 
 **Detection Strategy**:
-1. **Primary patterns**: Systemd target markers (multi-user or graphical)
-2. **Fallback patterns**: Login prompts, systemd startup finished messages
+1. **Success patterns**: Login prompts, systemd target markers, systemd running messages
+2. **Failure patterns**: Kernel panic, missing init, not syncing (fail-fast)
 3. **Future enhancement**: cocoon-ready.service (Phase 2, baked into images)
 
 **Implementation**:
 ```go
-// BootDetectionConfig defines patterns for detecting boot completion
-type BootDetectionConfig struct {
-    // Systemd target patterns (any one indicates boot complete)
-    SystemdTargetPatterns []string
+// CocoonConfig fields for boot detection (config/config.go):
+//   BootSuccessPatterns []string `json:"boot_success_patterns,omitempty"`
+//   BootFailurePatterns []string `json:"boot_failure_patterns,omitempty"`
 
-    // Fallback patterns (used if primary patterns not found within timeout)
-    FallbackPatterns []string
-
-    // Timeout for boot detection
-    Timeout time.Duration
-}
-
-// DefaultBootDetectionConfig returns the default boot detection configuration
-func DefaultBootDetectionConfig() BootDetectionConfig {
-    return BootDetectionConfig{
-        // Systemd target patterns (ordered by priority)
-        SystemdTargetPatterns: []string{
-            "login:",                                  // Login prompt (most universal)
-            "Reached target.*Login",                   // systemd login target
-            "systemd .* running",                      // systemd running message
-        },
-
-        // Fallback patterns (login prompt indicates boot complete)
-        FallbackPatterns: []string{
-            "Welcome to",                              // Distribution welcome message
-            "Startup finished",                        // systemd startup finished
-        },
-
-        Timeout: 60 * time.Second,
+// BootSuccessPatternsOrDefault returns the configured boot success patterns,
+// or sensible defaults if none are configured.
+func (c *CocoonConfig) BootSuccessPatternsOrDefault() []string {
+    if len(c.BootSuccessPatterns) > 0 {
+        return c.BootSuccessPatterns
+    }
+    return []string{
+        `login:`,                  // Login prompt (most universal)
+        `Reached target.*Login`,   // systemd login target
+        `systemd .* running`,      // systemd running message
     }
 }
 
-// BootCompletionState tracks detection state
-type BootCompletionState struct {
-    SystemdTargetReached bool
-    BootCompleteTime     time.Time
+// BootFailurePatternsOrDefault returns the configured boot failure patterns,
+// or sensible defaults if none are configured.
+func (c *CocoonConfig) BootFailurePatternsOrDefault() []string {
+    if len(c.BootFailurePatterns) > 0 {
+        return c.BootFailurePatterns
+    }
+    return []string{
+        `Kernel panic`,            // Kernel panic
+        `not syncing`,             // Kernel not syncing
+        `No working init found`,   // Missing init binary
+        `Failed to execute /init`, // Init execution failure
+    }
 }
 
-// WaitForBootCompletion waits for VM boot to complete with robust pattern detection
-func WaitForBootCompletion(vmID string, config BootDetectionConfig) error {
-    logPath := fmt.Sprintf("/var/log/cocoon/%s-serial.log", vmID)
+// waitForBoot tails the serial log file, scanning for boot success or failure
+// patterns in a single pass. Returns nil when a success pattern matches, or an
+// error if a failure pattern matches or the timeout expires.
+func waitForBoot(ctx context.Context, serialLogPath string, timeout time.Duration,
+    successPatterns, failurePatterns []string,
+) error {
+    // Compile all patterns as regexps upfront.
+    successREs, err := compilePatterns(successPatterns)
+    failureREs, err := compilePatterns(failurePatterns)
 
-    ctx, cancel := context.WithTimeout(context.Background(), config.Timeout)
+    ctx, cancel := context.WithTimeout(ctx, timeout)
     defer cancel()
 
-    state := &BootCompletionState{}
+    // Wait for the serial log file to appear.
+    waitForFile(ctx, serialLogPath)
 
-    // Tail serial log for boot completion markers
-    for line := range tailFile(ctx, logPath) {
-        // Check systemd target patterns
-        if !state.SystemdTargetReached {
-            for _, pattern := range config.SystemdTargetPatterns {
-                if strings.Contains(line, pattern) {
-                    log.Info("VM %s: Boot pattern matched: %s", vmID, pattern)
-                    state.SystemdTargetReached = true
-                    state.BootCompleteTime = time.Now()
-                    log.Info("VM %s: Boot completed successfully", vmID)
+    f, _ := os.Open(serialLogPath)
+    defer f.Close()
+
+    reader := bufio.NewReader(f)
+    var partial string
+
+    ticker := time.NewTicker(250 * time.Millisecond)
+    defer ticker.Stop()
+
+    for {
+        for {
+            line, readErr := reader.ReadString('\n')
+            if len(line) > 0 {
+                if readErr == io.EOF && line[len(line)-1] != '\n' {
+                    partial += line  // Incomplete line: buffer for next poll
+                    break
+                }
+                fullLine := partial + line
+                partial = ""
+
+                // Check failure patterns first (fail-fast).
+                if pat, matched := matchesAny(fullLine, failureREs, failurePatterns); matched {
+                    return fmt.Errorf("boot failure detected: matched pattern %q", pat)
+                }
+                // Check success patterns.
+                if _, matched := matchesAny(fullLine, successREs, successPatterns); matched {
                     return nil
                 }
+            }
+            if readErr != nil {
+                break // No more data; wait for next poll.
             }
         }
 
-        // Fallback: check fallback patterns (only after timeout/2)
-        if time.Since(ctx.Value("startTime").(time.Time)) > config.Timeout/2 {
-            for _, pattern := range config.FallbackPatterns {
-                if strings.Contains(line, pattern) {
-                    log.Warn("VM %s: Boot detected via fallback pattern: %s", vmID, pattern)
-                    state.BootCompleteTime = time.Now()
-                    return nil
-                }
+        // Check partial lines against success patterns only (e.g., "login: "
+        // prompts that never get a trailing newline).
+        if partial != "" {
+            if _, matched := matchesAny(partial, successREs, successPatterns); matched {
+                return nil
             }
+        }
+
+        select {
+        case <-ctx.Done():
+            return fmt.Errorf("boot timeout: no boot completion detected within %s", timeout)
+        case <-ticker.C:
+            // Continue reading.
         }
     }
-
-    // Timeout exceeded
-    return fmt.Errorf("boot timeout exceeded: systemd_target_reached=%v",
-        state.SystemdTargetReached)
-}
-
-// tailFile tails a log file and returns lines via channel
-func tailFile(ctx context.Context, path string) <-chan string {
-    ch := make(chan string)
-
-    go func() {
-        defer close(ch)
-
-        // Store start time in context for fallback timing
-        ctx = context.WithValue(ctx, "startTime", time.Now())
-
-        var file *os.File
-        var err error
-
-        // Wait for log file to be created
-        for {
-            file, err = os.Open(path)
-            if err == nil {
-                break
-            }
-
-            select {
-            case <-ctx.Done():
-                return
-            case <-time.After(100 * time.Millisecond):
-                continue
-            }
-        }
-        defer file.Close()
-
-        scanner := bufio.NewScanner(file)
-        for scanner.Scan() {
-            select {
-            case <-ctx.Done():
-                return
-            case ch <- scanner.Text():
-            }
-        }
-    }()
-
-    return ch
 }
 ```
 
@@ -728,7 +705,7 @@ func ValidateBootability(rootfs string) error {
   - [x] Implement multi-pattern boot detection:
     - [x] Login prompt patterns
     - [x] Systemd target patterns (login target, running message)
-    - [x] Fallback patterns (welcome message, startup finished)
+    - [x] Failure patterns (kernel panic, missing init)
   - [x] Timeout handling with detailed error reporting
 
 ### Phase 2: Advanced Features (P1)
