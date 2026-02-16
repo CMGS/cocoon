@@ -1560,7 +1560,7 @@ Each Phase 2 feature adds its fields independently. All additions use `omitempty
 
 - **Checkpoint**: VMs with volumes can be checkpointed, but host paths must exist at restore time and virtiofsd processes must be restarted. Volume configuration is stored in `config.json` and included in checkpoint metadata.
 - **Device passthrough coexistence**: Volumes and device passthrough can coexist on the same VM. The VM delete flow must handle both virtiofsd cleanup and device driver restoration.
-- **Console coexistence**: The `buildCHVMConfig` examples in this document show `Console.Mode = "Off"` for illustration. When the console feature is also enabled, this will be `Console.Mode = "Pty"`. See `console.md` for details.
+- **Console coexistence**: The `buildCHVMConfig` examples in this document show `Console.Mode = "Off"` for illustration. When the console feature is also enabled, this will be `Console.Mode = "Pty"`. See [12-console.md](./12-console.md) for details.
 
 ---
 
@@ -1570,10 +1570,10 @@ Each Phase 2 feature adds its fields independently. All additions use `omitempty
 - [virtiofsd (Rust)](https://gitlab.com/virtio-fs/virtiofsd) -- the recommended virtiofsd implementation
 - [virtio-fs specification](https://virtio-fs.gitlab.io/)
 - [Cloud Hypervisor REST API](https://github.com/cloud-hypervisor/cloud-hypervisor/blob/main/vmm/src/api/openapi/)
-- [03-hypervisor-integration.md](../03-hypervisor-integration.md) -- Cocoon's CH integration
-- [05-storage-management.md](../05-storage-management.md) -- Storage architecture and COW overlays
-- [07-vm-lifecycle.md](../07-vm-lifecycle.md) -- VM lifecycle state machine
-- [09-cli-design.md](../09-cli-design.md) -- CLI design patterns
+- [03-hypervisor-integration.md](./03-hypervisor-integration.md) -- Cocoon's CH integration
+- [05-storage-management.md](./05-storage-management.md) -- Storage architecture and COW overlays
+- [07-vm-lifecycle.md](./07-vm-lifecycle.md) -- VM lifecycle state machine
+- [09-cli-design.md](./09-cli-design.md) -- CLI design patterns
 - [16-networking.md](./16-networking.md) -- CNI networking (prerequisite for Option D)
 
 ---

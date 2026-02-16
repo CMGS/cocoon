@@ -34,7 +34,7 @@ See [00-overview.md § Supported Image Contract](./00-overview.md#️-supported-
 
 This document defines the command-line interface for Cocoon, a lightweight VM management tool built on Cloud Hypervisor. The CLI follows Docker-like patterns for familiarity while exposing VM-specific capabilities like UEFI/Direct kernel boot modes, resource allocation, and lifecycle management.
 
-The design integrates the [Boot Contract](./01-boot-contract.md) decisions, including flexible boot modes (UEFI default for cloud images, Direct kernel boot for OCI VM images), serial console I/O, and graceful shutdown semantics. It also leverages the [storage management](./05-storage-management.md) system for efficient copy-on-write disk handling.
+The design integrates the [Boot Contract](./01-boot-contract.md) decisions, including UEFI boot for cloud images (Phase 1), serial console I/O, and graceful shutdown semantics. Direct kernel boot for OCI VM images is planned for Phase 2 (see [04.1-oci-vm-images.md](./04.1-oci-vm-images.md)). It also leverages the [storage management](./05-storage-management.md) system for efficient copy-on-write disk handling.
 
 ## Table of Contents
 
@@ -651,8 +651,8 @@ cocoon run ubuntu-22.04-cloudimg --name myvm --cpus 4 --memory 4G
 # Run VM with auto-remove on stop
 cocoon run --rm ubuntu-22.04-cloudimg --name temp-vm
 
-# Run an OCI VM image (uses direct kernel boot)
-cocoon run --oci myorg/ubuntu-vm:22.04
+# Run an OCI VM image (Phase 2 -- not yet implemented)
+# cocoon run --oci myorg/ubuntu-vm:22.04
 
 # Run with TPM 2.0 emulation enabled
 cocoon run --tpm ubuntu-22.04-cloudimg --name secure-vm
@@ -1894,7 +1894,7 @@ This CLI design implements the Boot Contract specification:
 
 | Boot Contract Section | CLI Implementation |
 |----------------------|-------------------|
-| §1 Boot Path Decision | `--oci` flag (selects direct kernel boot), config-level firmware paths |
+| §1 Boot Path Decision | UEFI boot (Phase 1); `--oci` flag for direct kernel boot (Phase 2, not yet implemented) |
 | §2 Guest Init Model | Guest initialization is the user's responsibility; DHCP-based network config planned for Phase 2 ([16-networking.md](./16-networking.md)) |
 | §3 I/O Mechanisms | Serial console via `--serial file=...` (CH flag), `cocoon logs` command |
 | §4 Lifecycle Semantics | `run`, `stop`, `delete`, `kill` commands |

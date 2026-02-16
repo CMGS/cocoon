@@ -49,8 +49,8 @@ const (
 
     // STARTING: Cloud Hypervisor process starting, VM booting.
     // boot_strategy determines boot method:
-    //   "uefi":   UEFI boot with CLOUDHV.fd (default for non-OCI images)
-    //   "direct": Direct kernel boot with kernel + initramfs (auto for OCI VM images)
+    //   "uefi":   UEFI boot with CLOUDHV.fd (Phase 1, default)
+    //   "direct": Direct kernel boot with kernel + initramfs (Phase 2, not yet implemented)
     // Actual mode used is recorded in metadata.last_boot_mode.
     VMStateStarting  VMState = "STARTING"
 

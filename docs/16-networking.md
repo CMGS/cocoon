@@ -44,7 +44,7 @@ Rather than building a bespoke networking layer, Cocoon delegates all network pl
 **Why CNI?**
 
 - **Ecosystem reuse**: Hundreds of CNI plugins exist for bridge, macvlan, ipvlan, VXLAN, Calico, Cilium, and more. Cocoon does not need to re-implement any of them.
-- **Separation of concerns**: CNI plugins handle the control plane (TAP creation, IP allocation, routing, iptables rules). Cocoon handles the data plane integration (passing TAP to Cloud Hypervisor).
+- **Separation of concerns**: CNI plugins handle the control plane (IP allocation, routing, iptables rules). Cocoon's network shim handles TAP creation inside the network namespace and passes the TAP device to Cloud Hypervisor.
 - **Configuration portability**: CNI network configurations are JSON files stored in `/etc/cni/net.d/`. Administrators can reuse configurations across Cocoon, Podman, and Kubernetes.
 - **IPAM abstraction**: IP address management is pluggable (host-local, dhcp, static). No IP allocation logic in Cocoon.
 
