@@ -46,11 +46,12 @@ type Manager interface {
 	// VerifyBootability checks if an image meets the Cocoon boot contract.
 	// The image must contain:
 	//   - A Linux kernel (/boot/vmlinuz*)
-	//   - An initrd (/boot/initrd* or /boot/initramfs*) OR a UEFI bootloader
+	//   - An initrd (/boot/initrd* or /boot/initramfs*)
+	//   - A UEFI bootloader (EFI/BOOT/BOOT*.EFI or similar)
 	//   - systemd as the init system (/sbin/init -> systemd)
 	//
-	// Returns a BootCheckResult with detailed findings including supported boot
-	// modes (UEFI via CLOUDHV.fd, direct kernel boot).
+	// Phase 1 supports UEFI boot only (via CLOUDHV.fd firmware).
+	// Direct kernel boot will be added in Phase 2 for OCI VM images.
 	VerifyBootability(ctx context.Context, imagePath string) (*BootCheckResult, error)
 
 	// ListCached returns all cached base images in the image cache directory.

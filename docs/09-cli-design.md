@@ -1683,38 +1683,39 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
    - Create `ImageManager` via pipeline
    - Create `COWManager` for qcow2 operations
    - Create `ReferenceCounter` for tracking
-4. **Resolve and fetch image** → `ImageManager.Resolve(image)` detects source type, then `ImageManager.Pull(image)` fetches/converts/caches to local qcow2 (acquires per-image conversion lock, Level 3 — see `06-concurrency.md § Lock Hierarchy`)
-5. **Verify bootability** → `ImageManager.VerifyBootable(image)` (Boot Contract §6)
-   - qcow2 files: inspect partitions via guestfish
-   - OCI images: validate rootfs components before conversion
-6. **Pin base image reference** (short lock hold):
+4. **Prepare image** → `ImageManager.Prepare(image)` detects source type, pulls/converts/caches to local qcow2 in one call (acquires per-image conversion lock, Level 3 — see `06-concurrency.md § Lock Hierarchy`). Returns `ImageIdentity` + cached base image path.
+5. **Verify bootability** → `ImageManager.VerifyBootability(baseImagePath)` (Boot Contract §6)
+   - Inspects partitions via guestfish (kernel, initrd, UEFI bootloader, systemd)
+   - Skipped if `--skip-verify` is set
+6. **Configure VM** → Write `config.json` and initial `metadata.json` (CREATING state) to the VM directory:
+   ```go
+   vmCfg := &types.VMConfig{
+       VMID:           vmID,
+       Name:           name,
+       ImageRef:       imageRef,
+       BaseKey:        identity.BaseKey(),
+       BaseDigestFull: identity.FullDigest,
+       Arch:           identity.Arch,
+       BootStrategy:   bootStrategy,
+       FirmwarePath:   firmwarePath,
+       CPUs:           cpus,
+       MemoryMB:       memoryMB,
+       DiskSize:       diskSize,
+       BaseImagePath:  baseImagePath,
+       OverlayPath:    overlayPath,
+       SocketPath:     socketPath,
+       SerialLog:      serialLogPath,
+       CreatedAt:      time.Now().UTC().Format(time.RFC3339),
+       SchemaVersion:  types.CurrentConfigSchemaVersion,
+   }
+   ```
+7. **Pin base image reference** (short lock hold):
    - **Acquire references.lock** (Level 2)
    - `refCounter.AddReference(baseKey, vmID, digestFull, sourceRef)` — immediately adds `vmID` to `refs[]`, protecting the base image from GC
    - **Release references.lock**
    - This "pin" ensures the base image survives even if GC runs during the subsequent (slow) steps. On failure in later steps, the cleanup path removes this reference.
-7. **Create COW overlay** → `StorageManager.CreateOverlay(baseKey, vmID)`
-8. **Configure VM**:
-   ```go
-   config := &types.VMConfig{
-       VMID:          vmID,
-       Name:          name,
-       ImageRef:      imageRef,
-       BaseKey:       identity.BaseKey,
-       BaseDigestFull: identity.DigestFull,
-       Arch:          identity.Arch,
-       BootStrategy:  types.BootStrategy(bootStrategy),
-       FirmwarePath:  firmwarePath,
-       CPUs:          cpus,
-       MemoryMB:      memoryMB,
-       DiskSize:      c.String("disk"),
-       BaseImagePath: baseImagePath,
-       OverlayPath:   overlayPath,
-       SerialLog:     serialLogPath,
-       SocketPath:    socketPath,
-       CreatedAt:     time.Now().UTC().Format(time.RFC3339),
-       SchemaVersion: types.CurrentConfigSchemaVersion,
-   }
-   ```
+   - Metadata must exist before pin so reconciliation can find the VM if we crash after pinning.
+8. **Create COW overlay** → `COWManager.CreateOverlay(baseKey, vmID, diskSize)`
 9. **Start Cloud Hypervisor** (REST-first):
     ```bash
     # Launch CH process with API socket only (no firmware/config on CLI):

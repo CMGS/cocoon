@@ -151,9 +151,13 @@ func (m *manager) Convert(ctx context.Context, identity *image.ImageIdentity) (s
 		return "", types.NewPermanentError(fmt.Errorf("convert %s: unsupported source format %q (expected qcow2 or raw)", baseKey, format))
 	}
 
-	// Atomic rename into cache.
+	// Atomic rename into cache, then mark read-only so VMs only write to
+	// their COW overlays and the shared base image stays immutable.
 	if err := os.Rename(tmpPath, basePath); err != nil {
 		return "", fmt.Errorf("convert %s: rename to cache path: %w", baseKey, err)
+	}
+	if err := os.Chmod(basePath, 0o444); err != nil {
+		return "", fmt.Errorf("convert %s: chmod read-only: %w", baseKey, err)
 	}
 
 	// Clean up temp source if it was downloaded (not a user's local file).

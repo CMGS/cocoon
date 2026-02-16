@@ -167,65 +167,56 @@ func (m *ImageLockManager) UnlockImage(lockFile *os.File) {
 ### Usage Pattern
 
 ```go
-func (mgr *ImageManager) PrepareBaseImage(image string) (*ImageInfo, error) {
-    // 1. Calculate checksum and resolve arch (no lock needed, read-only operation)
+// Simplified view of image/pipeline/manager.go Prepare().
+// See the actual implementation for full error handling.
+func (m *PipelineManager) Prepare(ctx context.Context, ref string) (*ImageIdentity, string, error) {
+    // 1. Resolve image identity (checksum + arch) — no lock needed.
     //    See 05-storage-management.md § "Image Checksum Identity" for the algorithm.
-    checksum, arch, err := mgr.cache.CalculateImageIdentity(image)
+    identity, err := m.resolveIdentity(ctx, ref)
     if err != nil {
-        return nil, err
+        return nil, "", err
+    }
+    baseKey := identity.BaseKey()
+
+    // 2. Fast path: check if already cached (no lock for read).
+    basePath := m.cfg.BaseImagePath(baseKey)
+    if _, err := os.Stat(basePath); err == nil {
+        return identity, basePath, nil
     }
 
-    // 2. Fast path: check if already cached (no lock for read)
-    cachedPath := mgr.cache.GetCachedImage(checksum, arch)
-    if cachedPath != nil {
-        return &ImageInfo{Path: cachedPath, Checksum: checksum, Arch: arch}, nil
+    // 3. Slow path: acquire file-based flock for conversion.
+    //    Lock key: {checksum}_{arch}.lock — matches cache filename.
+    lockPath := filepath.Join(m.cfg.CacheLockDir(), baseKey+".lock")
+    fl := flock.New(lockPath)
+    if err := fl.Lock(); err != nil {
+        return nil, "", err
+    }
+    defer fl.Unlock()
+
+    // 4. Double-check cache (another process may have finished while we waited).
+    if _, err := os.Stat(basePath); err == nil {
+        return identity, basePath, nil
     }
 
-    // 3. Slow path: acquire file-based lock for conversion
-    //    Lock key: {checksum}_{arch} — matches cache filename.
-    lockFile, err := mgr.imageLocks.LockImage(checksum, arch)
+    // 5. Pull and convert (only one process does this).
+    //    pull() downloads to temp file; convert() produces qcow2 + chmod 0444.
+    srcPath, err := m.pull(ctx, identity)
     if err != nil {
-        return nil, err
+        return nil, "", err
     }
-    defer mgr.imageLocks.UnlockImage(lockFile)
-
-    // 4. Double-check cache (another process may have finished while we waited)
-    cachedPath = mgr.cache.GetCachedImage(checksum, arch)
-    if cachedPath != nil {
-        return &ImageInfo{Path: cachedPath, Checksum: checksum, Arch: arch}, nil
-    }
-
-    // 5. Pull and convert (only one process does this)
-    containerID, err := mgr.buildah.PullImage(image)
+    resultPath, err := m.convert(ctx, identity, srcPath)
     if err != nil {
-        return nil, err
-    }
-    defer mgr.buildah.Cleanup(containerID)
-
-    mountPoint, err := mgr.buildah.MountImage(containerID)
-    if err != nil {
-        return nil, err
+        return nil, "", err
     }
 
-    baseImage, err := mgr.converter.CreateBaseImage(mountPoint, checksum)
-    if err != nil {
-        return nil, err
-    }
-
-    // 6. Store in cache with atomic write (see next section)
-    err = mgr.cache.StoreImage(checksum, baseImage)
-    if err != nil {
-        return nil, err
-    }
-
-    return &ImageInfo{Path: baseImage, Checksum: checksum, Arch: arch}, nil
+    return identity, resultPath, nil
 }
 ```
 
 ### Behavior
 
-- **First process**: Acquires file lock, pulls image, converts, caches, releases lock
-- **Subsequent processes**: Block on file lock, then find cached image in step 4
+- **First process**: Acquires flock, pulls image, converts to qcow2 (chmod 0444), releases lock
+- **Subsequent processes**: Block on flock, then find cached image in step 4
 - **Result**: Only one download and conversion per unique image
 - **Cross-process safety**: Works across multiple CLI invocations (not just threads)
 
