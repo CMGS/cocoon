@@ -19,7 +19,7 @@ Cocoon relies on several external tools and libraries to provide VM management w
 | buildah | OCI image pull/extract | 1.35.0 | apt/dnf |
 | skopeo | OCI image inspection | 1.14.0 | apt/dnf |
 | qemu-img | qcow2 operations | 8.0 | apt/dnf (qemu-utils) |
-| guestfish | OCI-to-qcow2 conversion (partition, copy rootfs) | libguestfs 1.50 | apt/dnf (libguestfs-tools) |
+| guestfish | OCI-to-qcow2 conversion (partition, copy rootfs) — **required** | libguestfs 1.50 | apt/dnf (libguestfs-tools) |
 | swtpm | TPM 2.0 software emulator for VM TPM support | any | apt/dnf (swtpm, swtpm-tools) |
 | /dev/kvm | KVM device access | kernel 5.6+ | Built-in (kernel module) |
 

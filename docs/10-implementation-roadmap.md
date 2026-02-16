@@ -1257,7 +1257,7 @@ qemu-img >= 8.0
 - [x] systemd boot detection implemented
 - [x] Serial console capture functional (`hypervisor/cloudhypervisor/client.go`, `vm/engine/boot_detect.go`)
 - [x] ACPI shutdown with configurable timeout (`vm/engine/manager.go`, `hypervisor/cloudhypervisor/client.go`)
-- [x] Stop() on timeout calls ForceKill: if ForceKill succeeds the VM transitions to STOPPED; if ForceKill fails, the VM transitions to ERROR (`vm/engine/manager.go`, `hypervisor/cloudhypervisor/client.go`)
+- [x] Stop() on timeout transitions to ERROR via Shutdown(); graceful stop transitions to STOPPED. ForceKill is a separate operation invoked by Kill() (`vm/engine/manager.go`, `hypervisor/cloudhypervisor/client.go`)
 - [x] `cocoon kill` provides an explicit force-kill operation independent of timeout (`vm/engine/manager.go`, `hypervisor/hypervisor.go`)
 
 **Hypervisor Integration**:
