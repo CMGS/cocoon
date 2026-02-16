@@ -175,58 +175,77 @@ func (m *ImageLockManager) UnlockImage(lockFile *os.File) {
 
 ### Usage Pattern
 
+The `Prepare()` function has **two distinct concurrency paths** depending on image type:
+
+#### OCI Images: Pull + Convert Inside Lock
+
 ```go
-// Simplified view of image/pipeline/manager.go Prepare().
-// See the actual implementation for full error handling.
-func (m *PipelineManager) Prepare(ctx context.Context, ref string) (*ImageIdentity, string, error) {
-    // 1. Resolve image identity (checksum + arch) — no lock needed.
-    //    See 05-storage-management.md § "Image Checksum Identity" for the algorithm.
-    identity, err := m.resolveIdentity(ctx, ref)
-    if err != nil {
-        return nil, "", err
-    }
+// Simplified view of image/pipeline/manager.go prepareOCI().
+func (m *manager) prepareOCI(ctx context.Context, ref string) (*ImageIdentity, string, error) {
+    // 1. Identify (skopeo inspect) — cheap, no lock needed.
+    identity, err := identifyOCIPlatform(ctx, ref)
     baseKey := identity.BaseKey()
+    basePath := m.cfg.BaseImagePath(baseKey)
 
     // 2. Fast path: check if already cached (no lock for read).
-    basePath := m.cfg.BaseImagePath(baseKey)
     if _, err := os.Stat(basePath); err == nil {
         return identity, basePath, nil
     }
 
-    // 3. Slow path: acquire file-based flock for conversion.
-    //    Lock key: {checksum}_{arch}.lock — matches cache filename.
-    lockPath := filepath.Join(m.cfg.CacheLockDir(), baseKey+".lock")
+    // 3. Acquire per-image conversion lock (Level 3).
+    lockPath := m.cfg.ConversionLockPath(baseKey)
     fl := flock.New(lockPath)
-    if err := fl.Lock(); err != nil {
-        return nil, "", err
-    }
+    fl.Lock()
     defer fl.Unlock()
 
-    // 4. Double-check cache (another process may have finished while we waited).
+    // 4. Double-check cache after acquiring lock.
     if _, err := os.Stat(basePath); err == nil {
         return identity, basePath, nil
     }
 
-    // 5. Pull and convert (only one process does this).
-    //    pull() downloads to temp file; convert() produces qcow2 + chmod 0444.
-    srcPath, err := m.pull(ctx, identity)
-    if err != nil {
-        return nil, "", err
-    }
-    resultPath, err := m.convert(ctx, identity, srcPath)
-    if err != nil {
-        return nil, "", err
-    }
+    // 5. Pull (buildah) + mount + convert — ALL inside lock.
+    //    Only one process pulls and converts per unique image.
+    pullOCIImage(ctx, identity)
+    convertOCIImage(ctx, identity, basePath, baseKey) // rename + chmod 0444
 
-    return identity, resultPath, nil
+    return identity, basePath, nil
 }
 ```
 
+#### URL/Local Images: Pull Outside Lock, Convert Inside Lock
+
+```go
+// Simplified view of image/pipeline/manager.go Prepare() for URL/local files.
+func (m *manager) Prepare(ctx context.Context, ref string) (*ImageIdentity, string, error) {
+    // 1. Pull determines identity (checksum from download/file) — NO LOCK.
+    //    For URL: downloads to temp file, computes SHA-256.
+    //    For local file: reads file, computes SHA-256.
+    //    Concurrent callers MAY redundantly download the same URL.
+    identity, err := m.Pull(ctx, ref)
+    baseKey := identity.BaseKey()
+    basePath := m.cfg.BaseImagePath(baseKey)
+
+    // 2. Fast path: check cache before converting.
+    if _, err := os.Stat(basePath); err == nil {
+        return identity, basePath, nil
+    }
+
+    // 3. Convert acquires its own per-image lock (Level 3).
+    //    Lock path: ConversionLockPath(baseKey) = {ConversionLockDir}/{checksum}_{arch}.lock
+    //    Inside lock: double-check cache, format-detect, qemu-img convert, rename + chmod 0444.
+    basePath, err = m.Convert(ctx, identity)
+
+    return identity, basePath, nil
+}
+```
+
+**Why Pull is outside the lock for URL/local**: The baseKey (content-addressed checksum) is unknown until the file is downloaded and hashed. The conversion lock is keyed by baseKey, so it cannot be acquired before Pull completes. Redundant downloads are harmless — the lock ensures only one conversion writes the final base image.
+
 ### Behavior
 
-- **First process**: Acquires flock, pulls image, converts to qcow2 (chmod 0444), releases lock
-- **Subsequent processes**: Block on flock, then find cached image in step 4
-- **Result**: Only one download and conversion per unique image
+- **OCI**: Pull + convert both inside per-image lock. Only one process pulls per unique image.
+- **URL/local**: Pull may be redundant across concurrent callers. Convert (inside lock) deduplicates: first writer wins, subsequent waiters find cache hit at step 4/2.
+- **Both paths**: Base image is chmod 0444 after atomic rename (immutable for COW overlays).
 - **Cross-process safety**: Works across multiple CLI invocations (not just threads)
 
 ### Crash Recovery

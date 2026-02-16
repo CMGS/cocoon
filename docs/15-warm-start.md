@@ -563,7 +563,7 @@ type InspectCheckpointInfo struct {
 
 ### 5.4 Lock Hierarchy Extension
 
-The checkpoint index lock fits into the existing lock hierarchy at Level 2 (same as name-index.lock). It is never held simultaneously with the name index lock or references lock.
+The checkpoint index lock fits into the existing lock hierarchy at Level 2 (same as name-index.lock). It is never held simultaneously with the name index lock or references lock. A per-VM checkpoint lock (Level 5) serializes concurrent checkpoint/restore operations on the same VM.
 
 ```
 Level 1: GC Lock (global)
@@ -575,7 +575,11 @@ Level 2: Checkpoint Index Lock (global) -- never held with name-index or referen
 Level 3: Image Conversion Lock (per-checksum)
     |
 Level 4: VM Metadata Lock (per-VM)
+    |
+Level 5: Checkpoint Lock (per-VM) -- serializes checkpoint create/restore for same VM
 ```
+
+See [06-concurrency.md](./06-concurrency.md) § Lock Hierarchy for the complete lock ordering across all phases.
 
 ---
 

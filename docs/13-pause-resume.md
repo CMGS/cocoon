@@ -44,7 +44,7 @@ RUNNING ----[cocoon pause]----> PAUSED ----[cocoon resume]----> RUNNING
 
 ### 1.3 Minimum Cloud Hypervisor Version
 
-**Minimum Cloud Hypervisor Version**: TBD. The required CH version for pause/resume endpoints (`vm.pause` and `vm.resume`) will be validated by `cocoon doctor` (see [docs/08-dependencies.md](./08-dependencies.md)). These APIs have been available since early CH releases, but the exact minimum version that provides stable pause/resume behavior will be confirmed through integration testing at the start of Phase 2 development.
+**Minimum Cloud Hypervisor Version**: ≥38.0.0 (same baseline as Phase 1, validated by `cocoon doctor` — see [docs/08-dependencies.md](./08-dependencies.md)). The `vm.pause` and `vm.resume` APIs have been available since early CH releases. If integration testing during Phase 2 development reveals that stable pause/resume requires a higher version, the doctor check will be updated accordingly.
 
 ---
 

@@ -70,7 +70,7 @@ This means:
 
 ### 1.3 Minimum Cloud Hypervisor Version
 
-**Minimum Cloud Hypervisor Version**: TBD. The required CH version for console PTY endpoints will be validated by `cocoon doctor` (see [docs/08-dependencies.md](./08-dependencies.md)). The `vm.info` API (used to discover the PTY path) has been available since early CH releases, but the exact minimum version that provides stable PTY allocation and correct `vm.info` response format will be confirmed through integration testing at the start of Phase 2 development.
+**Minimum Cloud Hypervisor Version**: ≥38.0.0 (same baseline as Phase 1, validated by `cocoon doctor` — see [docs/08-dependencies.md](./08-dependencies.md)). The `vm.info` API (used to discover the PTY path) has been available since early CH releases. If integration testing during Phase 2 development reveals that stable PTY allocation requires a higher version, the doctor check will be updated accordingly.
 
 ---
 

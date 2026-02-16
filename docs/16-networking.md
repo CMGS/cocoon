@@ -2418,7 +2418,7 @@ func TestNetworkCreateRollback(t *testing.T) {
 ### 12.1 Related Cocoon Documents
 
 - [03-hypervisor-integration.md](./03-hypervisor-integration.md): Cloud Hypervisor process model, REST API mapping. The `CHVMConfig` struct is extended with `Net` field for `--net` arguments.
-- [06-concurrency.md](./06-concurrency.md): Lock hierarchy. Network namespace creation does not require Cocoon-level locking (kernel namespaces are inherently isolated). However, the metadata lock (Level 4) is held during `NetworkState` updates.
+- [06-concurrency.md](./06-concurrency.md): Lock hierarchy. Network namespace creation itself is kernel-isolated, but `AddNetwork()`/`DeleteNetwork()` acquire a per-VM Network Lock (Level 5) to serialize CNI ADD/DEL + TAP setup for the same VM. The dnsmasq Lock (Level 6) serializes hosts-file writes + SIGHUP. The metadata lock (Level 4) is held during `NetworkState` updates.
 - [07-vm-lifecycle.md](./07-vm-lifecycle.md): VM state machine. Network setup occurs during CREATING -> CREATED transition. Network cleanup occurs during -> DELETED transition. CNI ADD is called before `config.json` is finalized. CNI DEL is called before files are removed.
 - [09-cli-design.md](./09-cli-design.md): CLI command structure. The `--network` and `--publish` flags are added to `vmCreateFlags()`, shared by `create` and `run`. The `network` subcommand is registered alongside existing commands.
 - [12-console.md](./12-console.md): Console access. Console and networking are independent features that can coexist. A networked VM with console provides both SSH and serial access paths.

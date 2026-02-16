@@ -1683,7 +1683,7 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
    - Create `ImageManager` via pipeline
    - Create `COWManager` for qcow2 operations
    - Create `ReferenceCounter` for tracking
-4. **Prepare image** → `ImageManager.Prepare(image)` detects source type, pulls/converts/caches to local qcow2 in one call (acquires per-image conversion lock, Level 3 — see `06-concurrency.md § Lock Hierarchy`). Returns `ImageIdentity` + cached base image path.
+4. **Prepare image** → `ImageManager.Prepare(image)` detects source type, pulls/converts/caches to local qcow2 in one call. For OCI images, pull+convert are both inside the per-image conversion lock (Level 3). For URL/local images, pull runs unlocked (baseKey unknown until download), then convert acquires the lock. See `06-concurrency.md § Usage Pattern` for details. Returns `ImageIdentity` + cached base image path.
 5. **Verify bootability** → `ImageManager.VerifyBootability(baseImagePath)` (Boot Contract §6)
    - Inspects partitions via guestfish (kernel, initrd, UEFI bootloader, systemd)
    - Skipped if `--skip-verify` is set
@@ -1905,7 +1905,7 @@ This CLI design implements the Boot Contract specification:
 | §3 I/O Mechanisms | Serial console via `--serial file=...` (CH flag), `cocoon logs` command |
 | §4 Lifecycle Semantics | `run`, `stop`, `delete`, `kill` commands |
 | §5 VM Configuration Schema | `types.VMConfig` in Go code |
-| §6 OCI to Bootable Bridge | `ImageManager.VerifyBootable()` and conversion logic |
+| §6 OCI to Bootable Bridge | `ImageManager.VerifyBootability()` and conversion logic |
 
 ### 8.3 Storage Management Integration
 
