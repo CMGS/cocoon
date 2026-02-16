@@ -69,7 +69,9 @@ const (
     // DELETED: Resources cleaned up, VM removed
     VMStateDeleted   VMState = "DELETED"
 
-    // PAUSED: vCPUs frozen, CH process alive (Phase 2 — see [13-pause-resume.md](./13-pause-resume.md))
+    // PAUSED: vCPUs frozen, CH process alive
+    // Phase 2 — NOT in types/state.go yet; will be added with pause/resume support.
+    // See [13-pause-resume.md](./13-pause-resume.md)
     VMStatePaused    VMState = "PAUSED"
 )
 ```
@@ -1809,11 +1811,11 @@ The `Reconcile` method on `*manager` performs the following checks:
 ### 10.1 Phase 1: Core State Machine (P0)
 
 **Tasks**:
-- [ ] Implement `VMState` enum and validation
-- [ ] Implement `TransitionState()` with validation
-- [ ] Implement `VMMetadataFile` struct
-- [ ] Implement atomic metadata persistence
-- [ ] Add state checks to all operations
+- [x] Implement `VMState` enum and validation (`types/state.go`)
+- [x] Implement `TransitionState()` with validation (`vm/engine/manager.go`)
+- [x] Implement `VMMetadataFile` struct (`types/metadata.go`)
+- [x] Implement atomic metadata persistence (`utils/atomic.go`, `vm/engine/manager.go`)
+- [x] Add state checks to all operations (`vm/engine/manager.go`)
 
 **Files**:
 - `types/state.go`: State machine (VMState, ValidTransitions, ValidateTransition)
@@ -1829,69 +1831,72 @@ The `Reconcile` method on `*manager` performs the following checks:
 ### 10.2 Phase 2: Operations (P0)
 
 **Tasks**:
-- [ ] Implement `create` with CREATING → CREATED transition
-- [ ] Implement `start` with STARTING → RUNNING transition
-- [ ] Implement `stop` with STOPPING → STOPPED transition
-- [ ] Implement `delete` with → DELETED transition
-- [ ] Implement `inspect` (read-only)
+- [x] Implement `create` with CREATING → CREATED transition (`vm/engine/manager.go`)
+- [x] Implement `start` with STARTING → RUNNING transition (`vm/engine/manager.go`)
+- [x] Implement `stop` with STOPPING → STOPPED transition (`vm/engine/manager.go`)
+- [x] Implement `delete` with → DELETED transition (`vm/engine/manager.go`)
+- [x] Implement `inspect` (read-only) (`cmd/cocoon/inspect.go`)
 
 **Error Handling**:
-- [ ] Implement error state transitions
-- [ ] Capture error details in metadata
-- [ ] Save serial log excerpts on error
+- [x] Implement error state transitions (`vm/engine/manager.go`)
+- [x] Capture error details in metadata (`types/metadata.go` LastError field)
+- [x] Save serial log excerpts on error (`vm/engine/manager.go`)
 
 ### 10.3 Phase 3: Idempotency (P1)
 
 **Tasks**:
-- [ ] Add idempotency checks to `start` (RUNNING → no-op)
-- [ ] Add idempotency checks to `stop` (STOPPED → no-op)
-- [ ] Add idempotency checks to `delete` (non-existent → no-op)
-- [ ] Add tests for all idempotency scenarios
+- [x] Add idempotency checks to `start` (RUNNING → no-op) (`vm/engine/manager.go`)
+- [x] Add idempotency checks to `stop` (STOPPED → no-op) (`vm/engine/manager.go`)
+- [x] Add idempotency checks to `delete` (non-existent → no-op) (`cmd/cocoon/rm.go`)
+- [ ] Add tests for all idempotency scenarios (validation, not code)
 
 ### 10.4 Phase 4: Reconciliation (P1)
 
 **Tasks**:
-- [ ] Implement `(m *manager) Reconcile(ctx, fix, force)` scanner
-- [ ] Implement `(m *manager) determineActualState()` logic
-- [ ] Implement `(m *manager) detectZombieResources()` for stale PIDs/sockets
-- [ ] Implement `(m *manager) applyFix()` with --force flag
-- [ ] Implement `detectOrphanedProcesses()` for cloud-hypervisor and swtpm
-- [ ] Implement `detectDanglingReferenceIssues()` and `detectNameIndexIssues()`
-- [ ] Add dry-run mode (default)
-- [ ] Add reconciliation on daemon startup
+- [x] Implement `(m *manager) Reconcile(ctx, fix, force)` scanner (`vm/engine/reconcile.go`)
+- [x] Implement `(m *manager) determineActualState()` logic (`vm/engine/reconcile.go`)
+- [x] Implement `(m *manager) detectZombieResources()` for stale PIDs/sockets (`vm/engine/reconcile.go`)
+- [x] Implement `(m *manager) applyFix()` with --force flag (`vm/engine/reconcile.go`)
+- [x] Implement `detectOrphanedProcesses()` for cloud-hypervisor and swtpm (`vm/engine/reconcile.go`)
+- [x] Implement `detectDanglingReferenceIssues()` and `detectNameIndexIssues()` (`vm/engine/reconcile.go`)
+- [x] Add dry-run mode (default) (`cmd/cocoon/doctor.go`)
+- [ ] Add reconciliation on daemon startup (Phase 2 — no daemon mode yet)
 
 ### 10.5 Testing Checklist
 
+> **Note**: Items below track validation and test coverage, not code implementation.
+> Code for all features above is implemented; these items track remaining verification tasks.
+
 **State Machine Tests**:
-- [ ] Valid transitions succeed
-- [ ] Invalid transitions error
-- [ ] Error transitions from any state
-- [ ] DELETED is terminal
+- [x] Valid transitions succeed (`types/state_test.go`)
+- [x] Invalid transitions error (`types/state_test.go`)
+- [x] Error transitions from any state (`types/state_test.go`)
+- [x] DELETED is terminal (`types/state_test.go`)
 
 **Idempotency Tests**:
-- [ ] start RUNNING VM → no-op
-- [ ] stop STOPPED VM → no-op
-- [ ] delete deleted VM → no-op
-- [ ] create existing VM → error
+- [ ] start RUNNING VM → no-op (validation, not code)
+- [ ] stop STOPPED VM → no-op (validation, not code)
+- [ ] delete deleted VM → no-op (validation, not code)
+- [ ] create existing VM → error (validation, not code)
 
 **Concurrency Tests**:
-- [ ] Concurrent metadata updates (lock contention)
-- [ ] Concurrent state transitions
-- [ ] Atomic rename guarantees
+- [ ] Concurrent metadata updates (lock contention) (validation, not code)
+- [ ] Concurrent state transitions (validation, not code)
+- [ ] Atomic rename guarantees (validation, not code)
 
 **Reconciliation Tests**:
-- [ ] Detect RUNNING VM with dead process
-- [ ] Detect STOPPED VM with running process
-- [ ] Detect stuck STARTING VM
-- [ ] Detect orphaned Cloud Hypervisor processes
-- [ ] Fix inconsistencies with --fix
+- [ ] Detect RUNNING VM with dead process (validation, not code)
+- [ ] Detect STOPPED VM with running process (validation, not code)
+- [ ] Detect stuck STARTING VM (validation, not code)
+- [ ] Detect orphaned Cloud Hypervisor processes (validation, not code)
+- [ ] Fix inconsistencies with --fix (validation, not code)
 
 **Error Handling Tests**:
-- [ ] Boot timeout → ERROR state
-- [ ] Kernel panic → ERROR state
-- [ ] Cloud Hypervisor crash → ERROR state
-- [ ] Can recover from ERROR via kill (ERROR -> STOPPED) then start (STOPPED -> RUNNING)
-- [ ] Can delete from ERROR state
+- [ ] Boot timeout → ERROR state (validation, not code)
+- [ ] Kernel panic → ERROR state (validation, not code)
+- [ ] Cloud Hypervisor crash → ERROR state (validation, not code)
+- [ ] Can recover from ERROR via kill (ERROR -> STOPPED) then start (STOPPED -> RUNNING) (validation, not code)
+- [ ] Can delete from ERROR state (validation, not code)
 
 ---
 

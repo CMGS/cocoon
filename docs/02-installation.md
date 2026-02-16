@@ -220,26 +220,27 @@ Recommended directory structure for Cocoon deployment:
 │   ├── references.json            # base_key -> vm references
 │   └── name-index.json            # vm name -> vm_id
 ├── vms/                           # VM instances
-│   ├── vm-abc-123/
+│   ├── vm-01JMXXXXXXXXXXXXXXXXXX/
 │   │   ├── overlay.qcow2          # COW overlay disk
 │   │   ├── config.json            # VM configuration
 │   │   └── metadata.json          # VM metadata
-│   └── vm-def-456/
+│   └── vm-01JNYYYYYYYYYYYYYYYYYY/
 ├── temp/                          # Temporary conversion files
 └── trash/                         # Soft-deleted GC artifacts (image/overlay)
 
-/var/log/cocoon/                   # Logs
-├── vm-abc-123-serial.log          # Serial console output (per-VM)
-├── vm-abc-123-ch.log              # Cloud Hypervisor log (per-VM)
-├── vm-def-456-serial.log
-└── vm-def-456-ch.log
+/var/log/cocoon/                   # Logs ({vmID}-{type}.log)
+├── vm-01JMXXXXXXXXXXXXXXXXXX-serial.log   # VM serial console output
+├── vm-01JMXXXXXXXXXXXXXXXXXX-ch.log       # Cloud Hypervisor process output
+├── vm-01JMXXXXXXXXXXXXXXXXXX-swtpm.log    # TPM emulator output (when --tpm enabled)
+├── vm-01JNYYYYYYYYYYYYYYYYYY-serial.log
+└── vm-01JNYYYYYYYYYYYYYYYYYY-ch.log
 
 /run/cocoon/                       # Runtime sockets
 └── vms/
-    ├── vm-abc-123/
+    ├── vm-01JMXXXXXXXXXXXXXXXXXX/
     │   ├── api.sock               # Cloud Hypervisor API socket
     │   └── ch.pid                 # Process ID file
-    └── vm-def-456/
+    └── vm-01JNYYYYYYYYYYYYYYYYYY/
 
 /etc/cocoon/                       # Configuration (optional)
 └── config.json                    # Global Cocoon config

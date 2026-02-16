@@ -1489,16 +1489,9 @@ On CNI DEL, the IP file is removed, returning the address to the pool. No Cocoon
 
 ### 6.3 dhcp IPAM
 
-The `dhcp` plugin runs a small daemon (`/opt/cni/bin/dhcp daemon`) that manages DHCP leases on behalf of VMs. When CNI ADD is called, the dhcp plugin sends a DHCP request from the VM's network namespace.
+Cocoon uses a per-bridge **dnsmasq** instance to provide DHCP on the bridge (see Section 8). When a VM is created with bridge networking, Cocoon starts a dnsmasq process on the bridge interface (if one is not already running), registers a static DHCP lease mapping the VM's MAC address to the IP allocated by the CNI IPAM plugin, and the guest obtains its IP via standard DHCP from dnsmasq on boot.
 
-**Setup requirement**: The dhcp daemon must be running before VMs can use dhcp IPAM:
-
-```bash
-# Start the CNI DHCP daemon (typically via systemd)
-/opt/cni/bin/dhcp daemon &
-```
-
-This is an external dependency, not managed by Cocoon.
+**No external daemon is required**. Cocoon manages the dnsmasq lifecycle (start, reload, stop) automatically as VMs are created and deleted. See Section 8 for the full dnsmasq management design.
 
 ### 6.4 IP Address Visibility
 
@@ -2365,7 +2358,7 @@ func TestNetworkCreateRollback(t *testing.T) {
 | host-local | v1.0.0+ | Yes | Default IPAM |
 | portmap | v1.0.0+ | Yes | Port forwarding |
 | macvlan | v1.0.0+ | Planned | Direct LAN access (Future/Experimental) |
-| dhcp | v1.0.0+ | Planned | External DHCP server required (Future/Experimental) |
+| dhcp | v1.0.0+ | Yes | Cocoon manages dnsmasq for DHCP on the bridge; no external daemon required |
 | static | v1.0.0+ | Planned | Fixed IP assignment (Future/Experimental) |
 
 ### 11.4 Manual Verification Checklist

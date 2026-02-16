@@ -68,6 +68,10 @@ This means:
 - `cocoon console` connects to the virtio-console PTY device
 - No breaking changes to existing VMs created before console support
 
+### 1.3 Minimum Cloud Hypervisor Version
+
+**Minimum Cloud Hypervisor Version**: TBD. The required CH version for console PTY endpoints will be validated by `cocoon doctor` (see [docs/08-dependencies.md](./08-dependencies.md)). The `vm.info` API (used to discover the PTY path) has been available since early CH releases, but the exact minimum version that provides stable PTY allocation and correct `vm.info` response format will be confirmed through integration testing at the start of Phase 2 development.
+
 ---
 
 ## 2. Design

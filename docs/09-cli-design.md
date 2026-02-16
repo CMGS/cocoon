@@ -59,7 +59,7 @@ cocoon/
 │   ├── main.go               # CLI entry point (urfave/cli/v2, signal handling)
 │   ├── app.go                # appContext: manager initialization, root check
 │   ├── output.go             # Table/JSON output helpers (printTable, printJSON)
-│   ├── init.go               # cocoon init (dirs + config + firmware download)
+│   ├── init.go               # cocoon init (dirs + config; optional firmware download via --with-uefi-firmware)
 │   ├── create.go             # cocoon create + shared vmCreateFlags()
 │   ├── run.go                # cocoon run (create + start)
 │   ├── start.go              # cocoon start
@@ -196,7 +196,7 @@ type Client interface {
 ```
 
 The concrete implementation lives in `hypervisor/cloudhypervisor/client.go`. Key implementation details:
-- `Launch()` starts the CH binary with `--api-socket` + firmware flag only; all VM config goes via REST API.
+- `Launch()` starts a CH process with `--api-socket` only; all VM configuration including firmware is sent via the `PUT /api/v1/vm.create` REST call.
 - `buildCHVMConfig()` sets `payload.firmware` for UEFI (CLOUDHV.fd) or `payload.kernel` + `payload.initramfs` + `payload.cmdline` for Direct kernel boot.
 - REST API calls use `doWithRetry()` with exponential backoff (100ms/200ms/400ms + jitter).
 - `isRetryable()`: retry on 500/503/429/connection-refused; no retry on 4xx/context.Canceled.
@@ -1711,15 +1711,14 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
    ```
 9. **Start Cloud Hypervisor** (REST-first):
     ```bash
-    # Launch CH process with API socket and firmware (UEFI boot):
-    cloud-hypervisor \
-      --api-socket /run/cocoon/vms/{vm_id}/api.sock \
-      --firmware /var/lib/cocoon/firmware/CLOUDHV.fd
+    # Launch CH process with API socket only (no firmware/config on CLI):
+    cloud-hypervisor --api-socket /run/cocoon/vms/{vm_id}/api.sock
     ```
     Then configure the VM via CH REST API:
     ```
     PUT /api/v1/vm.create
     {
+      "payload": {"firmware": "/var/lib/cocoon/firmware/CLOUDHV.fd"},
       "cpus": {"boot_vcpus": 2},
       "memory": {"size": 2147483648},
       "disks": [{"path": "/var/lib/cocoon/vms/{vm_id}/overlay.qcow2"}],
@@ -1934,37 +1933,37 @@ This CLI design implements the Boot Contract specification:
 
 ### Phase 1: Core Commands (P0)
 
-- [ ] **CLI Framework**:
-  - [ ] Setup urfave/cli/v2 application structure
-  - [ ] Implement version command
-  - [ ] Implement global flags (--config)
+- [x] **CLI Framework** (`cmd/cocoon/main.go`, `cmd/cocoon/app.go`):
+  - [x] Setup urfave/cli/v2 application structure
+  - [x] Implement version command (`cmd/cocoon/version.go`)
+  - [x] Implement global flags (--config, --root-dir, --runtime-dir, --log-dir, --log-level)
 
-- [ ] **VM Lifecycle**:
-  - [ ] `cocoon run` command with full flow
-  - [ ] `cocoon create` command
-  - [ ] `cocoon start` command with boot timeout
-  - [ ] `cocoon stop` command with ACPI shutdown
-  - [ ] `cocoon delete` command with resource cleanup
-  - [ ] `cocoon kill` command for force termination
+- [x] **VM Lifecycle**:
+  - [x] `cocoon run` command with full flow (`cmd/cocoon/run.go`)
+  - [x] `cocoon create` command (`cmd/cocoon/create.go`)
+  - [x] `cocoon start` command with boot timeout (`cmd/cocoon/start.go`)
+  - [x] `cocoon stop` command with ACPI shutdown (`cmd/cocoon/stop.go`)
+  - [x] `cocoon delete` command with resource cleanup (`cmd/cocoon/rm.go`)
+  - [x] `cocoon kill` command for force termination (`cmd/cocoon/kill.go`)
 
-- [ ] **Information Commands**:
-  - [ ] `cocoon list` with table/json output
-  - [ ] `cocoon inspect` with detailed VM info
-  - [ ] `cocoon logs` with follow/tail options
+- [x] **Information Commands**:
+  - [x] `cocoon list` with table/json output (`cmd/cocoon/ps.go`)
+  - [x] `cocoon inspect` with detailed VM info (`cmd/cocoon/inspect.go`)
+  - [x] `cocoon logs` with follow/tail options (`cmd/cocoon/logs.go`)
 
-- [ ] **Image Management** (multi-source):
-  - [ ] Image source auto-detection (qcow2 file / URL / OCI ref)
-  - [ ] `cocoon image pull` from any source (qcow2, URL, OCI)
-  - [ ] `cocoon image list` from cache
-  - [ ] `cocoon image inspect` with metadata
-  - [ ] `cocoon image verify` for boot contract
-  - [ ] `cocoon image rm` with reference checking
+- [x] **Image Management** (multi-source) (`cmd/cocoon/images.go`):
+  - [x] Image source auto-detection (qcow2 file / URL / OCI ref) (`image/pipeline/manager.go`)
+  - [x] `cocoon image pull` from any source (qcow2, URL, OCI)
+  - [x] `cocoon image list` from cache
+  - [x] `cocoon image inspect` with metadata
+  - [x] `cocoon image verify` for boot contract
+  - [x] `cocoon image rm` with reference checking
 
-- [ ] **Storage**:
-  - [ ] Implement StorageManager interface
-  - [ ] COW overlay creation
-  - [ ] Reference counter integration
-  - [ ] `cocoon gc` command
+- [x] **Storage** (`storage/local/`):
+  - [x] Implement StorageManager interface (`storage/storage.go`, `storage/local/cow.go`)
+  - [x] COW overlay creation (`storage/local/cow.go`)
+  - [x] Reference counter integration (`storage/local/refcount.go`)
+  - [x] `cocoon gc` command (`cmd/cocoon/gc.go`, `storage/local/gc.go`)
 
 ### Phase 2: Advanced Features (P1)
 

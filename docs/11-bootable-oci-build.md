@@ -224,7 +224,7 @@ CMD ["/sbin/init"]
 
 **initramfs generation**: On Debian/Ubuntu, installing `linux-image-generic` triggers `initramfs-tools` to generate the initrd automatically via a kernel postinst hook. On Fedora, `dracut` runs as part of the `kernel` package installation. No manual `mkinitramfs` or `dracut` invocation is typically needed.
 
-**Bootloader installation within a container**: Running `grub-install` inside a Docker build is not straightforward because there is no real block device. For Phase 1 (qcow2 conversion), the bootloader is installed during the OCI-to-qcow2 conversion step by `guestfish`. The Dockerfile only needs to install the GRUB *packages* (binaries and modules), not run `grub-install`.
+**Bootloader installation within a container**: Running `grub-install` inside a Docker build is not straightforward because there is no real block device. For Phase 1 (qcow2 conversion), the conversion step does **not** run `grub-install` either -- it only creates partitions, writes the rootfs via `tar-in`, and verifies that `grub.cfg` exists. The UEFI bootloader binary (`BOOTX64.EFI`) and GRUB modules must be pre-installed in the OCI image's `/boot/efi/EFI/BOOT/` directory. The Dockerfile must install the GRUB packages (e.g., `grub-efi-amd64-bin`, `grub-efi-amd64-signed`, `shim-signed`), which place the EFI binaries in the correct locations during package installation.
 
 ---
 
@@ -242,13 +242,14 @@ Dockerfile
 2. docker push myregistry.io/myvm:v1
     |
     v
-3. cocoon image pull myregistry.io/myvm:v1
+3. cocoon image pull myregistry.io/myvm:v1        (Phase 1: pull standard OCI container image)
+   cocoon image pull --oci myregistry.io/myvm:v1  (Phase 2: pull OCI VM image)
     |
     v
 4. cocoon image verify myregistry.io/myvm:v1
     |
     v
-5. cocoon create myregistry.io/myvm:v1 --name myvm   (Phase 1: OCI->qcow2->UEFI)
+5. cocoon create myregistry.io/myvm:v1 --name myvm       (Phase 1: OCI->qcow2->UEFI)
    cocoon create --oci myregistry.io/myvm:v1 --name myvm  (Phase 2: direct kernel boot)
 ```
 
@@ -277,10 +278,14 @@ docker push myregistry.io/ubuntu-vm:22.04
 Pull the image into Cocoon's local image cache:
 
 ```bash
+# Phase 1: pull standard OCI container image
 cocoon image pull myregistry.io/ubuntu-vm:22.04
+
+# Phase 2: pull OCI VM image (uses --oci flag)
+cocoon image pull --oci myregistry.io/ubuntu-vm:22.04
 ```
 
-This downloads the OCI layers and extracts the rootfs into Cocoon's local storage. The pull process is the same regardless of whether the image will be used via Phase 1 (qcow2) or Phase 2 (direct kernel boot).
+For Phase 1, this downloads the OCI container layers and extracts the rootfs into Cocoon's local storage. For Phase 2, the `--oci` flag signals that the image uses the OCI VM Image format ([docs/04.1](./04.1-oci-vm-images.md)) with separate kernel, rootfs, and customization layers. The `--oci` flag convention is defined in [docs/09-cli-design.md](./09-cli-design.md).
 
 **Step 4: `cocoon image verify`**
 
@@ -392,11 +397,15 @@ In Phase 1, bootable OCI images are consumed through the [OCI Conversion Pipelin
 OCI Image (rootfs) -> Buildah extraction -> guestfish partitioning -> qcow2
                                               |
                                               +-- Create GPT partition table
-                                              +-- Create ESP (FAT32, GRUB)
+                                              +-- Create ESP (FAT32)
                                               +-- Create root partition (ext4)
-                                              +-- Install GRUB via grub-install
-                                              +-- Write rootfs to root partition
+                                              +-- Mount ESP at /boot/efi
+                                              +-- tar-in rootfs (including pre-installed bootloader)
+                                              +-- Verify grub.cfg exists
+                                              +-- (Optional) Regenerate grub.cfg for serial console
 ```
+
+**Important**: The conversion step does **not** run `grub-install`. The UEFI bootloader (`BOOTX64.EFI` in `/boot/efi/EFI/BOOT/`) and GRUB modules must already be present in the OCI image's rootfs. This is a **build-time** responsibility: the Dockerfile must install the GRUB packages (see [section 3](#3-dockerfile-examples)). The conversion step only partitions the disk, writes the rootfs, and verifies that a grub.cfg exists. If `virt-customize` is available, it optionally injects `console=ttyS0,115200n8` into the GRUB configuration for serial console support.
 
 **Boot mode**: UEFI via `payload.firmware` (CLOUDHV.fd)
 **Requires**: Kernel, initramfs, systemd, GRUB packages in the OCI image
@@ -555,7 +564,7 @@ cocoon create Fedora-Cloud-Base-39-1.5.x86_64.qcow2 --name fedora-vm
 
 Building bootable OCI images from scratch is complex because it requires:
 - Kernel and initramfs generation inside a container build environment
-- GRUB module installation (actual `grub-install` runs during qcow2 conversion, not in the Dockerfile)
+- GRUB package installation in the Dockerfile (the EFI bootloader binary must be present in the rootfs; the conversion step does not run `grub-install`)
 - Partition table and filesystem setup during conversion
 - Thorough testing across distributions
 

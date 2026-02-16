@@ -42,6 +42,10 @@ RUNNING ----[cocoon pause]----> PAUSED ----[cocoon resume]----> RUNNING
               PUT /api/v1/vm.pause         PUT /api/v1/vm.resume
 ```
 
+### 1.3 Minimum Cloud Hypervisor Version
+
+**Minimum Cloud Hypervisor Version**: TBD. The required CH version for pause/resume endpoints (`vm.pause` and `vm.resume`) will be validated by `cocoon doctor` (see [docs/08-dependencies.md](./08-dependencies.md)). These APIs have been available since early CH releases, but the exact minimum version that provides stable pause/resume behavior will be confirmed through integration testing at the start of Phase 2 development.
+
 ---
 
 ## 2. State Machine Extension
@@ -238,7 +242,7 @@ cocoon stop myvm  (state: PAUSED)
     v
 [6] Wait for CH process to exit (up to --timeout, default 30s)
     |       |
-    |       +-- If timeout: Stop() force-kills the CH process on timeout and transitions VM to ERROR state
+    |       +-- If timeout: ForceKill() is called; if it succeeds -> STOPPED, if it fails -> ERROR
     v
 [7] CH process exited -> TransitionState(vmID, STOPPED, "graceful shutdown complete")
 ```
@@ -247,7 +251,7 @@ cocoon stop myvm  (state: PAUSED)
 
 - **Resume is mandatory**: Cocoon MUST resume the VM before sending ACPI shutdown. CH cannot process ACPI power button events while vCPUs are frozen. Attempting to send `vm.power-button` to a paused VM has no effect -- the guest never processes the interrupt.
 - **Resume failure -> ERROR**: If `PUT /api/v1/vm.resume` fails (e.g., the CH process crashed while the VM was paused, or the API socket is unresponsive), the VM transitions to ERROR. Cocoon does not attempt further shutdown steps because the guest is unreachable. The user can then use `cocoon kill` or `cocoon delete --force` to clean up.
-- **Timeout -> ERROR (force-kill)**: If the guest does not shut down within the timeout, `Stop()` force-kills the CH process and transitions the VM to ERROR. The `Shutdown()` implementation in `client.go` calls `ForceKill()` when the timeout is reached, sending SIGKILL to the CH process.
+- **Timeout -> ForceKill -> STOPPED or ERROR**: If the guest does not shut down within the timeout, the `Shutdown()` implementation in `client.go` calls `ForceKill()`, sending SIGKILL to the CH process. If `ForceKill()` succeeds (process terminated), `Stop()` transitions the VM to STOPPED. If `ForceKill()` itself fails (e.g., PID reuse, permission error), `Stop()` transitions the VM to ERROR. This matches the behavior documented in [docs/07-vm-lifecycle.md](./07-vm-lifecycle.md).
 - **Sequence is atomic from the caller's perspective**: The resume-then-stop sequence is a single `Stop()` call. The intermediate RUNNING state is visible in metadata briefly but is not a user-initiated transition.
 
 ### 3.4 Kill on Paused VM
@@ -567,9 +571,9 @@ func (m *Manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
     }
 
     // Proceed with normal stop flow (ACPI shutdown, wait for process exit).
-    // If the guest does not shut down within the timeout, Stop() force-kills
-    // the CH process and transitions the VM to ERROR state, same as stopping
-    // from RUNNING (see §3.3 timeout behavior).
+    // If the guest does not shut down within the timeout, Shutdown() calls
+    // ForceKill(). If ForceKill succeeds -> STOPPED; if it fails -> ERROR.
+    // Same as stopping from RUNNING (see §3.3 timeout behavior).
     // ... existing stop logic ...
 }
 ```

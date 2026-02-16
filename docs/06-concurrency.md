@@ -633,8 +633,8 @@ func (gc *GarbageCollector) CollectImage(imageKey string) error {
 # Terminal 1: Create VM with bootable OCI image
 $ cocoon create myorg/ubuntu-bootable:22.04 --name vm-new
 
-# Terminal 2: Update myorg/ubuntu-bootable:22.04 (new version released)
-$ cocoon pull myorg/ubuntu-bootable:22.04 --force-update
+# Terminal 2: Re-pull updated myorg/ubuntu-bootable:22.04 (new version released upstream)
+$ cocoon image pull myorg/ubuntu-bootable:22.04
 ```
 
 **Expected Behavior**:
@@ -646,7 +646,7 @@ $ cocoon pull myorg/ubuntu-bootable:22.04 --force-update
      └── vm-002/overlay.qcow2
    ```
 
-2. **Force Update** (Terminal 2):
+2. **Re-pull** (Terminal 2):
    - Pulls new version of myorg/ubuntu-bootable:22.04
    - Calculates new checksum: `def456`
    - Converts and stores: `/cache/images/def456.qcow2`

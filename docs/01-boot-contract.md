@@ -705,31 +705,31 @@ func ValidateBootability(rootfs string) error {
 
 ### Phase 1: Core Boot (P0)
 
-- [ ] **Firmware Management**:
-  - [ ] Download CLOUDHV.fd on install
-  - [ ] Store in `/var/lib/cocoon/firmware/`
-  - [ ] Implement `cocoon firmware` commands
-  - [ ] Version management and updates
+- [x] **Firmware Management** (`cmd/cocoon/firmware.go`):
+  - [x] Download CLOUDHV.fd on install (default URL: edk2 latest release)
+  - [x] Store in `/var/lib/cocoon/firmware/`
+  - [x] Implement `cocoon firmware` commands (list, verify, install, update)
+  - [x] Version management and updates (`firmware install --force`)
 
-- [ ] **UEFI Boot**:
-  - [ ] Locate UEFI firmware: primary `/var/lib/cocoon/firmware/CLOUDHV.fd`, deprecated fallback `/usr/share/OVMF/OVMF_CODE.fd`
-  - [ ] Launch CH with UEFI firmware via REST `payload.firmware` (default boot strategy for non-OCI images)
+- [x] **UEFI Boot** (`vm/engine/manager.go`, `hypervisor/cloudhypervisor/client.go`):
+  - [x] Locate UEFI firmware: primary `/var/lib/cocoon/firmware/CLOUDHV.fd`, deprecated fallback `/usr/share/OVMF/OVMF_CODE.fd`
+  - [x] Launch CH with UEFI firmware via REST `payload.firmware` (default boot strategy for non-OCI images)
 
 - [ ] **Direct Kernel Boot** (OCI VM images) — **Phase 2 (Not Yet Implemented)**:
   - [ ] Extract kernel and initramfs from OCI VM images
   - [ ] Launch CH with `payload.kernel` + `payload.initramfs` + `payload.cmdline`
   - [ ] Build kernel cmdline with `root=PARTUUID=<uuid> rw console=ttyS0,115200n8 console=hvc0`
 
-- [ ] **Image Conversion**:
-  - [ ] Regenerate GRUB config (if needed for console settings)
+- [x] **Image Conversion** (`image/pipeline/manager.go`, `image/pipeline/convert_linux.go`):
+  - [x] Regenerate GRUB config (if needed for console settings)
 
-- [ ] **Boot Detection**:
-  - [ ] Monitor serial log for boot completion
-  - [ ] Implement multi-pattern boot detection:
-    - [ ] Login prompt patterns
-    - [ ] Systemd target patterns (login target, running message)
-    - [ ] Fallback patterns (welcome message, startup finished)
-  - [ ] Timeout handling with detailed error reporting
+- [x] **Boot Detection** (`vm/engine/boot_detect.go`):
+  - [x] Monitor serial log for boot completion
+  - [x] Implement multi-pattern boot detection:
+    - [x] Login prompt patterns
+    - [x] Systemd target patterns (login target, running message)
+    - [x] Fallback patterns (welcome message, startup finished)
+  - [x] Timeout handling with detailed error reporting
 
 ### Phase 2: Advanced Features (P1)
 

@@ -1,7 +1,7 @@
 # Implementation Roadmap
 
 **Version**: 1.0
-**Status**: Complete
+**Status**: Complete (code implemented; validation checklist tracks remaining verification tasks)
 **Phase**: Phase 1
 **Last Updated**: 2026-02-14
 
@@ -1254,7 +1254,7 @@ qemu-img >= 8.0
 - [x] systemd boot detection implemented
 - [x] Serial console capture functional (`hypervisor/cloudhypervisor/client.go`, `vm/engine/boot_detect.go`)
 - [x] ACPI shutdown with configurable timeout (`vm/engine/manager.go`, `hypervisor/cloudhypervisor/client.go`)
-- [x] Stop() on timeout force-kills the CH process and transitions VM to ERROR state (`vm/engine/manager.go`, `hypervisor/cloudhypervisor/client.go`)
+- [x] Stop() on timeout calls ForceKill: if ForceKill succeeds the VM transitions to STOPPED; if ForceKill fails, the VM transitions to ERROR (`vm/engine/manager.go`, `hypervisor/cloudhypervisor/client.go`)
 - [x] `cocoon kill` provides an explicit force-kill operation independent of timeout (`vm/engine/manager.go`, `hypervisor/hypervisor.go`)
 
 **Hypervisor Integration**:
@@ -1303,25 +1303,28 @@ qemu-img >= 8.0
 
 ### P1: Important But Not Blocking
 
+> **Note**: Unchecked items below are documentation, testing, and UX tasks —
+> not missing code. "Complete" status refers to code implementation.
+
 **Documentation**:
 - [x] README with quickstart (`README.md`)
 - [x] Installation guide for major distros (`docs/02-installation.md`)
 - [x] Architecture overview (`docs/00-overview.md`)
-- [ ] Troubleshooting FAQ
-- [ ] API documentation (if exposed)
+- [ ] Troubleshooting FAQ (documentation, not code)
+- [ ] API documentation (if exposed) (documentation, not code)
 
 **Testing**:
-- [ ] Unit test coverage >80%
-- [ ] Integration tests pass
-- [ ] E2E tests cover main workflows
-- [ ] Performance benchmarks documented
-- [ ] Chaos testing validates resilience
+- [ ] Unit test coverage >80% (validation, not code)
+- [ ] Integration tests pass (validation, not code)
+- [ ] E2E tests cover main workflows (validation, not code)
+- [ ] Performance benchmarks documented (validation, not code)
+- [ ] Chaos testing validates resilience (validation, not code)
 
 **UX Improvements**:
-- [ ] Progress bars for long operations
-- [ ] Color-coded output (errors in red, etc.)
-- [ ] Shell completion scripts
-- [ ] Better error messages with suggestions
+- [ ] Progress bars for long operations (enhancement, not blocking)
+- [ ] Color-coded output (errors in red, etc.) (enhancement, not blocking)
+- [ ] Shell completion scripts (enhancement, not blocking)
+- [ ] Better error messages with suggestions (enhancement, not blocking)
 
 **Packaging**:
 - [ ] .deb package for Ubuntu/Debian

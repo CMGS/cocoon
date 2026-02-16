@@ -64,16 +64,102 @@ Other documents MUST reference this section rather than defining their own paths
 
 **Phase 2 Additions (Planned)**:
 
-Persistent paths (`/var/lib/cocoon/`):
-- `/var/lib/cocoon/checkpoints/` — VM checkpoint snapshots for warm-start (Phase 2, see [15-warm-start.md](./15-warm-start.md))
-  - `/var/lib/cocoon/checkpoints/{vm-id}/` — Per-VM checkpoint data
-- `/var/lib/cocoon/cache/oci/` — Extracted OCI layers and rootfs for OCI VM images (Phase 2, see [04.1-oci-vm-images.md](./04.1-oci-vm-images.md))
-- `/var/lib/cocoon/vms/{vm-id}/rootfs/` — OverlayFS mount point for OCI VM images (Phase 2, see [04.1-oci-vm-images.md](./04.1-oci-vm-images.md))
+> **SSOT Note**: This section is the Single Source of Truth (SSOT) for all Phase 2
+> storage and runtime paths. Individual Phase 2 design documents should reference
+> this section rather than maintaining independent path listings.
 
-Runtime paths (`/run/cocoon/`):
-- `/run/cocoon/dnsmasq/` — dnsmasq PID files and lease state for per-bridge DHCP (see [16-networking.md](./16-networking.md))
-- `/run/cocoon/vms/{vm-id}/netns` — network namespace bind mount for CNI (see [16-networking.md](./16-networking.md))
-- `/run/cocoon/vms/{vm-id}/virtiofs/` — virtiofsd socket files for volume passthrough (see [17-volume-passthrough.md](./17-volume-passthrough.md))
+```
+Phase 2 Planned Paths:
+│
+├── Persistent Storage (/var/lib/cocoon/)
+│   │
+│   ├── Warm-Start Checkpoints (docs/15-warm-start.md)
+│   │   └── checkpoints/
+│   │       ├── checkpoint-index.json           # name -> ckpt-id mapping
+│   │       ├── checkpoint-index.lock           # flock for index updates
+│   │       └── {ckpt-id}/                      # e.g., ckpt-01HXYZ.../
+│   │           ├── checkpoint.json             # Checkpoint metadata (checkpoint_type: "qcow2" | "overlayfs")
+│   │           ├── ch-snapshot/                # CH memory + device state
+│   │           │   ├── config                  # CH VM config snapshot
+│   │           │   └── state                   # Memory + device + vCPU state
+│   │           ├── overlay.qcow2               # Disk state (qcow2 path only)
+│   │           └── upper/                      # Preserved overlayfs upperdir (overlayfs path only)
+│   │
+│   ├── OCI VM Image Cache (docs/04.1-oci-vm-images.md)
+│   │   ├── cache/oci/
+│   │   │   └── {manifest-digest}/              # Per-image extracted artifacts
+│   │   │       ├── manifest.json               # OCI manifest
+│   │   │       ├── config.json                 # OCI VM config blob (kernel cmdline, etc.)
+│   │   │       ├── vmlinuz                     # Extracted kernel (payload.kernel)
+│   │   │       ├── initrd.img                  # Extracted initrd (payload.initramfs)
+│   │   │       ├── rootfs/                     # Rootfs layer (extracted dir tree, read-only)
+│   │   │       ├── custom-1/                   # First customization layer (read-only, if present)
+│   │   │       └── custom-N/                   # Nth customization layer (read-only, if present)
+│   │   └── db/
+│   │       └── oci-references.json             # manifest-digest -> [vm-id] ref tracking
+│   │
+│   ├── Per-VM OCI Rootfs State (docs/04.1-oci-vm-images.md)
+│   │   └── vms/{vm-id}/
+│   │       ├── upper/                          # OverlayFS upperdir (per-VM COW writes)
+│   │       ├── work/                           # OverlayFS workdir (kernel internal)
+│   │       ├── merged/                         # OverlayFS mount point (virtiofsd serves this)
+│   │       └── virtiofsd.sock                  # virtiofsd socket for rootfs-serving instance
+│   │
+│   ├── dnsmasq DHCP State (docs/16-networking.md)
+│   │   └── dnsmasq/{bridge}/                   # Per-bridge state (e.g., dnsmasq/cni0/)
+│   │       ├── dnsmasq.conf                    # Generated dnsmasq configuration
+│   │       ├── dnsmasq.pid                     # PID file for running dnsmasq process
+│   │       └── hosts                           # Static DHCP leases (<mac>,<ip>,<hostname>)
+│   │
+│   └── Volume Passthrough Shared Directory (docs/17-volume-passthrough.md)
+│       └── shares/                             # Default allowed host path for volume mounts
+│
+├── Runtime State (/run/cocoon/)
+│   │
+│   ├── CNI Networking (docs/16-networking.md)
+│   │   └── vms/{vm-id}/
+│   │       └── netns                           # Network namespace bind mount for CNI
+│   │
+│   └── Volume Passthrough Daemons (docs/17-volume-passthrough.md)
+│       └── vms/{vm-id}/
+│           ├── virtiofs-{tag}.sock             # virtiofsd socket per shared volume
+│           └── virtiofs-{tag}.pid              # virtiofsd PID file per shared volume
+│
+├── Console (docs/12-console.md)
+│   │   No new on-disk paths. The PTY device path (/dev/pts/N) is dynamically
+│   │   discovered from the CH REST API (GET /api/v1/vm.info) at attach time.
+│   │   Console mode is configured via --console pty in the CH VM config.
+│   │
+│   └── (Future: /run/cocoon/vms/{vm-id}/console.lock — advisory lock to
+│         prevent concurrent attach; deferred beyond Phase 2 v1.0)
+│
+├── Pause/Resume (docs/13-pause-resume.md)
+│   │   No new on-disk paths. Pause state is tracked in the existing
+│   │   metadata.json via the paused_at field and state=PAUSED.
+│   │   CH state is queried via GET /api/v1/vm.info for reconciliation.
+│   │
+│   └── (No additional files)
+│
+└── External / System Paths (not managed by Cocoon)
+    ├── /etc/cni/net.d/*.conflist              # CNI network configs (user-provided, docs/16)
+    ├── /opt/cni/bin/                          # CNI plugin binaries (docs/16)
+    └── /var/lib/cni/networks/{network}/{ip}   # host-local IPAM allocations (CNI-managed, docs/16)
+```
+
+Path notes:
+- **dnsmasq state** lives under `/var/lib/cocoon/dnsmasq/` (persistent) rather than
+  `/run/cocoon/` because DHCP lease files must survive dnsmasq restarts (SIGHUP
+  re-reads hosts file). The PID file is co-located for simplicity.
+- **virtiofsd sockets** for user volumes (`virtiofs-{tag}.sock`) are under `/run/cocoon/`
+  (ephemeral), while the rootfs-serving virtiofsd socket (`virtiofsd.sock`) is under
+  `/var/lib/cocoon/vms/` alongside the OverlayFS mount it serves.
+- **Checkpoint directories** use their own ID namespace (`ckpt-{ulid}`), separate from
+  VM IDs (`vm-{ulid}`). The `ch-snapshot/` subdirectory name matches the
+  `destination_url` parameter in Cloud Hypervisor's `PUT /api/v1/vm.snapshot` API.
+- **OCI cache** directories are keyed by manifest digest (content-addressable) and
+  shared across all VMs created from the same OCI image.
+- **Network namespace** files under `/run/cocoon/` are lost on reboot; the Start()
+  flow transparently recreates them when needed (see docs/16 Section 2.4).
 
 **Key rules**:
 - Overlay is ALWAYS `overlay.qcow2` inside the VM directory (not `{vm_id}.qcow2`)
@@ -277,30 +363,42 @@ func (c *CocoonConfig) EnsureDirs() error { ... }
 
 The following path helpers are planned for Phase 2 features. They are not yet
 implemented but are documented here to reserve the namespace and ensure
-consistency across design documents.
+consistency across design documents. See the Phase 2 tree diagram above for
+the full directory layout.
 
 ```go
 // Phase 2 — Warm Start (docs/15-warm-start.md)
-func (c *CocoonConfig) CheckpointsDir() string             // RootDir/checkpoints
-func (c *CocoonConfig) VMCheckpointDir(vmID string) string // RootDir/checkpoints/{vmID}
+func (c *CocoonConfig) CheckpointsDir() string                      // RootDir/checkpoints
+func (c *CocoonConfig) CheckpointDir(ckptID string) string          // RootDir/checkpoints/{ckptID}
+func (c *CocoonConfig) CheckpointIndexPath() string                 // RootDir/checkpoints/checkpoint-index.json
+func (c *CocoonConfig) CheckpointIndexLock() string                 // RootDir/checkpoints/checkpoint-index.lock
+func (c *CocoonConfig) CheckpointSnapshotDir(ckptID string) string  // RootDir/checkpoints/{ckptID}/ch-snapshot
 
 // Phase 2 — OCI VM Images (docs/04.1-oci-vm-images.md)
-func (c *CocoonConfig) OCICacheDir() string                // RootDir/cache/oci
-func (c *CocoonConfig) VMRootfsDir(vmID string) string     // RootDir/vms/{vmID}/rootfs
+func (c *CocoonConfig) OCICacheDir() string                         // RootDir/cache/oci
+func (c *CocoonConfig) OCICacheEntry(digest string) string          // RootDir/cache/oci/{digest}
+func (c *CocoonConfig) VMUpperDir(vmID string) string               // RootDir/vms/{vmID}/upper
+func (c *CocoonConfig) VMWorkDir(vmID string) string                // RootDir/vms/{vmID}/work
+func (c *CocoonConfig) VMMergedDir(vmID string) string              // RootDir/vms/{vmID}/merged
+func (c *CocoonConfig) VMRootfsVirtiofsdSock(vmID string) string    // RootDir/vms/{vmID}/virtiofsd.sock
 
 // Phase 2 — Networking (docs/16-networking.md)
-func (c *CocoonConfig) DnsmasqRunDir() string              // RuntimeDir/dnsmasq (PID files, lease state)
-func (c *CocoonConfig) VMNetNSPath(vmID string) string     // RuntimeDir/vms/{vmID}/netns
+func (c *CocoonConfig) DnsmasqStateDir() string                     // RootDir/dnsmasq
+func (c *CocoonConfig) DnsmasqBridgeDir(bridge string) string       // RootDir/dnsmasq/{bridge}
+func (c *CocoonConfig) VMNetNSPath(vmID string) string              // RuntimeDir/vms/{vmID}/netns
 
 // Phase 2 — Volume Passthrough (docs/17-volume-passthrough.md)
-func (c *CocoonConfig) VMVirtiofsDir(vmID string) string   // RuntimeDir/vms/{vmID}/virtiofs
+func (c *CocoonConfig) VMVirtiofsSocketPath(vmID, tag string) string // RuntimeDir/vms/{vmID}/virtiofs-{tag}.sock
+func (c *CocoonConfig) VMVirtiofsPIDPath(vmID, tag string) string    // RuntimeDir/vms/{vmID}/virtiofs-{tag}.pid
+func (c *CocoonConfig) SharesDir() string                            // RootDir/shares
 ```
 
-`EnsureDirs()` will be extended to create `RootDir/checkpoints` and
-`RootDir/cache/oci` at startup, and `RuntimeDir/dnsmasq` when networking
-is enabled. Per-VM directories (`checkpoints/{vmID}`, `vms/{vmID}/rootfs`,
-`netns`, `virtiofs/`) are created on demand during VM setup rather than at
-startup.
+`EnsureDirs()` will be extended to create `RootDir/checkpoints`,
+`RootDir/cache/oci`, and `RootDir/shares` at startup. `RootDir/dnsmasq`
+is created when the first networked VM is provisioned. Per-VM directories
+(`checkpoints/{ckptID}`, `vms/{vmID}/upper`, `vms/{vmID}/work`,
+`vms/{vmID}/merged`, network namespace bind mounts, virtiofsd sockets)
+are created on demand during VM or checkpoint setup rather than at startup.
 
 ## Copy-on-Write (COW) Strategy
 
