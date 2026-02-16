@@ -1247,6 +1247,9 @@ qemu-img >= 8.0
 
 ## 8. Phase 1 Completion Checklist
 
+> **Note**: Unchecked items in the checklists below are validation, testing, and documentation tasks —
+> not missing code. "Complete" status refers to code implementation.
+
 ### P0: Critical Requirements
 
 **Boot Contract**:
@@ -1302,9 +1305,6 @@ qemu-img >= 8.0
 ---
 
 ### P1: Important But Not Blocking
-
-> **Note**: Unchecked items below are documentation, testing, and UX tasks —
-> not missing code. "Complete" status refers to code implementation.
 
 **Documentation**:
 - [x] README with quickstart (`README.md`)

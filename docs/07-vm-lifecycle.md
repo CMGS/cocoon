@@ -514,7 +514,7 @@ func (m *manager) transitionStateWithUpdate(vmID string, to types.VMState, reaso
 
 #### stop
 
-**Signature**: `cocoon stop VM_ID [--timeout SECONDS]`
+**Signature**: `cocoon stop VM_ID [--timeout DURATION]`  *(DURATION is a Go duration string, e.g. `30s`, `2m`; default: `30s`)*
 
 **Preconditions**:
 - VM in RUNNING state
@@ -1794,8 +1794,8 @@ The `Reconcile` method on `*manager` performs the following checks:
 ### 9.6 Reconciliation Schedule
 
 **When to Run**:
-1. **On daemon startup** (if running as daemon)
-2. **Periodically** (every 5 minutes in daemon mode)
+1. **On CLI invocation** (`cocoon doctor --reconcile` or future daemon mode — Phase 2)
+2. **Periodically** (Phase 2 daemon mode — not yet implemented; currently reconciliation runs on-demand via `cocoon doctor`)
 3. **Manually** (user runs `cocoon doctor --fix`)
 4. **After crashes** (detect on next CLI invocation)
 
@@ -1860,7 +1860,7 @@ The `Reconcile` method on `*manager` performs the following checks:
 - [x] Implement `detectOrphanedProcesses()` for cloud-hypervisor and swtpm (`vm/engine/reconcile.go`)
 - [x] Implement `detectDanglingReferenceIssues()` and `detectNameIndexIssues()` (`vm/engine/reconcile.go`)
 - [x] Add dry-run mode (default) (`cmd/cocoon/doctor.go`)
-- [ ] Add reconciliation on daemon startup (Phase 2 — no daemon mode yet)
+- [ ] Add reconciliation on startup (Phase 2 — daemon mode not yet implemented; currently runs on-demand via `cocoon doctor`)
 
 ### 10.5 Testing Checklist
 

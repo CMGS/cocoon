@@ -95,6 +95,7 @@ Phase 2 Scope (Tested and Supported):
 |--------|--------|-------|
 | bridge | **Supported** | Default CNI plugin, primary implementation target |
 | host-local IPAM | **Supported** | Default IPAM backend for bridge mode |
+| DHCP IPAM | **Supported** | dnsmasq provides DHCP on the bridge; no external daemon required |
 | portmap | **Supported** | Host port forwarding (works with bridge) |
 
 Future / Experimental (not covered by Phase 2 implementation):
@@ -103,7 +104,6 @@ Future / Experimental (not covered by Phase 2 implementation):
 |--------|--------|-------|
 | ptp | Experimental | Point-to-point; requires separate validation |
 | macvlan | Experimental | Direct L2 attachment; TAP redirect path untested |
-| DHCP IPAM | Yes | dnsmasq provides DHCP on the bridge; no external daemon required |
 
 Known Limitations:
 

@@ -22,7 +22,7 @@ func initCommand() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.BoolFlag{
 				Name:  "force",
-				Usage: "overwrite existing config file and re-download firmware",
+				Usage: "overwrite existing config file; with --with-uefi-firmware, also re-download firmware",
 			},
 			&cli.StringFlag{
 				Name:  "with-uefi-firmware",

@@ -640,6 +640,7 @@ func runCommand() *cli.Command {
 3. **Wait for Boot**: Poll serial log for boot completion (timeout: config default)
 4. **Print VM ID**: Output the created VM ID
 5. **Background behavior**: VM runs as a background CH process. Serial log is written to disk; use `cocoon logs --follow` to stream.
+   > **Phase 1 note**: All runs are background (CH process). The `--detach/-d` flag is accepted but is a no-op. In Phase 2, non-detach runs will attach to the serial log automatically; `--detach/-d` will then control attach vs. detach mode.
 6. **Auto-remove** (if `--rm`): The `AutoRemove` flag is recorded in metadata. When the VM is stopped via `cocoon stop`, the delete flow is triggered automatically. Note: if the VM crashes or is killed externally, auto-remove does not fire. Use `cocoon doctor --fix` for state reconciliation; automatic deletion of crashed `auto_remove` VMs is a future enhancement.
 
 **Example Usage**:
@@ -1788,8 +1789,8 @@ cocoon run ubuntu-22.04-cloudimg \
   --memory 8G \
   --cpus 4
 
-# Run in background with auto-cleanup
-cocoon run --rm -d ubuntu-22.04-cloudimg --name temp-vm
+# Run with auto-cleanup (Phase 1: -d is a no-op; Phase 2: controls attach/detach mode)
+cocoon run --rm ubuntu-22.04-cloudimg --name temp-vm
 ```
 
 ### 7.2 VM Lifecycle Management

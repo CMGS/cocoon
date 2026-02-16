@@ -97,7 +97,7 @@ Checkpoint on host A, transfer files, restore on host B. While not a goal for Ph
 ### 3.1 Checkpoint Flow (End-to-End)
 
 ```
-cocoon checkpoint my-vm --live --name "after-setup"
+cocoon checkpoint create my-vm --live --name "after-setup"
 
   1. ResolveVMRef("my-vm") -> "vm-01HX..."
   2. LoadMetadata("vm-01HX...") -> state=RUNNING

@@ -106,7 +106,7 @@ var ValidTransitions = map[VMState][]VMState{
 - `PAUSED -> STOPPING`: `cocoon stop` on a paused VM (resume first, then stop gracefully)
 - `PAUSED -> ERROR`: CH crash while paused
 
-Note: There is no direct `PAUSED -> DELETED` transition. To delete a paused VM, first stop it (`PAUSED -> STOPPING -> STOPPED`), then delete (`STOPPED -> DELETED`). Similarly, `cocoon kill` on a paused VM goes through `PAUSED -> STOPPING -> STOPPED`.
+Note: There is no direct `PAUSED -> DELETED` transition. To delete a paused VM, first stop it (`PAUSED -> STOPPING -> STOPPED`), then delete (`STOPPED -> DELETED`). Kill on a paused VM force-kills the CH process: `PAUSED -> STOPPED` on success, `PAUSED -> ERROR` on failure (no STOPPING intermediate state).
 
 ### 2.4 State Machine Diagram
 
@@ -256,7 +256,7 @@ cocoon stop myvm  (state: PAUSED)
 
 ### 3.4 Kill on Paused VM
 
-`cocoon kill` on a PAUSED VM sends SIGKILL directly to the CH process **without resuming first**. No resume is needed because SIGKILL operates at the host process level, not the guest vCPU level. The frozen vCPUs are terminated immediately along with the CH process. Transition: PAUSED -> STOPPED.
+`cocoon kill` on a PAUSED VM sends SIGKILL directly to the CH process **without resuming first**. No resume is needed because SIGKILL operates at the host process level, not the guest vCPU level. The frozen vCPUs are terminated immediately along with the CH process. Transition: `PAUSED -> STOPPED` if the force-kill succeeds, `PAUSED -> ERROR` if the force-kill fails (e.g., PID reuse, permission error).
 
 This is the fastest way to terminate a paused VM but skips any graceful guest shutdown (filesystem sync, service cleanup, etc.).
 
@@ -977,7 +977,7 @@ func TestKillPausedVM(t *testing.T) {
 
     // 1. Create, start, and pause VM
     // 2. Call kill -> SIGKILL without resume
-    // 3. Verify ERROR state (or STOPPED depending on implementation)
+    // 3. Verify STOPPED state (force-kill succeeded) or ERROR state (force-kill failed)
     // 4. Verify CH process exited
 }
 ```
