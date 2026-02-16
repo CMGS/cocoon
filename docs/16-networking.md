@@ -1275,7 +1275,7 @@ The `--network` and `--publish` flags are added to both `cocoon create` and `coc
 ```go
 func vmCreateFlags() []cli.Flag {
     return []cli.Flag{
-        // ... existing flags (--name, --cpus, --memory, --disk-size, --rm) ...
+        // ... existing flags (--name, --cpus, --memory, --disk) ...
 
         &cli.StringSliceFlag{
             Name:    "network",

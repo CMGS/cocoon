@@ -1369,7 +1369,7 @@ Note that `Type` is `InconsistencyType` (a typed string), `Severity` is `Inconsi
 
 #### 9.2.4 Reconciliation Algorithm
 
-**On Startup (cocoon daemon start or cocoon doctor)**:
+**On Startup (future daemon mode — Phase 2) or `cocoon doctor --fix`**:
 
 ```go
 // Reconcile scans all VMs and detects inconsistencies between metadata and
