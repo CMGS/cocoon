@@ -521,7 +521,7 @@ func initCommand() *cli.Command {
         Flags: []cli.Flag{
             &cli.BoolFlag{
                 Name:  "force",
-                Usage: "overwrite existing config file and re-download firmware",
+                Usage: "overwrite existing config file; with --with-uefi-firmware, also re-download firmware",
             },
             &cli.StringFlag{
                 Name:  "with-uefi-firmware",
@@ -614,6 +614,11 @@ func vmCreateFlags() []cli.Flag {
 func runCommand() *cli.Command {
     flags := vmCreateFlags()
     flags = append(flags,
+        &cli.BoolFlag{
+            Name:    "detach",
+            Aliases: []string{"d"},
+            Usage:   "run VM in background (Phase 1: no-op; Phase 2: controls attach/detach mode)",
+        },
         &cli.BoolFlag{
             Name:  "rm",
             Usage: "automatically delete the VM when it stops",

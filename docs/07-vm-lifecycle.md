@@ -69,11 +69,11 @@ const (
     // DELETED: Resources cleaned up, VM removed
     VMStateDeleted   VMState = "DELETED"
 
-    // PAUSED: vCPUs frozen, CH process alive
-    // Phase 2 — NOT in types/state.go yet; will be added with pause/resume support.
-    // See [13-pause-resume.md](./13-pause-resume.md)
-    VMStatePaused    VMState = "PAUSED"
 )
+
+// Phase 2 extension (not yet in types/state.go):
+//   VMStatePaused VMState = "PAUSED"  // vCPUs frozen, CH process alive
+// See [13-pause-resume.md](./13-pause-resume.md) for pause/resume design.
 ```
 
 ### 1.2 State Machine Diagram
@@ -1794,7 +1794,7 @@ The `Reconcile` method on `*manager` performs the following checks:
 ### 9.6 Reconciliation Schedule
 
 **When to Run**:
-1. **On CLI invocation** (`cocoon doctor --reconcile` or future daemon mode — Phase 2)
+1. **On CLI invocation** (`cocoon doctor --fix` or future daemon mode — Phase 2)
 2. **Periodically** (Phase 2 daemon mode — not yet implemented; currently reconciliation runs on-demand via `cocoon doctor`)
 3. **Manually** (user runs `cocoon doctor --fix`)
 4. **After crashes** (detect on next CLI invocation)
