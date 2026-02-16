@@ -82,7 +82,8 @@ type BootCheckResult struct {
 	Bootable bool `json:"bootable"`
 
 	// BootModes lists the boot modes the image supports.
-	// Possible values: "uefi" (CLOUDHV.fd), "direct" (kernel boot).
+	// Phase 1: "uefi" (CLOUDHV.fd firmware).
+	// Phase 2 will add: "direct" (kernel boot for OCI VM images).
 	BootModes []string `json:"boot_modes"`
 
 	// Errors lists critical issues that prevent booting.

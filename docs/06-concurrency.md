@@ -42,6 +42,8 @@ Level 5: Checkpoint Lock (per-VM) — Phase 2, docs/15-warm-start.md
     ↓
 Level 5: Network Lock (per-VM) — Phase 2, docs/16-networking.md
     ↓
+Level 5: Console Lock (per-VM) — Phase 2, docs/12-console.md
+    ↓
 Level 6: dnsmasq Lock (global) — Phase 2, docs/16-networking.md
 ```
 
@@ -53,6 +55,7 @@ Level 6: dnsmasq Lock (global) — Phase 2, docs/16-networking.md
 - VM Metadata Lock: `/var/lib/cocoon/vms/{vm-id}/metadata.lock`
 - Checkpoint Lock (Phase 2): `/var/lib/cocoon/vms/{vm-id}/checkpoint.lock`
 - Network Lock (Phase 2): `/run/cocoon/vms/{vm-id}/network.lock`
+- Console Lock (Phase 2): `/run/cocoon/vms/{vm-id}/console.lock`
 - OCI Reference Lock (Phase 2): `/var/lib/cocoon/db/oci-references.lock`
 - Checkpoint Index Lock (Phase 2): `/var/lib/cocoon/checkpoints/checkpoint-index.lock`
 - OCI Cache Lock (Phase 2): `/var/lib/cocoon/cache/oci/{digest}.lock`

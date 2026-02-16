@@ -363,9 +363,13 @@ func (m *manager) prepareOCI(ctx context.Context, ref string) (*image.ImageIdent
 		return nil, "", types.NewPermanentError(fmt.Errorf("convert OCI %s: %w", baseKey, err))
 	}
 
-	// Atomic rename into cache.
+	// Atomic rename into cache, then mark read-only so VMs only write to
+	// their COW overlays and the shared base image stays immutable.
 	if err := os.Rename(tmpPath, basePath); err != nil {
 		return nil, "", fmt.Errorf("convert %s: rename to cache: %w", baseKey, err)
+	}
+	if err := os.Chmod(basePath, 0o444); err != nil { //nolint:gosec // G302: intentionally world-readable — base images are shared immutable backing files for COW overlays
+		return nil, "", fmt.Errorf("convert %s: chmod read-only: %w", baseKey, err)
 	}
 
 	// Cleanup buildah container.
