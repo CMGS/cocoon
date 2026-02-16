@@ -939,7 +939,7 @@ func buildCHVMConfig(vmCfg *types.VMConfig) *hypervisor.CHVMConfig {
 		cfg.Payload = &hypervisor.CHPayloadConfig{
 			Kernel:    vmCfg.KernelPath,
 			Initramfs: vmCfg.InitramfsPath,
-			Cmdline:   vmCfg.CmdlinePath,
+			Cmdline:   vmCfg.Cmdline,
 		}
 	} else if vmCfg.FirmwarePath != "" {
 		cfg.Payload = &hypervisor.CHPayloadConfig{

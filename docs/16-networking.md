@@ -2364,9 +2364,9 @@ func TestNetworkCreateRollback(t *testing.T) {
 | bridge | v1.0.0+ | Yes | Primary plugin for Cocoon |
 | host-local | v1.0.0+ | Yes | Default IPAM |
 | portmap | v1.0.0+ | Yes | Port forwarding |
-| macvlan | v1.0.0+ | Yes | Direct LAN access |
-| dhcp | v1.0.0+ | Yes | External DHCP server required |
-| static | v1.0.0+ | Yes | Fixed IP assignment |
+| macvlan | v1.0.0+ | Planned | Direct LAN access (Future/Experimental) |
+| dhcp | v1.0.0+ | Planned | External DHCP server required (Future/Experimental) |
+| static | v1.0.0+ | Planned | Fixed IP assignment (Future/Experimental) |
 
 ### 11.4 Manual Verification Checklist
 

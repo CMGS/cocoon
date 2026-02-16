@@ -18,7 +18,7 @@ type VMConfig struct {
 	FirmwarePath  string       `json:"firmware_path"`
 	KernelPath    string       `json:"kernel_path,omitempty"`
 	InitramfsPath string       `json:"initramfs_path,omitempty"`
-	CmdlinePath   string       `json:"cmdline,omitempty"`
+	Cmdline       string       `json:"cmdline,omitempty"`
 	TPMSocketPath string       `json:"tpm_socket_path,omitempty"`
 
 	// Resources

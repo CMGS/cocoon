@@ -615,13 +615,12 @@ func runCommand() *cli.Command {
     flags := vmCreateFlags()
     flags = append(flags,
         &cli.BoolFlag{
-            Name:    "detach",
-            Aliases: []string{"d"},
-            Usage:   "run VM in background",
-        },
-        &cli.BoolFlag{
             Name:  "rm",
             Usage: "automatically delete the VM when it stops",
+        },
+        &cli.IntFlag{
+            Name:  "boot-timeout",
+            Usage: "boot detection timeout in seconds (0 = skip boot detection)",
         },
     )
     return &cli.Command{
@@ -677,7 +676,7 @@ cocoon run --boot-timeout 120 ubuntu-22.04-cloudimg --name slow-vm
     - Bootable OCI images: Converted and used successfully
     - Non-bootable OCI images: **Fail with clear error** (missing kernel/bootloader)
 - **Phase 2 Support** (Planned):
-  - Auto-fix non-bootable OCI images during conversion
+  - Enhanced bootability diagnostics with specific remediation guidance
 
 ```go
 func createCommand() *cli.Command {
@@ -1535,11 +1534,11 @@ CLOUDHV.fd       UEFI  /var/lib/cocoon/firmware/CLOUDHV.fd        2.1MB    true
 
 #### 4.15.2 cocoon firmware install
 
-Download and install firmware files from explicit URLs using the `--uefi-url` flag.
+Download and install firmware files. Uses the latest edk2 release by default; override with `--uefi-url`.
 
 ```bash
 # Install UEFI firmware from URL
-cocoon firmware install --uefi-url https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v50.0/CLOUDHV.fd
+cocoon firmware install --uefi-url https://github.com/cloud-hypervisor/edk2/releases/latest/download/CLOUDHV.fd
 
 # Force re-download
 cocoon firmware install --uefi-url URL --force
@@ -1595,13 +1594,13 @@ All firmware files verified.
 cocoon firmware list
 
 # Install UEFI firmware from URL
-cocoon firmware install --uefi-url https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v50.0/CLOUDHV.fd
+cocoon firmware install --uefi-url https://github.com/cloud-hypervisor/edk2/releases/latest/download/CLOUDHV.fd
 
 # Verify firmware files exist
 cocoon firmware verify
 
 # Force re-download
-cocoon firmware install --uefi-url https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v50.0/CLOUDHV.fd --force
+cocoon firmware install --uefi-url https://github.com/cloud-hypervisor/edk2/releases/latest/download/CLOUDHV.fd --force
 ```
 
 ---

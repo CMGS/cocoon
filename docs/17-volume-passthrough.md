@@ -1498,6 +1498,21 @@ maintenance status and security concerns.
 
 ## 12. Unresolved Questions
 
+### Triage Summary
+
+| # | Question | Phase | Decision / Status |
+|---|----------|-------|-------------------|
+| Q1 | DAX support | Phase 2.1 (defer) | Defer; disable by default. Revisit when hugepages config is streamlined. |
+| Q2 | File-level sharing | Phase 2.1 (defer) | Defer; directories only for now. |
+| Q3 | Max volume count | **Phase 2.0** (must decide) | Default 16, configurable via `cocoon.json`. |
+| Q4 | virtiofsd distribution | **Phase 2.0** (must decide) | Require user install; `cocoon doctor` checks availability and version. |
+| Q5 | Auto-mount mechanism | Phase 2.1 (defer) | Defer; manual guest config initially. Provide reference udev rule in docs. |
+| Q6 | Concurrent volume access | **Phase 2.0** (must decide) | Warn on multi-VM RW sharing of the same path; allow with `--allow-shared-rw` flag. |
+| Q7 | Windows guest support | Phase 2.1 (defer) | Defer; Linux guests only. Document as unsupported. |
+| Q8 | Performance tuning | Phase 2.1 (defer) | Defer; use virtiofsd defaults (1 queue, 1024 entries). |
+
+---
+
 1. **DAX (Direct Access) support**: Should DAX be enabled by default for
    read-only volumes? DAX provides memory-mapped access for better read
    performance but requires `hugepages` memory configuration. This adds

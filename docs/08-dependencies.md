@@ -192,8 +192,7 @@ qemu-img --version
 **Minimum Version**: libguestfs 1.50
 
 **Tools Included**:
-- `virt-format`: Formats filesystem inside disk images
-- `virt-copy-in`: Copies files into disk images
+- `guestfish`: Interactive and scriptable filesystem access for disk images (used for formatting, copying files, and bootability verification)
 
 **Installation**:
 
@@ -209,8 +208,7 @@ sudo dnf install -y libguestfs-tools
 
 **Verification**:
 ```bash
-virt-format --version
-virt-copy-in --version
+guestfish --version
 ```
 
 ### 7. swtpm (TPM 2.0 Emulator)
@@ -366,18 +364,11 @@ func checkDependencies() []DependencyStatus {
             Required:       true,
         },
         {
-            Name:           "virt-format",
-            Command:        "virt-format",
+            Name:           "guestfish",
+            Command:        "guestfish",
             Args:           []string{"--version"},
-            VersionPattern: `virt-format`,
-            Required:       false, // Optional (only needed for OCI conversion)
-        },
-        {
-            Name:           "virt-copy-in",
-            Command:        "virt-copy-in",
-            Args:           []string{"--version"},
-            VersionPattern: `virt-copy-in`,
-            Required:       false,
+            VersionPattern: `guestfish`,
+            Required:       false, // Optional (only needed for OCI conversion and deep bootability verification)
         },
     }
 
@@ -530,8 +521,7 @@ func getInstallCommand(name string) string {
         "buildah":          "sudo apt-get install buildah (Ubuntu) or sudo dnf install buildah (Fedora)",
         "skopeo":           "sudo apt-get install skopeo (Ubuntu) or sudo dnf install skopeo (Fedora)",
         "qemu-img":         "sudo apt-get install qemu-utils (Ubuntu) or sudo dnf install qemu-img (Fedora)",
-        "virt-format":      "sudo apt-get install libguestfs-tools (Ubuntu) or sudo dnf install libguestfs-tools (Fedora)",
-        "virt-copy-in":     "sudo apt-get install libguestfs-tools (Ubuntu) or sudo dnf install libguestfs-tools (Fedora)",
+        "guestfish":        "sudo apt-get install libguestfs-tools (Ubuntu) or sudo dnf install libguestfs-tools (Fedora)",
     }
     return installCmds[name]
 }
@@ -548,12 +538,9 @@ Core Dependencies:
 ✅ buildah 1.35.0 found at /usr/bin/buildah
 ✅ skopeo 1.14.0 found at /usr/bin/skopeo
 ✅ qemu-img 8.2.0 found at /usr/bin/qemu-img
-❌ virt-format not found
+⚠️ guestfish not found (optional)
    → Install: sudo apt-get install libguestfs-tools
-   → Note: Only needed for OCI image conversion
-❌ virt-copy-in not found
-   → Install: sudo apt-get install libguestfs-tools
-   → Note: Only needed for OCI image conversion
+   → Note: Only needed for deep bootability verification and OCI image conversion
 ✅ /dev/kvm accessible
 
 Firmware Files:
@@ -720,12 +707,12 @@ sudo usermod -aG kvm $USER
 newgrp kvm  # Or log out and back in
 ```
 
-### 3. virt-format not found
+### 3. guestfish not found
 
 **Error**:
 ```
-Error: virt-format: command not found
-Cannot format disks. Install libguestfs-tools or use manual disk creation.
+Error: guestfish: command not found
+Deep bootability verification unavailable. Install libguestfs-tools.
 ```
 
 **Solution**:
@@ -858,7 +845,7 @@ cocoon doctor
 cloud-hypervisor --version
 buildah version
 qemu-img --version
-virt-format --version
+guestfish --version
 
 # Check KVM
 ls -l /dev/kvm

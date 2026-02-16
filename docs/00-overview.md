@@ -361,8 +361,8 @@ For quick evaluation:
    # Verify installation
    cocoon doctor
 
-   # Install UEFI firmware (explicit URL required)
-   cocoon firmware install --uefi-url https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v50.0/CLOUDHV.fd
+   # Install UEFI firmware (downloads from default edk2 release URL)
+   cocoon firmware install
    ```
 
 5. **Create and start a VM** (3 min):

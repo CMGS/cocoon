@@ -184,7 +184,7 @@ sudo dnf install -y edk2-ovmf
 | Boot Method | Firmware | OS Support | Phase |
 |-------------|----------|------------|-------|
 | **UEFI (Default)** | CLOUDHV.fd (deprecated fallback: OVMF) | All Linux distributions and cloud images | Phase 1 |
-| **Direct kernel boot** | None (kernel + initramfs passed directly) | OCI VM images | Phase 1 |
+| **Direct kernel boot** | None (kernel + initramfs passed directly) | OCI VM images | Phase 2 |
 
 **Cocoon Default Strategy** (per Boot Contract v2.0):
 - UEFI boot by default for cloud images (broadest compatibility)

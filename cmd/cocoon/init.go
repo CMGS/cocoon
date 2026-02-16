@@ -26,7 +26,7 @@ func initCommand() *cli.Command {
 			},
 			&cli.StringFlag{
 				Name:  "with-uefi-firmware",
-				Usage: "download UEFI firmware from `URL` (e.g. https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v50.0/CLOUDHV.fd)",
+				Usage: "download UEFI firmware from `URL` (e.g. https://github.com/cloud-hypervisor/edk2/releases/latest/download/CLOUDHV.fd)",
 			},
 		},
 		Action: initAction,

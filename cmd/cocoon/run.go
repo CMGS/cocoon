@@ -50,6 +50,8 @@ func runAction(c *cli.Context) error {
 		return fmt.Errorf("create VM: %w", err)
 	}
 
+	// Print VM ID immediately after creation (before boot detection).
+	// This allows scripts to capture the ID for cleanup even if Start() fails.
 	fmt.Printf("%s\n", vmCfg.VMID)
 
 	autoRemove := c.Bool("rm")

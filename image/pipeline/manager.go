@@ -108,37 +108,9 @@ func (m *manager) Convert(ctx context.Context, identity *image.ImageIdentity) (s
 
 	// Handle OCI image type: rootfs mount -> qcow2 conversion via guestfish.
 	if identity.ImageType == image.ImageTypeOCI {
-		log.Printf("image %s: converting OCI rootfs -> qcow2", baseKey)
-
-		// Ensure cache directory exists.
-		cacheDir := m.cfg.ImageCacheDir()
-		if err := os.MkdirAll(cacheDir, 0o750); err != nil {
-			return "", fmt.Errorf("convert %s: create cache dir: %w", baseKey, err)
+		if err := m.convertOCIImage(ctx, identity, basePath, baseKey); err != nil {
+			return "", err
 		}
-
-		tmpPath := basePath + ".tmp"
-		defer func() { _ = os.Remove(tmpPath) }()
-
-		diskSize := "10G" // Default size for OCI conversion
-		if err := convertOCI(ctx, srcPath, tmpPath, diskSize); err != nil {
-			// Clean up buildah container on conversion failure.
-			if identity.ContainerID != "" {
-				cleanupBuildahContainer(identity.ContainerID, m.cfg)
-			}
-			return "", types.NewPermanentError(fmt.Errorf("convert OCI %s: %w", baseKey, err))
-		}
-
-		// Atomic rename into cache.
-		if err := os.Rename(tmpPath, basePath); err != nil {
-			return "", fmt.Errorf("convert %s: rename to cache: %w", baseKey, err)
-		}
-
-		// Cleanup buildah container.
-		if identity.ContainerID != "" {
-			cleanupBuildahContainer(identity.ContainerID, m.cfg)
-		}
-
-		log.Printf("image %s: OCI conversion complete -> %s", baseKey, basePath)
 		return basePath, nil
 	}
 
@@ -193,6 +165,45 @@ func (m *manager) Convert(ctx context.Context, identity *image.ImageIdentity) (s
 
 	log.Printf("image %s: conversion complete -> %s", baseKey, basePath)
 	return basePath, nil
+}
+
+// convertOCIImage handles the OCI-specific conversion path within Convert().
+// It creates a temporary qcow2 from the OCI rootfs and atomically moves it
+// into the cache at basePath. On failure, any associated buildah container is
+// cleaned up.
+func (m *manager) convertOCIImage(ctx context.Context, identity *image.ImageIdentity, basePath, baseKey string) error {
+	log.Printf("image %s: converting OCI rootfs -> qcow2", baseKey)
+
+	// Ensure cache directory exists.
+	cacheDir := m.cfg.ImageCacheDir()
+	if err := os.MkdirAll(cacheDir, 0o750); err != nil {
+		return fmt.Errorf("convert %s: create cache dir: %w", baseKey, err)
+	}
+
+	tmpPath := basePath + ".tmp"
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	diskSize := "10G" // Default size for OCI conversion
+	if err := convertOCI(ctx, identity.TempPath, tmpPath, diskSize); err != nil {
+		// Clean up buildah container on conversion failure.
+		if identity.ContainerID != "" {
+			cleanupBuildahContainer(identity.ContainerID, m.cfg)
+		}
+		return types.NewPermanentError(fmt.Errorf("convert OCI %s: %w", baseKey, err))
+	}
+
+	// Atomic rename into cache.
+	if err := os.Rename(tmpPath, basePath); err != nil {
+		return fmt.Errorf("convert %s: rename to cache: %w", baseKey, err)
+	}
+
+	// Cleanup buildah container.
+	if identity.ContainerID != "" {
+		cleanupBuildahContainer(identity.ContainerID, m.cfg)
+	}
+
+	log.Printf("image %s: OCI conversion complete -> %s", baseKey, basePath)
+	return nil
 }
 
 // Prepare is the combined pull+convert+cache pipeline. It first checks whether

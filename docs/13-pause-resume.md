@@ -91,7 +91,7 @@ var ValidTransitions = map[VMState][]VMState{
     VMStatePaused:    {VMStateRunning, VMStateStopping, VMStateStopped, VMStateDeleted, VMStateError},
     VMStateStopping:  {VMStateStopped, VMStateError},
     VMStateStopped:   {VMStateStarting, VMStateDeleted},
-    VMStateError:     {VMStateDeleted},
+    VMStateError:     {VMStateStopped, VMStateDeleted},
     VMStateDeleted:   {},
 }
 ```
@@ -237,8 +237,7 @@ cocoon stop myvm  (state: PAUSED)
     v
 [6] Wait for CH process to exit (up to --stop-timeout, default 15s)
     |       |
-    |       +-- If timeout: TransitionState -> ERROR, return error
-    |           (consistent with Phase 1 -- Stop() does NOT auto-kill on timeout)
+    |       +-- If timeout: Stop() force-kills the CH process on timeout and transitions VM to ERROR state
     v
 [7] CH process exited -> TransitionState(vmID, STOPPED, "graceful shutdown complete")
 ```
@@ -247,7 +246,7 @@ cocoon stop myvm  (state: PAUSED)
 
 - **Resume is mandatory**: Cocoon MUST resume the VM before sending ACPI shutdown. CH cannot process ACPI power button events while vCPUs are frozen. Attempting to send `vm.power-button` to a paused VM has no effect -- the guest never processes the interrupt.
 - **Resume failure -> ERROR**: If `PUT /api/v1/vm.resume` fails (e.g., the CH process crashed while the VM was paused, or the API socket is unresponsive), the VM transitions to ERROR. Cocoon does not attempt further shutdown steps because the guest is unreachable. The user can then use `cocoon kill` or `cocoon delete --force` to clean up.
-- **Timeout -> ERROR (no auto-kill)**: Consistent with Phase 1 behavior, if the guest does not shut down within the timeout, `Stop()` returns an error and transitions the VM to ERROR. Cocoon does **not** automatically escalate to SIGKILL. This is a deliberate design choice: auto-kill could cause data loss, and the user should explicitly choose `cocoon kill` if forceful termination is acceptable.
+- **Timeout -> ERROR (force-kill)**: If the guest does not shut down within the timeout, `Stop()` force-kills the CH process and transitions the VM to ERROR. The `Shutdown()` implementation in `client.go` calls `ForceKill()` when the timeout is reached, sending SIGKILL to the CH process.
 - **Sequence is atomic from the caller's perspective**: The resume-then-stop sequence is a single `Stop()` call. The intermediate RUNNING state is visible in metadata briefly but is not a user-initiated transition.
 
 ### 3.4 Kill on Paused VM
@@ -526,7 +525,7 @@ var ValidTransitions = map[VMState][]VMState{
     VMStatePaused:    {VMStateRunning, VMStateStopping, VMStateStopped, VMStateDeleted, VMStateError},
     VMStateStopping:  {VMStateStopped, VMStateError},
     VMStateStopped:   {VMStateStarting, VMStateDeleted},
-    VMStateError:     {VMStateDeleted},
+    VMStateError:     {VMStateStopped, VMStateDeleted},
     VMStateDeleted:   {},
 }
 ```

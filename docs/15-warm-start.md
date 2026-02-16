@@ -1698,13 +1698,13 @@ See [13-pause-resume.md](./13-pause-resume.md). Must be completed first.
 
 4. **Restore to different resources**: Can a checkpoint from a 2-vCPU/1GB VM be restored as 4-vCPU/2GB? CH may support this for memory (adding pages) but not for reducing. Decision: Require identical resource configuration; investigate relaxation later.
 
-5. **Network identity on restore**: Should the restored VM get the same or different MAC address? Decision: Restored VMs receive a new VM ID and thus a new deterministic MAC address (MAC = hash(vmID, ifName)), different from the source VM. The MAC is stable across subsequent restarts of the same restored VM instance. This ensures uniqueness on the network while preserving DHCP lease stability for each individual restored VM.
+5. **Resolved -- Network identity on restore**: New deterministic MAC via `hash(vmID, ifName)`. Restored VMs receive a new VM ID and thus a new deterministic MAC address, different from the source VM. The MAC is stable across subsequent restarts of the same restored VM instance. This ensures uniqueness on the network while preserving DHCP lease stability for each individual restored VM.
 
 6. **Checkpoint portability**: Can a checkpoint be transferred to a different host? Requires same CH version, firmware, architecture, and base image. Decision: Focus on single-host; cross-host transfer is future scope.
 
-7. **Concurrent checkpoints**: Should multiple checkpoints of the same VM be allowed? Decision: Serialize per-VM (VM must be PAUSED). Concurrent checkpoints of different VMs are naturally supported.
+7. **Resolved -- Concurrent checkpoints**: Serialize per-VM; reject concurrent checkpoint attempts with clear error. The VM must be PAUSED for checkpoint, so concurrent checkpoints of the same VM are naturally impossible. Concurrent checkpoints of different VMs are supported.
 
-8. **Checkpoint naming conflicts**: Same rule as VM names: reject with error. Delete existing checkpoint first or choose a different name.
+8. **Resolved -- Checkpoint naming conflicts**: Same rules as VM names; reject duplicates with error. Delete existing checkpoint first or choose a different name.
 
 ---
 

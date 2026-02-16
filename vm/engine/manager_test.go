@@ -985,7 +985,7 @@ func TestBuildCHVMConfig_DirectKernelBoot(t *testing.T) {
 		BootStrategy:  types.BootStrategyDirect,
 		KernelPath:    "/boot/vmlinuz",
 		InitramfsPath: "/boot/initrd.img",
-		CmdlinePath:   "console=ttyS0 root=/dev/vda1",
+		Cmdline:       "console=ttyS0 root=/dev/vda1",
 	}
 
 	chCfg := buildCHVMConfig(vmCfg)
