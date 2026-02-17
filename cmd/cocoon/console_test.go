@@ -145,6 +145,34 @@ func TestRelayStdinToPTY(t *testing.T) {
 	}
 }
 
+// Integration tests for consoleAction. These require a running Cloud Hypervisor
+// instance and are skipped in unit test mode. Run with: go test -run TestConsole -tags integration
+//
+// See docs/12-console.md Section 9.2 for the full integration test specification.
+
+func TestConsoleAttachDetach(t *testing.T) {
+	t.Skip("integration test: requires running Cloud Hypervisor instance with a VM")
+
+	// TODO: When integration test infrastructure is available:
+	// 1. Create a VM with console mode Pty
+	// 2. Start the VM and wait for boot
+	// 3. Attach console, verify PTY path from vm.info
+	// 4. Send input, verify output appears on guest
+	// 5. Send ~. escape sequence, verify clean disconnect
+	// 6. Verify VM continues running after detach
+	// 7. Verify terminal is restored to original state
+}
+
+func TestConsoleLegacyVMError(t *testing.T) {
+	t.Skip("integration test: requires running Cloud Hypervisor instance with a legacy VM")
+
+	// TODO: When integration test infrastructure is available:
+	// 1. Create a VM with console mode Off (simulating pre-Pty VM)
+	// 2. Attempt cocoon console
+	// 3. Verify error: "no console PTY available... recreate it to enable interactive console"
+	// 4. Verify error mentions 'cocoon doctor' for CH version check
+}
+
 func TestRelayStdinToPTY_ContextCancellation(t *testing.T) {
 	t.Parallel()
 

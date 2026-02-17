@@ -76,9 +76,19 @@ func consoleAction(c *cli.Context) error {
 
 	ptyPath := vmInfo.Config.Console.File
 	if ptyPath == "" {
-		return fmt.Errorf("no console PTY available for %s (console mode: %s); "+
-			"this VM was created before console support was added, "+
-			"recreate it to enable interactive console", ref, vmInfo.Config.Console.Mode)
+		mode := vmInfo.Config.Console.Mode
+		if mode != "Pty" {
+			// VM was created with console mode Off (before Pty support was added),
+			// or Cloud Hypervisor is too old to support Pty mode.
+			return fmt.Errorf("no console PTY available for %s (console mode: %s); "+
+				"this VM was created before console support was added, "+
+				"recreate it to enable interactive console; "+
+				"if the issue persists, run 'cocoon doctor' to verify Cloud Hypervisor version (v38.0+ required)",
+				ref, mode)
+		}
+		return fmt.Errorf("no console PTY allocated for %s; "+
+			"Cloud Hypervisor reported Pty mode but no PTY path, "+
+			"run 'cocoon doctor' to verify Cloud Hypervisor version (v38.0+ required)", ref)
 	}
 	if !strings.HasPrefix(ptyPath, "/dev/pts/") {
 		return fmt.Errorf("unexpected PTY path %q (expected /dev/pts/*)", ptyPath)
