@@ -70,6 +70,10 @@ type Client interface {
 	// GetVMInfo sends GET /api/v1/vm.info and returns the parsed response.
 	GetVMInfo(ctx context.Context, socketPath string) (*CHVMInfo, error)
 
+	// GetConsolePTYPath retrieves the virtio-console PTY path for a running VM.
+	// Returns an empty string (no error) if the console is not in Pty mode.
+	GetConsolePTYPath(ctx context.Context, socketPath string) (string, error)
+
 	// --- Utilities ---
 
 	// WaitForSocket blocks until the Unix socket at socketPath exists and is

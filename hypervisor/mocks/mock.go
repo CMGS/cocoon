@@ -27,8 +27,9 @@ type MockClient struct {
 	ShutdownVMFunc      func(ctx context.Context, socketPath string) error
 	PowerButtonFunc     func(ctx context.Context, socketPath string) error
 	DeleteVMFunc        func(ctx context.Context, socketPath string) error
-	GetVMInfoFunc       func(ctx context.Context, socketPath string) (*hypervisor.CHVMInfo, error)
-	WaitForSocketFunc   func(ctx context.Context, socketPath string, timeout time.Duration) error
+	GetVMInfoFunc           func(ctx context.Context, socketPath string) (*hypervisor.CHVMInfo, error)
+	GetConsolePTYPathFunc   func(ctx context.Context, socketPath string) (string, error)
+	WaitForSocketFunc       func(ctx context.Context, socketPath string, timeout time.Duration) error
 	CheckSocketConnFunc func(socketPath string) error
 }
 
@@ -103,6 +104,13 @@ func (m *MockClient) GetVMInfo(ctx context.Context, socketPath string) (*hypervi
 		return m.GetVMInfoFunc(ctx, socketPath)
 	}
 	return nil, nil
+}
+
+func (m *MockClient) GetConsolePTYPath(ctx context.Context, socketPath string) (string, error) {
+	if m.GetConsolePTYPathFunc != nil {
+		return m.GetConsolePTYPathFunc(ctx, socketPath)
+	}
+	return "", nil
 }
 
 func (m *MockClient) WaitForSocket(ctx context.Context, socketPath string, timeout time.Duration) error {

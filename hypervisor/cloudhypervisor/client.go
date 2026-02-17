@@ -470,6 +470,19 @@ func (c *client) GetVMInfo(ctx context.Context, socketPath string) (*hypervisor.
 	return info, err
 }
 
+// GetConsolePTYPath retrieves the virtio-console PTY path for a running VM.
+// Returns an empty string (no error) if the console is not in Pty mode.
+func (c *client) GetConsolePTYPath(ctx context.Context, socketPath string) (string, error) {
+	info, err := c.GetVMInfo(ctx, socketPath)
+	if err != nil {
+		return "", fmt.Errorf("get VM info: %w", err)
+	}
+	if info.Config.Console.Mode != "Pty" {
+		return "", nil
+	}
+	return info.Config.Console.File, nil
+}
+
 // doGetVMInfo is the single-attempt implementation of GetVMInfo.
 func (c *client) doGetVMInfo(ctx context.Context, socketPath string) (*hypervisor.CHVMInfo, error) {
 	hc := c.newHTTPClient(socketPath)

@@ -768,10 +768,8 @@ func (m *manager) Inspect(ctx context.Context, vmID string) (*types.VMInspect, e
 
 	// Populate console PTY path from live CH API (only for running VMs).
 	if types.VMState(meta.State) == types.VMStateRunning && m.hyper.IsAlive(vmID) {
-		if info, infoErr := m.hyper.GetVMInfo(ctx, vmCfg.SocketPath); infoErr == nil {
-			if info.Config.Console.File != "" {
-				inspect.Hypervisor.ConsolePTY = info.Config.Console.File
-			}
+		if ptyPath, ptyErr := m.hyper.GetConsolePTYPath(ctx, vmCfg.SocketPath); ptyErr == nil && ptyPath != "" {
+			inspect.Hypervisor.ConsolePTY = ptyPath
 		}
 	}
 

@@ -135,6 +135,11 @@ func consoleAction(c *cli.Context) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
+	go func() {
+		for range sigCh {
+			// Absorbed — context cancellation handles graceful shutdown.
+		}
+	}()
 
 	// Propagate initial terminal size and handle SIGWINCH.
 	cleanupSIGWINCH := handleSIGWINCH(os.Stdin, pty)
@@ -187,16 +192,27 @@ func relayConsole(ctx context.Context, pty *os.File, escapeChar byte) error {
 	// note above), and the PTY goroutine will unblock when pty.Close() runs
 	// in consoleAction's defer. The errCh buffer of 2 prevents either
 	// goroutine from deadlocking on its send.
+	var firstErr error
 	select {
 	case <-ctx.Done():
 		return nil
-	case err := <-errCh:
-		// EOF or clean disconnect is not an error.
-		if err == nil || errors.Is(err, io.EOF) {
-			return nil
-		}
-		return err
+	case firstErr = <-errCh:
 	}
+
+	// If the first goroutine exited cleanly, check whether the second has
+	// already reported an error (non-blocking). This catches concurrent I/O
+	// errors that would otherwise be silently discarded.
+	if firstErr == nil || errors.Is(firstErr, io.EOF) {
+		select {
+		case secondErr := <-errCh:
+			if secondErr != nil && !errors.Is(secondErr, io.EOF) {
+				return secondErr
+			}
+		default:
+		}
+		return nil
+	}
+	return firstErr
 }
 
 // relayStdinToPTY reads from stdin and writes to the PTY, with SSH-style
