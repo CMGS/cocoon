@@ -116,11 +116,16 @@ Phase 2 Planned Paths:
 │   └── Volume Passthrough Shared Directory (docs/17-volume-passthrough.md)
 │       └── shares/                             # Default allowed host path for volume mounts
 │
-├── Runtime State (/run/cocoon/)
+├── Runtime State (/run/cocoon/ — configurable via RuntimeDir)
 │   │
 │   ├── CNI Networking (docs/16-networking.md)
 │   │   └── vms/{vm-id}/
-│   │       └── netns                           # Network namespace bind mount for CNI
+│   │       ├── netns                           # Network namespace bind mount for CNI
+│   │       └── network.lock                    # Per-VM network lock (L5, docs/06)
+│   │
+│   ├── dnsmasq Runtime (docs/16-networking.md)
+│   │   └── dnsmasq/
+│   │       └── dnsmasq.lock                    # Global dnsmasq lock (L6, docs/06)
 │   │
 │   └── Volume Passthrough Daemons (docs/17-volume-passthrough.md)
 │       └── vms/{vm-id}/

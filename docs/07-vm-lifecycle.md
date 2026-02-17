@@ -71,9 +71,7 @@ const (
 
 )
 
-// Phase 2 extension (not yet in types/state.go):
-//   VMStatePaused VMState = "PAUSED"  // vCPUs frozen, CH process alive
-// See [13-pause-resume.md](./13-pause-resume.md) for pause/resume design.
+// Phase 2 adds a PAUSED state — see [13-pause-resume.md](./13-pause-resume.md).
 ```
 
 ### 1.2 State Machine Diagram
