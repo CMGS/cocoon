@@ -96,8 +96,8 @@ Using pre-built binaries is the fastest and most reliable installation method.
 **1. Download the latest release:**
 
 ```bash
-# Set desired version (check https://github.com/cloud-hypervisor/cloud-hypervisor/releases)
-CH_VERSION="v50.0"
+# Set desired version (must be >= v38.0; check https://github.com/cloud-hypervisor/cloud-hypervisor/releases)
+CH_VERSION="v42.0"  # example; any version >= v38.0 works
 
 # Download for x86_64
 curl -LO https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/${CH_VERSION}/cloud-hypervisor-static
@@ -244,7 +244,7 @@ sudo chmod -R 755 /run/cocoon
 
 ```bash
 cloud-hypervisor --version
-# Expected output: cloud-hypervisor v50.0
+# Expected output: cloud-hypervisor vXX.Y (must be >= v38.0)
 ```
 
 **2. Check KVM access:**

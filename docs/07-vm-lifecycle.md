@@ -70,9 +70,9 @@ const (
     VMStateDeleted   VMState = "DELETED"
 
 )
-
-// Phase 2 adds a PAUSED state — see [13-pause-resume.md](./13-pause-resume.md).
 ```
+
+> **Phase 2 extension**: A PAUSED state will be added — see [13-pause-resume.md](./13-pause-resume.md) for design.
 
 ### 1.2 State Machine Diagram
 
@@ -1561,11 +1561,6 @@ func (m *manager) determineActualState(meta *types.VMMetadataFile, vmCfg *types.
 
     case types.VMStateError:
         return types.VMStateError
-
-    // Phase 2 — PAUSED state handling (not in Phase 1 types/state.go):
-    // When VMStatePaused is added in Phase 2 (see [13-pause-resume.md](./13-pause-resume.md)):
-    //   - Process alive + socket OK → remain PAUSED
-    //   - Process dead or socket gone → transition to ERROR
 
     case types.VMStateCreating:
         return types.VMStateError // Creation did not complete

@@ -494,7 +494,7 @@ func main() {
 }
 
 func run(app *cli.App) int {
-    ctx, stop := signal.NotifyContext(context.TODO(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+    ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
     defer stop()
 
     if err := app.RunContext(ctx, os.Args); err != nil {
@@ -1717,10 +1717,11 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
 8. **Create COW overlay** → `COWManager.CreateOverlay(baseKey, vmID, diskSize)`
 9. **Register name** → `AddName(cfg, name, vmID)` acquires `name-index.lock` (Level 2), adds `name → vm_id` to `name-index.json`, release lock. Fails with `ErrVMAlreadyExists` if name is taken.
 10. **Transition CREATING → CREATED** → Atomically updates `metadata.json` state. At this point the VM is fully persisted and discoverable via `cocoon inspect`/`cocoon list`, but not yet running.
+11. **Print VM ID** → Output `vm_id` to stdout immediately after Create, **before** boot detection. This allows scripts to capture the ID for cleanup even if Start fails (see `cmd/cocoon/run.go` rationale).
 
     **--- End of `Create()` phase; `Start()` phase begins ---**
 
-11. **Start Cloud Hypervisor** (REST-first):
+12. **Start Cloud Hypervisor** (REST-first):
     ```bash
     # Launch CH process with API socket only (no firmware/config on CLI):
     cloud-hypervisor --api-socket /run/cocoon/vms/{vm_id}/api.sock
@@ -1738,8 +1739,7 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
     }
     ```
     Followed by `PUT /api/v1/vm.boot` to start the VM.
-12. **Print VM ID** → Output `vm_id` to stdout immediately after Create, **before** boot detection. This allows scripts to capture the ID for cleanup even if Start fails (see `cmd/cocoon/run.go` rationale).
-13. **Start → Wait for boot** → `vmMgr.Start()`: launch CH process, poll serial log for boot completion marker (timeout: 60s), transition to RUNNING, write runtime fields (PID, socket path) to `metadata.json`. Note: `config.json` is immutable after step 6 and is never rewritten.
+13. **Wait for boot** → Poll serial log for boot completion marker (timeout: 60s), transition to RUNNING, write runtime fields (PID, socket path) to `metadata.json`. Note: `config.json` is immutable after step 6 and is never rewritten.
 14. **Auto-remove bookkeeping** → If `--rm`, set `AutoRemove=true` in metadata after Start succeeds; delete is triggered when the VM is later stopped via `cocoon stop` (crash/external-kill: `cocoon doctor --fix` performs state reconciliation; automatic deletion of crashed `auto_remove` VMs is a future enhancement)
 
 **Failure cleanup**: If any step after 6 (in Create) fails, the cleanup path must:

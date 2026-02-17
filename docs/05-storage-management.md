@@ -14,7 +14,7 @@ This document describes the storage management strategy for the Cocoon AI Agent 
 ### Canonical Filesystem Layout (Normative)
 
 **This section is the single source of truth for Cocoon filesystem paths.**
-Other documents MUST reference this section rather than defining their own paths.
+Other documents may use default paths (e.g., `/var/lib/cocoon/...`) as illustrative examples but MUST NOT introduce new directories or filenames not listed here. All paths are derived from configurable roots (`RootDir`, `RuntimeDir`, `LogDir`); defaults shown below assume the standard `/var/lib/cocoon`, `/run/cocoon`, `/var/log/cocoon`.
 Lock file paths are additionally documented in [06-concurrency.md](./06-concurrency.md) § Lock File Locations, which is the SSOT for the lock hierarchy and lock-specific semantics.
 
 ```
