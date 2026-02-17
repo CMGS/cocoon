@@ -88,7 +88,7 @@ func main() {
 
 func run(app *cli.App) int {
 	// Set up signal handling for graceful shutdown.
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	ctx, stop := signal.NotifyContext(context.TODO(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	defer stop()
 
 	if err := app.RunContext(ctx, os.Args); err != nil {

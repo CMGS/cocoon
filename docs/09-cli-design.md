@@ -376,10 +376,10 @@ No prefix-matching, substring matching, or fuzzy matching is supported.
 
 ### 3.2 Identifier Summary
 
-| Identifier | Format | Example | Mutable? | Used In |
-|------------|--------|---------|----------|---------|
-| `vm_id` | `vm-{ulid}` | `vm-01HXYZ5A3B7C8D9E0F1G2H3J4K` | Never | Directories, logs, sockets, locks |
-| `name` | User-chosen or auto-generated | `myvm`, `cocoon-a3f7b2c1` | Immutable after create | CLI commands, display, name index |
+| Identifier | Format                        | Example                         | Mutable?               | Used In                           |
+| ---------- | ----------------------------- | ------------------------------- | ---------------------- | --------------------------------- |
+| `vm_id`    | `vm-{ulid}`                   | `vm-01HXYZ5A3B7C8D9E0F1G2H3J4K` | Never                  | Directories, logs, sockets, locks |
+| `name`     | User-chosen or auto-generated | `myvm`, `cocoon-a3f7b2c1`       | Immutable after create | CLI commands, display, name index |
 
 ### 3.3 Resolution Examples
 
@@ -499,7 +499,7 @@ func main() {
 }
 
 func run(app *cli.App) int {
-    ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+    ctx, stop := signal.NotifyContext(context.TODO(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
     defer stop()
 
     if err := app.RunContext(ctx, os.Args); err != nil {
@@ -1130,11 +1130,11 @@ cocoon console myvm --escape-char "~"
 
 **Escape Sequences** (at start of line, default escape char `^]` = Ctrl-]):
 
-| Sequence | Action |
-|----------|--------|
-| `^].` | Disconnect from console |
-| `^]?` | Show supported escape sequences |
-| `^]^]` | Send literal Ctrl-] to guest |
+| Sequence | Action                          |
+| -------- | ------------------------------- |
+| `^].`    | Disconnect from console         |
+| `^]?`    | Show supported escape sequences |
+| `^]^]`   | Send literal Ctrl-] to guest    |
 
 **Notes**:
 - Requires Linux (Cloud Hypervisor is Linux-only)
@@ -1242,11 +1242,11 @@ func imagesCommand() *cli.Command {
 
 **Image Source Detection** (`imagePullAction` auto-detects source type):
 
-| Pattern | Detected Type | Action |
-|---------|---------------|--------|
-| `/path/to/*.qcow2` or `/path/to/*.img` | `qcow2` | Validate file, copy/link to cache |
-| `https://...` or `http://...` | `url` | Download, validate, cache |
-| `registry/repo:tag` or `repo:tag` | `oci` | Pull via Buildah, convert to qcow2, validate bootability, cache |
+| Pattern                                | Detected Type | Action                                                          |
+| -------------------------------------- | ------------- | --------------------------------------------------------------- |
+| `/path/to/*.qcow2` or `/path/to/*.img` | `qcow2`       | Validate file, copy/link to cache                               |
+| `https://...` or `http://...`          | `url`         | Download, validate, cache                                       |
+| `registry/repo:tag` or `repo:tag`      | `oci`         | Pull via Buildah, convert to qcow2, validate bootability, cache |
 
 **Cache Resolution Behavior**:
 
@@ -2003,23 +2003,23 @@ done
 
 This CLI design implements the Boot Contract specification:
 
-| Boot Contract Section | CLI Implementation |
-|----------------------|-------------------|
-| §1 Boot Path Decision | UEFI boot (Phase 1); `--oci` flag for direct kernel boot (Phase 2, not yet implemented) |
-| §2 Guest Init Model | Guest initialization is the user's responsibility; DHCP-based network config planned for Phase 2 ([16-networking.md](./16-networking.md)) |
-| §3 I/O Mechanisms | Serial console via `--serial file=...` (CH flag), `cocoon logs` command |
-| §4 Lifecycle Semantics | `run`, `stop`, `delete`, `kill` commands |
-| §5 VM Configuration Schema | `types.VMConfig` in Go code |
-| §6 OCI to Bootable Bridge | `ImageManager.VerifyBootability()` and conversion logic |
+| Boot Contract Section      | CLI Implementation                                                                                                                        |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| §1 Boot Path Decision      | UEFI boot (Phase 1); `--oci` flag for direct kernel boot (Phase 2, not yet implemented)                                                   |
+| §2 Guest Init Model        | Guest initialization is the user's responsibility; DHCP-based network config planned for Phase 2 ([16-networking.md](./16-networking.md)) |
+| §3 I/O Mechanisms          | Serial console via `--serial file=...` (CH flag), `cocoon logs` command                                                                   |
+| §4 Lifecycle Semantics     | `run`, `stop`, `delete`, `kill` commands                                                                                                  |
+| §5 VM Configuration Schema | `types.VMConfig` in Go code                                                                                                               |
+| §6 OCI to Bootable Bridge  | `ImageManager.VerifyBootability()` and conversion logic                                                                                   |
 
 ### 8.3 Storage Management Integration
 
-| Storage Document Section | CLI Implementation |
-|-------------------------|-------------------|
-| COW Strategy | `COWManager.CreateOverlay()` in VM creation flow |
-| Reference Counting | Automatic in `create` and `delete` flows |
-| Garbage Collection | `cocoon gc` command |
-| Storage Layout | Configured via `root_dir` / `runtime_dir` / `log_dir` in JSON config |
+| Storage Document Section | CLI Implementation                                                   |
+| ------------------------ | -------------------------------------------------------------------- |
+| COW Strategy             | `COWManager.CreateOverlay()` in VM creation flow                     |
+| Reference Counting       | Automatic in `create` and `delete` flows                             |
+| Garbage Collection       | `cocoon gc` command                                                  |
+| Storage Layout           | Configured via `root_dir` / `runtime_dir` / `log_dir` in JSON config |
 
 ### 8.4 External References
 
