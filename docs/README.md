@@ -18,7 +18,7 @@ This directory contains design documents, specifications, and RFCs for Cocoon. T
 | [07-vm-lifecycle.md](./07-vm-lifecycle.md) | VM Lifecycle Management | Implemented | State machine, identifier rules, metadata schema, idempotency, and reconciliation |
 | [08-dependencies.md](./08-dependencies.md) | Dependencies and Requirements | Implemented | External tools, version requirements, installation instructions, and permissions |
 | [09-cli-design.md](./09-cli-design.md) | CLI Design and Commands | Implemented | Command structure, flags, output formats, and supported image types |
-| [10-implementation-roadmap.md](./10-implementation-roadmap.md) | Implementation Roadmap | Implemented | Phase 1 development plan, critical path, testing strategy, and validation milestones |
+| [10-implementation-roadmap.md](./10-implementation-roadmap.md) | Implementation Roadmap | Historical | Phase 1 development plan, critical path, testing strategy, and validation milestones |
 
 ### Phase 2: Advanced Features (docs/04.1, 11-13, 15-17)
 
@@ -26,7 +26,7 @@ This directory contains design documents, specifications, and RFCs for Cocoon. T
 |-----|-------|--------|-------------|
 | [04.1-oci-vm-images.md](./04.1-oci-vm-images.md) | OCI VM Image Format | Planned | VM-native OCI image format with OverlayFS + virtiofs rootfs and direct kernel boot |
 | [11-bootable-oci-build.md](./11-bootable-oci-build.md) | Building Bootable OCI Images | Planned | Guidance on building custom OCI images that satisfy the Boot Contract |
-| [12-console.md](./12-console.md) | VM Console | Planned | Interactive bidirectional console via PTY, escape sequence handling, and terminal raw mode |
+| [12-console.md](./12-console.md) | VM Console | Implemented | Interactive bidirectional console via PTY, escape sequence handling, and terminal raw mode |
 | [13-pause-resume.md](./13-pause-resume.md) | VM Pause and Resume | Planned | PAUSED state machine extension, vCPU freeze/unfreeze via CH API, and reconciliation |
 | [15-warm-start.md](./15-warm-start.md) | VM Warm Start | Planned | Checkpoint/restore for sub-second VM creation, golden checkpoint workflow, and snapshot management |
 | [16-networking.md](./16-networking.md) | CNI Networking | Planned | CNI plugin integration, bridge networking, control plane for VM network attachment |

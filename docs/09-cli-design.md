@@ -1672,6 +1672,43 @@ Alias for `cocoon firmware install`. Accepts the same flags (`--uefi-url`, `--fo
 cocoon firmware update --uefi-url https://github.com/cloud-hypervisor/edk2/releases/latest/download/CLOUDHV.fd
 ```
 
+### 4.17 cocoon version (Version Information)
+
+**Purpose**: Display Cocoon version, git revision, and build timestamp. The version fields are injected at build time via `go build -ldflags`.
+
+**Implementation**: `cmd/cocoon/version.go`
+
+```go
+func versionCommand() *cli.Command {
+    return &cli.Command{
+        Name:  "version",
+        Usage: "Show version information",
+        Action: func(_ *cli.Context) error {
+            fmt.Print(version.String())
+            return nil
+        },
+    }
+}
+```
+
+**Output format** (from `version/version.go`):
+
+```
+Version:    v0.1.0
+Revision:   abc1234def5678...
+Built at:   2026-02-17T10:30:00
+```
+
+The three fields (`VERSION`, `REVISION`, `BUILTAT`) default to `"unknown"`, `"HEAD"`, and `"now"` when not set via ldflags. The `Makefile` sets them automatically during `make build`:
+
+```bash
+go build -ldflags "-X github.com/CMGS/cocoon/version.REVISION=$(git rev-parse HEAD) \
+  -X github.com/CMGS/cocoon/version.VERSION=$(git describe --tags) \
+  -X github.com/CMGS/cocoon/version.BUILTAT=$(date +%Y-%m-%dT%H:%M:%S)"
+```
+
+Note: `cocoon --version` (the global flag provided by urfave/cli) uses the same `version.String()` output via the custom `cli.VersionPrinter` set in `main()`.
+
 ---
 
 ## 5. Configuration
