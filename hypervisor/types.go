@@ -62,10 +62,12 @@ type CHSerialConfig struct {
 //
 // Supported modes:
 //   - "Off"  : no console
+//   - "Pty"  : allocate a PTY (path reported in vm.info)
 //   - "Tty"  : connect to a TTY
 //   - "File" : write output to a file
 type CHConsoleConfig struct {
 	Mode string `json:"mode"`
+	File string `json:"file,omitempty"` // Populated by CH when mode is "Pty" or "File"
 }
 
 // CHVMInfo is the response body from GET /api/v1/vm.info.

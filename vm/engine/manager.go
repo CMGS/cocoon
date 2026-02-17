@@ -765,6 +765,16 @@ func (m *manager) Inspect(ctx context.Context, vmID string) (*types.VMInspect, e
 	if excerpt, readErr := readSerialLogExcerpt(vmCfg.SerialLog, 100); readErr == nil {
 		inspect.Hypervisor.SerialLogExcerpt = excerpt
 	}
+
+	// Populate console PTY path from live CH API (only for running VMs).
+	if types.VMState(meta.State) == types.VMStateRunning && m.hyper.IsAlive(vmID) {
+		if info, infoErr := m.hyper.GetVMInfo(ctx, vmCfg.SocketPath); infoErr == nil {
+			if info.Config.Console.File != "" {
+				inspect.Hypervisor.ConsolePTY = info.Config.Console.File
+			}
+		}
+	}
+
 	return inspect, nil
 }
 
@@ -928,7 +938,7 @@ func buildCHVMConfig(vmCfg *types.VMConfig) *hypervisor.CHVMConfig {
 			File: vmCfg.SerialLog,
 		},
 		Console: hypervisor.CHConsoleConfig{
-			Mode: "Off",
+			Mode: "Pty",
 		},
 	}
 

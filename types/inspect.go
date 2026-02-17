@@ -36,6 +36,7 @@ type InspectHypervisorInfo struct {
 	CHSocket         string   `json:"ch_socket"`
 	CHPID            int      `json:"ch_pid"`
 	SerialLog        string   `json:"serial_log"`
+	ConsolePTY       string   `json:"console_pty,omitempty"` // PTY path when console mode is Pty
 	SerialLogExcerpt []string `json:"serial_log_excerpt,omitempty"`
 }
 

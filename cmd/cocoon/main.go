@@ -75,6 +75,7 @@ func main() {
 		psCommand(),
 		inspectCommand(),
 		logsCommand(),
+		consoleCommand(),
 		imagesCommand(),
 		gcCommand(),
 		firmwareCommand(),
