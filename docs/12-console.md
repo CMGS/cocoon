@@ -130,15 +130,14 @@ The escape sequence follows SSH conventions: the escape character (default `~`) 
     |                 |          |
     |                 v          |
     |            +-----------+   |
-    |            |  ESCAPED  |   |
-    |            +-----------+   |
-    |              |       |     |
-    |          '.' |       | '?' |
-    |              v       v     |
-    |          DISCONNECT  HELP  |
-    |                            |
-    +----------------------------+
-              back to NORMAL
+    |            |  ESCAPED  |---+--- other (non-CR/LF) ---> NORMAL
+    |            +-----------+             (forward both)
+    |              |    |    |
+    |          '.' |    |'?' | CR/LF
+    |              v    v    +------> LINE_START
+    |        DISCONNECT HELP          (forward both)
+    |
+    +---- all non-CR/LF paths eventually return to NORMAL
 ```
 
 ### 2.3 Clean Detach Without Killing the VM
@@ -235,7 +234,7 @@ const (
     stateEscaped
 )
 
-func relayStdinToPTY(ctx context.Context, stdin io.Reader, pty *os.File, escapeChar byte) error {
+func relayStdinToPTY(ctx context.Context, stdin io.Reader, pty io.Writer, escapeChar byte) error {
     state := stateLineStart // Start of session acts as start of line.
     buf := make([]byte, 1)
 
@@ -257,8 +256,8 @@ func relayStdinToPTY(ctx context.Context, stdin io.Reader, pty *os.File, escapeC
             if b == '\r' || b == '\n' {
                 state = stateLineStart
             }
-            if _, err := pty.Write(buf[:1]); err != nil {
-                return err
+            if _, werr := pty.Write(buf[:1]); werr != nil {
+                return werr
             }
 
         case stateLineStart:
@@ -271,8 +270,8 @@ func relayStdinToPTY(ctx context.Context, stdin io.Reader, pty *os.File, escapeC
             } else {
                 state = stateNormal
             }
-            if _, err := pty.Write(buf[:1]); err != nil {
-                return err
+            if _, werr := pty.Write(buf[:1]); werr != nil {
+                return werr
             }
 
         case stateEscaped:
@@ -283,24 +282,29 @@ func relayStdinToPTY(ctx context.Context, stdin io.Reader, pty *os.File, escapeC
             case '?':
                 // Print help to user (not to guest).
                 helpMsg := "\r\nSupported escape sequences:\r\n" +
-                    "  ~.  Disconnect\r\n" +
-                    "  ~?  This help\r\n" +
-                    "  ~~  Send escape character\r\n"
+                    "  " + string(escapeChar) + ".  Disconnect\r\n" +
+                    "  " + string(escapeChar) + "?  This help\r\n" +
+                    "  " + string(escapeChar) + string(escapeChar) + "  Send escape character\r\n"
                 _, _ = os.Stdout.Write([]byte(helpMsg))
                 state = stateLineStart // Allow immediate follow-up escape.
                 continue
             case escapeChar:
                 // Send literal escape char.
                 state = stateNormal
-                if _, err := pty.Write([]byte{escapeChar}); err != nil {
-                    return err
+                if _, werr := pty.Write([]byte{escapeChar}); werr != nil {
+                    return werr
                 }
             default:
                 // Not a recognized sequence; forward both the escape char
-                // and the current byte.
-                state = stateNormal
-                if _, err := pty.Write([]byte{escapeChar, b}); err != nil {
-                    return err
+                // and the current byte. Track CR/LF so the next escape
+                // sequence at the new line start is still recognized.
+                if b == '\r' || b == '\n' {
+                    state = stateLineStart
+                } else {
+                    state = stateNormal
+                }
+                if _, werr := pty.Write([]byte{escapeChar, b}); werr != nil {
+                    return werr
                 }
             }
         }
@@ -410,7 +414,7 @@ func propagateTerminalSize(local *os.File, remote *os.File) {
     if err != nil {
         return
     }
-    setWinSize(remote, width, height)
+    _ = setWinSize(remote, width, height)
 }
 ```
 
@@ -496,8 +500,9 @@ This field is populated at inspect time by querying the CH REST API, not stored 
 cocoon/
 ├── cmd/cocoon/
 │   ├── console.go             # cocoon console command
-│   └── console_linux.go       # Linux-specific PTY and ioctl helpers
-│   └── console_darwin.go      # Stub: SIGWINCH no-op (Linux check is in console.go via runtime.GOOS)
+│   ├── console_linux.go       # Linux-specific SIGWINCH + ioctl
+│   ├── console_darwin.go      # Stub: SIGWINCH no-op (Linux check is in console.go via runtime.GOOS)
+│   └── console_test.go        # Escape state machine tests, write error tests, context cancellation
 ```
 
 ---
@@ -591,29 +596,37 @@ func consoleAction(c *cli.Context) error {
             "Cloud Hypervisor reported Pty mode but no PTY path, "+
             "run 'cocoon doctor' to verify Cloud Hypervisor version (v38.0+ required)", ref)
     }
-    if matched, _ := regexp.MatchString(`^/dev/pts/\d+$`, filepath.Clean(ptyPath)); !matched {
+    ptyPath = filepath.Clean(ptyPath)
+    if matched, _ := regexp.MatchString(`^/dev/pts/\d+$`, ptyPath); !matched {
         return fmt.Errorf("unexpected PTY path %q (expected /dev/pts/<number>)", ptyPath)
     }
 
-    // Parse escape char before entering raw mode.
-    escapeCharStr := c.String("escape-char")
-    if len(escapeCharStr) != 1 {
-        return fmt.Errorf("--escape-char must be a single character, got %q", escapeCharStr)
-    }
-    escapeChar := escapeCharStr[0]
-
-    // Open PTY.
+    // Open PTY device. Note: there is an inherent TOCTOU window between the
+    // state check above and this open — the VM may stop in between.
     pty, err := os.OpenFile(ptyPath, os.O_RDWR, 0)
     if err != nil {
-        return fmt.Errorf("open console PTY %s: %w", ptyPath, err)
+        return fmt.Errorf("open console PTY %s (is the VM still running?): %w", ptyPath, err)
     }
     defer pty.Close()
 
-    // Set terminal to raw mode.
+    // Parse escape character before entering raw mode so validation errors
+    // render correctly and don't trigger the "Disconnected" defer message.
+    escapeCharStr := c.String("escape-char")
+    if len(escapeCharStr) != 1 {
+        return fmt.Errorf("--escape-char must be a single ASCII character, got %q", escapeCharStr)
+    }
+    escapeChar := escapeCharStr[0]
+    if escapeChar < 0x20 || escapeChar > 0x7E {
+        return fmt.Errorf("--escape-char must be a printable ASCII character (0x20-0x7E), got %q", escapeCharStr)
+    }
+
+    // Require interactive terminal.
     fd := int(os.Stdin.Fd())
     if !term.IsTerminal(fd) {
         return fmt.Errorf("stdin is not a terminal; cocoon console requires an interactive TTY")
     }
+
+    // Set terminal to raw mode.
     oldState, err := term.MakeRaw(fd)
     if err != nil {
         return fmt.Errorf("set terminal raw mode: %w", err)
@@ -623,20 +636,26 @@ func consoleAction(c *cli.Context) error {
         fmt.Fprintf(os.Stderr, "\r\nDisconnected from %s.\r\n", ref)
     }()
 
-    // Propagate initial terminal size.
-    propagateTerminalSize(os.Stdin, pty)
-
-    // Handle SIGWINCH.
+    // Re-register SIGINT/SIGTERM to prevent double-signal from bypassing
+    // terminal restore. Go's signal.NotifyContext re-arms the default
+    // handler after the first signal, so a second Ctrl-C would force-kill
+    // the process before the deferred term.Restore runs, leaving the
+    // terminal in raw mode. We absorb these signals here and let the
+    // relay's context cancellation handle graceful shutdown.
     sigCh := make(chan os.Signal, 1)
-    signal.Notify(sigCh, syscall.SIGWINCH)
+    signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
     defer signal.Stop(sigCh)
     go func() {
         for range sigCh {
-            propagateTerminalSize(os.Stdin, pty)
+            // Absorbed — context cancellation handles graceful shutdown.
         }
     }()
 
-    // Print banner.
+    // Propagate initial terminal size and handle SIGWINCH.
+    cleanupSIGWINCH := handleSIGWINCH(os.Stdin, pty)
+    defer cleanupSIGWINCH()
+
+    // Print connection banner.
     fmt.Fprintf(os.Stderr, "Connected to %s (escape sequence: %s.)\r\n", ref, escapeCharStr)
 
     // Start bidirectional relay.
@@ -651,7 +670,7 @@ func consoleAction(c *cli.Context) error {
 $ cocoon console myvm
 Connected to myvm (escape sequence: ~.)
 
-Ubuntu 22.04 LTS myvm ttyS0
+Ubuntu 22.04 LTS myvm hvc0
 
 myvm login: _
 
@@ -787,7 +806,7 @@ For custom images that do not include `systemd-getty-generator`, see §6.3 for i
 | VM not found | `VM not found: <ref>` | 1 |
 | VM not running | `VM <ref> is not running (state: <state>)` | 1 |
 | No console PTY available | `no console PTY available for <ref> (console mode: Off)` | 1 |
-| PTY path does not exist | `open console PTY <path>: no such file or directory` | 1 |
+| PTY path does not exist | `open console PTY <path> (is the VM still running?): no such file or directory` | 1 |
 | stdin is not a terminal | `stdin is not a terminal; cocoon console requires an interactive TTY` | 1 |
 | Raw mode failure | `set terminal raw mode: <err>` | 1 |
 | CH API unreachable | `get VM info for <vmID>: <err>` | 1 |

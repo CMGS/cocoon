@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"testing"
 	"time"
@@ -115,6 +116,22 @@ func TestRelayStdinToPTY(t *testing.T) {
 			escapeChar: '^',
 			wantPTY:    []byte("\r^"),
 		},
+		// Escape state machine edge case: unrecognized escape followed by
+		// CR/LF must transition to stateLineStart so the next escape works.
+		{
+			name:       "unrecognized escape then CR preserves line start",
+			input:      []byte("\r~\r~."),
+			escapeChar: '~',
+			wantPTY:    []byte("\r~\r"),
+			wantExit:   true,
+		},
+		{
+			name:       "unrecognized escape then LF preserves line start",
+			input:      []byte("\n~\n~."),
+			escapeChar: '~',
+			wantPTY:    []byte("\n~\n"),
+			wantExit:   true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -206,5 +223,26 @@ func TestRelayStdinToPTY_ContextCancellation(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("relayStdinToPTY did not return after context cancellation")
+	}
+}
+
+// errWriter is an io.Writer that always returns an error.
+type errWriter struct{ err error }
+
+func (w *errWriter) Write([]byte) (int, error) { return 0, w.err }
+
+func TestRelayStdinToPTY_WriteError(t *testing.T) {
+	t.Parallel()
+
+	wantErr := fmt.Errorf("broken pipe")
+	stdin := bytes.NewReader([]byte("hello"))
+	pty := &errWriter{err: wantErr}
+
+	err := relayStdinToPTY(context.Background(), stdin, pty, '~')
+	if err == nil {
+		t.Fatal("expected write error, got nil")
+	}
+	if err.Error() != wantErr.Error() {
+		t.Errorf("expected error %q, got %q", wantErr, err)
 	}
 }

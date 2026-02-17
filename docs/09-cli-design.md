@@ -1110,7 +1110,7 @@ func consoleCommand() *cli.Command {
             &cli.StringFlag{
                 Name:  "escape-char",
                 Value: "~",
-                Usage: "escape character for disconnect (e.g., ~. to disconnect)",
+                Usage: "escape character for disconnect (must be a printable ASCII character, 0x20-0x7E)",
             },
         },
         Action: consoleAction,

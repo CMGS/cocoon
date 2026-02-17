@@ -27,7 +27,7 @@ func consoleCommand() *cli.Command {
 			&cli.StringFlag{
 				Name:  "escape-char",
 				Value: "~",
-				Usage: "escape character for disconnect (e.g., ~. to disconnect)",
+				Usage: "escape character for disconnect (must be a printable ASCII character, 0x20-0x7E)",
 			},
 		},
 		Action: consoleAction,
@@ -65,7 +65,9 @@ func consoleAction(c *cli.Context) error {
 		return fmt.Errorf("VM %s is not running (state: %s)", ref, meta.State)
 	}
 
-	// Get PTY path from CH REST API.
+	// Get PTY path from CH REST API. We call GetVMInfo directly (rather
+	// than GetConsolePTYPath) because we need Console.Mode for targeted
+	// error messages when the console is not available.
 	cfg, err := app.vmMgr.LoadConfig(vmID)
 	if err != nil {
 		return err
@@ -293,8 +295,13 @@ func relayStdinToPTY(ctx context.Context, stdin io.Reader, pty io.Writer, escape
 				}
 			default:
 				// Not a recognized sequence; forward both the escape char
-				// and the current byte.
-				state = stateNormal
+				// and the current byte. Track CR/LF so the next escape
+				// sequence at the new line start is still recognized.
+				if b == '\r' || b == '\n' {
+					state = stateLineStart
+				} else {
+					state = stateNormal
+				}
 				if _, werr := pty.Write([]byte{escapeChar, b}); werr != nil {
 					return werr
 				}
