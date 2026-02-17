@@ -12,6 +12,7 @@ import (
 	"github.com/CMGS/cocoon/hypervisor/cloudhypervisor"
 	"github.com/CMGS/cocoon/image"
 	"github.com/CMGS/cocoon/image/pipeline"
+	"github.com/CMGS/cocoon/oci"
 	"github.com/CMGS/cocoon/storage"
 	"github.com/CMGS/cocoon/storage/local"
 	"github.com/CMGS/cocoon/vm"
@@ -20,13 +21,14 @@ import (
 
 // appContext holds initialized managers for CLI commands.
 type appContext struct {
-	cfg    *config.CocoonConfig
-	vmMgr  vm.Manager
-	imgMgr image.Manager
-	hyper  hypervisor.Client
-	refCtr storage.ReferenceCounter
-	cowMgr storage.COWManager
-	gc     storage.GarbageCollector
+	cfg      *config.CocoonConfig
+	vmMgr    vm.Manager
+	imgMgr   image.Manager  // Cloud image pipeline (pull/convert/cache).
+	imgBuild image.Builder  // OCI VM image build/push/login.
+	hyper    hypervisor.Client
+	refCtr   storage.ReferenceCounter
+	cowMgr   storage.COWManager
+	gc       storage.GarbageCollector
 }
 
 // initApp creates and initializes all managers from CLI context.
@@ -58,15 +60,17 @@ func initApp(_ *cli.Context) (*appContext, error) {
 	cowMgr := local.NewCOWManager(cfg)
 	gc := local.NewGarbageCollector(cfg)
 	imgMgr := pipeline.New(cfg, refCtr)
+	imgBuild := oci.NewBuilder(cfg)
 	vmMgr := engine.New(cfg, hyper, refCtr, cowMgr, imgMgr)
 
 	return &appContext{
-		cfg:    cfg,
-		vmMgr:  vmMgr,
-		imgMgr: imgMgr,
-		hyper:  hyper,
-		refCtr: refCtr,
-		cowMgr: cowMgr,
-		gc:     gc,
+		cfg:      cfg,
+		vmMgr:    vmMgr,
+		imgMgr:   imgMgr,
+		imgBuild: imgBuild,
+		hyper:    hyper,
+		refCtr:   refCtr,
+		cowMgr:   cowMgr,
+		gc:       gc,
 	}, nil
 }

@@ -290,6 +290,18 @@ func (c *CocoonConfig) ConversionLockPath(baseKey string) string {
 	return filepath.Join(c.RootDir, "cache", "locks", baseKey+".lock")
 }
 
+func (c *CocoonConfig) OCIBuildCacheDir() string {
+	return filepath.Join(c.RootDir, "cache", "oci-builds")
+}
+
+func (c *CocoonConfig) OCIBuildTagIndex() string {
+	return filepath.Join(c.RootDir, "db", "oci-build-tags.json")
+}
+
+func (c *CocoonConfig) OCIBuildTagLock() string {
+	return filepath.Join(c.RootDir, "db", "oci-build-tags.lock")
+}
+
 // EnsureDirs creates all required directories.
 func (c *CocoonConfig) EnsureDirs() error {
 	dirs := []string{
@@ -297,6 +309,7 @@ func (c *CocoonConfig) EnsureDirs() error {
 		c.ImageCacheDir(),
 		c.ManifestCacheDir(),
 		c.ConversionLockDir(),
+		c.OCIBuildCacheDir(),
 		c.VMDir(),
 		c.TempDir(),
 		c.TrashDir(),

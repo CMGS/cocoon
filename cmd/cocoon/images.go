@@ -4,11 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	cli "github.com/urfave/cli/v2"
+	"golang.org/x/term"
 
 	"github.com/CMGS/cocoon/image/refcache"
+	"github.com/CMGS/cocoon/oci"
 	"github.com/CMGS/cocoon/types"
 )
 
@@ -51,6 +54,9 @@ func imagesCommand() *cli.Command {
 		Subcommands: []*cli.Command{
 			imageListCommand(),
 			imagePullCommand(),
+			imageBuildCommand(),
+			imagePushCommand(),
+			imageLoginCommand(),
 			imageInspectCommand(),
 			imageRemoveCommand(),
 			imageVerifyCommand(),
@@ -160,6 +166,9 @@ func imagePullAction(c *cli.Context) error {
 
 	ref := c.Args().Get(0)
 
+	// Check if the image is already cached before pulling.
+	_, wasCached := resolveBaseKeyFromCache(c, app, ref)
+
 	// Use the Prepare pipeline to pull + convert + cache the image.
 	identity, basePath, err := app.imgMgr.Prepare(c.Context, ref)
 	if err != nil {
@@ -167,10 +176,11 @@ func imagePullAction(c *cli.Context) error {
 	}
 
 	// Post-pull bootability verification.
+	// Skip for already-cached images (verified on first pull).
 	// VerifyBootability requires guestfish for deep checks (Linux-only).
 	// On Darwin or when guestfish is unavailable, it falls back to basic
 	// qcow2 validation with an optimistic result.
-	if !c.Bool("skip-verify") {
+	if !c.Bool("skip-verify") && wasCached != nil {
 		result, verifyErr := app.imgMgr.VerifyBootability(c.Context, basePath)
 		if verifyErr != nil {
 			return fmt.Errorf("verify bootability for %q: %w", ref, verifyErr)
@@ -198,7 +208,7 @@ func imagePullAction(c *cli.Context) error {
 func imageInspectCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "inspect",
-		Usage:     "Show details of a cached image (size, checksum, ref count)",
+		Usage:     "Show details of a cached cloud image or locally built OCI VM image",
 		ArgsUsage: "IMAGE_REF",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
@@ -223,28 +233,57 @@ func imageInspectAction(c *cli.Context) error {
 
 	ref := c.Args().Get(0)
 
-	baseKey, err := resolveBaseKeyFromCache(c, app, ref)
-	if err != nil {
-		return err
+	// Resolution priority:
+	// 1. Try OCI VM image store (local builds).
+	// 2. Try cloud image cache.
+	// 3. Error.
+	store := oci.NewStore(app.cfg)
+	if layoutPath, resolveErr := store.ResolveTag(ref); resolveErr == nil {
+		return inspectOCIImage(ref, layoutPath)
 	}
 
-	// Look up the cached image.
+	// Fall back to cloud image cache.
+	baseKey, err := resolveBaseKeyFromCache(c, app, ref)
+	if err != nil {
+		return fmt.Errorf("image not found: %q is not a local OCI build tag or cached cloud image", ref)
+	}
+
+	return inspectCloudImage(c, app, baseKey)
+}
+
+func inspectOCIImage(tag, layoutPath string) error {
+	info, err := oci.InspectLayout(layoutPath)
+	if err != nil {
+		return fmt.Errorf("inspect OCI layout: %w", err)
+	}
+
+	result := ociInspectInfo{
+		Type:           "oci",
+		Tag:            tag,
+		ManifestDigest: info.ManifestDigest,
+		Layers:         info.Layers,
+		Config:         info.Config,
+		LayoutPath:     layoutPath,
+	}
+	return printJSON(result)
+}
+
+func inspectCloudImage(c *cli.Context, app *appContext, baseKey string) error {
 	images, err := app.imgMgr.ListCached(c.Context)
 	if err != nil {
 		return fmt.Errorf("list cached images: %w", err)
 	}
 
-	var found *imageInspectInfo
 	for _, img := range images {
 		if img.BaseKey == baseKey {
-			// Get actual ref count from reference counter.
 			refs, refErr := app.refCtr.GetReferences(baseKey)
 			refCount := img.RefCount
 			if refErr == nil {
 				refCount = len(refs)
 			}
 
-			found = &imageInspectInfo{
+			found := cloudInspectInfo{
+				Type:       "cloudimg",
 				BaseKey:    img.BaseKey,
 				Path:       img.Path,
 				Size:       img.Size,
@@ -261,19 +300,26 @@ func imageInspectAction(c *cli.Context) error {
 				found.SourceRefs = sourceRefs
 				found.DigestFull = digestFull
 			}
-			break
+			return printJSON(found)
 		}
 	}
 
-	if found == nil {
-		return fmt.Errorf("cached image not found: %s", baseKey)
-	}
-
-	return printJSON(found)
+	return fmt.Errorf("cached image not found: %s", baseKey)
 }
 
-// imageInspectInfo holds detailed info for the image inspect command.
-type imageInspectInfo struct {
+// ociInspectInfo is the output for OCI VM image inspection.
+type ociInspectInfo struct {
+	Type           string           `json:"type"`
+	Tag            string           `json:"tag"`
+	ManifestDigest string           `json:"manifest_digest"`
+	Layers         []oci.LayerInfo  `json:"layers"`
+	Config         *oci.VMImageConfig `json:"config"`
+	LayoutPath     string           `json:"layout_path"`
+}
+
+// cloudInspectInfo is the output for cloud image inspection.
+type cloudInspectInfo struct {
+	Type       string   `json:"type"`
 	BaseKey    string   `json:"base_key"`
 	Path       string   `json:"path"`
 	Size       int64    `json:"size"`
@@ -430,6 +476,179 @@ func imageVerifyAction(c *cli.Context) error {
 		return cli.Exit("", 1)
 	}
 
+	return nil
+}
+
+func imageBuildCommand() *cli.Command {
+	return &cli.Command{
+		Name:      "build",
+		Usage:     "Build an OCI VM image from a cloud image or Cocoonfile",
+		ArgsUsage: "[CLOUD_IMAGE]",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:    "tag",
+				Aliases: []string{"t"},
+				Usage:   "OCI reference tag for the built image",
+			},
+			&cli.StringFlag{
+				Name:    "file",
+				Aliases: []string{"f"},
+				Usage:   "path to Cocoonfile",
+			},
+		},
+		Action: imageBuildAction,
+	}
+}
+
+func imageBuildAction(c *cli.Context) error {
+	app, err := initApp(c)
+	if err != nil {
+		return err
+	}
+
+	cocoonfilePath := c.String("file")
+	tag := c.String("tag")
+
+	var imagePath string
+
+	if cocoonfilePath != "" {
+		// Parse the Cocoonfile to determine FROM.
+		cf, parseErr := oci.ParseCocoonfile(cocoonfilePath)
+		if parseErr != nil {
+			return fmt.Errorf("parse Cocoonfile: %w", parseErr)
+		}
+
+		// FROM in Cocoonfile determines the base image.
+		imagePath = cf.From
+
+		// Positional arg overrides FROM if provided.
+		if c.NArg() > 0 {
+			imagePath = c.Args().Get(0)
+		}
+	} else {
+		// No Cocoonfile: positional arg is required.
+		if c.NArg() < 1 {
+			return fmt.Errorf("CLOUD_IMAGE argument required (or use --file Cocoonfile)\n\nUsage: cocoon image build [CLOUD_IMAGE] [--tag REF] [--file Cocoonfile]")
+		}
+		imagePath = c.Args().Get(0)
+	}
+
+	// Default tag: filename without extension.
+	if tag == "" {
+		base := filepath.Base(imagePath)
+		ext := filepath.Ext(base)
+		tag = strings.TrimSuffix(base, ext)
+		if tag == "" {
+			tag = base
+		}
+	}
+
+	result, err := app.imgBuild.Build(c.Context, imagePath, tag, cocoonfilePath)
+	if err != nil {
+		return fmt.Errorf("build OCI VM image: %w", err)
+	}
+
+	fmt.Printf("Built: %s\n", result.Tag)
+	fmt.Printf("Kernel: %s\n", result.KernelVersion)
+	fmt.Printf("Digest: %s\n", result.ManifestDigest)
+	fmt.Printf("Layout: %s\n", result.LayoutPath)
+
+	return nil
+}
+
+func imagePushCommand() *cli.Command {
+	return &cli.Command{
+		Name:      "push",
+		Usage:     "Push a locally built OCI VM image to a container registry",
+		ArgsUsage: "REF",
+		Action:    imagePushAction,
+	}
+}
+
+func imagePushAction(c *cli.Context) error {
+	if c.NArg() < 1 {
+		return fmt.Errorf("REF argument required\n\nUsage: cocoon image push REF")
+	}
+
+	app, err := initApp(c)
+	if err != nil {
+		return err
+	}
+
+	ref := c.Args().Get(0)
+
+	result, err := app.imgBuild.Push(c.Context, ref)
+	if err != nil {
+		return fmt.Errorf("push OCI VM image: %w", err)
+	}
+
+	fmt.Printf("Pushed: %s\n", result.Ref)
+	if result.ManifestDigest != "" {
+		fmt.Printf("Digest: %s\n", result.ManifestDigest)
+	}
+
+	return nil
+}
+
+func imageLoginCommand() *cli.Command {
+	return &cli.Command{
+		Name:      "login",
+		Usage:     "Log in to a container registry",
+		ArgsUsage: "REGISTRY",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:    "username",
+				Aliases: []string{"u"},
+				Usage:   "registry username",
+			},
+			&cli.StringFlag{
+				Name:    "password",
+				Aliases: []string{"p"},
+				Usage:   "registry password",
+			},
+		},
+		Action: imageLoginAction,
+	}
+}
+
+func imageLoginAction(c *cli.Context) error {
+	if c.NArg() < 1 {
+		return fmt.Errorf("REGISTRY argument required\n\nUsage: cocoon image login REGISTRY [-u USERNAME] [-p PASSWORD]")
+	}
+
+	registry := c.Args().Get(0)
+	username := c.String("username")
+	password := c.String("password")
+
+	// Prompt for username if not provided.
+	if username == "" {
+		fmt.Print("Username: ")
+		if _, err := fmt.Scanln(&username); err != nil {
+			return fmt.Errorf("read username: %w", err)
+		}
+	}
+
+	// Prompt for password if not provided.
+	if password == "" {
+		fmt.Print("Password: ")
+		passwordBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
+		if err != nil {
+			return fmt.Errorf("read password: %w", err)
+		}
+		fmt.Println() // newline after hidden input
+		password = string(passwordBytes)
+	}
+
+	app, err := initApp(c)
+	if err != nil {
+		return err
+	}
+
+	if err := app.imgBuild.Login(c.Context, registry, username, password); err != nil {
+		return fmt.Errorf("login: %w", err)
+	}
+
+	fmt.Printf("Login succeeded for %s\n", registry)
 	return nil
 }
 
