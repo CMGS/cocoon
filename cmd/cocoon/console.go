@@ -26,8 +26,8 @@ func consoleCommand() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "escape-char",
-				Value: "~",
-				Usage: "escape character for disconnect (must be a printable ASCII character, 0x20-0x7E)",
+				Value: "^]",
+				Usage: "escape character for disconnect (single character or ^X caret notation; default ^] matches telnet)",
 			},
 		},
 		Action: consoleAction,
@@ -108,13 +108,9 @@ func consoleAction(c *cli.Context) error {
 
 	// Parse escape character before entering raw mode so validation errors
 	// render correctly and don't trigger the "Disconnected" defer message.
-	escapeCharStr := c.String("escape-char")
-	if len(escapeCharStr) != 1 {
-		return fmt.Errorf("--escape-char must be a single ASCII character, got %q", escapeCharStr)
-	}
-	escapeChar := escapeCharStr[0]
-	if escapeChar < 0x20 || escapeChar > 0x7E {
-		return fmt.Errorf("--escape-char must be a printable ASCII character (0x20-0x7E), got %q", escapeCharStr)
+	escapeChar, err := parseEscapeChar(c.String("escape-char"))
+	if err != nil {
+		return err
 	}
 
 	// Require interactive terminal.
@@ -153,7 +149,8 @@ func consoleAction(c *cli.Context) error {
 	defer cleanupSIGWINCH()
 
 	// Print connection banner.
-	fmt.Fprintf(os.Stderr, "Connected to %s (escape sequence: %s.)\r\n", ref, escapeCharStr)
+	escapeDisplay := formatEscapeChar(escapeChar)
+	fmt.Fprintf(os.Stderr, "Connected to %s (escape sequence: %s.)\r\n", ref, escapeDisplay)
 
 	// Start bidirectional I/O relay.
 	return relayConsole(c.Context, pty, escapeChar)
@@ -228,8 +225,8 @@ func isEIO(err error) bool {
 	return errors.Is(err, syscall.EIO)
 }
 
-// relayStdinToPTY reads from stdin and writes to the PTY, with SSH-style
-// escape sequence detection. Returns nil on disconnect (~.).
+// relayStdinToPTY reads from stdin and writes to the PTY, with escape
+// sequence detection. Returns nil on disconnect (escape-char + '.').
 func relayStdinToPTY(ctx context.Context, stdin io.Reader, pty io.Writer, escapeChar byte) error {
 	state := stateLineStart // Start of session acts as start of line.
 	// Single-byte reads are required for escape sequence detection.
@@ -280,10 +277,11 @@ func relayStdinToPTY(ctx context.Context, stdin io.Reader, pty io.Writer, escape
 				return nil
 			case '?':
 				// Print help to user (not to guest).
+				esc := formatEscapeChar(escapeChar)
 				helpMsg := "\r\nSupported escape sequences:\r\n" +
-					"  " + string(escapeChar) + ".  Disconnect\r\n" +
-					"  " + string(escapeChar) + "?  This help\r\n" +
-					"  " + string(escapeChar) + string(escapeChar) + "  Send escape character\r\n"
+					"  " + esc + ".  Disconnect\r\n" +
+					"  " + esc + "?  This help\r\n" +
+					"  " + esc + esc + "  Send escape character\r\n"
 				_, _ = os.Stdout.Write([]byte(helpMsg))
 				state = stateLineStart // Allow immediate follow-up escape sequence.
 				continue
@@ -308,4 +306,51 @@ func relayStdinToPTY(ctx context.Context, stdin io.Reader, pty io.Writer, escape
 			}
 		}
 	}
+}
+
+// parseEscapeChar parses the --escape-char flag value. It accepts:
+//   - Caret notation for control characters: "^]", "^A", "^C", etc.
+//   - A single printable or control character (raw byte).
+//
+// Returns an error for NUL (0x00), DEL (0x7F), or multi-byte strings
+// that are not valid caret notation.
+func parseEscapeChar(s string) (byte, error) {
+	// Caret notation: ^@ through ^_ (0x00-0x1F) and ^a-^z.
+	if len(s) == 2 && s[0] == '^' {
+		c := s[1]
+		if c >= '@' && c <= '_' {
+			b := c - '@'
+			if b == 0 {
+				return 0, fmt.Errorf("--escape-char: NUL (^@) cannot be used as escape character")
+			}
+			return b, nil
+		}
+		if c >= 'a' && c <= 'z' {
+			return c - 'a' + 1, nil
+		}
+		return 0, fmt.Errorf("--escape-char: invalid caret notation %q (use ^A through ^_ or ^a through ^z)", s)
+	}
+
+	if len(s) == 1 {
+		b := s[0]
+		if b == 0 {
+			return 0, fmt.Errorf("--escape-char: NUL (0x00) cannot be used as escape character")
+		}
+		if b == 0x7F {
+			return 0, fmt.Errorf("--escape-char: DEL (0x7F) cannot be used as escape character")
+		}
+		return b, nil
+	}
+
+	return 0, fmt.Errorf("--escape-char must be a single character or ^X caret notation, got %q", s)
+}
+
+// formatEscapeChar returns a human-readable representation of the byte.
+// Control characters (0x01-0x1F) are shown as ^A through ^_, printable
+// characters are returned as-is.
+func formatEscapeChar(b byte) string {
+	if b >= 1 && b <= 0x1F {
+		return "^" + string(rune(b+'@'))
+	}
+	return string(b)
 }

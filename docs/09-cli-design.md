@@ -1109,8 +1109,8 @@ func consoleCommand() *cli.Command {
         Flags: []cli.Flag{
             &cli.StringFlag{
                 Name:  "escape-char",
-                Value: "~",
-                Usage: "escape character for disconnect (must be a printable ASCII character, 0x20-0x7E)",
+                Value: "^]",
+                Usage: "escape character for disconnect (single character or ^X caret notation; default ^] matches telnet)",
             },
         },
         Action: consoleAction,
@@ -1124,17 +1124,17 @@ func consoleCommand() *cli.Command {
 # Attach console to a running VM
 cocoon console myvm
 
-# Use a custom escape character
-cocoon console myvm --escape-char "^"
+# Use a custom escape character (e.g., tilde)
+cocoon console myvm --escape-char "~"
 ```
 
-**Escape Sequences** (at start of line):
+**Escape Sequences** (at start of line, default escape char `^]` = Ctrl-]):
 
 | Sequence | Action |
 |----------|--------|
-| `~.` | Disconnect from console |
-| `~?` | Show supported escape sequences |
-| `~~` | Send literal `~` to guest |
+| `^].` | Disconnect from console |
+| `^]?` | Show supported escape sequences |
+| `^]^]` | Send literal Ctrl-] to guest |
 
 **Notes**:
 - Requires Linux (Cloud Hypervisor is Linux-only)

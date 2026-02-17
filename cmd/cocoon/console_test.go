@@ -226,6 +226,144 @@ func TestRelayStdinToPTY_ContextCancellation(t *testing.T) {
 	}
 }
 
+func TestRelayStdinToPTY_ControlCharEscape(t *testing.T) {
+	t.Parallel()
+
+	// Ctrl-] (0x1D) as escape char, matching telnet default.
+	tests := []struct {
+		name       string
+		input      []byte
+		escapeChar byte
+		wantPTY    []byte
+		wantExit   bool
+	}{
+		{
+			name:       "ctrl-] at session start disconnects",
+			input:      []byte{0x1D, '.'},
+			escapeChar: 0x1D,
+			wantPTY:    nil,
+			wantExit:   true,
+		},
+		{
+			name:       "ctrl-] after CR disconnects",
+			input:      []byte{'\r', 0x1D, '.'},
+			escapeChar: 0x1D,
+			wantPTY:    []byte("\r"),
+			wantExit:   true,
+		},
+		{
+			name:       "ctrl-] mid-line passes through",
+			input:      []byte{'h', 'i', 0x1D, '.'},
+			escapeChar: 0x1D,
+			wantPTY:    []byte{'h', 'i', 0x1D, '.'},
+		},
+		{
+			name:       "double ctrl-] sends literal",
+			input:      []byte{'\r', 0x1D, 0x1D},
+			escapeChar: 0x1D,
+			wantPTY:    []byte{'\r', 0x1D},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			stdin := bytes.NewReader(tt.input)
+			ptyBuf := &bytes.Buffer{}
+			err := relayStdinToPTY(context.Background(), stdin, ptyBuf, tt.escapeChar)
+			if tt.wantExit {
+				if err != nil {
+					t.Errorf("expected clean exit, got: %v", err)
+				}
+			} else {
+				if err != nil && err != io.EOF {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}
+			got := ptyBuf.Bytes()
+			if !bytes.Equal(got, tt.wantPTY) {
+				t.Errorf("PTY output mismatch:\n  got:  %q\n  want: %q", got, tt.wantPTY)
+			}
+		})
+	}
+}
+
+func TestParseEscapeChar(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input   string
+		want    byte
+		wantErr bool
+	}{
+		{"^]", 0x1D, false},  // Ctrl-]
+		{"^A", 0x01, false},  // Ctrl-A
+		{"^C", 0x03, false},  // Ctrl-C
+		{"^_", 0x1F, false},  // Ctrl-_
+		{"^a", 0x01, false},  // lowercase caret notation
+		{"^z", 0x1A, false},  // Ctrl-Z
+		{"~", '~', false},    // printable char
+		{"#", '#', false},    // printable char
+		{" ", ' ', false},    // space (0x20)
+		{"^@", 0, true},      // NUL rejected
+		{"\x00", 0, true},    // raw NUL rejected
+		{"\x7F", 0, true},    // DEL rejected
+		{"^!", 0, true},      // invalid caret notation
+		{"ab", 0, true},      // too long
+		{"", 0, true},        // empty
+		{"abc", 0, true},     // way too long
+		{"\x1D", 0x1D, false}, // raw Ctrl-] byte
+		{"\x01", 0x01, false}, // raw Ctrl-A byte
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("input=%q", tt.input), func(t *testing.T) {
+			t.Parallel()
+			got, err := parseEscapeChar(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("expected error for input %q, got byte %d", tt.input, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected error for input %q: %v", tt.input, err)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("parseEscapeChar(%q) = 0x%02X, want 0x%02X", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatEscapeChar(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input byte
+		want  string
+	}{
+		{0x1D, "^]"},
+		{0x01, "^A"},
+		{0x03, "^C"},
+		{0x1F, "^_"},
+		{'~', "~"},
+		{'#', "#"},
+		{' ', " "},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("byte=0x%02X", tt.input), func(t *testing.T) {
+			t.Parallel()
+			got := formatEscapeChar(tt.input)
+			if got != tt.want {
+				t.Errorf("formatEscapeChar(0x%02X) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 // errWriter is an io.Writer that always returns an error.
 type errWriter struct{ err error }
 

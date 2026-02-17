@@ -106,7 +106,7 @@ consoleAction(c *cli.Context)
     |    goroutine 2: stdin -> PTY (with escape detection)
     v
 [8] Block until:
-    - Escape sequence (~.) detected
+    - Escape sequence (^].) detected
     - PTY read returns EOF (VM shut down)
     - Signal received (SIGINT, SIGTERM)
     - Context canceled
@@ -117,7 +117,7 @@ consoleAction(c *cli.Context)
 
 ### 2.2 Escape Sequence State Machine
 
-The escape sequence follows SSH conventions: the escape character (default `~`) is only recognized at the start of a new line (immediately after `\r` or `\n`). This prevents accidental disconnects when typing `~` in normal text.
+The escape sequence follows telnet/SSH conventions: the escape character (default `^]`, i.e., Ctrl-]) is only recognized at the start of a new line (immediately after `\r` or `\n`). The default was chosen to avoid conflicting with SSH's own `~` escape, since users almost always connect to the Linux host via SSH. The `--escape-char` flag accepts caret notation (`^X`) for control characters or a single printable character.
 
 ```
                   +-----------+
@@ -520,8 +520,8 @@ func consoleCommand() *cli.Command {
         Flags: []cli.Flag{
             &cli.StringFlag{
                 Name:  "escape-char",
-                Value: "~",
-                Usage: "escape character for disconnect (must be a printable ASCII character, 0x20-0x7E)",
+                Value: "^]",
+                Usage: "escape character for disconnect (single character or ^X caret notation; default ^] matches telnet)",
             },
         },
         Action: consoleAction,
@@ -611,13 +611,9 @@ func consoleAction(c *cli.Context) error {
 
     // Parse escape character before entering raw mode so validation errors
     // render correctly and don't trigger the "Disconnected" defer message.
-    escapeCharStr := c.String("escape-char")
-    if len(escapeCharStr) != 1 {
-        return fmt.Errorf("--escape-char must be a single ASCII character, got %q", escapeCharStr)
-    }
-    escapeChar := escapeCharStr[0]
-    if escapeChar < 0x20 || escapeChar > 0x7E {
-        return fmt.Errorf("--escape-char must be a printable ASCII character (0x20-0x7E), got %q", escapeCharStr)
+    escapeChar, err := parseEscapeChar(c.String("escape-char"))
+    if err != nil {
+        return err
     }
 
     // Require interactive terminal.
@@ -668,25 +664,25 @@ func consoleAction(c *cli.Context) error {
 ```bash
 # Attach interactive console to a running VM
 $ cocoon console myvm
-Connected to myvm (escape sequence: ~.)
+Connected to myvm (escape sequence: ^].)
 
 Ubuntu 22.04 LTS myvm hvc0
 
 myvm login: _
 
-# Disconnect with escape sequence (type Enter, then ~.)
-~.
+# Disconnect with escape sequence (type Enter, then Ctrl-] followed by .)
+^].
 Disconnected from myvm.
 
-# Use a different escape character
-$ cocoon console myvm --escape-char "^"
+# Use a different escape character (e.g., tilde, like SSH)
+$ cocoon console myvm --escape-char "~"
 
-# Show help for escape sequences (type Enter, then ~?)
-~?
+# Show help for escape sequences (type Enter, then Ctrl-] followed by ?)
+^]?
 Supported escape sequences:
-  ~.  Disconnect
-  ~?  This help
-  ~~  Send escape character
+  ^].  Disconnect
+  ^]?  This help
+  ^]^]  Send escape character
 ```
 
 ---
@@ -852,9 +848,9 @@ Interactive console sessions are not logged by default. This is intentional -- p
 
 ### 8.3 Escape Sequence Security
 
-The escape character (`~`) is only recognized at the start of a line (after CR/LF or at session start). This prevents accidental disconnects from malicious guest programs that print `~.` sequences. The `--escape-char` flag allows changing the escape character if `~` conflicts with the guest workload.
+The escape character (default `^]`, i.e., Ctrl-]) is only recognized at the start of a line (after CR/LF or at session start). This prevents accidental disconnects from malicious guest programs that emit escape sequences. The default `^]` was chosen to match telnet conventions and avoid conflicting with SSH's `~` escape — since users almost always reach the Linux host via SSH, using `~` would disconnect the SSH session instead of the console.
 
-The `--escape-char` value must be a printable ASCII character (0x20-0x7E). Control characters (including CR 0x0D, LF 0x0A, and DEL 0x7F) are rejected because they would break the escape state machine: CR and LF trigger the `stateLineStart` transition, so using them as the escape character would make the escape sequence undetectable.
+The `--escape-char` flag accepts caret notation (`^X`) for control characters or a single printable character. NUL (0x00) and DEL (0x7F) are rejected. The `parseEscapeChar` function handles parsing and validation.
 
 ### 8.4 PTY Buffer Limits
 
