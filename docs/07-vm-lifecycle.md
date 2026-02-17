@@ -809,6 +809,9 @@ type VMConfig struct {
     // Boot configuration (immutable)
     BootStrategy  BootStrategy `json:"boot_strategy"`            // "uefi" (default), "direct" (OCI)
     FirmwarePath  string       `json:"firmware_path"`             // Primary firmware path resolved at creation
+    KernelPath    string       `json:"kernel_path,omitempty"`     // Direct boot kernel (Phase 2)
+    InitramfsPath string       `json:"initramfs_path,omitempty"`  // Direct boot initramfs (Phase 2)
+    Cmdline       string       `json:"cmdline,omitempty"`         // Direct boot kernel cmdline (Phase 2)
     TPMSocketPath string       `json:"tpm_socket_path,omitempty"` // swtpm socket path (if TPM enabled)
 
     // Resources (immutable after create; Phase 2 may allow resize)
@@ -1179,6 +1182,7 @@ const (
     // Boot errors
     ErrorBootTimeout       ErrorType = "boot_timeout"
     ErrorKernelPanic       ErrorType = "kernel_panic"
+    ErrorBootFailure       ErrorType = "boot_failure"
     ErrorMissingBootloader ErrorType = "missing_bootloader"
     ErrorMissingKernel     ErrorType = "missing_kernel"
 

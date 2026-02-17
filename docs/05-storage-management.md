@@ -24,7 +24,9 @@ Lock file paths are additionally documented in [06-concurrency.md](./06-concurre
 │   ├── references.lock                   # flock for reference counter
 │   ├── gc.lock                           # Global GC lock
 │   ├── name-index.json                   # name → vm_id mapping (derived, can be rebuilt)
-│   └── name-index.lock                   # flock for name-index updates
+│   ├── name-index.lock                   # flock for name-index updates
+│   ├── oci-build-tags.json               # OCI build tag → layout path mapping (cocoon image build)
+│   └── oci-build-tags.lock               # flock for OCI build tag index updates
 ├── cache/
 │   ├── images/                           # Base qcow2 images (content-addressed)
 │   │   ├── {checksum_16}_{arch}.qcow2    # e.g., a1b2c3d4e5f6a7b8_amd64.qcow2
@@ -32,8 +34,10 @@ Lock file paths are additionally documented in [06-concurrency.md](./06-concurre
 │   ├── manifests/                        # OCI manifest cache
 │   │   ├── index.json                    # IMAGE_REF -> base_key mapping index
 │   │   └── index.lock                    # flock for manifest index updates
-│   └── locks/
-│       └── {checksum_16}_{arch}.lock     # Per-image conversion lock
+│   ├── locks/
+│   │   └── {checksum_16}_{arch}.lock     # Per-image conversion lock
+│   └── oci-builds/                       # OCI VM image build outputs (cocoon image build)
+│       └── {build-tag}/                  # OCI layout directory per built image
 ├── buildah/                              # Buildah storage root
 ├── vms/
 │   ├── {vm-id}/                          # e.g., vm-01HXYZ.../

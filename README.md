@@ -4,7 +4,7 @@ Lightweight VM manager built on Cloud Hypervisor.
 
 ## Features
 
-- **UEFI boot** -- CLOUDHV.fd UEFI firmware by default (direct kernel boot for OCI VM images planned for Phase 2)
+- **UEFI boot** -- CLOUDHV.fd UEFI firmware by default (direct kernel boot for OCI VM images is Phase 2 planned)
 - **TPM 2.0 emulation** -- optional swtpm integration via `--tpm` flag for measured boot and guest attestation
 - **OCI VM image build** -- `cocoon image build` extracts kernel/rootfs from cloud images, packages as OCI with custom media types; supports Cocoonfile customization (see `cocoonfile.example`)
 - **OCI VM image push/login** -- `cocoon image push` uploads built images to any OCI registry; `cocoon image login` stores credentials
@@ -89,6 +89,8 @@ cocoon delete <vm>
 | `cocoon gc` | Run garbage collection on unreferenced images and orphaned resources |
 | `cocoon firmware list` | List installed firmware files (alias: `ls`) |
 | `cocoon firmware verify` | Check firmware files exist and are accessible |
+| `cocoon firmware install` | Download and install firmware files |
+| `cocoon firmware update` | Update firmware files (alias for `install`) |
 | `cocoon doctor` | Check system health, dependencies, and VM state consistency |
 | `cocoon version` | Show version, git revision, and build timestamp |
 

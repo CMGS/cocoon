@@ -108,8 +108,12 @@ func pingRegistry(ctx context.Context, registry, username, password string) erro
 		return nil
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
-		// Token-based registries return 401 with a Bearer challenge on /v2/.
-		// This is normal — credentials will be exchanged for a token at push time.
+		// Token-based registries (Docker Hub, ghcr.io) return 401 with a Bearer
+		// challenge on /v2/. In this flow, actual credential verification happens
+		// during the token exchange at push time, not here. This means login may
+		// succeed even if credentials are incorrect. A full token exchange would
+		// require parsing the Www-Authenticate realm URL and requesting a token —
+		// deferred to a future enhancement.
 		if strings.Contains(resp.Header.Get("Www-Authenticate"), "Bearer") {
 			return nil
 		}
@@ -118,6 +122,11 @@ func pingRegistry(ctx context.Context, registry, username, password string) erro
 	// Some registries return 403 for bad credentials.
 	if resp.StatusCode == http.StatusForbidden {
 		return fmt.Errorf("access denied for %s (HTTP 403)", registry)
+	}
+
+	// Treat server errors as transient failures — do not report login success.
+	if resp.StatusCode >= 500 {
+		return fmt.Errorf("registry %s returned server error (HTTP %d)", registry, resp.StatusCode)
 	}
 
 	return nil

@@ -57,14 +57,17 @@ func (s *Store) ResolveTag(tag string) (string, error) {
 		if !ok {
 			return fmt.Errorf("tag %q not found in local builds", tag)
 		}
-		// Verify the layout directory still exists.
-		if _, err := os.Stat(entry.LayoutPath); os.IsNotExist(err) {
-			return fmt.Errorf("layout directory for tag %q no longer exists: %s", tag, entry.LayoutPath)
-		}
 		layoutPath = entry.LayoutPath
 		return nil
 	})
-	return layoutPath, err
+	if err != nil {
+		return "", err
+	}
+	// Verify outside the lock to avoid holding it during I/O.
+	if _, statErr := os.Stat(layoutPath); os.IsNotExist(statErr) {
+		return "", fmt.Errorf("layout directory for tag %q no longer exists: %s", tag, layoutPath)
+	}
+	return layoutPath, nil
 }
 
 // ListTags returns all local build tags, sorted by creation time (newest first).
