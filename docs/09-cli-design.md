@@ -72,7 +72,7 @@ cocoon/
 │   ├── console.go            # cocoon console (interactive PTY relay)
 │   ├── console_linux.go      # Linux-specific SIGWINCH + ioctl
 │   ├── console_darwin.go     # Darwin stub (SIGWINCH no-op)
-│   ├── images.go             # cocoon image (list/pull/inspect/remove/verify)
+│   ├── images.go             # cocoon image (list/pull/build/push/login/inspect/remove/verify)
 │   ├── gc.go                 # cocoon gc
 │   ├── firmware.go           # cocoon firmware (list/verify/install/update)
 │   ├── doctor.go             # cocoon doctor (deps + reconciliation)
@@ -91,6 +91,8 @@ cocoon/
 │       └── mock.go
 ├── image/
 │   ├── image.go              # Manager interface (Pull, Convert, Prepare, Verify, List, Remove)
+│   ├── builder.go            # Builder interface (Build, Push, Login, Inspect, ListBuilds)
+│   ├── buildtypes.go         # BuildResult, PushResult, BuildEntry, InspectResult
 │   ├── types.go              # ImageIdentity, ImageType, BootCheckResult, CachedImage
 │   ├── pipeline/
 │   │   ├── manager.go        # Pipeline implementation (pull → convert → cache)
@@ -106,6 +108,18 @@ cocoon/
 │   │   └── cleanup_darwin.go # No-op
 │   └── mocks/
 │       └── mock.go
+├── oci/
+│   ├── types.go              # Media types, VMImageConfig, BuildResult, PushResult, TagEntry
+│   ├── cocoonfile.go         # Cocoonfile parser (FROM/RUN/COPY/LABEL)
+│   ├── kernel.go             # Kernel detection from /boot file listing
+│   ├── tar.go                # Deterministic tar layer builder
+│   ├── build_linux.go        # Build pipeline: extract kernel/rootfs, assemble OCI layout
+│   ├── build_darwin.go       # Stub: returns "Linux only" error
+│   ├── push.go               # Push OCI layout to registry via go-containerregistry
+│   ├── login.go              # Registry login, credential storage (~/.cocoon/config.json)
+│   ├── layout.go             # InspectLayout: parse OCI layout metadata
+│   ├── store.go              # Tag index: local build tag → OCI layout mapping
+│   └── builder.go            # image.Builder adapter (delegates to package functions)
 ├── storage/
 │   ├── storage.go            # ReferenceCounter, COWManager, GarbageCollector interfaces
 │   ├── types.go              # OverlayInfo, GCResult
@@ -327,13 +341,14 @@ Cocoon does not use a factory pattern. All managers are constructed directly in 
 ```go
 // appContext holds initialized managers for CLI commands.
 type appContext struct {
-    cfg    *config.CocoonConfig
-    vmMgr  vm.Manager
-    imgMgr image.Manager
-    hyper  hypervisor.Client
-    refCtr storage.ReferenceCounter
-    cowMgr storage.COWManager
-    gc     storage.GarbageCollector
+    cfg      *config.CocoonConfig
+    vmMgr    vm.Manager
+    imgMgr   image.Manager  // Cloud image pipeline (pull/convert/cache).
+    imgBuild image.Builder  // OCI VM image build/push/login.
+    hyper    hypervisor.Client
+    refCtr   storage.ReferenceCounter
+    cowMgr   storage.COWManager
+    gc       storage.GarbageCollector
 }
 
 func initApp(_ *cli.Context) (*appContext, error) {
@@ -350,9 +365,10 @@ func initApp(_ *cli.Context) (*appContext, error) {
     cowMgr := local.NewCOWManager(cfg)
     gc := local.NewGarbageCollector(cfg)
     imgMgr := pipeline.New(cfg, refCtr)
+    imgBuild := oci.NewBuilder(cfg)
     vmMgr := engine.New(cfg, hyper, refCtr, cowMgr, imgMgr)
 
-    return &appContext{cfg, vmMgr, imgMgr, hyper, refCtr, cowMgr, gc}, nil
+    return &appContext{cfg, vmMgr, imgMgr, imgBuild, hyper, refCtr, cowMgr, gc}, nil
 }
 ```
 
@@ -1182,29 +1198,51 @@ func imagesCommand() *cli.Command {
                 },
                 Action:    imagePullAction,
             },
-            // Phase 2: image build and push are planned but not yet implemented.
-            // {
-            //     Name:      "build",
-            //     Usage:     "Build a bootable OCI VM image (Phase 2)",
-            //     ArgsUsage: "CONTEXT_DIR",
-            //     Flags: []cli.Flag{
-            //         &cli.StringFlag{
-            //             Name:    "tag",
-            //             Aliases: []string{"t"},
-            //             Usage:   "image tag (e.g., myorg/myvm:latest)",
-            //         },
-            //     },
-            //     Action: imageBuildAction,
-            // },
-            // {
-            //     Name:      "push",
-            //     Usage:     "Push a built OCI VM image to a registry (Phase 2)",
-            //     ArgsUsage: "IMAGE_REF",
-            //     Action:    imagePushAction,
-            // },
+            {
+                Name:      "build",
+                Usage:     "Build an OCI VM image from a cloud image or Cocoonfile",
+                ArgsUsage: "[CLOUD_IMAGE]",
+                Flags: []cli.Flag{
+                    &cli.StringFlag{
+                        Name:    "tag",
+                        Aliases: []string{"t"},
+                        Usage:   "OCI reference tag for the built image",
+                    },
+                    &cli.StringFlag{
+                        Name:    "file",
+                        Aliases: []string{"f"},
+                        Usage:   "path to Cocoonfile",
+                    },
+                },
+                Action: imageBuildAction,
+            },
+            {
+                Name:      "push",
+                Usage:     "Push a locally built OCI VM image to a container registry",
+                ArgsUsage: "REF",
+                Action:    imagePushAction,
+            },
+            {
+                Name:      "login",
+                Usage:     "Log in to a container registry",
+                ArgsUsage: "REGISTRY",
+                Flags: []cli.Flag{
+                    &cli.StringFlag{
+                        Name:    "username",
+                        Aliases: []string{"u"},
+                        Usage:   "registry username",
+                    },
+                    &cli.StringFlag{
+                        Name:    "password",
+                        Aliases: []string{"p"},
+                        Usage:   "registry password",
+                    },
+                },
+                Action: imageLoginAction,
+            },
             {
                 Name:      "inspect",
-                Usage:     "Show details of a cached image (size, checksum, ref count)",
+                Usage:     "Show details of a cached cloud image or locally built OCI VM image",
                 ArgsUsage: "IMAGE_REF",
                 Flags: []cli.Flag{
                     &cli.StringFlag{
@@ -1271,8 +1309,17 @@ cocoon image pull /tmp/ubuntu-22.04-cloudimg.qcow2
 # Pull bootable OCI image (custom-built, requires root for conversion)
 cocoon image pull myorg/ubuntu-bootable:22.04
 
-# Pull OCI VM image (Phase 2: --oci flag not yet implemented; type is auto-detected)
-# cocoon image pull --oci myorg/ubuntu-vm:22.04
+# Build an OCI VM image from a cloud image
+cocoon image build /path/to/ubuntu-22.04-cloudimg.qcow2 --tag myorg/ubuntu-vm:22.04
+
+# Build using a Cocoonfile (see cocoonfile.example in project root)
+cocoon image build --file cocoonfile.example --tag myorg/ubuntu-vm:22.04
+
+# Log in to a container registry
+cocoon image login ghcr.io -u myuser
+
+# Push a built image to a registry
+cocoon image push myorg/ubuntu-vm:22.04
 
 # List cached images
 cocoon image list
@@ -1317,7 +1364,7 @@ Solutions:
      cocoon image pull https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img
 
   2. (Phase 2) Build a bootable OCI image with:
-     cocoon image build --base ubuntu:22.04 --tag myorg/ubuntu-bootable:22.04
+     cocoon image build --file Cocoonfile --tag myorg/ubuntu-bootable:22.04
 
   3. See docs/00-overview.md#supported-image-contract for details
 
@@ -2070,6 +2117,14 @@ This CLI design implements the Boot Contract specification:
   - [x] `cocoon image inspect` with metadata
   - [x] `cocoon image verify` for boot contract
   - [x] `cocoon image rm` with reference checking
+
+- [x] **OCI VM Image Build** (`oci/`, `image/builder.go`):
+  - [x] `cocoon image build` from cloud image or Cocoonfile (`oci/build_linux.go`, `oci/cocoonfile.go`)
+  - [x] `cocoon image push` to container registries (`oci/push.go`)
+  - [x] `cocoon image login` with credential storage (`oci/login.go`)
+  - [x] `cocoon image inspect` for OCI VM images (`oci/layout.go`)
+  - [x] OCI media types and VM config schema (`oci/types.go`)
+  - [x] Local tag index for built images (`oci/store.go`)
 
 - [x] **Storage** (`storage/local/`):
   - [x] Implement COWManager interface (`storage/storage.go`, `storage/local/cow.go`)

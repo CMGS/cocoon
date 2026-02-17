@@ -212,6 +212,14 @@ func runDependencyChecks(app *appContext) []checkResult {
 	// 4f. Check swtpm binary (TPM emulator).
 	results = append(results, checkSwtpm())
 
+	// 4g. Check virt-customize binary (optional — required for Cocoonfile builds).
+	results = append(results, checkOptionalBinary(
+		"virt-customize",
+		"virt-customize",
+		[]string{"--version"},
+		"optional: required for Cocoonfile RUN/COPY steps",
+	))
+
 	// 5. Check KVM device.
 	if _, err := os.Stat("/dev/kvm"); err != nil {
 		results = append(results, checkResult{
@@ -294,6 +302,44 @@ func checkSwtpm() checkResult {
 		Name:   "swtpm",
 		Status: "pass",
 		Detail: fmt.Sprintf("%s (%s)", path, ver),
+	}
+}
+
+// checkOptionalBinary checks if a binary exists and reports its version.
+// Unlike checkBinaryWithMinVersion, missing binaries are reported as "warn" not "fail".
+func checkOptionalBinary(name, binary string, args []string, purpose string) checkResult {
+	path, err := exec.LookPath(binary)
+	if err != nil {
+		return checkResult{
+			Name:   name,
+			Status: "warn",
+			Detail: fmt.Sprintf("not found in PATH (%s)", purpose),
+		}
+	}
+
+	cmd := exec.Command(path, args...) //nolint:gosec // binary path is resolved from PATH; args are fixed literals
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return checkResult{
+			Name:   name,
+			Status: "warn",
+			Detail: fmt.Sprintf("%s (version unknown)", path),
+		}
+	}
+
+	ver, err := parseSemVersion(string(out))
+	if err != nil {
+		return checkResult{
+			Name:   name,
+			Status: "warn",
+			Detail: fmt.Sprintf("%s (version: %s)", path, strings.TrimSpace(string(out))),
+		}
+	}
+
+	return checkResult{
+		Name:   name,
+		Status: "pass",
+		Detail: fmt.Sprintf("%s (version %s)", path, ver.String()),
 	}
 }
 

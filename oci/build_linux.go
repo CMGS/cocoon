@@ -8,10 +8,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/CMGS/cocoon/config"
@@ -219,26 +221,82 @@ func extractGuestFile(ctx context.Context, imagePath, guestPath, localPath strin
 	return nil
 }
 
-// readPartUUID reads the GPT PARTUUID of partition 2 from the image.
+// readPartUUID dynamically detects the root partition and reads its GPT PARTUUID.
+// It uses guestfish inspect-os to find the root device, then extracts the disk
+// and partition number to query the PARTUUID via part-get-gpt-guid.
 func readPartUUID(ctx context.Context, imagePath string) (string, error) {
-	// Use guestfish script via stdin since part-get-gpt-guid requires run first.
+	// Use guestfish inspect to find the root partition dynamically.
+	// inspect-get-mountpoints returns mountpoints mapped to devices.
 	script := fmt.Sprintf(`add %s
 run
-part-get-gpt-guid /dev/sda 2
+inspect-os
 `, imagePath)
-
 	cmd := exec.CommandContext(ctx, "guestfish") //nolint:gosec
 	cmd.Stdin = strings.NewReader(script)
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("guestfish part-get-gpt-guid: %w", err)
+		return "", fmt.Errorf("guestfish inspect-os: %w", err)
+	}
+	root := strings.TrimSpace(string(out))
+	if root == "" {
+		return "", fmt.Errorf("guestfish inspect-os returned no root device")
+	}
+	// If multiple roots, take the first line.
+	if idx := strings.IndexByte(root, '\n'); idx >= 0 {
+		root = root[:idx]
 	}
 
-	uuid := strings.TrimSpace(string(out))
+	// Now get the PARTUUID for this root device.
+	// Extract partition number from device path (e.g., /dev/sda2 -> 2).
+	// The root device from inspect-os is a filesystem device like /dev/sda2.
+	// We need the disk device (/dev/sda) and partition number (2).
+	disk, partNum, err := parseDevicePartition(root)
+	if err != nil {
+		return "", fmt.Errorf("parse root device %s: %w", root, err)
+	}
+
+	script2 := fmt.Sprintf(`add %s
+run
+part-get-gpt-guid %s %d
+`, imagePath, disk, partNum)
+	cmd2 := exec.CommandContext(ctx, "guestfish") //nolint:gosec
+	cmd2.Stdin = strings.NewReader(script2)
+	out2, err := cmd2.Output()
+	if err != nil {
+		return "", fmt.Errorf("guestfish part-get-gpt-guid %s %d: %w", disk, partNum, err)
+	}
+	uuid := strings.TrimSpace(string(out2))
 	if uuid == "" {
-		return "", fmt.Errorf("empty PARTUUID from guestfish (is the image GPT-partitioned?)")
+		return "", fmt.Errorf("empty PARTUUID for %s partition %d", disk, partNum)
 	}
 	return uuid, nil
+}
+
+// parseDevicePartition splits a device path like "/dev/sda2" into disk "/dev/sda" and partition 2.
+// Also handles nvme style like "/dev/nvme0n1p2" -> "/dev/nvme0n1" and 2.
+func parseDevicePartition(device string) (string, int, error) {
+	// Find trailing digits.
+	i := len(device)
+	for i > 0 && device[i-1] >= '0' && device[i-1] <= '9' {
+		i--
+	}
+	if i == len(device) {
+		return "", 0, fmt.Errorf("no partition number in device %q", device)
+	}
+	partStr := device[i:]
+	diskPart := device[:i]
+	// Strip trailing 'p' for nvme-style devices (e.g., /dev/nvme0n1p2).
+	if len(diskPart) > 0 && diskPart[len(diskPart)-1] == 'p' {
+		// Only strip if before 'p' there's a digit (nvme pattern).
+		if len(diskPart) > 1 && diskPart[len(diskPart)-2] >= '0' && diskPart[len(diskPart)-2] <= '9' {
+			diskPart = diskPart[:len(diskPart)-1]
+		}
+	}
+	partNum, err := strconv.Atoi(partStr)
+	if err != nil {
+		return "", 0, fmt.Errorf("parse partition number %q: %w", partStr, err)
+	}
+	return diskPart, partNum, nil
 }
 
 // extractRootfsTar extracts the root filesystem as a tar archive.
@@ -250,13 +308,10 @@ func extractRootfsTar(ctx context.Context, imagePath, tarPath string) error {
 		return err
 	}
 
-	script := fmt.Sprintf(`add %s
-run
-mount-ro /dev/sda2 /
-tar-out / %s
-`, imagePath, tarPath)
-
-	cmd := exec.CommandContext(ctx, "guestfish") //nolint:gosec
+	// Use guestfish -i (inspect mode) which auto-detects and mounts the root filesystem.
+	script := fmt.Sprintf(`tar-out / %s
+`, tarPath)
+	cmd := exec.CommandContext(ctx, "guestfish", "--ro", "-a", imagePath, "-i") //nolint:gosec
 	cmd.Stdin = strings.NewReader(script)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("guestfish tar-out: %s: %w", strings.TrimSpace(string(out)), err)
@@ -360,10 +415,13 @@ func assembleOCILayout(
 
 // validateSafePath checks that a path contains only safe characters for guestfish.
 func validateSafePath(path string) error {
+	if strings.Contains(path, "..") {
+		return fmt.Errorf("path traversal not allowed in %q", path)
+	}
 	for _, c := range path {
 		isAlpha := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 		isDigit := c >= '0' && c <= '9'
-		isSafe := c == '/' || c == '-' || c == '_' || c == '.'
+		isSafe := c == '/' || c == '-' || c == '_' || c == '.' || c == '+' || c == '~' || c == '@' || c == ':' || c == '%' || c == ','
 		if !isAlpha && !isDigit && !isSafe {
 			return fmt.Errorf("unsafe character %q in path %q", string(c), path)
 		}
@@ -377,9 +435,20 @@ func sha256Hex(data []byte) string {
 }
 
 func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src) //nolint:gosec // G304: src is a temp file from the build
+	sf, err := os.Open(src) //nolint:gosec // G304: src is a build pipeline temp file
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0o644) //nolint:gosec // G306
+	defer sf.Close() //nolint:errcheck
+
+	df, err := os.Create(dst) //nolint:gosec // G304: dst is a build pipeline output path
+	if err != nil {
+		return err
+	}
+
+	if _, err = io.Copy(df, sf); err != nil {
+		df.Close() //nolint:errcheck,gosec // G104: best-effort close on error path
+		return err
+	}
+	return df.Close()
 }

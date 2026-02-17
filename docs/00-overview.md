@@ -235,11 +235,12 @@ Phase 1 delivers a complete, production-ready VM lifecycle management system.
 
 Design docs: [00-overview](./00-overview.md) through [10-implementation-roadmap](./10-implementation-roadmap.md)
 
-### Phase 2: Advanced Features (Planned)
+### Phase 2: Advanced Features (Partially Implemented)
 
-Phase 2 adds interactive access, VM state management, fast provisioning, and networking.
+Phase 2 adds OCI VM image tooling, interactive access, VM state management, fast provisioning, and networking.
 
-- **Console** ([docs/12](./12-console.md)): Interactive bidirectional PTY console via `cocoon console`, dual-port strategy (serial for logs, virtio-console for interactive access), SSH-style escape sequences
+- **OCI VM Image Build/Push/Login** ([docs/04.1](./04.1-oci-vm-images.md)): `cocoon image build` extracts kernel/rootfs from cloud images, packages as OCI with custom media types; Cocoonfile customization (FROM/RUN/COPY/LABEL); `cocoon image push` to registries; `cocoon image login` for credential management -- **Implemented**
+- **Console** ([docs/12](./12-console.md)): Interactive bidirectional PTY console via `cocoon console`, dual-port strategy (serial for logs, virtio-console for interactive access), SSH-style escape sequences -- **Implemented**
 - **Pause/Resume** ([docs/13](./13-pause-resume.md)): New PAUSED state in the VM state machine, vCPU freeze/unfreeze via Cloud Hypervisor `vm.pause`/`vm.resume` API, prerequisite for checkpoint/restore
 - **Warm Start** ([docs/15](./15-warm-start.md)): VM checkpoint and restore for sub-second creation (~200ms vs 5-30s cold boot), golden checkpoint workflow, snapshot management with GC integration
 - **CNI Networking** ([docs/16](./16-networking.md)): CNI plugin integration for VM network attachment, TAP device bridging into VMs, IPAM (host-local/dhcp), port forwarding via portmap plugin, DNS injection
@@ -307,16 +308,20 @@ Cocoon is a general-purpose lightweight VM manager. Common use cases include:
 **Core (Phase 1)**:
 - **Hypervisor**: Cloud Hypervisor (Rust-based VMM, production-grade)
 - **Language**: Go 1.25+ (interface-driven, factory pattern)
-- **OCI Tools**: Buildah (daemonless)
+- **OCI Tools**: Buildah (daemonless), go-containerregistry (OCI image push/login)
 - **Storage**: qcow2 via qemu-img and libguestfs
 - **Firmware**: OVMF (UEFI via CLOUDHV.fd) for cloud images; direct kernel boot for OCI VM images (Phase 2)
 - **TPM**: swtpm (optional TPM 2.0 emulation)
 - **CLI Framework**: urfave/cli/v2
 - **Configuration**: JSON with sensible defaults
 
-**Phase 2 Additions**:
-- **Networking**: CNI plugins (bridge, macvlan, host-local IPAM, portmap)
+**Implemented (Phase 2)**:
+- **OCI VM Image Build**: `cocoon image build` (kernel/rootfs extraction, OCI packaging, Cocoonfile)
+- **OCI VM Image Push/Login**: `cocoon image push` + `cocoon image login` (go-containerregistry)
 - **Console**: virtio-console PTY via Cloud Hypervisor `vm.info` API
+
+**Planned (Phase 2)**:
+- **Networking**: CNI plugins (bridge, macvlan, host-local IPAM, portmap)
 - **Checkpoint**: Cloud Hypervisor `vm.snapshot`/`vm.restore` API
 
 ## Deployment Strategy
@@ -394,6 +399,7 @@ For quick evaluation:
 | [02-installation.md](./02-installation.md) | Installation | Implemented |
 | [03-hypervisor-integration.md](./03-hypervisor-integration.md) | Cloud Hypervisor Integration | Implemented |
 | [04-oci-conversion.md](./04-oci-conversion.md) | OCI to qcow2 Conversion | Implemented |
+| [04.1-oci-vm-images.md](./04.1-oci-vm-images.md) | OCI VM Image Format (build/push/login) | Implemented (partial) |
 | [05-storage-management.md](./05-storage-management.md) | Storage Management | Implemented |
 | [06-concurrency.md](./06-concurrency.md) | Concurrency Design | Implemented |
 | [07-vm-lifecycle.md](./07-vm-lifecycle.md) | VM Lifecycle Management | Implemented |
