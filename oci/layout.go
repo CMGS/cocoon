@@ -35,7 +35,7 @@ func InspectLayout(layoutPath string) (*LayoutInfo, error) {
 	}
 
 	var idx ociIndex
-	if err := json.Unmarshal(indexData, &idx); err != nil {
+	if err = json.Unmarshal(indexData, &idx); err != nil {
 		return nil, fmt.Errorf("parse index.json: %w", err)
 	}
 	if len(idx.Manifests) == 0 {
@@ -52,7 +52,7 @@ func InspectLayout(layoutPath string) (*LayoutInfo, error) {
 	}
 
 	var manifest ociManifest
-	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+	if err = json.Unmarshal(manifestData, &manifest); err != nil {
 		return nil, fmt.Errorf("parse manifest: %w", err)
 	}
 
@@ -63,18 +63,14 @@ func InspectLayout(layoutPath string) (*LayoutInfo, error) {
 	}
 
 	var vmConfig VMImageConfig
-	if err := json.Unmarshal(configData, &vmConfig); err != nil {
+	if err = json.Unmarshal(configData, &vmConfig); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
 	// 4. Build layer info list.
 	layers := make([]LayerInfo, 0, len(manifest.Layers))
 	for _, l := range manifest.Layers {
-		layers = append(layers, LayerInfo{
-			MediaType: l.MediaType,
-			Digest:    l.Digest,
-			Size:      l.Size,
-		})
+		layers = append(layers, LayerInfo(l))
 	}
 
 	return &LayoutInfo{

@@ -56,7 +56,7 @@ func Push(ctx context.Context, cfg *config.CocoonConfig, ref string) (*PushResul
 
 	// Push to registry using Cocoon's own keychain, falling back to Docker's default.
 	keychain := authn.NewMultiKeychain(CocoonKeychain(), authn.DefaultKeychain)
-	if err := remote.Write(tag, img, remote.WithAuthFromKeychain(keychain), remote.WithContext(ctx)); err != nil {
+	if err = remote.Write(tag, img, remote.WithAuthFromKeychain(keychain), remote.WithContext(ctx)); err != nil {
 		return nil, classifyPushError(err)
 	}
 
@@ -130,4 +130,3 @@ func isNetworkError(err error) bool {
 	}
 	return false
 }
-

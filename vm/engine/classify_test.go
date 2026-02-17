@@ -38,7 +38,7 @@ func TestClassifyError(t *testing.T) {
 		{
 			name:   "boot failure detected generic",
 			reason: `boot failed: boot failure detected: "some failure" matched pattern "fail"`,
-			want:   types.ErrorKernelPanic,
+			want:   types.ErrorBootFailure,
 		},
 
 		// CH launch failure

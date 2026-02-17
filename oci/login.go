@@ -74,7 +74,7 @@ func Login(ctx context.Context, registry, username, password string) error {
 		return fmt.Errorf("write config: %w", err)
 	}
 	if err := os.Rename(tmpFile, configPath); err != nil {
-		os.Remove(tmpFile) //nolint:errcheck
+		os.Remove(tmpFile) //nolint:errcheck,gosec // G104: best-effort cleanup
 		return fmt.Errorf("rename config: %w", err)
 	}
 
@@ -139,7 +139,7 @@ func (k *cocoonKeychain) Resolve(target authn.Resource) (authn.Authenticator, er
 	}
 
 	var cfg dockerAuthConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	if err = json.Unmarshal(data, &cfg); err != nil {
 		return authn.Anonymous, nil
 	}
 

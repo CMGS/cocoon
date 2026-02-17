@@ -56,8 +56,8 @@ func parseCocoonfile(scanner *bufio.Scanner) (*Cocoonfile, error) {
 		line := scanner.Text()
 
 		// Handle line continuation.
-		if strings.HasSuffix(line, "\\") {
-			current.WriteString(strings.TrimSuffix(line, "\\"))
+		if trimmed, ok := strings.CutSuffix(line, "\\"); ok {
+			current.WriteString(trimmed)
 			continue
 		}
 		current.WriteString(line)
@@ -132,11 +132,11 @@ func parseCocoonfile(scanner *bufio.Scanner) (*Cocoonfile, error) {
 
 // splitDirective splits a line into its directive keyword and remaining arguments.
 func splitDirective(line string) (string, string) {
-	idx := strings.IndexByte(line, ' ')
-	if idx < 0 {
+	directive, args, ok := strings.Cut(line, " ")
+	if !ok {
 		return line, ""
 	}
-	return line[:idx], strings.TrimSpace(line[idx+1:])
+	return directive, strings.TrimSpace(args)
 }
 
 // parseLabels parses one or more key=value or key="value" pairs from a LABEL line.

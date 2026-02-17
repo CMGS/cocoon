@@ -26,11 +26,11 @@ func classifyError(reason string) types.ErrorType {
 		return types.ErrorKernelPanic
 	}
 
-	// Boot failure detected: waitForBoot matched a failure pattern (e.g., panic,
-	// missing init, etc.). If it was a kernel panic, the check above already
-	// caught it, so this is a generic boot failure.
+	// Boot failure detected: waitForBoot matched a failure pattern (e.g.,
+	// missing init, failed to execute /init). If it was a kernel panic, the
+	// check above already caught it, so this is a generic boot failure.
 	if strings.Contains(lower, "boot failure detected") {
-		return types.ErrorKernelPanic
+		return types.ErrorBootFailure
 	}
 
 	// Cloud Hypervisor launch failures.

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // IsProcessAlive checks if a process with the given PID exists.
@@ -30,7 +31,9 @@ func ValidateProcess(pid int, expectedName string) bool {
 	return validateProcessImpl(pid, expectedName)
 }
 
-// ForceKillProcess sends SIGKILL to a process and waits for exit.
+// ForceKillProcess sends SIGKILL to a process and polls until it exits.
+// After Release(), the process is no longer a child, so Wait() would fail
+// with ECHILD. Instead we poll IsProcessAlive with a short timeout.
 func ForceKillProcess(pid int) error {
 	process, err := os.FindProcess(pid)
 	if err != nil {
@@ -39,8 +42,16 @@ func ForceKillProcess(pid int) error {
 	if err := process.Signal(syscall.SIGKILL); err != nil {
 		return fmt.Errorf("kill process %d: %w", pid, err)
 	}
-	_, _ = process.Wait()
-	return nil
+	// Poll for exit — SIGKILL is unconditional but the kernel needs a
+	// brief window to tear down the process.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !IsProcessAlive(pid) {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return fmt.Errorf("process %d still alive after SIGKILL timeout", pid)
 }
 
 // WritePIDFile writes a PID to a file.

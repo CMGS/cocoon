@@ -55,14 +55,14 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 	workImage := imagePath
 	if cf != nil && len(cf.Steps) > 0 {
 		workCopy := filepath.Join(tmpDir, "work.qcow2")
-		if err := copyFile(imagePath, workCopy); err != nil {
+		if err = copyFile(imagePath, workCopy); err != nil {
 			return nil, fmt.Errorf("copy image for customization: %w", err)
 		}
 		workImage = workCopy
 
 		// Apply each RUN/COPY step via virt-customize.
 		for i, step := range cf.Steps {
-			if err := applyStep(ctx, workImage, step); err != nil {
+			if err = applyStep(ctx, workImage, step); err != nil {
 				return nil, fmt.Errorf("Cocoonfile step %d (%s): %w", i+1, step.Type, err)
 			}
 		}
@@ -83,10 +83,10 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 	kernelLocal := filepath.Join(tmpDir, "vmlinuz")
 	initrdLocal := filepath.Join(tmpDir, "initrd.img")
 
-	if err := extractGuestFile(ctx, workImage, ki.KernelPath, kernelLocal); err != nil {
+	if err = extractGuestFile(ctx, workImage, ki.KernelPath, kernelLocal); err != nil {
 		return nil, fmt.Errorf("extract kernel: %w", err)
 	}
-	if err := extractGuestFile(ctx, workImage, ki.InitrdPath, initrdLocal); err != nil {
+	if err = extractGuestFile(ctx, workImage, ki.InitrdPath, initrdLocal); err != nil {
 		return nil, fmt.Errorf("extract initrd: %w", err)
 	}
 
@@ -105,7 +105,7 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 
 	// Step 6: Extract rootfs as tar, rewrite deterministically.
 	rawTarPath := filepath.Join(tmpDir, "rootfs-raw.tar")
-	if err := extractRootfsTar(ctx, workImage, rawTarPath); err != nil {
+	if err = extractRootfsTar(ctx, workImage, rawTarPath); err != nil {
 		return nil, fmt.Errorf("extract rootfs: %w", err)
 	}
 
@@ -199,7 +199,7 @@ func listBootFiles(ctx context.Context, imagePath string) ([]string, error) {
 	}
 
 	var files []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -284,15 +284,15 @@ func assembleOCILayout(
 	}
 	configDigest := sha256Hex(configJSON)
 	configSize := int64(len(configJSON))
-	if err := os.WriteFile(filepath.Join(blobsDir, configDigest), configJSON, 0o644); err != nil { //nolint:gosec // G306
+	if err = os.WriteFile(filepath.Join(blobsDir, configDigest), configJSON, 0o644); err != nil { //nolint:gosec // G306
 		return "", fmt.Errorf("write config blob: %w", err)
 	}
 
 	// 2. Copy layer tars into blobs dir.
-	if err := copyFile(kernelTarPath, filepath.Join(blobsDir, kernelDigest)); err != nil {
+	if err = copyFile(kernelTarPath, filepath.Join(blobsDir, kernelDigest)); err != nil {
 		return "", fmt.Errorf("copy kernel layer: %w", err)
 	}
-	if err := copyFile(rootfsTarPath, filepath.Join(blobsDir, rootfsDigest)); err != nil {
+	if err = copyFile(rootfsTarPath, filepath.Join(blobsDir, rootfsDigest)); err != nil {
 		return "", fmt.Errorf("copy rootfs layer: %w", err)
 	}
 
@@ -325,13 +325,13 @@ func assembleOCILayout(
 	}
 	manifestDigest := sha256Hex(manifestJSON)
 	manifestSize := int64(len(manifestJSON))
-	if err := os.WriteFile(filepath.Join(blobsDir, manifestDigest), manifestJSON, 0o644); err != nil { //nolint:gosec // G306
+	if err = os.WriteFile(filepath.Join(blobsDir, manifestDigest), manifestJSON, 0o644); err != nil { //nolint:gosec // G306
 		return "", fmt.Errorf("write manifest blob: %w", err)
 	}
 
 	// 4. Write oci-layout file.
 	ociLayout := `{"imageLayoutVersion":"1.0.0"}`
-	if err := os.WriteFile(filepath.Join(layoutDir, "oci-layout"), []byte(ociLayout+"\n"), 0o644); err != nil { //nolint:gosec // G306
+	if err = os.WriteFile(filepath.Join(layoutDir, "oci-layout"), []byte(ociLayout+"\n"), 0o644); err != nil { //nolint:gosec // G306
 		return "", fmt.Errorf("write oci-layout: %w", err)
 	}
 
@@ -351,7 +351,7 @@ func assembleOCILayout(
 	if err != nil {
 		return "", fmt.Errorf("marshal index: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(layoutDir, "index.json"), append(indexJSON, '\n'), 0o644); err != nil { //nolint:gosec // G306
+	if err = os.WriteFile(filepath.Join(layoutDir, "index.json"), append(indexJSON, '\n'), 0o644); err != nil { //nolint:gosec // G306
 		return "", fmt.Errorf("write index.json: %w", err)
 	}
 
