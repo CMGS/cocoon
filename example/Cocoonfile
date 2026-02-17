@@ -1,0 +1,7 @@
+# Example Cocoonfile for Cocoon VM image build
+FROM https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+
+RUN echo 'root:eruCocoon' | chpasswd
+
+LABEL maintainer="cocoon"
+LABEL base="ubuntu-noble"
