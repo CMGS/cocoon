@@ -134,10 +134,10 @@ Phase 2 Planned Paths:
 │   └── (Future: /run/cocoon/vms/{vm-id}/console.lock — advisory lock to
 │         prevent concurrent attach; deferred beyond Phase 2 v1.0)
 │
-├── Pause/Resume (docs/13-pause-resume.md)
-│   │   No new on-disk paths. Pause state is tracked in the existing
-│   │   metadata.json via the paused_at field and state=PAUSED.
-│   │   CH state is queried via GET /api/v1/vm.info for reconciliation.
+├── Pause/Resume (docs/13-pause-resume.md) — Phase 2, not yet implemented
+│   │   No new on-disk paths planned. Pause state will be tracked in the
+│   │   existing metadata.json via a paused_at field and state=PAUSED.
+│   │   CH state queried via GET /api/v1/vm.info for reconciliation.
 │   │
 │   └── (No additional files)
 │

@@ -98,82 +98,46 @@ Without locking, all three would:
 
 ### Solution: File-Based Per-Image Lock
 
-Lock on the image checksum using file locks (flock) to ensure cross-process safety:
+Lock on the image checksum using file locks (flock) to ensure cross-process safety.
+
+The implementation uses the `lock.Locker` interface (`lock/lock.go`) with an
+`flock(2)` backend (`lock/flock/flock.go`). Each image's lock path is derived
+from the content-addressed base key via `CocoonConfig.ConversionLockPath(baseKey)`:
 
 ```go
-package storage
+// lock/lock.go — interface for cross-process mutual exclusion.
+package lock
 
-import (
-    "fmt"
-    "os"
-    "path/filepath"
-    "syscall"
-)
-
-// ImageLockManager manages file-based locks for image conversion operations
-type ImageLockManager struct {
-    lockDir string
+type Locker interface {
+    Lock() error             // Acquire exclusive lock (blocks).
+    TryLock() (bool, error)  // Non-blocking attempt; false if held.
+    Unlock() error           // Release lock. File is NOT deleted.
+    Path() string            // Lock file path.
 }
+```
 
-// NewImageLockManager creates a new lock manager
-func NewImageLockManager(storageDir string) *ImageLockManager {
-    lockDir := filepath.Join(storageDir, "cache", "locks")
-    os.MkdirAll(lockDir, 0755)
-    return &ImageLockManager{
-        lockDir: lockDir,
-    }
+```go
+// lock/flock/flock.go — flock(2) implementation of lock.Locker.
+package flock
+
+func New(path string) lock.Locker  // Create a Locker for the given path.
+```
+
+```go
+// config/config.go — per-image lock path helper.
+func (c *CocoonConfig) ConversionLockPath(baseKey string) string {
+    return filepath.Join(c.RootDir, "cache", "locks", baseKey+".lock")
 }
+```
 
-// LockImage acquires the file lock for a specific image identity.
-// The lock key matches the cache filename: {checksum}_{arch}.
-// Returns lock file handle that must be closed to release the lock.
-func (m *ImageLockManager) LockImage(checksum, arch string) (*os.File, error) {
-    lockPath := filepath.Join(m.lockDir, checksum+"_"+arch+".lock")
+Usage (from `image/pipeline/manager.go`):
 
-    // Open or create lock file
-    lockFile, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0644)
-    if err != nil {
-        return nil, fmt.Errorf("failed to open lock file: %w", err)
-    }
-
-    // Acquire exclusive file lock (blocks if another process holds it)
-    err = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX)
-    if err != nil {
-        lockFile.Close()
-        return nil, fmt.Errorf("failed to acquire lock: %w", err)
-    }
-
-    return lockFile, nil
-}
-
-// TryLockImage attempts to acquire the lock without blocking.
-// Returns (lock file, true) if successful, (nil, false) if already locked.
-func (m *ImageLockManager) TryLockImage(checksum, arch string) (*os.File, bool) {
-    lockPath := filepath.Join(m.lockDir, checksum+"_"+arch+".lock")
-
-    lockFile, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0644)
-    if err != nil {
-        return nil, false
-    }
-
-    // Try to acquire lock without blocking
-    err = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-    if err != nil {
-        lockFile.Close()
-        return nil, false
-    }
-
-    return lockFile, true
-}
-
-// UnlockImage releases the lock by closing the file
-// The defer pattern ensures lock is released even on panic
-func (m *ImageLockManager) UnlockImage(lockFile *os.File) {
-    if lockFile != nil {
-        // Flock is automatically released when file is closed
-        lockFile.Close()
-    }
-}
+```go
+lockPath := m.cfg.ConversionLockPath(baseKey)
+fl := flock.New(lockPath)
+if err := fl.Lock(); err != nil { return err }
+defer fl.Unlock()
+// ... convert image inside lock ...
 ```
 
 ### Usage Pattern
@@ -731,9 +695,8 @@ import (
 )
 
 type Reconciler struct {
-    vmDir      string
-    refs       *storage.ReferenceCounter
-    imageLocks *storage.ImageLockManager
+    vmDir string
+    refs  *storage.ReferenceCounter
 }
 
 type Orphan struct {

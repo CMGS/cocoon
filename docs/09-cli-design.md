@@ -640,13 +640,12 @@ func runCommand() *cli.Command {
 
 **Behavior**:
 
-1. **Create VM Configuration**: Generate VM ID, resolve image, prepare COW overlay
-2. **Start Cloud Hypervisor**: Launch CH process, configure via REST, boot VM
-3. **Wait for Boot**: Poll serial log for boot completion (timeout: config default)
-4. **Print VM ID**: Output the created VM ID
-5. **Background behavior**: VM runs as a background CH process. Serial log is written to disk; use `cocoon logs --follow` to stream.
+1. **Create VM** (`vmMgr.Create`): Generate VM ID, resolve image, prepare COW overlay, pin reference, register name, transition to CREATED.
+2. **Print VM ID**: Output the VM ID immediately after Create, **before** boot detection. This allows scripts to capture the ID for cleanup even if Start fails (see `cmd/cocoon/run.go` rationale comment).
+3. **Start VM** (`vmMgr.Start`): Launch CH process, configure via REST, boot VM, poll serial log for boot completion (timeout: config default), transition to RUNNING.
+4. **Background behavior**: VM runs as a background CH process. Serial log is written to disk; use `cocoon logs --follow` to stream.
    > **Phase 1 note**: All runs are background (CH process). The `--detach/-d` flag is accepted but is a no-op. In Phase 2, non-detach runs will attach to the serial log automatically; `--detach/-d` will then control attach vs. detach mode.
-6. **Auto-remove** (if `--rm`): The `AutoRemove` flag is recorded in metadata. When the VM is stopped via `cocoon stop`, the delete flow is triggered automatically. Note: if the VM crashes or is killed externally, auto-remove does not fire. Use `cocoon doctor --fix` for state reconciliation; automatic deletion of crashed `auto_remove` VMs is a future enhancement.
+5. **Auto-remove** (if `--rm`): The `AutoRemove` flag is recorded in metadata after Start succeeds. When the VM is stopped via `cocoon stop`, the delete flow is triggered automatically. Note: if the VM crashes or is killed externally, auto-remove does not fire. Use `cocoon doctor --fix` for state reconciliation; automatic deletion of crashed `auto_remove` VMs is a future enhancement.
 
 **Example Usage**:
 
