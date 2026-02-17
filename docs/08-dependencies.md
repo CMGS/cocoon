@@ -32,6 +32,7 @@ The following Go libraries are used by Cocoon and managed via `go.mod`:
 | `github.com/urfave/cli/v2` | CLI framework | `cmd/cocoon/` |
 | `github.com/oklog/ulid/v2` | ULID-based VM ID generation | `utils/id.go` |
 | `github.com/google/go-containerregistry` | OCI image push and registry authentication | `oci/push.go`, `oci/login.go` |
+| `github.com/docker/go-units` | Human-readable memory/size parsing (K, M, G, T, Ki, Mi, Gi) | `cmd/cocoon/create.go` |
 | `golang.org/x/term` | Terminal password input (hidden) for `cocoon image login` | `cmd/cocoon/images.go` |
 
 ## Core Dependencies

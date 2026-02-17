@@ -106,6 +106,9 @@ cocoon/
 │   │   ├── verify_darwin.go  # Stub: returns "Linux only" error
 │   │   ├── cleanup_linux.go  # buildah umount + rm
 │   │   └── cleanup_darwin.go # No-op
+│   ├── refcache/
+│   │   ├── index.go             # Manifest ref-cache: IMAGE_REF → base_key mapping
+│   │   └── index_test.go
 │   └── mocks/
 │       └── mock.go
 ├── oci/
@@ -138,20 +141,21 @@ cocoon/
 │   │   ├── boot_detect.go    # waitForBoot: serial log polling for boot patterns
 │   │   ├── boot_detect_test.go
 │   │   ├── name_index.go     # Name ↔ vm_id resolution
-│   │   └── reconcile.go      # VM state reconciliation logic
+│   │   ├── reconcile.go      # VM state reconciliation logic
+│   │   └── classify.go       # Error classification (reason → ErrorType)
 │   └── mocks/
 │       └── mock.go
 ├── types/
 │   ├── boot.go               # BootStrategy, BootConfig, DefaultBootStrategy
 │   ├── config.go             # VMConfig (immutable, written at create)
-│   ├── errors.go             # ErrorType (14 constants), ClassifiedError
+│   ├── errors.go             # ErrorType (15 constants), ClassifiedError
 │   ├── inspect.go            # VMInspect (merged config + metadata view)
 │   ├── metadata.go           # VMMetadataFile (mutable runtime state)
 │   ├── reference.go          # NameIndex, Reference types
 │   ├── state.go              # VMState (8 states), ValidateTransition
 │   └── state_test.go
 ├── lock/
-│   ├── interface.go          # Locker interface (Lock, TryLock, Unlock, Path)
+│   ├── lock.go               # Locker interface (Lock, TryLock, Unlock, Path)
 │   ├── flock/
 │   │   ├── flock.go          # flock(2) implementation
 │   │   └── flock_test.go
@@ -557,7 +561,7 @@ func initCommand() *cli.Command {
 **Behavior**:
 
 1. Build config from `config.DefaultConfig()`, apply `--root-dir`, `--runtime-dir`, `--log-dir` overrides
-2. Create all directories via `cfg.EnsureDirs()` (db/, cache/images/, cache/manifests/, cache/locks/, vms/, temp/, trash/, firmware/, buildah/, runtime/vms/, log/)
+2. Create all directories via `cfg.EnsureDirs()` (db/, cache/images/, cache/manifests/, cache/locks/, cache/oci-builds/, vms/, temp/, trash/, firmware/, buildah/, runtime/vms/, log/)
 3. If `--with-uefi-firmware URL`: download to `firmware/CLOUDHV.fd` (0644), atomic rename
 4. Write `config.json` to `--config` path (default `/etc/cocoon/config.json`); skip if exists unless `--force`
 5. Print "Done. Run 'cocoon doctor' to verify system dependencies."

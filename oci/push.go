@@ -106,10 +106,10 @@ func classifyPushError(err error) error {
 		"connection refused",
 		"connection reset",
 		"EOF",
-		"500",
-		"502",
-		"503",
-		"429",
+		"INTERNAL_ERROR",
+		"BAD_GATEWAY",
+		"SERVICE_UNAVAILABLE",
+		"TOO_MANY_REQUESTS",
 	}
 	for _, p := range transientPatterns {
 		if strings.Contains(errStr, p) {

@@ -104,6 +104,9 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 	if err != nil {
 		return nil, fmt.Errorf("read PARTUUID: %w", err)
 	}
+	if !isValidUUID(partUUID) {
+		return nil, fmt.Errorf("invalid PARTUUID format %q (expected UUID)", partUUID)
+	}
 
 	// Step 6: Extract rootfs as tar, rewrite deterministically.
 	rawTarPath := filepath.Join(tmpDir, "rootfs-raw.tar")
@@ -124,10 +127,14 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 
 	// Step 7-8: Build config blob and assemble OCI layout.
 	arch := runtime.GOARCH
+	memMB := cfg.DefaultMemoryMB
+	if memMB < 0 || memMB > 1<<31-1 {
+		return nil, fmt.Errorf("default_memory_mb %d out of range", memMB)
+	}
 	vmConfig := &VMImageConfig{
 		Arch:            arch,
 		DefaultCPUs:     cfg.DefaultCPUs,
-		DefaultMemoryMB: int(cfg.DefaultMemoryMB),
+		DefaultMemoryMB: int(memMB),
 		KernelCmdline: fmt.Sprintf(
 			"console=hvc0 root=PARTUUID=%s ro quiet",
 			partUUID,
@@ -148,6 +155,7 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 
 	manifestDigest, err := assembleOCILayout(layoutDir, vmConfig, kernelTarPath, kernelDigest, kernelSize, rootfsTarPath, rootfsDigest, rootfsSize)
 	if err != nil {
+		os.RemoveAll(layoutDir) //nolint:errcheck,gosec // best-effort cleanup of partial layout
 		return nil, fmt.Errorf("assemble OCI layout: %w", err)
 	}
 
@@ -253,6 +261,10 @@ inspect-os
 	disk, partNum, err := parseDevicePartition(root)
 	if err != nil {
 		return "", fmt.Errorf("parse root device %s: %w", root, err)
+	}
+	// Validate device path to prevent guestfish script injection.
+	if !strings.HasPrefix(disk, "/dev/") {
+		return "", fmt.Errorf("unexpected device path %q from inspect-os (expected /dev/...)", disk)
 	}
 
 	script2 := fmt.Sprintf(`add %s
@@ -413,7 +425,10 @@ func assembleOCILayout(
 	return manifestDigest, nil
 }
 
-// validateSafePath checks that a path contains only safe characters for guestfish.
+// validateSafePath checks that a path contains only safe characters for embedding
+// in guestfish scripts. This prevents shell injection via paths passed to guestfish
+// commands like 'add', 'tar-out', and 'part-get-gpt-guid'.
+// Used for both user-provided image paths and internal temp paths.
 func validateSafePath(path string) error {
 	if strings.Contains(path, "..") {
 		return fmt.Errorf("path traversal not allowed in %q", path)
@@ -432,6 +447,25 @@ func validateSafePath(path string) error {
 func sha256Hex(data []byte) string {
 	h := sha256.Sum256(data)
 	return hex.EncodeToString(h[:])
+}
+
+// isValidUUID checks that s matches UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.
+func isValidUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, c := range s {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if c != '-' {
+				return false
+			}
+		} else {
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func copyFile(src, dst string) error {

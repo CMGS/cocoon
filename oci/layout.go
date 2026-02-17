@@ -88,6 +88,12 @@ func readBlob(layoutPath, digest string) ([]byte, error) {
 		return nil, fmt.Errorf("unsupported digest format: %s", digest)
 	}
 	hex := digest[7:]
+	// Validate hex part contains only hexadecimal characters to prevent path traversal.
+	for _, c := range hex {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return nil, fmt.Errorf("invalid character in digest hex: %s", digest)
+		}
+	}
 	blobPath := filepath.Join(layoutPath, "blobs", "sha256", hex)
 	data, err := os.ReadFile(blobPath) //nolint:gosec // G304: path derived from local OCI layout
 	if err != nil {

@@ -512,7 +512,10 @@ func imageBuildAction(c *cli.Context) error {
 	var imagePath string
 
 	if cocoonfilePath != "" {
-		// Parse the Cocoonfile to determine FROM.
+		// Parse the Cocoonfile to determine the FROM base image.
+		// NOTE: The builder adapter will re-parse the Cocoonfile from the same
+		// path. This double-parse is acceptable because the Cocoonfile is a
+		// local file under the user's control (no TOCTOU risk in practice).
 		cf, parseErr := oci.ParseCocoonfile(cocoonfilePath)
 		if parseErr != nil {
 			return fmt.Errorf("parse Cocoonfile: %w", parseErr)

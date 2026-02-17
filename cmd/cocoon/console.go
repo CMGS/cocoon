@@ -199,6 +199,16 @@ func relayConsole(ctx context.Context, pty *os.File, escapeChar byte) error {
 	var firstErr error
 	select {
 	case <-ctx.Done():
+		// Context was canceled (one of the goroutines called cancel()).
+		// Drain errCh to check if a real error was reported concurrently,
+		// since select picks randomly when both cases are ready.
+		select {
+		case err := <-errCh:
+			if err != nil && !errors.Is(err, io.EOF) && !isEIO(err) {
+				return err
+			}
+		default:
+		}
 		return nil
 	case firstErr = <-errCh:
 	}

@@ -244,6 +244,7 @@ Phase 2 adds OCI VM image tooling, interactive access, VM state management, fast
 - **Pause/Resume** ([docs/13](./13-pause-resume.md)): New PAUSED state in the VM state machine, vCPU freeze/unfreeze via Cloud Hypervisor `vm.pause`/`vm.resume` API, prerequisite for checkpoint/restore
 - **Warm Start** ([docs/15](./15-warm-start.md)): VM checkpoint and restore for sub-second creation (~200ms vs 5-30s cold boot), golden checkpoint workflow, snapshot management with GC integration
 - **CNI Networking** ([docs/16](./16-networking.md)): CNI plugin integration for VM network attachment, TAP device bridging into VMs, IPAM (host-local/dhcp), port forwarding via portmap plugin, DNS injection
+- **Volume Passthrough** ([docs/17](./17-volume-passthrough.md)): Host directory and volume sharing with VMs via virtiofs
 
 ### Phase 3: Hardware and Ecosystem (Future)
 
@@ -399,7 +400,7 @@ For quick evaluation:
 | [02-installation.md](./02-installation.md) | Installation | Implemented |
 | [03-hypervisor-integration.md](./03-hypervisor-integration.md) | Cloud Hypervisor Integration | Implemented |
 | [04-oci-conversion.md](./04-oci-conversion.md) | OCI to qcow2 Conversion | Implemented |
-| [04.1-oci-vm-images.md](./04.1-oci-vm-images.md) | OCI VM Image Format (build/push/login) | Implemented (partial) |
+| [04.1-oci-vm-images.md](./04.1-oci-vm-images.md) | OCI VM Image Format (build/push/login/inspect) | Implemented (build/push/login/inspect); direct kernel boot planned |
 | [05-storage-management.md](./05-storage-management.md) | Storage Management | Implemented |
 | [06-concurrency.md](./06-concurrency.md) | Concurrency Design | Implemented |
 | [07-vm-lifecycle.md](./07-vm-lifecycle.md) | VM Lifecycle Management | Implemented |
@@ -416,6 +417,7 @@ For quick evaluation:
 | [13-pause-resume.md](./13-pause-resume.md) | VM Pause and Resume | Planned |
 | [15-warm-start.md](./15-warm-start.md) | VM Warm Start (Checkpoint/Restore) | Planned |
 | [16-networking.md](./16-networking.md) | CNI Networking | Planned |
+| [17-volume-passthrough.md](./17-volume-passthrough.md) | Volume Passthrough (virtiofs) | Planned |
 
 ### Phase 3: Hardware and Ecosystem
 
