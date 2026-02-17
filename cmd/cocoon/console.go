@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -83,10 +84,11 @@ func consoleAction(c *cli.Context) error {
 		return fmt.Errorf("unexpected PTY path %q (expected /dev/pts/*)", ptyPath)
 	}
 
-	// Open PTY device.
+	// Open PTY device. Note: there is an inherent TOCTOU window between the
+	// state check above and this open — the VM may stop in between.
 	pty, err := os.OpenFile(ptyPath, os.O_RDWR, 0) //nolint:gosec // G304: PTY path validated above
 	if err != nil {
-		return fmt.Errorf("open console PTY %s: %w", ptyPath, err)
+		return fmt.Errorf("open console PTY %s (is the VM still running?): %w", ptyPath, err)
 	}
 	defer pty.Close() //nolint:errcheck // best-effort cleanup
 
@@ -94,7 +96,7 @@ func consoleAction(c *cli.Context) error {
 	// render correctly and don't trigger the "Disconnected" defer message.
 	escapeCharStr := c.String("escape-char")
 	if len(escapeCharStr) != 1 {
-		return fmt.Errorf("--escape-char must be a single character, got %q", escapeCharStr)
+		return fmt.Errorf("--escape-char must be a single ASCII character, got %q", escapeCharStr)
 	}
 	escapeChar := escapeCharStr[0]
 
@@ -170,13 +172,17 @@ func relayConsole(ctx context.Context, pty *os.File, escapeChar byte) error {
 		cancel()
 	}()
 
-	// Wait for either goroutine to finish.
+	// Wait for either goroutine to finish. The second goroutine may outlive
+	// this function: the stdin goroutine can block on os.Stdin.Read() (see
+	// note above), and the PTY goroutine will unblock when pty.Close() runs
+	// in consoleAction's defer. The errCh buffer of 2 prevents either
+	// goroutine from deadlocking on its send.
 	select {
 	case <-ctx.Done():
 		return nil
 	case err := <-errCh:
 		// EOF or clean disconnect is not an error.
-		if err == nil || err == io.EOF {
+		if err == nil || errors.Is(err, io.EOF) {
 			return nil
 		}
 		return err
