@@ -13,8 +13,9 @@ This document describes the storage management strategy for the Cocoon AI Agent 
 
 ### Canonical Filesystem Layout (Normative)
 
-**This section is the single source of truth for all Cocoon filesystem paths.**
+**This section is the single source of truth for Cocoon filesystem paths.**
 Other documents MUST reference this section rather than defining their own paths.
+Lock file paths are additionally documented in [06-concurrency.md](./06-concurrency.md) § Lock File Locations, which is the SSOT for the lock hierarchy and lock-specific semantics.
 
 ```
 /var/lib/cocoon/                          # Persistent root (survives reboot)

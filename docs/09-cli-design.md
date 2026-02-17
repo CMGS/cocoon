@@ -1738,10 +1738,9 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
     }
     ```
     Followed by `PUT /api/v1/vm.boot` to start the VM.
-12. **Wait for boot** → Poll serial log for boot completion marker (timeout: 60s)
-13. **Update metadata** → Transition to RUNNING state, write runtime fields (PID, socket path) to `metadata.json`. Note: `config.json` is immutable after step 6 and is never rewritten.
-14. **Print VM ID** → Output `vm_id` to stdout for scripting
-15. **Auto-remove bookkeeping** → If `--rm`, set `AutoRemove=true` in metadata; delete is triggered when the VM is later stopped via `cocoon stop` (crash/external-kill: `cocoon doctor --fix` performs state reconciliation; automatic deletion of crashed `auto_remove` VMs is a future enhancement)
+12. **Print VM ID** → Output `vm_id` to stdout immediately after Create, **before** boot detection. This allows scripts to capture the ID for cleanup even if Start fails (see `cmd/cocoon/run.go` rationale).
+13. **Start → Wait for boot** → `vmMgr.Start()`: launch CH process, poll serial log for boot completion marker (timeout: 60s), transition to RUNNING, write runtime fields (PID, socket path) to `metadata.json`. Note: `config.json` is immutable after step 6 and is never rewritten.
+14. **Auto-remove bookkeeping** → If `--rm`, set `AutoRemove=true` in metadata after Start succeeds; delete is triggered when the VM is later stopped via `cocoon stop` (crash/external-kill: `cocoon doctor --fix` performs state reconciliation; automatic deletion of crashed `auto_remove` VMs is a future enhancement)
 
 **Failure cleanup**: If any step after 6 (in Create) fails, the cleanup path must:
 - `RemoveName(cfg, name)` — release the name-index entry
@@ -1972,7 +1971,7 @@ This CLI design implements the Boot Contract specification:
   - [x] `cocoon image rm` with reference checking
 
 - [x] **Storage** (`storage/local/`):
-  - [x] Implement StorageManager interface (`storage/storage.go`, `storage/local/cow.go`)
+  - [x] Implement COWManager interface (`storage/storage.go`, `storage/local/cow.go`)
   - [x] COW overlay creation (`storage/local/cow.go`)
   - [x] Reference counter integration (`storage/local/refcount.go`)
   - [x] `cocoon gc` command (`cmd/cocoon/gc.go`, `storage/local/gc.go`)

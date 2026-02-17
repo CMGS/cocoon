@@ -1564,12 +1564,10 @@ func (m *manager) determineActualState(meta *types.VMMetadataFile, vmCfg *types.
     case types.VMStateError:
         return types.VMStateError
 
-    // Phase 2 — PAUSED state handling (see [13-pause-resume.md](./13-pause-resume.md))
-    case types.VMStatePaused:
-        if processValid && socketConnectable {
-            return types.VMStatePaused // Process alive + socket OK → still paused (Phase 2)
-        }
-        return types.VMStateError // Process dead or socket gone → ERROR (Phase 2)
+    // Phase 2 — PAUSED state handling (not in Phase 1 types/state.go):
+    // When VMStatePaused is added in Phase 2 (see [13-pause-resume.md](./13-pause-resume.md)):
+    //   - Process alive + socket OK → remain PAUSED
+    //   - Process dead or socket gone → transition to ERROR
 
     case types.VMStateCreating:
         return types.VMStateError // Creation did not complete
