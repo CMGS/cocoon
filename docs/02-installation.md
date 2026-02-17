@@ -292,7 +292,7 @@ cloud-hypervisor \
     --disk path=/tmp/test-disk.raw \
     --cpus boot=1 \
     --memory size=512M \
-    --console off \
+    --console pty \
     --serial tty &
 
 # Allow VM to boot

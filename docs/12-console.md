@@ -998,7 +998,7 @@ beyond Phase 2 v1.0.
 
 ### 10.2 Interaction with Other Phase 2 Features
 
-- **Pause/Resume** ([13-pause-resume.md](./13-pause-resume.md)): Console can be attached to a PAUSED VM. The PTY remains open but no guest output arrives while paused. Input typed while the VM is paused is buffered in the kernel PTY buffer and delivered to the guest when the VM is resumed. If more than ~4 KB is typed while paused, excess input may be dropped (kernel PTY buffer limit). On resume, output resumes.
+- **Pause/Resume** ([13-pause-resume.md](./13-pause-resume.md)): When pause/resume is implemented, console will be attachable to a PAUSED VM. The PTY remains open but no guest output arrives while paused. Input typed while the VM is paused is buffered in the kernel PTY buffer and delivered to the guest when the VM is resumed. If more than ~4 KB is typed while paused, excess input may be dropped (kernel PTY buffer limit). On resume, output resumes. (Currently only RUNNING VMs are supported — see step [2] in Section 2.1.)
 - **Checkpoint/Restore** ([15-warm-start.md](./15-warm-start.md)): On checkpoint restore, Cloud Hypervisor allocates a new PTY with a different path. `cocoon console` discovers the PTY path dynamically via `GET /api/v1/vm.info`, so it works correctly on restored VMs without additional configuration.
 - **Device Passthrough** ([14-device-passthrough.md](./14-device-passthrough.md)): Console is independent of device passthrough. Both can coexist on the same VM.
 

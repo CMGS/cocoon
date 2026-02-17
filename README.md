@@ -4,7 +4,7 @@ Lightweight VM manager built on Cloud Hypervisor.
 
 ## Features
 
-- **UEFI boot** -- CLOUDHV.fd UEFI firmware by default, with direct kernel boot for OCI VM images
+- **UEFI boot** -- CLOUDHV.fd UEFI firmware by default (direct kernel boot for OCI VM images planned for Phase 2)
 - **TPM 2.0 emulation** -- optional swtpm integration via `--tpm` flag for measured boot and guest attestation
 - **Content-addressed image cache** -- base images deduplicated by SHA-256 checksum
 - **COW overlays** -- qcow2 copy-on-write disks backed by shared base images
@@ -18,7 +18,7 @@ Lightweight VM manager built on Cloud Hypervisor.
 
 - Linux with KVM (x86_64 or aarch64)
 - Root access (sudo)
-- [Cloud Hypervisor](https://github.com/cloud-hypervisor/cloud-hypervisor) v50.0+
+- [Cloud Hypervisor](https://github.com/cloud-hypervisor/cloud-hypervisor) v38.0+
 - `qemu-img` (from qemu-utils package)
 - UEFI firmware (`CLOUDHV.fd`)
 - Go 1.25+ (build only)
@@ -74,6 +74,7 @@ cocoon delete <vm>
 | `cocoon list` | List VMs (aliases: `ps`, `ls`) |
 | `cocoon inspect VM` | Display detailed VM information as JSON |
 | `cocoon logs VM` | View VM serial console logs |
+| `cocoon console VM` | Attach an interactive console to a running VM |
 | `cocoon image list` | List cached base images (alias: `ls`) |
 | `cocoon image pull IMAGE_REF` | Pull and cache an image without creating a VM |
 | `cocoon image inspect IMAGE_REF` | Show details of a cached image |

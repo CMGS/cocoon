@@ -222,7 +222,7 @@ ls -la /sbin/init  # Should be symlink to systemd
 ```bash
 cloud-hypervisor \
   --serial file=/var/log/cocoon/vm-123-serial.log \
-  --console off
+  --console pty
 ```
 
 **Serial Log Format**:

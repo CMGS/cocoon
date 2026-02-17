@@ -1012,7 +1012,7 @@ func TestReconcilePausedWithRunningProcess(t *testing.T) {
 
 ### 9.2 Interaction with Other Phase 2 Features
 
-- **Console** ([12-console.md](./12-console.md)): Console can be attached to a PAUSED VM. The PTY remains open but no guest output arrives while paused. On resume, output resumes normally.
+- **Console** ([12-console.md](./12-console.md)): When pause/resume is implemented, console will be attachable to a PAUSED VM (`consoleAction` currently only allows RUNNING — see TODO in console.go). The PTY remains open but no guest output arrives while paused. On resume, output resumes normally.
 - **Warm Start** ([15-warm-start.md](./15-warm-start.md)): Pause is a prerequisite for consistent checkpointing. The checkpoint workflow pauses the VM, captures state and disk, then optionally resumes. The `--live` flag on `cocoon checkpoint` automates the pause/checkpoint/resume cycle.
 - **Device Passthrough** ([14-device-passthrough.md](./14-device-passthrough.md)): VMs with passthrough devices can be paused and resumed. Device state is preserved because the VFIO binding is maintained. However, passthrough devices prevent checkpointing (a limitation of CH, not of pause/resume).
 

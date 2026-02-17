@@ -69,6 +69,9 @@ cocoon/
 │   ├── ps.go                 # cocoon list/ps/ls
 │   ├── inspect.go            # cocoon inspect
 │   ├── logs.go               # cocoon logs
+│   ├── console.go            # cocoon console (interactive PTY relay)
+│   ├── console_linux.go      # Linux-specific SIGWINCH + ioctl
+│   ├── console_darwin.go     # Darwin stub (SIGWINCH no-op)
 │   ├── images.go             # cocoon image (list/pull/inspect/remove/verify)
 │   ├── gc.go                 # cocoon gc
 │   ├── firmware.go           # cocoon firmware (list/verify/install/update)
@@ -188,6 +191,7 @@ type Client interface {
     PowerButton(ctx context.Context, socketPath string) error
     DeleteVM(ctx context.Context, socketPath string) error
     GetVMInfo(ctx context.Context, socketPath string) (*CHVMInfo, error)
+    GetConsolePTYPath(ctx context.Context, socketPath string) (string, error)
 
     // --- Utilities ---
     WaitForSocket(ctx context.Context, socketPath string, timeout time.Duration) error
@@ -1017,6 +1021,7 @@ When the serial log is readable, `hypervisor.serial_log_excerpt` contains the la
     "ch_socket": "/run/cocoon/vms/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K/api.sock",
     "ch_pid": 12345,
     "serial_log": "/var/log/cocoon/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K-serial.log",
+    "console_pty": "/dev/pts/7",
     "serial_log_excerpt": [
       "[    0.000000] Linux version 6.8.0...",
       "[    2.134221] systemd[1]: Reached target Multi-User System.",
@@ -1089,7 +1094,56 @@ cocoon logs myvm --follow
 cocoon logs myvm --tail 50 --timestamps
 ```
 
-### 4.12 cocoon image (Image Management)
+### 4.12 cocoon console (Interactive Console)
+
+**Command**: `cocoon console <vm-ref> [FLAGS]`
+
+**Purpose**: Attach an interactive console to a running VM. Provides bidirectional TTY access via the Cloud Hypervisor virtio-console PTY device. See [12-console.md](./12-console.md) for design details.
+
+```go
+func consoleCommand() *cli.Command {
+    return &cli.Command{
+        Name:      "console",
+        Usage:     "Attach an interactive console to a running VM",
+        ArgsUsage: "VM_REF",
+        Flags: []cli.Flag{
+            &cli.StringFlag{
+                Name:  "escape-char",
+                Value: "~",
+                Usage: "escape character for disconnect (e.g., ~. to disconnect)",
+            },
+        },
+        Action: consoleAction,
+    }
+}
+```
+
+**Example Usage**:
+
+```bash
+# Attach console to a running VM
+cocoon console myvm
+
+# Use a custom escape character
+cocoon console myvm --escape-char "^"
+```
+
+**Escape Sequences** (at start of line):
+
+| Sequence | Action |
+|----------|--------|
+| `~.` | Disconnect from console |
+| `~?` | Show supported escape sequences |
+| `~~` | Send literal `~` to guest |
+
+**Notes**:
+- Requires Linux (Cloud Hypervisor is Linux-only)
+- Requires an interactive terminal (stdin must be a TTY)
+- The VM must be in RUNNING state
+- Terminal is set to raw mode during the session and restored on exit
+- Disconnecting does not stop the VM
+
+### 4.13 cocoon image (Image Management)
 
 **Command**: `cocoon image SUBCOMMAND [FLAGS]`
 
@@ -1270,7 +1324,7 @@ Solutions:
 Exit code: 1
 ```
 
-### 4.13 cocoon gc (Garbage Collection)
+### 4.14 cocoon gc (Garbage Collection)
 
 **Command**: `cocoon gc [FLAGS]`
 
@@ -1318,7 +1372,7 @@ cocoon gc --grace-period 12
 cocoon gc --aggressive
 ```
 
-### 4.14 cocoon doctor (System Health Check)
+### 4.15 cocoon doctor (System Health Check)
 
 **Command**: `cocoon doctor [FLAGS]`
 
@@ -1459,7 +1513,7 @@ Attempted to fix 2 issue(s).
 
 ---
 
-### 4.15 cocoon firmware (Firmware Management)
+### 4.16 cocoon firmware (Firmware Management)
 
 **Command**: `cocoon firmware <subcommand> [FLAGS]`
 
@@ -1528,7 +1582,7 @@ func firmwareCommand() *cli.Command {
 
 **Subcommands**:
 
-#### 4.15.1 cocoon firmware list
+#### 4.16.1 cocoon firmware list
 
 List all installed firmware files with paths and sizes.
 
@@ -1538,7 +1592,7 @@ NAME             TYPE  PATH                                       SIZE     EXIST
 CLOUDHV.fd       UEFI  /var/lib/cocoon/firmware/CLOUDHV.fd        2.1MB    true
 ```
 
-#### 4.15.2 cocoon firmware install
+#### 4.16.2 cocoon firmware install
 
 Download and install firmware files. Uses the latest edk2 release by default; override with `--uefi-url`.
 
@@ -1562,7 +1616,7 @@ $ cocoon firmware install --uefi-url https://github.com/cloud-hypervisor/edk2/re
 Firmware install complete.
 ```
 
-#### 4.15.3 cocoon firmware verify
+#### 4.16.3 cocoon firmware verify
 
 Check that firmware files exist and are accessible (via `os.Stat`). No checksum verification is performed.
 
