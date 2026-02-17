@@ -314,6 +314,17 @@ func TestParseEscapeChar(t *testing.T) {
 		{"abc", 0, true},     // way too long
 		{"\x1D", 0x1D, false}, // raw Ctrl-] byte
 		{"\x01", 0x01, false}, // raw Ctrl-A byte
+		// CR/LF rejected (conflict with line-start detection).
+		{"^M", 0, true},      // CR via caret notation
+		{"^J", 0, true},      // LF via caret notation
+		{"\r", 0, true},      // raw CR
+		{"\n", 0, true},      // raw LF
+		// '.' and '?' rejected (conflict with escape commands).
+		{".", 0, true},
+		{"?", 0, true},
+		// High bytes rejected (non-ASCII).
+		{"\x80", 0, true},
+		{"\xFF", 0, true},
 	}
 
 	for _, tt := range tests {

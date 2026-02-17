@@ -312,42 +312,56 @@ func relayStdinToPTY(ctx context.Context, stdin io.Reader, pty io.Writer, escape
 //   - Caret notation for control characters: "^]", "^A", "^C", etc.
 //   - A single printable or control character (raw byte).
 //
-// Returns an error for NUL (0x00), DEL (0x7F), or multi-byte strings
-// that are not valid caret notation.
+// Returns an error for reserved bytes that conflict with the escape state
+// machine or produce unusable output:
+//   - NUL (0x00): cannot be typed
+//   - CR (0x0D), LF (0x0A): used for line-start detection in escape state machine
+//   - '.' and '?': overlap with escape sequence commands (disconnect, help)
+//   - DEL (0x7F) and bytes >= 0x80: non-printable, no standard representation
 func parseEscapeChar(s string) (byte, error) {
 	// Caret notation: ^@ through ^_ (0x00-0x1F) and ^a-^z.
 	if len(s) == 2 && s[0] == '^' {
 		c := s[1]
 		if c >= '@' && c <= '_' {
 			b := c - '@'
-			if b == 0 {
-				return 0, fmt.Errorf("--escape-char: NUL (^@) cannot be used as escape character")
-			}
-			return b, nil
+			return validateEscapeByte(b, s)
 		}
 		if c >= 'a' && c <= 'z' {
-			return c - 'a' + 1, nil
+			b := c - 'a' + 1
+			return validateEscapeByte(b, s)
 		}
 		return 0, fmt.Errorf("--escape-char: invalid caret notation %q (use ^A through ^_ or ^a through ^z)", s)
 	}
 
 	if len(s) == 1 {
-		b := s[0]
-		if b == 0 {
-			return 0, fmt.Errorf("--escape-char: NUL (0x00) cannot be used as escape character")
-		}
-		if b == 0x7F {
-			return 0, fmt.Errorf("--escape-char: DEL (0x7F) cannot be used as escape character")
-		}
-		return b, nil
+		return validateEscapeByte(s[0], s)
 	}
 
 	return 0, fmt.Errorf("--escape-char must be a single character or ^X caret notation, got %q", s)
 }
 
-// formatEscapeChar returns a human-readable representation of the byte.
-// Control characters (0x01-0x1F) are shown as ^A through ^_, printable
-// characters are returned as-is.
+// validateEscapeByte checks that a parsed escape byte does not conflict with
+// the escape state machine or produce unusable output.
+func validateEscapeByte(b byte, original string) (byte, error) {
+	switch {
+	case b == 0:
+		return 0, fmt.Errorf("--escape-char: NUL cannot be used as escape character")
+	case b == '\r' || b == '\n':
+		return 0, fmt.Errorf("--escape-char: CR/LF cannot be used as escape character (conflicts with line-start detection)")
+	case b == '.' || b == '?':
+		return 0, fmt.Errorf("--escape-char: %q cannot be used as escape character (conflicts with escape sequence commands)", original)
+	case b == 0x7F:
+		return 0, fmt.Errorf("--escape-char: DEL (0x7F) cannot be used as escape character")
+	case b >= 0x80:
+		return 0, fmt.Errorf("--escape-char: non-ASCII byte 0x%02X cannot be used as escape character", b)
+	}
+	return b, nil
+}
+
+// formatEscapeChar returns a human-readable representation of a validated
+// escape byte. Control characters (0x01-0x1F) are shown as ^A through ^_,
+// printable ASCII characters (0x20-0x7E) are returned as-is. Must only be
+// called with bytes that have passed validateEscapeByte.
 func formatEscapeChar(b byte) string {
 	if b >= 1 && b <= 0x1F {
 		return "^" + string(rune(b+'@'))

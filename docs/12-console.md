@@ -68,7 +68,7 @@ This means:
 - `cocoon console` connects to the virtio-console PTY device
 - No breaking changes to existing VMs created before console support
 
-### 1.3 Minimum Cloud Hypervisor Version
+### 1.4 Minimum Cloud Hypervisor Version
 
 **Minimum Cloud Hypervisor Version**: ≥38.0.0 (same baseline as Phase 1, validated by `cocoon doctor` — see [docs/08-dependencies.md](./08-dependencies.md)). The `vm.info` API (used to discover the PTY path) has been available since early CH releases. If integration testing during Phase 2 development reveals that stable PTY allocation requires a higher version, the doctor check will be updated accordingly.
 
@@ -281,10 +281,11 @@ func relayStdinToPTY(ctx context.Context, stdin io.Reader, pty io.Writer, escape
                 return nil
             case '?':
                 // Print help to user (not to guest).
+                esc := formatEscapeChar(escapeChar)
                 helpMsg := "\r\nSupported escape sequences:\r\n" +
-                    "  " + string(escapeChar) + ".  Disconnect\r\n" +
-                    "  " + string(escapeChar) + "?  This help\r\n" +
-                    "  " + string(escapeChar) + string(escapeChar) + "  Send escape character\r\n"
+                    "  " + esc + ".  Disconnect\r\n" +
+                    "  " + esc + "?  This help\r\n" +
+                    "  " + esc + esc + "  Send escape character\r\n"
                 _, _ = os.Stdout.Write([]byte(helpMsg))
                 state = stateLineStart // Allow immediate follow-up escape.
                 continue
@@ -485,10 +486,11 @@ Add the console PTY path to the inspect output when available:
 // In types/inspect.go (addition)
 
 type InspectHypervisorInfo struct {
-    CHSocket   string `json:"ch_socket"`
-    CHPID      int    `json:"ch_pid"`
-    SerialLog  string `json:"serial_log"`
-    ConsolePTY string `json:"console_pty,omitempty"` // PTY path when console mode is Pty
+    CHSocket         string   `json:"ch_socket"`
+    CHPID            int      `json:"ch_pid"`
+    SerialLog        string   `json:"serial_log"`
+    ConsolePTY       string   `json:"console_pty,omitempty"` // PTY path when console mode is Pty
+    SerialLogExcerpt []string `json:"serial_log_excerpt,omitempty"`
 }
 ```
 
@@ -652,7 +654,8 @@ func consoleAction(c *cli.Context) error {
     defer cleanupSIGWINCH()
 
     // Print connection banner.
-    fmt.Fprintf(os.Stderr, "Connected to %s (escape sequence: %s.)\r\n", ref, escapeCharStr)
+    escapeDisplay := formatEscapeChar(escapeChar)
+    fmt.Fprintf(os.Stderr, "Connected to %s (escape sequence: %s.)\r\n", ref, escapeDisplay)
 
     // Start bidirectional relay.
     return relayConsole(c.Context, pty, escapeChar)
@@ -850,7 +853,14 @@ Interactive console sessions are not logged by default. This is intentional -- p
 
 The escape character (default `^]`, i.e., Ctrl-]) is only recognized at the start of a line (after CR/LF or at session start). This prevents accidental disconnects from malicious guest programs that emit escape sequences. The default `^]` was chosen to match telnet conventions and avoid conflicting with SSH's `~` escape — since users almost always reach the Linux host via SSH, using `~` would disconnect the SSH session instead of the console.
 
-The `--escape-char` flag accepts caret notation (`^X`) for control characters or a single printable character. NUL (0x00) and DEL (0x7F) are rejected. The `parseEscapeChar` function handles parsing and validation.
+The `--escape-char` flag accepts caret notation (`^X`) for control characters or a single printable character. The following values are rejected because they conflict with the escape state machine or produce unusable output:
+
+- NUL (0x00): cannot be typed
+- CR (0x0D) and LF (0x0A): used for line-start detection in the escape state machine
+- `.` and `?`: overlap with escape sequence commands (disconnect, help)
+- DEL (0x7F) and bytes ≥ 0x80: non-printable, no standard representation
+
+The `parseEscapeChar` function validates these rules via a `validateEscapeByte` helper and returns a clear error message for invalid values.
 
 ### 8.4 PTY Buffer Limits
 
