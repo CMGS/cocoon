@@ -6,6 +6,8 @@ Lightweight VM manager built on Cloud Hypervisor.
 
 - **UEFI boot** -- CLOUDHV.fd UEFI firmware by default (direct kernel boot for OCI VM images planned for Phase 2)
 - **TPM 2.0 emulation** -- optional swtpm integration via `--tpm` flag for measured boot and guest attestation
+- **OCI VM image build** -- `cocoon image build` extracts kernel/rootfs from cloud images, packages as OCI with custom media types; supports Cocoonfile customization (see `cocoonfile.example`)
+- **OCI VM image push/login** -- `cocoon image push` uploads built images to any OCI registry; `cocoon image login` stores credentials
 - **Content-addressed image cache** -- base images deduplicated by SHA-256 checksum
 - **COW overlays** -- qcow2 copy-on-write disks backed by shared base images
 - **Cloud image support** -- pull from HTTP/HTTPS URLs or use local qcow2/raw files
@@ -78,7 +80,10 @@ cocoon delete <vm>
 | `cocoon console VM` | Attach an interactive console to a running VM |
 | `cocoon image list` | List cached base images (alias: `ls`) |
 | `cocoon image pull IMAGE_REF` | Pull and cache an image without creating a VM |
-| `cocoon image inspect IMAGE_REF` | Show details of a cached image |
+| `cocoon image build [IMAGE] [--file Cocoonfile] [--tag REF]` | Build an OCI VM image from a cloud image or Cocoonfile |
+| `cocoon image push REF` | Push a locally built OCI VM image to a container registry |
+| `cocoon image login REGISTRY` | Log in to a container registry for push operations |
+| `cocoon image inspect IMAGE_REF` | Show details of a cached cloud image or locally built OCI VM image |
 | `cocoon image remove IMAGE_REF` | Remove a cached image if unreferenced (alias: `rm`) |
 | `cocoon image verify IMAGE_REF` | Check if an image (local path or cached ref) is bootable |
 | `cocoon gc` | Run garbage collection on unreferenced images and orphaned resources |
@@ -86,6 +91,19 @@ cocoon delete <vm>
 | `cocoon firmware verify` | Check firmware files exist and are accessible |
 | `cocoon doctor` | Check system health, dependencies, and VM state consistency |
 | `cocoon version` | Show version, git revision, and build timestamp |
+
+## Cocoonfile
+
+A Cocoonfile is a Dockerfile-like file for customizing VM images before packaging them as OCI. Supported directives: `FROM`, `RUN`, `COPY`, `LABEL`. See `cocoonfile.example` in the project root for a working example.
+
+```bash
+# Build from a Cocoonfile
+cocoon image build --file cocoonfile.example --tag myorg/ubuntu-vm:latest
+
+# Push to a registry
+cocoon image login ghcr.io
+cocoon image push myorg/ubuntu-vm:latest
+```
 
 ## Global Flags
 

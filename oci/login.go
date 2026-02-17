@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -107,6 +108,11 @@ func pingRegistry(ctx context.Context, registry, username, password string) erro
 		return nil
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
+		// Token-based registries return 401 with a Bearer challenge on /v2/.
+		// This is normal — credentials will be exchanged for a token at push time.
+		if strings.Contains(resp.Header.Get("Www-Authenticate"), "Bearer") {
+			return nil
+		}
 		return fmt.Errorf("invalid credentials for %s (HTTP 401)", registry)
 	}
 	// Some registries return 403 for bad credentials.

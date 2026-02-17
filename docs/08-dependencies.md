@@ -23,6 +23,17 @@ Cocoon relies on several external tools and libraries to provide VM management w
 | swtpm | TPM 2.0 software emulator for VM TPM support | any | apt/dnf (swtpm, swtpm-tools) |
 | /dev/kvm | KVM device access | kernel 5.6+ | Built-in (kernel module) |
 
+## Go Library Dependencies
+
+The following Go libraries are used by Cocoon and managed via `go.mod`:
+
+| Library | Purpose | Used By |
+|---------|---------|---------|
+| `github.com/urfave/cli/v2` | CLI framework | `cmd/cocoon/` |
+| `github.com/oklog/ulid/v2` | ULID-based VM ID generation | `utils/id.go` |
+| `github.com/google/go-containerregistry` | OCI image push and registry authentication | `oci/push.go`, `oci/login.go` |
+| `golang.org/x/term` | Terminal password input (hidden) for `cocoon image login` | `cmd/cocoon/images.go` |
+
 ## Core Dependencies
 
 ### 1. Cloud Hypervisor
@@ -203,7 +214,8 @@ qemu-img --version
 **Minimum Version**: libguestfs 1.50
 
 **Tools Included**:
-- `guestfish`: Interactive and scriptable filesystem access for disk images (used for formatting, copying files, and bootability verification)
+- `guestfish`: Interactive and scriptable filesystem access for disk images (used for formatting, copying files, bootability verification, and OCI VM image build)
+- `virt-customize`: Applies Cocoonfile RUN/COPY steps to disk images during `cocoon image build` (requires libguestfs-tools)
 
 **Installation**:
 

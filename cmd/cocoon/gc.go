@@ -41,7 +41,7 @@ func gcAction(c *cli.Context) error {
 	gracePeriodHours := c.Int("grace-period")
 	if c.Bool("aggressive") {
 		gracePeriodHours = 0
-	} else if gracePeriodHours == 0 {
+	} else if !c.IsSet("grace-period") {
 		gracePeriodHours = app.cfg.GCGracePeriodHours
 	}
 	gracePeriod := time.Duration(gracePeriodHours) * time.Hour

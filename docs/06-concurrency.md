@@ -28,6 +28,8 @@ Level 2: Reference Counter Lock (global)
     ↓
 Level 2: Name Index Lock (global, same level as references — never held together)
     ↓
+Level 2: OCI Build Tag Lock (global, same level — never held with references or name-index) — Implemented, oci/store.go
+    ↓
 Level 2: OCI Reference Lock (global, same level — never held with references or name-index) — Phase 2, docs/04.1-oci-vm-images.md
     ↓
 Level 2: Checkpoint Index Lock (global, same level — never held with name-index or references) — Phase 2, docs/15-warm-start.md
@@ -56,6 +58,7 @@ Level 6: dnsmasq Lock (global) — Phase 2, docs/16-networking.md
 - Checkpoint Lock (Phase 2): `/var/lib/cocoon/vms/{vm-id}/checkpoint.lock`
 - Network Lock (Phase 2): `/run/cocoon/vms/{vm-id}/network.lock`
 - Console Lock (Phase 2): `/run/cocoon/vms/{vm-id}/console.lock`
+- OCI Build Tag Lock: `/var/lib/cocoon/db/oci-build-tags.lock`
 - OCI Reference Lock (Phase 2): `/var/lib/cocoon/db/oci-references.lock`
 - Checkpoint Index Lock (Phase 2): `/var/lib/cocoon/checkpoints/checkpoint-index.lock`
 - OCI Cache Lock (Phase 2): `/var/lib/cocoon/cache/oci/{digest}.lock`

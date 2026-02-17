@@ -359,10 +359,13 @@ func (c *CocoonConfig) VMDir() string              // RootDir/vms
 func (c *CocoonConfig) TempDir() string            // RootDir/temp
 func (c *CocoonConfig) TrashDir() string           // RootDir/trash
 func (c *CocoonConfig) DBDir() string              // RootDir/db
+func (c *CocoonConfig) OCIBuildCacheDir() string   // RootDir/cache/oci-builds
+func (c *CocoonConfig) OCIBuildTagIndex() string   // RootDir/db/oci-build-tags.json
+func (c *CocoonConfig) OCIBuildTagLock() string    // RootDir/db/oci-build-tags.lock
 
 // EnsureDirs creates all required directories (db, cache/images,
-// cache/manifests, cache/locks, vms, temp, trash, firmware, buildah,
-// RuntimeDir/vms, LogDir).
+// cache/manifests, cache/locks, cache/oci-builds, vms, temp, trash,
+// firmware, buildah, RuntimeDir/vms, LogDir).
 func (c *CocoonConfig) EnsureDirs() error { ... }
 ```
 
@@ -381,7 +384,12 @@ func (c *CocoonConfig) CheckpointIndexPath() string                 // RootDir/c
 func (c *CocoonConfig) CheckpointIndexLock() string                 // RootDir/checkpoints/checkpoint-index.lock
 func (c *CocoonConfig) CheckpointSnapshotDir(ckptID string) string  // RootDir/checkpoints/{ckptID}/ch-snapshot
 
-// Phase 2 — OCI VM Images (docs/04.1-oci-vm-images.md)
+// OCI VM Image Build (docs/04.1-oci-vm-images.md) — Implemented
+func (c *CocoonConfig) OCIBuildCacheDir() string                    // RootDir/cache/oci-builds
+func (c *CocoonConfig) OCIBuildTagIndex() string                    // RootDir/db/oci-build-tags.json
+func (c *CocoonConfig) OCIBuildTagLock() string                     // RootDir/db/oci-build-tags.lock
+
+// Phase 2 — OCI VM Boot (docs/04.1-oci-vm-images.md) — Planned
 func (c *CocoonConfig) OCICacheDir() string                         // RootDir/cache/oci
 func (c *CocoonConfig) OCICacheEntry(digest string) string          // RootDir/cache/oci/{digest}
 func (c *CocoonConfig) VMUpperDir(vmID string) string               // RootDir/vms/{vmID}/upper

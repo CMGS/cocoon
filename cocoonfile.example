@@ -1,5 +1,16 @@
 # Example Cocoonfile for Cocoon VM image build
-FROM https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+#
+# Usage:
+#   1. Download the base image first:
+#      curl -LO https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+#   2. Build the OCI VM image:
+#      cocoon image build --file cocoonfile.example --tag my-vm:latest
+#
+# Note: FROM must be a local file path. Download the cloud image first,
+# then reference it here. URL and registry-ref FROM are planned for a
+# future release.
+
+FROM noble-server-cloudimg-amd64.img
 
 RUN echo 'root:eruCocoon' | chpasswd
 

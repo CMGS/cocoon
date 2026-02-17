@@ -225,7 +225,9 @@ func (m *manager) Prepare(ctx context.Context, ref string) (*image.ImageIdentity
 	// Fast path: check refcache first for any ref format (handles short names, aliases, etc.).
 	// This prevents short names like "ubuntu-22.04-cloudimg" from being misclassified as OCI
 	// refs and sent into the buildah/skopeo pipeline when they already exist in the cache.
-	if baseKey, found, _ := refcache.ResolveBaseKey(m.cfg, ref); found {
+	if baseKey, found, resolveErr := refcache.ResolveBaseKey(m.cfg, ref); resolveErr != nil {
+		return nil, "", fmt.Errorf("resolve cached ref %q: %w", ref, resolveErr)
+	} else if found {
 		basePath := m.cfg.BaseImagePath(baseKey)
 		if _, statErr := os.Stat(basePath); statErr == nil {
 			log.Printf("image %s: cache hit for %q, skipping pull", baseKey, ref)

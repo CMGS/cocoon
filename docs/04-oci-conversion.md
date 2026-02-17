@@ -277,13 +277,9 @@ isManifestList := strings.Contains(index.MediaType, "image.index") ||
 
 ### 3.3 Authenticated Pulls
 
-> **Not Yet Implemented** -- Future Work
+**Phase 1 (cloud images / bootable OCI)**: Relies on ambient credentials available to skopeo and buildah (e.g., `~/.docker/config.json`, podman login state, or environment variables). If the image requires authentication and credentials are not found, the pull fails with a permanent `ClassifiedError`.
 
-The current implementation relies on ambient credentials available to skopeo and buildah (e.g., `~/.docker/config.json`, podman login state, or environment variables). There is no explicit `Login()` or `PullWithAuth()` API.
-
-**Current behavior**: If the image requires authentication and skopeo/buildah cannot find credentials in the standard credential stores, the pull will fail with a permanent `ClassifiedError` (the error message will contain "unauthorized" or "authentication required").
-
-**Planned**: Explicit `Login()` and credential management APIs are planned for Phase 2.
+**OCI VM image operations (build/push)**: Explicit registry login is implemented via `cocoon image login REGISTRY` (see `oci/login.go`). Credentials are stored in `~/.cocoon/config.json` using Docker-compatible auth format. The `cocoon image push` command uses these credentials via the `CocoonKeychain` (falling back to Docker's default keychain).
 
 ### 3.4 Pull Progress Tracking
 
@@ -1051,10 +1047,11 @@ The conversion pipeline follows these key design principles:
 
 ### 10.2 Phase 2: Production Hardening (P1) -- Future Work
 
-- [ ] **Authentication**:
-  - [ ] Explicit private registry login support
-  - [ ] Credential management API
+- [x] **Authentication** (OCI VM images):
+  - [x] Explicit private registry login via `cocoon image login` (`oci/login.go`)
+  - [x] Credential storage in `~/.cocoon/config.json` with Docker-compatible auth format
   - [ ] Token refresh
+  - [ ] Credential helper integration (e.g., docker-credential-ecr-login)
 
 - [ ] **Progress Tracking**:
   - [ ] OCI pull progress reporting
