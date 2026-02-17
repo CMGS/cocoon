@@ -48,7 +48,7 @@ This document defines the **Boot Contract** - the core specification for how Coc
   "memory": {"size": 2147483648},
   "disks": [{"path": "/var/lib/cocoon/vms/vm-123/overlay.qcow2"}],
   "serial": {"mode": "File", "file": "/var/log/cocoon/vm-123-serial.log"},
-  "console": {"mode": "Off"}
+  "console": {"mode": "Pty"}
 }
 ```
 
@@ -86,7 +86,7 @@ This document defines the **Boot Contract** - the core specification for how Coc
   "memory": {"size": 2147483648},
   "disks": [{"path": "/var/lib/cocoon/vms/vm-123/overlay.qcow2"}],
   "serial": {"mode": "File", "file": "/var/log/cocoon/vm-123-serial.log"},
-  "console": {"mode": "Off"}
+  "console": {"mode": "Pty"}
 }
 ```
 

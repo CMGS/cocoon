@@ -2,11 +2,17 @@ package cloudhypervisor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/CMGS/cocoon/hypervisor"
 )
 
 // ---------------------------------------------------------------------------
@@ -220,6 +226,159 @@ func TestDoWithRetry_ExhaustsRetries(t *testing.T) {
 	expectedCalls := c.maxRetries + 1
 	if calls != expectedCalls {
 		t.Fatalf("expected %d calls, got %d", expectedCalls, calls)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetConsolePTYPath tests
+// ---------------------------------------------------------------------------
+
+// startFakeVMInfoServer creates an HTTP server that listens on a Unix socket
+// and serves GET /api/v1/vm.info with the provided handler. It returns the
+// socket path. The server is automatically cleaned up when the test finishes.
+//
+// We use /tmp for the socket because macOS enforces a 104-byte limit on Unix
+// socket paths and t.TempDir() paths often exceed that.
+func startFakeVMInfoServer(t *testing.T, handler http.HandlerFunc) string {
+	t.Helper()
+
+	dir, err := os.MkdirTemp("/tmp", "cocoon-test-*")
+	if err != nil {
+		t.Fatalf("create temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	socketPath := filepath.Join(dir, "api.sock")
+
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen on unix socket %s: %v", socketPath, err)
+	}
+
+	srv := &http.Server{Handler: handler}
+	go func() { _ = srv.Serve(listener) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	return socketPath
+}
+
+// vmInfoJSON builds a minimal JSON response for GET /api/v1/vm.info with the
+// given console mode and file.
+func vmInfoJSON(consoleMode, consoleFile string) []byte {
+	info := hypervisor.CHVMInfo{
+		Config: hypervisor.CHVMConfig{
+			CPUs:   hypervisor.CHCPUConfig{BootVCPUs: 1, MaxVCPUs: 1},
+			Memory: hypervisor.CHMemoryConfig{Size: 512 * 1024 * 1024},
+			Serial: hypervisor.CHSerialConfig{Mode: "Null"},
+			Console: hypervisor.CHConsoleConfig{
+				Mode: consoleMode,
+				File: consoleFile,
+			},
+		},
+		State: "Running",
+	}
+	data, _ := json.Marshal(info)
+	return data
+}
+
+func TestGetConsolePTYPath_PtyModeWithFile(t *testing.T) {
+	wantPath := "/dev/pts/3"
+
+	socketPath := startFakeVMInfoServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/vm.info" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(vmInfoJSON("Pty", wantPath))
+	})
+
+	c := &client{
+		httpTimeout: 5 * time.Second,
+		maxRetries:  0,
+		baseBackoff: 1 * time.Millisecond,
+	}
+
+	got, err := c.GetConsolePTYPath(t.Context(), socketPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != wantPath {
+		t.Fatalf("expected PTY path %q, got %q", wantPath, got)
+	}
+}
+
+func TestGetConsolePTYPath_OffMode(t *testing.T) {
+	socketPath := startFakeVMInfoServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/vm.info" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(vmInfoJSON("Off", ""))
+	})
+
+	c := &client{
+		httpTimeout: 5 * time.Second,
+		maxRetries:  0,
+		baseBackoff: 1 * time.Millisecond,
+	}
+
+	got, err := c.GetConsolePTYPath(t.Context(), socketPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("expected empty string for Off mode, got %q", got)
+	}
+}
+
+func TestGetConsolePTYPath_PtyModeEmptyFile(t *testing.T) {
+	socketPath := startFakeVMInfoServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/vm.info" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// Console mode is "Pty" but CH has not yet allocated a PTY, so File is empty.
+		_, _ = w.Write(vmInfoJSON("Pty", ""))
+	})
+
+	c := &client{
+		httpTimeout: 5 * time.Second,
+		maxRetries:  0,
+		baseBackoff: 1 * time.Millisecond,
+	}
+
+	got, err := c.GetConsolePTYPath(t.Context(), socketPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("expected empty string when Pty mode has no file yet, got %q", got)
+	}
+}
+
+func TestGetConsolePTYPath_GetVMInfoError(t *testing.T) {
+	// Point at a non-existent socket so GetVMInfo fails with a connection error.
+	dir := t.TempDir()
+	badSocket := filepath.Join(dir, "nonexistent.sock")
+
+	// Ensure the socket file does not exist.
+	_ = os.Remove(badSocket)
+
+	c := &client{
+		httpTimeout: 2 * time.Second,
+		maxRetries:  0,
+		baseBackoff: 1 * time.Millisecond,
+	}
+
+	got, err := c.GetConsolePTYPath(t.Context(), badSocket)
+	if err == nil {
+		t.Fatal("expected error when socket does not exist, got nil")
+	}
+	if got != "" {
+		t.Fatalf("expected empty string on error, got %q", got)
 	}
 }
 

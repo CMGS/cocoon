@@ -95,7 +95,7 @@ Phase 2 Scope (Tested and Supported):
 |--------|--------|-------|
 | bridge | **Supported** | Default CNI plugin, primary implementation target |
 | host-local IPAM | **Supported** | Default IPAM backend for bridge mode |
-| DHCP IPAM | **Supported** | dnsmasq provides DHCP on the bridge; no external daemon required |
+| DHCP IPAM | **Supported** | For macvlan/ipvlan: uses external DHCP server on the LAN. For bridge: dnsmasq must be started on the bridge before CNI ADD (see Section 8) |
 | portmap | **Supported** | Host port forwarding (works with bridge) |
 
 #### Future / Experimental (not covered by Phase 2 implementation)
@@ -1172,6 +1172,11 @@ func (e *engine) Create(ctx context.Context, opts CreateOptions) (*types.VMConfi
             })
         }
         cfg.Network = types.NetworkConfig{Networks: attachments}
+
+        // 2b. For bridge networks with dhcp IPAM, start dnsmasq before CNI ADD
+        //     so the IPAM plugin can obtain an IP from dnsmasq. For host-local
+        //     IPAM (default), this step is skipped — dnsmasq is started after
+        //     CNI ADD with a static lease.
 
         // 3. Invoke CNI ADD for each network.
         var states []types.NetworkAttachmentState

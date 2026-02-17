@@ -233,7 +233,7 @@ Phase 1 delivers a complete, production-ready VM lifecycle management system.
 - ✅ CLI tool with Docker-like interface (`cocoon run/ps/logs/inspect`)
 - ✅ Concurrency control with file-based lock hierarchy
 
-Design docs: [00-overview](./00-overview.md) through [11-bootable-oci-build](./11-bootable-oci-build.md)
+Design docs: [00-overview](./00-overview.md) through [10-implementation-roadmap](./10-implementation-roadmap.md)
 
 ### Phase 2: Advanced Features (Planned)
 
@@ -406,7 +406,7 @@ For quick evaluation:
 
 | Doc | Title | Status |
 |-----|-------|--------|
-| [12-console.md](./12-console.md) | VM Console | Planned |
+| [12-console.md](./12-console.md) | VM Console | Implemented |
 | [13-pause-resume.md](./13-pause-resume.md) | VM Pause and Resume | Planned |
 | [15-warm-start.md](./15-warm-start.md) | VM Warm Start (Checkpoint/Restore) | Planned |
 | [16-networking.md](./16-networking.md) | CNI Networking | Planned |

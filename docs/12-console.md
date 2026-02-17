@@ -1,7 +1,7 @@
 # VM Console
 
 **Version**: 1.0
-**Status**: Planned
+**Status**: Implemented
 **Phase**: Phase 2
 **Last Updated**: 2026-02-14
 
@@ -516,7 +516,7 @@ func consoleCommand() *cli.Command {
             &cli.StringFlag{
                 Name:  "escape-char",
                 Value: "~",
-                Usage: "escape character for disconnect",
+                Usage: "escape character for disconnect (must be a printable ASCII character, 0x20-0x7E)",
             },
         },
         Action: consoleAction,
@@ -834,6 +834,8 @@ Interactive console sessions are not logged by default. This is intentional -- p
 ### 8.3 Escape Sequence Security
 
 The escape character (`~`) is only recognized at the start of a line (after CR/LF or at session start). This prevents accidental disconnects from malicious guest programs that print `~.` sequences. The `--escape-char` flag allows changing the escape character if `~` conflicts with the guest workload.
+
+The `--escape-char` value must be a printable ASCII character (0x20-0x7E). Control characters (including CR 0x0D, LF 0x0A, and DEL 0x7F) are rejected because they would break the escape state machine: CR and LF trigger the `stateLineStart` transition, so using them as the escape character would make the escape sequence undetectable.
 
 ### 8.4 PTY Buffer Limits
 

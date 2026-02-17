@@ -111,6 +111,9 @@ func consoleAction(c *cli.Context) error {
 		return fmt.Errorf("--escape-char must be a single ASCII character, got %q", escapeCharStr)
 	}
 	escapeChar := escapeCharStr[0]
+	if escapeChar < 0x20 || escapeChar > 0x7E {
+		return fmt.Errorf("--escape-char must be a printable ASCII character (0x20-0x7E), got %q", escapeCharStr)
+	}
 
 	// Require interactive terminal.
 	fd := int(os.Stdin.Fd())
@@ -204,10 +207,10 @@ func relayConsole(ctx context.Context, pty *os.File, escapeChar byte) error {
 	// If the first goroutine exited cleanly, check whether the second has
 	// already reported an error (non-blocking). This catches concurrent I/O
 	// errors that would otherwise be silently discarded.
-	if firstErr == nil || errors.Is(firstErr, io.EOF) {
+	if firstErr == nil || errors.Is(firstErr, io.EOF) || isEIO(firstErr) {
 		select {
 		case secondErr := <-errCh:
-			if secondErr != nil && !errors.Is(secondErr, io.EOF) {
+			if secondErr != nil && !errors.Is(secondErr, io.EOF) && !isEIO(secondErr) {
 				return secondErr
 			}
 		default:
@@ -215,6 +218,12 @@ func relayConsole(ctx context.Context, pty *os.File, escapeChar byte) error {
 		return nil
 	}
 	return firstErr
+}
+
+// isEIO reports whether err is a syscall.EIO error. When the VM shuts down,
+// the PTY device returns EIO which should be treated as a clean disconnect.
+func isEIO(err error) bool {
+	return errors.Is(err, syscall.EIO)
 }
 
 // relayStdinToPTY reads from stdin and writes to the PTY, with SSH-style

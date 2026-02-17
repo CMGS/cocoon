@@ -1663,6 +1663,15 @@ cocoon firmware verify
 cocoon firmware install --uefi-url https://github.com/cloud-hypervisor/edk2/releases/latest/download/CLOUDHV.fd --force
 ```
 
+#### 4.16.4 cocoon firmware update
+
+Alias for `cocoon firmware install`. Accepts the same flags (`--uefi-url`, `--force`) and behaves identically. Provided as a convenience for users who prefer the "update" verb.
+
+```bash
+# Update firmware (same as install)
+cocoon firmware update --uefi-url https://github.com/cloud-hypervisor/edk2/releases/latest/download/CLOUDHV.fd
+```
+
 ---
 
 ## 5. Configuration
