@@ -95,7 +95,7 @@ Phase 2 Scope (Tested and Supported):
 |--------|--------|-------|
 | bridge | **Supported** | Default CNI plugin, primary implementation target |
 | host-local IPAM | **Supported** | Default IPAM backend for bridge mode |
-| DHCP IPAM | **Supported** | For macvlan/ipvlan: uses external DHCP server on the LAN. For bridge: dnsmasq must be started on the bridge before CNI ADD (see Section 8) |
+| DHCP IPAM | **Supported** | For macvlan/ipvlan with an external DHCP server on the LAN. Bridge networks use `host-local` IPAM instead (guest receives IP via dnsmasq; see Section 8.2) |
 | portmap | **Supported** | Host port forwarding (works with bridge) |
 
 #### Future / Experimental (not covered by Phase 2 implementation)
@@ -1173,12 +1173,9 @@ func (e *engine) Create(ctx context.Context, opts CreateOptions) (*types.VMConfi
         }
         cfg.Network = types.NetworkConfig{Networks: attachments}
 
-        // 2b. For bridge networks with dhcp IPAM, start dnsmasq before CNI ADD
-        //     so the IPAM plugin can obtain an IP from dnsmasq. For host-local
-        //     IPAM (default), this step is skipped — dnsmasq is started after
-        //     CNI ADD with a static lease.
-
         // 3. Invoke CNI ADD for each network.
+        // IPAM plugin (host-local by default) allocates an IP during CNI ADD.
+        // The allocated IP is later served to the guest via dnsmasq (step 5).
         var states []types.NetworkAttachmentState
         for i, att := range attachments {
             state, err := e.netMgr.AddNetwork(ctx, vmID, nsPath, att)
@@ -1515,9 +1512,9 @@ On CNI DEL, the IP file is removed, returning the address to the pool. No Cocoon
 
 ### 6.3 dhcp IPAM
 
-Cocoon uses a per-bridge **dnsmasq** instance to provide DHCP on the bridge (see Section 8). When a VM is created with bridge networking, Cocoon starts a dnsmasq process on the bridge interface (if one is not already running), registers a static DHCP lease mapping the VM's MAC address to the IP allocated by the CNI IPAM plugin, and the guest obtains its IP via standard DHCP from dnsmasq on boot.
+The CNI `dhcp` IPAM plugin obtains IP addresses by running a DHCP client on the CNI interface, which requires an **external DHCP server** on the attached network segment. This is intended for **macvlan/ipvlan** networks where the host is connected to a LAN with an existing DHCP server (e.g., a corporate network or home router).
 
-**No external daemon is required**. Cocoon manages the dnsmasq lifecycle (start, reload, stop) automatically as VMs are created and deleted. See Section 8 for the full dnsmasq management design.
+**Bridge networks should use `host-local` IPAM** (the default). For bridge networks, Cocoon delivers the IPAM-allocated IP to the guest via a per-bridge **dnsmasq** instance that serves static DHCP leases (see Section 8.2). This dnsmasq is a guest IP delivery mechanism — it is **not** the same as the CNI `dhcp` IPAM plugin. dnsmasq works with any IPAM plugin (`host-local`, `static`, etc.) and requires no external DHCP server. Cocoon manages the dnsmasq lifecycle automatically.
 
 ### 6.4 IP Address Visibility
 
@@ -2404,7 +2401,7 @@ func TestNetworkCreateRollback(t *testing.T) {
 | host-local | v1.0.0+ | Yes | Default IPAM |
 | portmap | v1.0.0+ | Yes | Port forwarding |
 | macvlan | v1.0.0+ | Planned | Direct LAN access (Future/Experimental) |
-| dhcp | v1.0.0+ | Yes | Cocoon manages dnsmasq for DHCP on the bridge; no external daemon required |
+| dhcp | v1.0.0+ | Yes | For macvlan/ipvlan with external DHCP. Bridge networks use `host-local` instead. |
 | static | v1.0.0+ | Planned | Fixed IP assignment (Future/Experimental) |
 
 ### 11.4 Manual Verification Checklist

@@ -9,6 +9,7 @@ Lightweight VM manager built on Cloud Hypervisor.
 - **Content-addressed image cache** -- base images deduplicated by SHA-256 checksum
 - **COW overlays** -- qcow2 copy-on-write disks backed by shared base images
 - **Cloud image support** -- pull from HTTP/HTTPS URLs or use local qcow2/raw files
+- **Interactive console** -- `cocoon console` for bidirectional PTY access to running VMs, SSH-style escape sequences
 - **Docker-like CLI** -- `cocoon run`, `cocoon list`, `cocoon stop`, `cocoon delete`
 - **State reconciliation** -- `cocoon doctor` detects and repairs metadata/process inconsistencies
 - **Zero-daemon architecture** -- one Cloud Hypervisor process per VM, no long-running daemon
