@@ -1,3 +1,5 @@
+//go:build linux
+
 package oci
 
 import (
@@ -121,10 +123,10 @@ func rewriteDeterministicTar(srcTar, dstTar string, excludePaths []string) (stri
 		}
 	}
 
-	if err := tw.Close(); err != nil {
+	if err = tw.Close(); err != nil {
 		return "", 0, fmt.Errorf("close tar writer: %w", err)
 	}
-	if err := df.Sync(); err != nil {
+	if err = df.Sync(); err != nil {
 		return "", 0, fmt.Errorf("sync destination tar: %w", err)
 	}
 
@@ -143,8 +145,8 @@ func rewriteDeterministicTar(srcTar, dstTar string, excludePaths []string) (stri
 // Returns the sha256 digest (hex-encoded, no prefix) and size of the tar.
 func buildKernelLayerTar(kernelPath, initrdPath, outPath string) (string, int64, error) {
 	type fileEntry struct {
-		tarName  string
-		srcPath  string
+		tarName string
+		srcPath string
 	}
 
 	// Sorted order: initrd.img before vmlinuz.
@@ -185,16 +187,16 @@ func buildKernelLayerTar(kernelPath, initrdPath, outPath string) (string, int64,
 			return "", 0, fmt.Errorf("open %s: %w", f.srcPath, oerr)
 		}
 		if _, cerr := io.Copy(tw, sf); cerr != nil {
-			sf.Close() //nolint:errcheck
+			sf.Close() //nolint:errcheck,gosec // G104: best-effort close on error path
 			return "", 0, fmt.Errorf("copy %s: %w", f.srcPath, cerr)
 		}
-		sf.Close() //nolint:errcheck
+		sf.Close() //nolint:errcheck,gosec // G104: error checked via tw.Close+df.Sync below
 	}
 
-	if err := tw.Close(); err != nil {
+	if err = tw.Close(); err != nil {
 		return "", 0, fmt.Errorf("close kernel tar writer: %w", err)
 	}
-	if err := of.Sync(); err != nil {
+	if err = of.Sync(); err != nil {
 		return "", 0, fmt.Errorf("sync kernel layer tar: %w", err)
 	}
 

@@ -235,13 +235,24 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 		return nil, fmt.Errorf("prepare image %s: %w", opts.Image, err)
 	}
 
-	// Step 1b: Verify bootability (unless skipped).
+	baseKey := identity.BaseKey()
+
+	// Step 1b: Pin reference early — protects the base image from GC during
+	// the verify + overlay creation steps that follow. We use vmID as the
+	// reference holder so reconciliation can track it.
+	if err = m.refCounter.AddReference(baseKey, vmID, identity.FullDigest, opts.Image); err != nil {
+		return nil, fmt.Errorf("pin reference for %s: %w", vmID, err)
+	}
+
+	// Step 1c: Verify bootability (unless skipped).
 	if !opts.SkipVerify {
 		result, verifyErr := m.imgMgr.VerifyBootability(ctx, baseImagePath)
 		if verifyErr != nil {
+			_ = m.refCounter.RemoveReference(baseKey, vmID)
 			return nil, fmt.Errorf("verify bootability for %s: %w", opts.Image, verifyErr)
 		}
 		if !result.Bootable {
+			_ = m.refCounter.RemoveReference(baseKey, vmID)
 			return nil, fmt.Errorf("%w: %s - %v", types.ErrImageNotBootable, opts.Image, result.Errors)
 		}
 		for _, w := range result.Warnings {
@@ -249,7 +260,6 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 		}
 	}
 
-	baseKey := identity.BaseKey()
 	if idxErr := refcache.Upsert(m.cfg, opts.Image, baseKey, identity.FullDigest); idxErr != nil {
 		log.Printf("warning: update manifest cache for %q: %v", opts.Image, idxErr)
 	}
@@ -257,6 +267,7 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 	// Resolve firmware path based on boot strategy and arch.
 	firmwarePath, err := resolveFirmwarePath(m.cfg, bootStrategy, identity.Arch)
 	if err != nil {
+		_ = m.refCounter.RemoveReference(baseKey, vmID)
 		return nil, fmt.Errorf("resolve firmware: %w", err)
 	}
 
@@ -288,19 +299,19 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 		SchemaVersion:  types.CurrentConfigSchemaVersion,
 	}
 
-	// Step 2: Create VM directory, write config + metadata, then pin reference.
-	// Pin MUST happen before overlay creation to prevent GC from collecting
-	// the base image during the (slow) overlay step (docs/09 "pin-first" flow).
-	// Metadata must exist before pin so reconciliation can find the VM if we
-	// crash after pinning.
+	// Step 2: Create VM directory, write config + metadata.
+	// Metadata must exist before overlay creation so reconciliation can
+	// find the VM if we crash after pinning.
 	vmDir := m.cfg.VMPersistDir(vmID)
 	if err := os.MkdirAll(vmDir, 0o755); err != nil { //nolint:gosec // G301: VM directory needs world-readable access for CH process
+		_ = m.refCounter.RemoveReference(baseKey, vmID)
 		return nil, fmt.Errorf("create VM directory: %w", err)
 	}
 
 	// Write config.json (immutable, written once).
 	configPath := m.cfg.VMConfigPath(vmID)
 	if err := utils.AtomicWriteJSON(configPath, vmCfg); err != nil {
+		_ = m.refCounter.RemoveReference(baseKey, vmID)
 		_ = os.RemoveAll(vmDir)
 		return nil, fmt.Errorf("write config.json: %w", err)
 	}
@@ -315,14 +326,9 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 	}
 	metaPath := m.cfg.VMMetadataPath(vmID)
 	if err := utils.AtomicWriteJSON(metaPath, meta); err != nil {
+		_ = m.refCounter.RemoveReference(baseKey, vmID)
 		_ = os.RemoveAll(vmDir)
 		return nil, fmt.Errorf("write metadata.json: %w", err)
-	}
-
-	// Pin reference: protects base image from GC during subsequent slow steps.
-	if err := m.refCounter.AddReference(baseKey, vmID, identity.FullDigest, opts.Image); err != nil {
-		_ = os.RemoveAll(vmDir)
-		return nil, fmt.Errorf("pin reference for %s: %w", vmID, err)
 	}
 
 	// Step 3: Create the COW overlay (slow, requires base image on disk).
@@ -535,7 +541,12 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 	if state == types.VMStateStopping {
 		deadline := time.Now().Add(timeout)
 		for time.Now().Before(deadline) {
-			if !m.hyper.IsAlive(vmID) {
+			// Check both PID file (primary) and metadata PID (fallback).
+			alive := m.hyper.IsAlive(vmID)
+			if !alive && meta.ProcessPID > 0 {
+				alive = utils.ValidateProcess(meta.ProcessPID, "cloud-hypervisor")
+			}
+			if !alive {
 				now := time.Now().UTC().Format(time.RFC3339)
 				_ = m.transitionStateWithUpdate(vmID, types.VMStateStopped, "process exited during stop wait", func(md *types.VMMetadataFile) {
 					md.StoppedAt = now
@@ -611,6 +622,13 @@ func (m *manager) Kill(ctx context.Context, vmID string) error {
 		} else {
 			return fmt.Errorf("force kill %s: %w", vmID, err)
 		}
+	}
+
+	// Safety net: if the PID file was already cleaned up but the CH process
+	// is still running, use the PID from metadata to kill it directly.
+	if meta.ProcessPID > 0 && utils.ValidateProcess(meta.ProcessPID, "cloud-hypervisor") {
+		log.Printf("kill %s: PID file missing but process %d still alive, killing via metadata PID", vmID, meta.ProcessPID)
+		_ = utils.ForceKillProcess(meta.ProcessPID)
 	}
 
 	// Determine target state based on current state.

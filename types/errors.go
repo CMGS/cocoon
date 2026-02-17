@@ -18,6 +18,7 @@ const (
 	// Boot errors
 	ErrorBootTimeout       ErrorType = "boot_timeout"
 	ErrorKernelPanic       ErrorType = "kernel_panic"
+	ErrorBootFailure       ErrorType = "boot_failure"
 	ErrorMissingBootloader ErrorType = "missing_bootloader"
 	ErrorMissingKernel     ErrorType = "missing_kernel"
 

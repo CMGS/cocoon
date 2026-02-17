@@ -73,8 +73,13 @@ func logsAction(c *cli.Context) error {
 }
 
 // printTailLines reads the last n lines from a file and prints them.
+// If n <= 0, nothing is printed (no output).
 // If timestamps is true, each line is prefixed with the current time.
 func printTailLines(path string, n int, timestamps bool) error {
+	if n <= 0 {
+		return nil
+	}
+
 	f, err := os.Open(path) //nolint:gosec // G304: path is a derived serial log path, not direct user input
 	if err != nil {
 		if os.IsNotExist(err) {

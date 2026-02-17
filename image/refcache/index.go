@@ -252,8 +252,14 @@ func candidates(ref string) []string {
 		add(v)
 		withoutExt := trimKnownExt(v)
 		add(withoutExt)
+		// OCI tag-less alias: "repo:tag" → "repo". Only apply when the
+		// colon appears after the last slash (looks like an OCI ref, not
+		// a URL scheme like "https:").
 		if i := strings.LastIndexByte(withoutExt, ':'); i > 0 {
-			add(withoutExt[:i]) // oci tag-less alias
+			lastSlash := strings.LastIndexByte(withoutExt, '/')
+			if i > lastSlash {
+				add(withoutExt[:i])
+			}
 		}
 		add(simplifyAlias(withoutExt))
 	}
