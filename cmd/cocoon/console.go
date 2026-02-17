@@ -7,8 +7,9 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"regexp"
 	"runtime"
-	"strings"
 	"syscall"
 
 	cli "github.com/urfave/cli/v2"
@@ -90,8 +91,9 @@ func consoleAction(c *cli.Context) error {
 			"Cloud Hypervisor reported Pty mode but no PTY path, "+
 			"run 'cocoon doctor' to verify Cloud Hypervisor version (v38.0+ required)", ref)
 	}
-	if !strings.HasPrefix(ptyPath, "/dev/pts/") {
-		return fmt.Errorf("unexpected PTY path %q (expected /dev/pts/*)", ptyPath)
+	ptyPath = filepath.Clean(ptyPath)
+	if matched, _ := regexp.MatchString(`^/dev/pts/\d+$`, ptyPath); !matched {
+		return fmt.Errorf("unexpected PTY path %q (expected /dev/pts/<number>)", ptyPath)
 	}
 
 	// Open PTY device. Note: there is an inherent TOCTOU window between the

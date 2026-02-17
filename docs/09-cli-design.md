@@ -483,6 +483,7 @@ func main() {
         psCommand(),
         inspectCommand(),
         logsCommand(),
+        consoleCommand(),
         imagesCommand(),
         gcCommand(),
         firmwareCommand(),
@@ -1735,7 +1736,7 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
       "memory": {"size": 2147483648},
       "disks": [{"path": "/var/lib/cocoon/vms/{vm_id}/overlay.qcow2"}],
       "serial": {"mode": "File", "file": "/var/log/cocoon/{vm_id}-serial.log"},
-      "console": {"mode": "Off"}
+      "console": {"mode": "Pty"}
     }
     ```
     Followed by `PUT /api/v1/vm.boot` to start the VM.

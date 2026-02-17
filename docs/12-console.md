@@ -85,36 +85,34 @@ consoleAction(c *cli.Context)
 [1] Resolve VM_REF -> vmID
     |
     v
-[2] Load metadata, verify VM is RUNNING (or PAUSED)
+[2] Load metadata, verify VM is RUNNING
+    (PAUSED will be allowed when pause/resume is implemented — see docs/13-pause-resume.md)
     |
     v
 [3] GET /api/v1/vm.info -> extract console PTY path
     |
     v
-[4] Validate PTY path exists (os.Stat)
+[4] Validate PTY path (/dev/pts/<digits>), open PTY (os.OpenFile, O_RDWR)
     |
     v
-[5] Open PTY file (os.OpenFile, O_RDWR)
-    |
-    v
-[6] Put user terminal into raw mode (golang.org/x/term)
+[5] Put user terminal into raw mode (golang.org/x/term)
     |                               defer restore
     v
-[7] Print connection banner
+[6] Print connection banner
     |
     v
-[8] Start bidirectional I/O relay with escape handling
+[7] Start bidirectional I/O relay with escape handling
     |    goroutine 1: PTY -> stdout
     |    goroutine 2: stdin -> PTY (with escape detection)
     v
-[9] Block until:
+[8] Block until:
     - Escape sequence (~.) detected
     - PTY read returns EOF (VM shut down)
     - Signal received (SIGINT, SIGTERM)
     - Context canceled
     |
     v
-[10] Restore terminal, close PTY fd, print disconnect message
+[9] Restore terminal, close PTY fd, print disconnect message
 ```
 
 ### 2.2 Escape Sequence State Machine
@@ -289,7 +287,7 @@ func relayStdinToPTY(ctx context.Context, stdin io.Reader, pty *os.File, escapeC
                     "  ~?  This help\r\n" +
                     "  ~~  Send escape character\r\n"
                 _, _ = os.Stdout.Write([]byte(helpMsg))
-                state = stateNormal
+                state = stateLineStart // Allow immediate follow-up escape.
                 continue
             case escapeChar:
                 // Send literal escape char.
@@ -389,8 +387,18 @@ func consoleAction(c *cli.Context) error {
         }
     }()
 
-    // SIGINT and SIGTERM are already handled by the app-level
-    // signal.NotifyContext in main.go (ctx cancellation).
+    // Re-register SIGINT/SIGTERM to prevent double-signal from bypassing
+    // terminal restore (signal.NotifyContext re-arms the default handler
+    // after the first signal). Drain absorbed signals in a goroutine.
+    sigCh2 := make(chan os.Signal, 1)
+    signal.Notify(sigCh2, syscall.SIGINT, syscall.SIGTERM)
+    defer signal.Stop(sigCh2)
+    go func() {
+        for range sigCh2 {
+            // Absorbed — context cancellation handles graceful shutdown.
+        }
+    }()
+
     // In raw mode, Ctrl-C generates a raw byte (0x03), not SIGINT,
     // so it is forwarded to the guest as-is.
 
@@ -489,7 +497,7 @@ cocoon/
 ├── cmd/cocoon/
 │   ├── console.go             # cocoon console command
 │   └── console_linux.go       # Linux-specific PTY and ioctl helpers
-│   └── console_darwin.go      # Stub: returns "console is only supported on Linux"
+│   └── console_darwin.go      # Stub: SIGWINCH no-op (Linux check is in console.go via runtime.GOOS)
 ```
 
 ---
@@ -529,6 +537,10 @@ app.Commands = []*cli.Command{
 
 ```go
 func consoleAction(c *cli.Context) error {
+    if runtime.GOOS != "linux" {
+        return fmt.Errorf("cocoon console requires Linux (Cloud Hypervisor is Linux-only)")
+    }
+
     if c.NArg() < 1 {
         return fmt.Errorf("VM_REF argument required\n\nUsage: cocoon console VM_REF [flags]")
     }
@@ -545,13 +557,14 @@ func consoleAction(c *cli.Context) error {
     }
 
     // Verify VM is running.
+    // TODO: also allow VMStatePaused when pause/resume is implemented (docs/13-pause-resume.md).
     meta, err := app.vmMgr.LoadMetadata(vmID)
     if err != nil {
         return err
     }
     state := types.VMState(meta.State)
-    if state != types.VMStateRunning && state != types.VMStatePaused {
-        return fmt.Errorf("VM %s is not running or paused (state: %s)", ref, meta.State)
+    if state != types.VMStateRunning {
+        return fmt.Errorf("VM %s is not running (state: %s)", ref, meta.State)
     }
 
     // Get PTY path from CH API.
@@ -566,10 +579,28 @@ func consoleAction(c *cli.Context) error {
 
     ptyPath := vmInfo.Config.Console.File
     if ptyPath == "" {
-        return fmt.Errorf("no console PTY available for %s (console mode: %s)\n"+
-            "Hint: this VM was created before console support was added. "+
-            "Recreate it to enable interactive console.", ref, vmInfo.Config.Console.Mode)
+        mode := vmInfo.Config.Console.Mode
+        if mode != "Pty" {
+            return fmt.Errorf("no console PTY available for %s (console mode: %s); "+
+                "this VM was created before console support was added, "+
+                "recreate it to enable interactive console; "+
+                "if the issue persists, run 'cocoon doctor' to verify Cloud Hypervisor version (v38.0+ required)",
+                ref, mode)
+        }
+        return fmt.Errorf("no console PTY allocated for %s; "+
+            "Cloud Hypervisor reported Pty mode but no PTY path, "+
+            "run 'cocoon doctor' to verify Cloud Hypervisor version (v38.0+ required)", ref)
     }
+    if matched, _ := regexp.MatchString(`^/dev/pts/\d+$`, filepath.Clean(ptyPath)); !matched {
+        return fmt.Errorf("unexpected PTY path %q (expected /dev/pts/<number>)", ptyPath)
+    }
+
+    // Parse escape char before entering raw mode.
+    escapeCharStr := c.String("escape-char")
+    if len(escapeCharStr) != 1 {
+        return fmt.Errorf("--escape-char must be a single character, got %q", escapeCharStr)
+    }
+    escapeChar := escapeCharStr[0]
 
     // Open PTY.
     pty, err := os.OpenFile(ptyPath, os.O_RDWR, 0)
@@ -606,11 +637,6 @@ func consoleAction(c *cli.Context) error {
     }()
 
     // Print banner.
-    escapeCharStr := c.String("escape-char")
-    if len(escapeCharStr) == 0 {
-        return fmt.Errorf("--escape-char must be a single character, got empty string")
-    }
-    escapeChar := escapeCharStr[0]
     fmt.Fprintf(os.Stderr, "Connected to %s (escape sequence: %s.)\r\n", ref, escapeCharStr)
 
     // Start bidirectional relay.
@@ -759,13 +785,13 @@ For custom images that do not include `systemd-getty-generator`, see §6.3 for i
 | Condition | Error Message | Exit Code |
 |-----------|--------------|-----------|
 | VM not found | `VM not found: <ref>` | 1 |
-| VM not running or paused | `VM <ref> is not running or paused (state: <state>)` | 1 |
+| VM not running | `VM <ref> is not running (state: <state>)` | 1 |
 | No console PTY available | `no console PTY available for <ref> (console mode: Off)` | 1 |
 | PTY path does not exist | `open console PTY <path>: no such file or directory` | 1 |
 | stdin is not a terminal | `stdin is not a terminal; cocoon console requires an interactive TTY` | 1 |
 | Raw mode failure | `set terminal raw mode: <err>` | 1 |
 | CH API unreachable | `get VM info for <vmID>: <err>` | 1 |
-| CH version does not support Pty mode | `Upgrade Cloud Hypervisor to v38.0 or later. Cocoon requires minimum CH v38.0.` | 1 |
+| CH version does not support Pty mode | `run 'cocoon doctor' to verify Cloud Hypervisor version (v38.0+ required)` | 1 |
 
 ### 7.2 Backward Compatibility
 
@@ -773,8 +799,7 @@ VMs created before console support is enabled will have `console.mode = "Off"`. 
 
 ```
 $ cocoon console old-vm
-Error: no console PTY available for old-vm (console mode: Off)
-Hint: this VM was created before console support was added. Recreate it to enable interactive console.
+Error: no console PTY available for old-vm (console mode: Off); this VM was created before console support was added, recreate it to enable interactive console; if the issue persists, run 'cocoon doctor' to verify Cloud Hypervisor version (v38.0+ required)
 ```
 
 ### 7.3 Terminal Recovery

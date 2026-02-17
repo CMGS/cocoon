@@ -1339,7 +1339,7 @@ qemu-img >= 8.0
 **Advanced Features** (can be deferred):
 - [ ] `cocoon exec` command (run commands in VM)
 - [ ] `cocoon cp` command (copy files to/from VM)
-- [ ] `cocoon attach` command (interactive console)
+- [x] `cocoon console` command (interactive console) — implemented in Phase 2
 - [ ] VM resource limits (CPU pinning, memory limits)
 - [ ] Guest initialization helpers (virtiofs shared directories)
 
