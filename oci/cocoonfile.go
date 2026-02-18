@@ -131,12 +131,11 @@ func parseCocoonfile(scanner *bufio.Scanner) (*Cocoonfile, error) {
 		return nil, fmt.Errorf("Cocoonfile must contain a FROM directive")
 	}
 
-	// Validate FROM: only local file paths are supported in the current version.
-	// Reject URLs with a clear error. Registry refs (e.g., "docker.io/library/ubuntu:22.04")
-	// are not explicitly detected here since they overlap with valid relative paths.
-	// They will fail downstream with "file not found" which is acceptable.
+	// Validate FROM: URL schemes are not supported.
+	// Non-URL values may be local paths or OCI references; concrete resolution
+	// happens in the CLI build path.
 	if strings.HasPrefix(cf.From, "http://") || strings.HasPrefix(cf.From, "https://") {
-		return nil, fmt.Errorf("FROM only supports local file paths in the current version (got URL: %q)", cf.From)
+		return nil, fmt.Errorf("FROM does not support URL schemes (got %q)", cf.From)
 	}
 
 	return cf, nil

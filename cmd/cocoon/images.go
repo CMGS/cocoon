@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -783,28 +786,351 @@ func imageBuildCommand() *cli.Command {
 
 // resolveBuildImagePath determines the base image path for a build, handling
 // both Cocoonfile-based and positional-argument-based invocations.
-func resolveBuildImagePath(c *cli.Context, cocoonfilePath string) (string, error) {
+func resolveBuildImagePath(c *cli.Context, app *appContext, cocoonfilePath string) (string, func(), error) {
 	if cocoonfilePath == "" {
 		if c.NArg() < 1 {
-			return "", fmt.Errorf("CLOUD_IMAGE argument required (or use --file Cocoonfile)\n\nUsage: cocoon image build [CLOUD_IMAGE] [--tag REF] [--file Cocoonfile]")
+			return "", nil, fmt.Errorf("CLOUD_IMAGE argument required (or use --file Cocoonfile)\n\nUsage: cocoon image build [CLOUD_IMAGE] [--tag REF] [--file Cocoonfile]")
 		}
-		return c.Args().Get(0), nil
+		return c.Args().Get(0), nil, nil
 	}
 
 	// Positional arg overrides FROM if provided.
 	if c.NArg() > 0 {
-		return c.Args().Get(0), nil
+		return c.Args().Get(0), nil, nil
 	}
 
 	cf, err := oci.ParseCocoonfile(cocoonfilePath)
 	if err != nil {
-		return "", fmt.Errorf("parse Cocoonfile: %w", err)
+		return "", nil, fmt.Errorf("parse Cocoonfile: %w", err)
 	}
-	imagePath := cf.From
-	if !filepath.IsAbs(imagePath) {
-		imagePath = filepath.Join(filepath.Dir(cocoonfilePath), imagePath)
+
+	imagePath, cleanup, err := resolveCocoonfileFrom(c, app, cocoonfilePath, cf.From)
+	if err != nil {
+		return "", nil, err
 	}
-	return imagePath, nil
+	return imagePath, cleanup, nil
+}
+
+func resolveCocoonfileFrom(c *cli.Context, app *appContext, cocoonfilePath, from string) (string, func(), error) {
+	from = strings.TrimSpace(from)
+	if from == "" {
+		return "", nil, fmt.Errorf("cocoonfile FROM is empty")
+	}
+	if strings.HasPrefix(from, "http://") || strings.HasPrefix(from, "https://") {
+		return "", nil, fmt.Errorf("FROM does not support URL schemes (got %q); use an OCI reference or local path", from)
+	}
+
+	// Explicit/existing local paths are always preferred.
+	if imagePath, isPath := resolveCocoonfileLocalPath(cocoonfilePath, from); isPath {
+		return imagePath, nil, nil
+	}
+
+	// Local OCI build tags take precedence over remote pulls.
+	store := oci.NewStore(app.cfg)
+	tagExists, err := store.HasTag(from)
+	if err != nil {
+		return "", nil, fmt.Errorf("check local OCI tag %q: %w", from, err)
+	}
+	if tagExists {
+		return materializeOCITagForBuild(c.Context, app, store, from)
+	}
+
+	// Fallback: treat FROM as a pullable reference.
+	_, basePath, err := app.imgMgr.Prepare(c.Context, from)
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve FROM %q via pull: %w", from, err)
+	}
+	return basePath, nil, nil
+}
+
+func resolveCocoonfileLocalPath(cocoonfilePath, from string) (string, bool) {
+	if filepath.IsAbs(from) {
+		return from, true
+	}
+	baseDir := filepath.Dir(cocoonfilePath)
+	if strings.HasPrefix(from, "./") || strings.HasPrefix(from, "../") {
+		return filepath.Clean(filepath.Join(baseDir, from)), true
+	}
+	candidate := filepath.Join(baseDir, from)
+	if _, err := os.Stat(candidate); err == nil {
+		return candidate, true
+	}
+	return "", false
+}
+
+func materializeOCITagForBuild(ctx context.Context, app *appContext, store *oci.Store, tag string) (string, func(), error) {
+	entry, err := store.GetTag(tag)
+	if err != nil {
+		return "", nil, fmt.Errorf("read local OCI tag %q: %w", tag, err)
+	}
+	if _, statErr := os.Stat(entry.LayoutPath); statErr != nil {
+		return "", nil, fmt.Errorf("local OCI layout missing at %s: %w", entry.LayoutPath, statErr)
+	}
+
+	info, err := oci.InspectLayout(entry.LayoutPath)
+	if err != nil {
+		return "", nil, fmt.Errorf("inspect local OCI layout %s: %w", entry.LayoutPath, err)
+	}
+
+	kernelDigest, rootfsDigests, err := locateLayerDigests(info)
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve layers from local OCI tag %q: %w", tag, err)
+	}
+
+	workDir, err := os.MkdirTemp(app.cfg.TempDir(), "cocoon-build-from-oci-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("create temp workspace for FROM %q: %w", tag, err)
+	}
+	cleanup := func() {
+		_ = os.RemoveAll(workDir)
+	}
+
+	rootfsDir := filepath.Join(workDir, "rootfs")
+	if mkErr := os.MkdirAll(rootfsDir, 0o755); mkErr != nil { //nolint:gosec // temporary local workspace
+		cleanup()
+		return "", nil, fmt.Errorf("create rootfs workspace: %w", mkErr)
+	}
+
+	for _, digest := range rootfsDigests {
+		layerPath, layerErr := ociLayoutBlobPath(entry.LayoutPath, digest)
+		if layerErr != nil {
+			cleanup()
+			return "", nil, fmt.Errorf("resolve rootfs layer %s: %w", digest, layerErr)
+		}
+		if layerErr = extractTarLayer(ctx, layerPath, rootfsDir); layerErr != nil {
+			cleanup()
+			return "", nil, fmt.Errorf("extract rootfs layer %s: %w", digest, layerErr)
+		}
+	}
+
+	kernelDir := filepath.Join(workDir, "kernel")
+	if mkErr := os.MkdirAll(kernelDir, 0o755); mkErr != nil { //nolint:gosec // temporary local workspace
+		cleanup()
+		return "", nil, fmt.Errorf("create kernel workspace: %w", mkErr)
+	}
+	kernelLayerPath, err := ociLayoutBlobPath(entry.LayoutPath, kernelDigest)
+	if err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("resolve kernel layer %s: %w", kernelDigest, err)
+	}
+	if err := extractTarLayer(ctx, kernelLayerPath, kernelDir); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("extract kernel layer %s: %w", kernelDigest, err)
+	}
+
+	bootDir := filepath.Join(rootfsDir, "boot")
+	if err := os.MkdirAll(bootDir, 0o755); err != nil { //nolint:gosec // temporary local workspace
+		cleanup()
+		return "", nil, fmt.Errorf("create boot directory in materialized rootfs: %w", err)
+	}
+
+	if err := installKernelArtifacts(kernelDir, bootDir, info.Config); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("materialize kernel artifacts from local OCI tag %q: %w", tag, err)
+	}
+
+	baseImagePath := filepath.Join(workDir, "base.qcow2")
+	if err := buildQcow2FromRootfs(ctx, rootfsDir, baseImagePath); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("materialize qcow2 from local OCI tag %q: %w", tag, err)
+	}
+
+	return baseImagePath, cleanup, nil
+}
+
+func locateLayerDigests(info *oci.LayoutInfo) (string, []string, error) {
+	if info == nil {
+		return "", nil, fmt.Errorf("layout info is nil")
+	}
+	var kernelDigest string
+	rootfsDigests := make([]string, 0, len(info.Layers))
+	for _, layer := range info.Layers {
+		switch layer.MediaType {
+		case oci.MediaTypeKernelLayer:
+			if kernelDigest == "" {
+				kernelDigest = layer.Digest
+			}
+		case oci.MediaTypeRootfsLayer:
+			rootfsDigests = append(rootfsDigests, layer.Digest)
+		}
+	}
+	if kernelDigest == "" {
+		return "", nil, fmt.Errorf("kernel layer not found")
+	}
+	if len(rootfsDigests) == 0 {
+		return "", nil, fmt.Errorf("rootfs layer not found")
+	}
+	return kernelDigest, rootfsDigests, nil
+}
+
+func ociLayoutBlobPath(layoutPath, digest string) (string, error) {
+	const prefix = "sha256:"
+	if !strings.HasPrefix(digest, prefix) {
+		return "", fmt.Errorf("unsupported digest format %q", digest)
+	}
+	hex := strings.TrimPrefix(digest, prefix)
+	if len(hex) != 64 {
+		return "", fmt.Errorf("invalid digest length for %q", digest)
+	}
+	for _, c := range hex {
+		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+		if !isHex {
+			return "", fmt.Errorf("invalid digest characters for %q", digest)
+		}
+	}
+	return filepath.Join(layoutPath, "blobs", "sha256", hex), nil
+}
+
+func extractTarLayer(ctx context.Context, layerPath, targetDir string) error {
+	cmd := exec.CommandContext(ctx, "tar", "-xf", layerPath, "-C", targetDir) //nolint:gosec // paths are local validated paths
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tar extract %s: %s: %w", layerPath, strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
+func installKernelArtifacts(kernelDir, bootDir string, cfg *oci.VMImageConfig) error {
+	kernelCandidates := []string{"vmlinuz"}
+	initrdCandidates := []string{"initrd.img"}
+	if cfg != nil {
+		if p := strings.TrimPrefix(strings.TrimSpace(cfg.KernelPath), "/"); p != "" {
+			kernelCandidates = append([]string{filepath.FromSlash(p)}, kernelCandidates...)
+		}
+		if p := strings.TrimPrefix(strings.TrimSpace(cfg.InitrdPath), "/"); p != "" {
+			initrdCandidates = append([]string{filepath.FromSlash(p)}, initrdCandidates...)
+		}
+	}
+
+	kernelSrc, err := firstExistingPath(kernelDir, kernelCandidates)
+	if err != nil {
+		return fmt.Errorf("locate kernel in extracted layer: %w", err)
+	}
+	initrdSrc, err := firstExistingPath(kernelDir, initrdCandidates)
+	if err != nil {
+		return fmt.Errorf("locate initrd in extracted layer: %w", err)
+	}
+
+	if err := copyFile(kernelSrc, filepath.Join(bootDir, "vmlinuz"), 0o644); err != nil { //nolint:gosec // host-side temp file
+		return fmt.Errorf("copy kernel into /boot: %w", err)
+	}
+	if err := copyFile(initrdSrc, filepath.Join(bootDir, "initrd.img"), 0o644); err != nil { //nolint:gosec // host-side temp file
+		return fmt.Errorf("copy initrd into /boot: %w", err)
+	}
+	return nil
+}
+
+func firstExistingPath(baseDir string, rels []string) (string, error) {
+	for _, rel := range rels {
+		p := filepath.Join(baseDir, rel)
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("none of %v found under %s", rels, baseDir)
+}
+
+func copyFile(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src) //nolint:gosec // src is local path controlled by caller
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = in.Close()
+	}()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode) //nolint:gosec // destination is a controlled local temp path
+	if err != nil {
+		return err
+	}
+
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+func buildQcow2FromRootfs(ctx context.Context, rootfsPath, outputPath string) error {
+	if err := validateSafeBuildPath(rootfsPath); err != nil {
+		return fmt.Errorf("invalid rootfs path: %w", err)
+	}
+	if err := validateSafeBuildPath(outputPath); err != nil {
+		return fmt.Errorf("invalid output path: %w", err)
+	}
+
+	createCmd := exec.CommandContext(ctx, "qemu-img", "create", "-f", "qcow2", outputPath, "10G") //nolint:gosec // internal command invocation with validated local paths
+	if out, err := createCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("qemu-img create: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+
+	rootfsTarPath := filepath.Join(filepath.Dir(outputPath), fmt.Sprintf(".rootfs-%d.tar", time.Now().UnixNano()))
+	if err := validateSafeBuildPath(rootfsTarPath); err != nil {
+		return fmt.Errorf("invalid rootfs tar path: %w", err)
+	}
+	tarCmd := exec.CommandContext(ctx, "tar", "-C", rootfsPath, "-cf", rootfsTarPath, ".") //nolint:gosec // internal command invocation with validated local paths
+	if out, err := tarCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("pack rootfs tar: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	defer os.Remove(rootfsTarPath) //nolint:errcheck,gosec // best-effort cleanup of temporary file
+
+	script := fmt.Sprintf(`add %s
+run
+part-init /dev/sda gpt
+part-add /dev/sda primary 2048 206847
+part-set-gpt-type /dev/sda 1 C12A7328-F81F-11D2-BA4B-00A0C93EC93B
+part-add /dev/sda primary 206848 -1
+part-set-gpt-type /dev/sda 2 0FC63DAF-8483-4772-8E79-3D69D8477DE4
+mkfs fat /dev/sda1
+mkfs ext4 /dev/sda2
+mount /dev/sda2 /
+mkdir-p /boot/efi
+mount /dev/sda1 /boot/efi
+tar-in %s /
+sync
+umount-all
+`, outputPath, rootfsTarPath)
+
+	gfCmd := exec.CommandContext(ctx, "guestfish") //nolint:gosec // guestfish script references validated local paths
+	gfCmd.Stdin = strings.NewReader(script)
+	if out, err := gfCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("guestfish create qcow2: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
+func validateSafeBuildPath(path string) error {
+	for _, c := range path {
+		isAlpha := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+		isDigit := c >= '0' && c <= '9'
+		isSafe := c == '/' || c == '-' || c == '_' || c == '.'
+		if !isAlpha && !isDigit && !isSafe {
+			return fmt.Errorf("unsafe character %q in path %q", string(c), path)
+		}
+	}
+	return nil
+}
+
+func ensureLatestTag(tag string) string {
+	tag = strings.TrimSpace(tag)
+	if tag == "" {
+		return ""
+	}
+	if strings.Contains(tag, "@sha256:") {
+		return tag
+	}
+	last := tag
+	if idx := strings.LastIndex(tag, "/"); idx >= 0 {
+		last = tag[idx+1:]
+	}
+	if strings.Contains(last, ":") {
+		return tag
+	}
+	return tag + ":latest"
 }
 
 func imageBuildAction(c *cli.Context) error {
@@ -816,9 +1142,12 @@ func imageBuildAction(c *cli.Context) error {
 	cocoonfilePath := c.String("file")
 	tag := c.String("tag")
 
-	imagePath, err := resolveBuildImagePath(c, cocoonfilePath)
+	imagePath, cleanup, err := resolveBuildImagePath(c, app, cocoonfilePath)
 	if err != nil {
 		return err
+	}
+	if cleanup != nil {
+		defer cleanup()
 	}
 
 	// Default tag: filename without extension.
@@ -830,6 +1159,7 @@ func imageBuildAction(c *cli.Context) error {
 			tag = base
 		}
 	}
+	tag = ensureLatestTag(tag)
 
 	result, err := app.imgBuild.Build(c.Context, imagePath, tag, cocoonfilePath)
 	if err != nil {
