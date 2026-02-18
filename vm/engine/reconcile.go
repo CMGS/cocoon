@@ -33,6 +33,7 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inc
 
 	var inconsistencies []vm.Inconsistency
 	knownPIDs := make(map[int]string) // pid -> vmID
+	expectedHypervisorNames := make(map[string]struct{})
 	vmConfigs := make(map[string]*types.VMConfig)
 
 	for _, entry := range entries {
@@ -124,6 +125,7 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inc
 		if meta.ProcessPID > 0 {
 			knownPIDs[meta.ProcessPID] = vmID
 		}
+		expectedHypervisorNames[meta.HypervisorProcessName(m.cfg.CHBinary)] = struct{}{}
 
 		// Determine actual state by probing the system.
 		actualState := m.determineActualState(meta, vmCfg)
@@ -191,8 +193,20 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inc
 		}
 	}
 
-	// Detect orphaned cloud-hypervisor and swtpm processes not tracked by any VM.
-	orphans := detectOrphanedProcesses(knownPIDs, m.cfg.CHBinary)
+	// Detect orphaned hypervisor/swtpm processes not tracked by any VM.
+	// Include all process names currently expected by loaded VM metadata.
+	processNames := make([]string, 0, len(expectedHypervisorNames)+1)
+	for name := range expectedHypervisorNames {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		processNames = append(processNames, name)
+	}
+	// Backward-compatible fallback for empty metadata set.
+	if len(processNames) == 0 {
+		processNames = append(processNames, (&types.VMMetadataFile{}).HypervisorProcessName(m.cfg.CHBinary))
+	}
+	orphans := detectOrphanedProcesses(knownPIDs, processNames)
 	inconsistencies = append(inconsistencies, orphans...)
 
 	return inconsistencies, nil
@@ -615,13 +629,33 @@ func isStuckInState(updatedAt string, timeout time.Duration) bool {
 	return time.Since(t) > timeout
 }
 
+func buildOrphanScanProcessNames(expectedHypervisors []string) []string {
+	procNames := make([]string, 0, len(expectedHypervisors)+1)
+	seenNames := make(map[string]struct{}, len(expectedHypervisors)+1)
+	for _, name := range expectedHypervisors {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if _, exists := seenNames[name]; exists {
+			continue
+		}
+		seenNames[name] = struct{}{}
+		procNames = append(procNames, name)
+	}
+	if _, exists := seenNames["swtpm"]; !exists {
+		procNames = append(procNames, "swtpm")
+	}
+	return procNames
+}
+
 // detectOrphanedProcesses scans /proc for hypervisor and swtpm processes
 // that are not tracked by any VM's metadata.
-// chBinary is the configured hypervisor binary name (e.g. "cloud-hypervisor").
+// expectedHypervisors contains one or more expected hypervisor process names.
 // Only works on Linux where /proc is available; on other platforms it logs a
 // warning and returns nil.
-func detectOrphanedProcesses(knownPIDs map[int]string, chBinary string) []vm.Inconsistency {
-	hvName := (&types.VMMetadataFile{}).HypervisorProcessName(chBinary) // nil metadata → basename(chBinary) → default
+func detectOrphanedProcesses(knownPIDs map[int]string, expectedHypervisors []string) []vm.Inconsistency {
+	procNames := buildOrphanScanProcessNames(expectedHypervisors)
 	var orphans []vm.Inconsistency
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
@@ -638,7 +672,7 @@ func detectOrphanedProcesses(knownPIDs map[int]string, chBinary string) []vm.Inc
 		if _, known := knownPIDs[pid]; known {
 			continue
 		}
-		for _, procName := range []string{hvName, "swtpm"} {
+		for _, procName := range procNames {
 			if utils.ValidateProcess(pid, procName) {
 				orphans = append(orphans, vm.Inconsistency{
 					Type:     vm.InconsistencyZombieProcess,

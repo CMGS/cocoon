@@ -67,3 +67,18 @@ func ReadPIDFile(path string) (int, error) {
 	}
 	return strconv.Atoi(strings.TrimSpace(string(data)))
 }
+
+// processNameMatches checks whether actual process name matches expected.
+// On Linux/macOS, kernel-reported comm names can be truncated (e.g., 15 chars
+// on Linux), so we accept exact match or a truncated-prefix match.
+func processNameMatches(actual, expected string) bool {
+	actual = strings.TrimSpace(actual)
+	expected = strings.TrimSpace(expected)
+	if actual == "" || expected == "" {
+		return false
+	}
+	if actual == expected {
+		return true
+	}
+	return strings.HasPrefix(expected, actual)
+}
