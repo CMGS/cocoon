@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -326,11 +325,12 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 	}
 
 	// Write initial metadata.json in CREATING state.
+	runtimeHypervisor := (&types.VMMetadataFile{}).HypervisorProcessName(m.cfg.CHBinary)
 	meta := &types.VMMetadataFile{
 		VMID:             vmID,
 		State:            string(types.VMStateCreating),
 		PreviousState:    "",
-		HypervisorBinary: filepath.Base(m.cfg.CHBinary),
+		HypervisorBinary: runtimeHypervisor,
 		UpdatedAt:        now,
 		SchemaVersion:    types.CurrentMetadataSchemaVersion,
 	}
@@ -419,8 +419,10 @@ func (m *manager) attemptBoot(ctx context.Context, vmID string, vmCfg *types.VMC
 	}
 
 	// Record PID in metadata immediately after launch (no state change).
+	runtimeHypervisor := (&types.VMMetadataFile{}).HypervisorProcessName(m.cfg.CHBinary)
 	if err := m.updateMetadata(vmID, func(md *types.VMMetadataFile) {
 		md.ProcessPID = pid
+		md.HypervisorBinary = runtimeHypervisor
 		md.StartedAt = time.Now().UTC().Format(time.RFC3339)
 	}); err != nil {
 		_ = m.hyper.ForceKill(vmID)
@@ -532,8 +534,10 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 	}
 
 	// Transition STARTING -> RUNNING with runtime metadata.
+	runtimeHypervisor := (&types.VMMetadataFile{}).HypervisorProcessName(m.cfg.CHBinary)
 	if err := m.transitionStateWithUpdate(vmID, types.VMStateRunning, "boot completed", func(md *types.VMMetadataFile) {
 		md.ProcessPID = result.pid
+		md.HypervisorBinary = runtimeHypervisor
 		md.BootTime = time.Since(bootStartTime).Round(time.Millisecond).String()
 		md.LastBootMode = string(result.bootMode)
 		md.LastFirmwarePath = result.firmwarePath
