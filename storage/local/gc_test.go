@@ -31,6 +31,21 @@ func createFakeImage(t *testing.T, cfg *config.CocoonConfig, baseKey string, mti
 	return path
 }
 
+func createFakeLockFile(t *testing.T, cfg *config.CocoonConfig, baseKey string, mtime time.Time) string {
+	t.Helper()
+	lockPath := cfg.ConversionLockPath(baseKey)
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll lock dir: %v", err)
+	}
+	if err := os.WriteFile(lockPath, []byte("lock"), 0o644); err != nil {
+		t.Fatalf("WriteFile lock: %v", err)
+	}
+	if err := os.Chtimes(lockPath, mtime, mtime); err != nil {
+		t.Fatalf("Chtimes lock: %v", err)
+	}
+	return lockPath
+}
+
 // --- Basic GC tests ---
 
 func TestGC_CollectUnreferenced_Empty(t *testing.T) {
@@ -344,5 +359,46 @@ func TestGC_CollectTempFiles_RemovesOldDirectories(t *testing.T) {
 	}
 	if _, err := os.Stat(oldDir); !os.IsNotExist(err) {
 		t.Fatalf("old temp directory still exists after collection, stat err=%v", err)
+	}
+}
+
+func TestGC_CollectStaleConversionLocks_RemovesOrphanLocks(t *testing.T) {
+	cfg := newTestConfig(t)
+	gc := NewGarbageCollector(cfg).(*fileGarbageCollector)
+
+	old := time.Now().Add(-2 * time.Hour)
+	baseKey := "deadbeefdeadbeef_amd64"
+	lockPath := createFakeLockFile(t, cfg, baseKey, old)
+
+	collected, err := gc.CollectStaleConversionLocks(1 * time.Hour)
+	if err != nil {
+		t.Fatalf("CollectStaleConversionLocks: %v", err)
+	}
+	if len(collected) != 1 || collected[0] != filepath.Base(lockPath) {
+		t.Fatalf("collected=%v, want [%s]", collected, filepath.Base(lockPath))
+	}
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Fatalf("stale lock file still exists, stat err=%v", err)
+	}
+}
+
+func TestGC_CollectStaleConversionLocks_KeepLocksForExistingBaseImage(t *testing.T) {
+	cfg := newTestConfig(t)
+	gc := NewGarbageCollector(cfg).(*fileGarbageCollector)
+
+	old := time.Now().Add(-2 * time.Hour)
+	baseKey := "cafebabecafebabe_amd64"
+	_ = createFakeImage(t, cfg, baseKey, old)
+	lockPath := createFakeLockFile(t, cfg, baseKey, old)
+
+	collected, err := gc.CollectStaleConversionLocks(1 * time.Hour)
+	if err != nil {
+		t.Fatalf("CollectStaleConversionLocks: %v", err)
+	}
+	if len(collected) != 0 {
+		t.Fatalf("collected=%v, want empty", collected)
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("lock file should be kept for existing base image: %v", err)
 	}
 }

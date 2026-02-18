@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -232,6 +233,90 @@ func (gc *fileGarbageCollector) CollectTempFiles(maxAge time.Duration) ([]string
 	return collected, err
 }
 
+// CollectStaleConversionLocks removes stale conversion lock files from
+// cache/locks/ that meet all of these conditions:
+//   - lock file mtime is older than maxAge
+//   - corresponding base image qcow2 does not exist
+//   - lock is not currently held (TryLock succeeds)
+//
+// Lock: gc.lock (L1) only.
+//
+// This is best-effort hygiene to clean lock files left behind after image
+// deletion. Active lock files are preserved.
+func (gc *fileGarbageCollector) CollectStaleConversionLocks(maxAge time.Duration) ([]string, error) {
+	var collected []string
+
+	err := gc.withGCLock(func() error {
+		entries, err := os.ReadDir(gc.cfg.ConversionLockDir())
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("read conversion lock directory: %w", err)
+		}
+
+		cutoff := time.Now().Add(-maxAge)
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			name := entry.Name()
+			if !strings.HasSuffix(name, ".lock") {
+				continue
+			}
+
+			info, infoErr := entry.Info()
+			if infoErr != nil {
+				continue
+			}
+			// Defense-in-depth: skip recently touched lock files.
+			if info.ModTime().After(cutoff) {
+				continue
+			}
+
+			baseKey := strings.TrimSuffix(name, ".lock")
+			basePath := gc.cfg.BaseImagePath(baseKey)
+			if _, statErr := os.Stat(basePath); statErr == nil {
+				// Base image exists: keep lock file.
+				continue
+			} else if !os.IsNotExist(statErr) {
+				// Unexpected stat error: skip.
+				continue
+			}
+
+			lockPath := filepath.Join(gc.cfg.ConversionLockDir(), name)
+			fl := flock.New(lockPath)
+			ok, tryErr := fl.TryLock()
+			if tryErr != nil || !ok {
+				// Held by another process or transient lock error.
+				continue
+			}
+
+			// Remove while lock is held, then release.
+			removeErr := os.Remove(lockPath)
+			unlockErr := fl.Unlock()
+			if removeErr != nil {
+				if unlockErr != nil {
+					log.Printf("gc: failed to release conversion lock %s after remove error: %v", lockPath, unlockErr)
+				}
+				continue
+			}
+			if unlockErr != nil {
+				log.Printf("gc: failed to release conversion lock %s after remove: %v", lockPath, unlockErr)
+			}
+
+			collected = append(collected, name)
+		}
+		return nil
+	})
+
+	if collected == nil {
+		collected = []string{}
+	}
+	sort.Strings(collected)
+	return collected, err
+}
+
 // FullGC runs a complete garbage collection cycle.
 //
 // Each phase acquires gc.lock independently. This is NOT atomic across the
@@ -239,6 +324,7 @@ func (gc *fileGarbageCollector) CollectTempFiles(maxAge time.Duration) ([]string
 // each phase performs its own reference check under lock.
 func (gc *fileGarbageCollector) FullGC() error {
 	tempMaxAge := 1 * time.Hour
+	lockMaxAge := storage.OCIGCGracePeriod
 
 	if _, err := gc.CollectUnreferencedImages(); err != nil {
 		return fmt.Errorf("collect unreferenced images: %w", err)
@@ -262,6 +348,10 @@ func (gc *fileGarbageCollector) FullGC() error {
 
 	if _, err := gc.CollectUnreferencedOCIBlobs(); err != nil {
 		return fmt.Errorf("collect unreferenced OCI blobs: %w", err)
+	}
+
+	if _, err := gc.CollectStaleConversionLocks(lockMaxAge); err != nil {
+		return fmt.Errorf("collect stale conversion locks: %w", err)
 	}
 
 	if _, err := gc.CollectTempFiles(tempMaxAge); err != nil {

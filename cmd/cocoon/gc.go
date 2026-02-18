@@ -5,13 +5,21 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	cli "github.com/urfave/cli/v2"
 
+	"github.com/CMGS/cocoon/lock/flock"
 	"github.com/CMGS/cocoon/oci"
 	"github.com/CMGS/cocoon/storage"
 )
+
+const conversionLockGCMaxAge = storage.OCIGCGracePeriod
+
+type conversionLockGC interface {
+	CollectStaleConversionLocks(maxAge time.Duration) ([]string, error)
+}
 
 func gcCommand() *cli.Command {
 	return &cli.Command{
@@ -93,7 +101,19 @@ func gcAction(c *cli.Context) error {
 		fmt.Printf("collected unreferenced OCI blob: %s\n", digest)
 	}
 
-	// Phase 7: Collect temp files.
+	// Phase 7: Collect stale conversion lock files (best-effort hygiene).
+	lockFiles := []string{}
+	if lockGC, ok := app.gc.(conversionLockGC); ok {
+		lockFiles, err = lockGC.CollectStaleConversionLocks(conversionLockGCMaxAge)
+		if err != nil {
+			return fmt.Errorf("collect stale conversion locks: %w", err)
+		}
+		for _, name := range lockFiles {
+			fmt.Printf("collected stale conversion lock: %s\n", name)
+		}
+	}
+
+	// Phase 8: Collect temp files.
 	tempFiles, err := app.gc.CollectTempFiles(1 * time.Hour)
 	if err != nil {
 		return fmt.Errorf("collect temp files: %w", err)
@@ -102,12 +122,12 @@ func gcAction(c *cli.Context) error {
 		fmt.Printf("collected temp file: %s\n", name)
 	}
 
-	total := len(images) + len(overlays) + len(ociLayouts) + len(staleTags) + len(orphanedManifests) + len(ociBlobs) + len(tempFiles)
+	total := len(images) + len(overlays) + len(ociLayouts) + len(staleTags) + len(orphanedManifests) + len(ociBlobs) + len(lockFiles) + len(tempFiles)
 	if total == 0 {
 		fmt.Println("Nothing to collect.")
 	} else {
-		fmt.Printf("\nCollected %d item(s): %d images, %d overlays, %d OCI layouts, %d stale tags, %d orphaned manifests, %d OCI blobs, %d temp files.\n",
-			total, len(images), len(overlays), len(ociLayouts), len(staleTags), len(orphanedManifests), len(ociBlobs), len(tempFiles))
+		fmt.Printf("\nCollected %d item(s): %d images, %d overlays, %d OCI layouts, %d stale tags, %d orphaned manifests, %d OCI blobs, %d stale locks, %d temp files.\n",
+			total, len(images), len(overlays), len(ociLayouts), len(staleTags), len(orphanedManifests), len(ociBlobs), len(lockFiles), len(tempFiles))
 	}
 
 	return nil
@@ -201,7 +221,25 @@ func gcDryRun(app *appContext) error {
 		fmt.Println("\nNo unreferenced OCI blobs found.")
 	}
 
-	// Phase 7 preview: old temp files (>1h).
+	// Phase 7 preview: stale conversion lock files.
+	if _, ok := app.gc.(conversionLockGC); ok {
+		lockCandidates, lockErr := previewStaleConversionLockCandidates(app, conversionLockGCMaxAge)
+		if lockErr != nil {
+			return fmt.Errorf("preview stale conversion locks: %w", lockErr)
+		}
+		if len(lockCandidates) > 0 {
+			fmt.Println("\nStale conversion lock files (candidates for collection):")
+			for _, name := range lockCandidates {
+				fmt.Printf("  %s\n", name)
+			}
+		} else {
+			fmt.Println("\nNo stale conversion lock files found.")
+		}
+	} else {
+		fmt.Println("\nStale conversion lock collection is not supported by this backend.")
+	}
+
+	// Phase 8 preview: old temp files (>1h).
 	tempCandidates, err := previewOldFileCandidates(app.cfg.TempDir(), 1*time.Hour)
 	if err != nil {
 		return fmt.Errorf("preview temp files: %w", err)
@@ -441,6 +479,54 @@ func previewOldFileCandidates(dir string, maxAge time.Duration) ([]string, error
 		}
 	}
 
+	sort.Strings(candidates)
+	return candidates, nil
+}
+
+func previewStaleConversionLockCandidates(app *appContext, maxAge time.Duration) ([]string, error) {
+	lockDir := app.cfg.ConversionLockDir()
+	entries, err := os.ReadDir(lockDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []string{}, nil
+		}
+		return nil, err
+	}
+
+	cutoff := time.Now().Add(-maxAge)
+	candidates := make([]string, 0)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".lock") {
+			continue
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			continue
+		}
+		if info.ModTime().After(cutoff) {
+			continue
+		}
+
+		baseKey := strings.TrimSuffix(name, ".lock")
+		if _, statErr := os.Stat(app.cfg.BaseImagePath(baseKey)); statErr == nil {
+			continue
+		} else if !os.IsNotExist(statErr) {
+			continue
+		}
+
+		lockPath := filepath.Join(lockDir, name)
+		fl := flock.New(lockPath)
+		ok, tryErr := fl.TryLock()
+		if tryErr != nil || !ok {
+			continue
+		}
+		_ = fl.Unlock()
+		candidates = append(candidates, name)
+	}
 	sort.Strings(candidates)
 	return candidates, nil
 }
