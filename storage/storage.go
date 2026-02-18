@@ -10,6 +10,11 @@ package storage
 
 import "time"
 
+// OCIGCGracePeriod is the defense-in-depth grace period for OCI GC operations.
+// OCI layouts and blobs younger than this are skipped to prevent races with
+// concurrent builds that have not yet recorded their tag/blob references.
+const OCIGCGracePeriod = 5 * time.Minute
+
 // ReferenceCounter manages base image reference counts.
 //
 // All mutations (AddReference, RemoveReference) MUST be called while holding

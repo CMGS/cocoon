@@ -10,6 +10,7 @@ import (
 	cli "github.com/urfave/cli/v2"
 
 	"github.com/CMGS/cocoon/oci"
+	"github.com/CMGS/cocoon/storage"
 )
 
 func gcCommand() *cli.Command {
@@ -268,9 +269,8 @@ func previewOrphanedOverlayCandidates(app *appContext) ([]string, error) {
 	return candidates, nil
 }
 
-// ociGCGracePeriod matches the 5-minute grace period used by the real GC
-// in storage/local/gc_oci.go to avoid races with concurrent builds.
-const ociGCGracePeriod = 5 * time.Minute
+// ociGCGracePeriod is an alias for the canonical constant in the storage package.
+const ociGCGracePeriod = storage.OCIGCGracePeriod
 
 func previewOrphanedOCILayoutCandidates(app *appContext) ([]string, error) {
 	layoutsDir := app.cfg.OCILayoutDir()
