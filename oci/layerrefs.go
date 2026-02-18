@@ -99,6 +99,25 @@ func GetAllTrackedBlobs(cfg *config.CocoonConfig) ([]string, error) {
 	return result, err
 }
 
+// GetAllManifestDigests returns all unique manifest digests referenced by any
+// blob entry in the layer refs index.
+func GetAllManifestDigests(cfg *config.CocoonConfig) ([]string, error) {
+	var result []string
+	err := withLayerRefsLock(cfg, func(idx *LayerRefsIndex) error {
+		seen := make(map[string]bool)
+		for _, entry := range idx.Blobs {
+			for _, md := range entry.ManifestDigests {
+				if !seen[md] {
+					result = append(result, md)
+					seen[md] = true
+				}
+			}
+		}
+		return nil // read-only
+	})
+	return result, err
+}
+
 func loadLayerRefs(cfg *config.CocoonConfig) (*LayerRefsIndex, error) {
 	idx := &LayerRefsIndex{Blobs: make(map[string]BlobRefEntry)}
 	path := cfg.OCILayerRefsFile()

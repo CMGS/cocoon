@@ -31,6 +31,7 @@ This directory contains design documents, specifications, and RFCs for Cocoon. T
 | [15-warm-start.md](./15-warm-start.md) | VM Warm Start | Planned | Checkpoint/restore for sub-second VM creation, golden checkpoint workflow, and snapshot management |
 | [16-networking.md](./16-networking.md) | CNI Networking | Planned | CNI plugin integration, bridge networking, control plane for VM network attachment |
 | [17-volume-passthrough.md](./17-volume-passthrough.md) | Volume Passthrough | Planned | Host-to-guest directory sharing via virtio-fs, virtiofsd lifecycle management |
+| [18-garbage-collection.md](./18-garbage-collection.md) | Garbage Collection | Implemented | GC phases, permanent deletion, OCI tag/manifest/blob cleanup, locking |
 
 ### Phase 3: Hardware and Ecosystem (docs/14)
 

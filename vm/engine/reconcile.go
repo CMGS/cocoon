@@ -6,7 +6,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -533,18 +532,7 @@ func (m *manager) fixOrphanedOverlay(vmID string) error {
 		return nil
 	}
 
-	if err := os.MkdirAll(m.cfg.TrashDir(), 0o755); err != nil { //nolint:gosec // G301: trash dir permissions align with other cocoon state dirs
-		return fmt.Errorf("ensure trash dir: %w", err)
-	}
-
-	trashName := fmt.Sprintf("%d_%s-orphan-overlay.qcow2", time.Now().UnixNano(), vmID)
-	trashPath := filepath.Join(m.cfg.TrashDir(), trashName)
-	if err := os.Rename(overlayPath, trashPath); err != nil {
-		if rmErr := os.Remove(overlayPath); rmErr != nil {
-			return fmt.Errorf("cleanup orphaned overlay: rename=%v, remove=%w", err, rmErr)
-		}
-	}
-
+	// Permanently delete the VM directory and all associated files.
 	_ = os.RemoveAll(m.cfg.VMPersistDir(vmID))
 	_ = os.RemoveAll(m.cfg.VMRuntimeDir(vmID))
 	_ = os.Remove(m.cfg.VMSerialLogPath(vmID))

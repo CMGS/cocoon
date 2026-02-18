@@ -65,7 +65,6 @@ func initAction(c *cli.Context) error {
 		cfg.BuildahRoot,
 		cfg.VMDir(),
 		cfg.TempDir(),
-		cfg.TrashDir(),
 		cfg.FirmwareDir(),
 		cfg.RuntimeDir,
 		cfg.LogDir,

@@ -69,25 +69,38 @@ type COWManager interface {
 
 // GarbageCollector reclaims unreferenced storage resources.
 //
+// All deletions are permanent. There is no trash or grace period for
+// unreferenced images — if an image has zero references it is collected.
+//
 // Locking order (docs/06-concurrency.md):
 //  1. Acquire gc.lock (Level 1).
 //  2. For each image, acquire references.lock (Level 2) for atomic
 //     check-and-delete inside the critical section.
 //  3. Never acquire locks in the reverse order.
 type GarbageCollector interface {
-	// CollectUnreferencedImages soft-deletes base images that have zero
-	// references AND whose mtime is older than gracePeriod.
-	// Returns the base_keys that were collected.
-	CollectUnreferencedImages(gracePeriod time.Duration) ([]string, error)
+	// CollectUnreferencedImages permanently deletes base images that have
+	// zero references. Returns the base_keys that were collected.
+	CollectUnreferencedImages() ([]string, error)
 
 	// CollectOrphanedOverlays finds VM directories where overlay.qcow2 exists
-	// but config.json is missing (crash point 1).  Moves them to trash/.
-	// Returns the VM IDs that were collected.
+	// but config.json is missing (crash point 1). Permanently deletes the
+	// VM directory. Returns the VM IDs that were collected.
 	CollectOrphanedOverlays() ([]string, error)
 
 	// CollectOrphanedOCILayouts removes OCI layout directories not referenced
 	// by the tag index. Returns collected layout directory names.
 	CollectOrphanedOCILayouts() ([]string, error)
+
+	// CollectStaleOCITags removes tags whose layout path no longer exists
+	// on disk. Cascades cleanup to orphaned manifest refs and zero-ref blobs.
+	// Returns collected stale tag names.
+	CollectStaleOCITags() ([]string, error)
+
+	// CollectOrphanedOCIManifestRefs removes manifest digest references from
+	// the layer-refs index that are not associated with any live tag.
+	// Zero-ref blobs are deleted (with a 5-min grace for in-progress builds).
+	// Returns orphaned manifest digests cleaned.
+	CollectOrphanedOCIManifestRefs() ([]string, error)
 
 	// CollectUnreferencedOCIBlobs removes blobs from the shared blob store
 	// that have zero manifest references. Returns collected blob digests.
@@ -97,11 +110,10 @@ type GarbageCollector interface {
 	// Returns the filenames that were collected.
 	CollectTempFiles(maxAge time.Duration) ([]string, error)
 
-	// EmptyTrash permanently deletes items in trash/ older than maxAge.
-	EmptyTrash(maxAge time.Duration) error
-
 	// FullGC runs a complete garbage collection cycle:
-	// CollectUnreferencedImages + CollectOrphanedOverlays + CollectOrphanedOCILayouts +
-	// CollectUnreferencedOCIBlobs + CollectTempFiles + EmptyTrash.
+	// CollectUnreferencedImages + CollectOrphanedOverlays +
+	// CollectOrphanedOCILayouts + CollectStaleOCITags +
+	// CollectOrphanedOCIManifestRefs + CollectUnreferencedOCIBlobs +
+	// CollectTempFiles.
 	FullGC() error
 }

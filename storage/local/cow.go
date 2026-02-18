@@ -133,10 +133,7 @@ func (m *fileCOWManager) CreateOverlay(baseKey, vmID, diskSize string) (string, 
 	return overlayPath, nil
 }
 
-// RemoveOverlay removes only the overlay disk file for vmID.
-// It first attempts a soft-delete by moving overlay.qcow2 to trash with a
-// timestamped name. If rename fails (e.g. cross-filesystem), it falls back to
-// removing overlay.qcow2 directly.
+// RemoveOverlay permanently removes the overlay disk file for vmID.
 //
 // The VM directory itself is intentionally preserved for the caller to handle
 // (for example, manager.Delete() will remove config/metadata/log references).
@@ -145,19 +142,7 @@ func (m *fileCOWManager) RemoveOverlay(vmID string) error {
 	if _, err := os.Stat(overlayPath); os.IsNotExist(err) {
 		return nil // already gone
 	}
-
-	// Move overlay to trash for potential recovery.
-	trashDir := m.cfg.TrashDir()
-	if err := os.MkdirAll(trashDir, 0o755); err != nil { //nolint:gosec // G301: trash dir needs same permissions as other cocoon dirs
-		return fmt.Errorf("ensure trash dir: %w", err)
-	}
-	trashName := fmt.Sprintf("%d_%s-overlay.qcow2", time.Now().UnixNano(), vmID)
-	trashPath := filepath.Join(trashDir, trashName)
-	if err := os.Rename(overlayPath, trashPath); err != nil {
-		// Cross-filesystem rename fails; fall back to hard delete.
-		return os.Remove(overlayPath)
-	}
-	return nil
+	return os.Remove(overlayPath)
 }
 
 // GetOverlayInfo returns metadata about an existing overlay by running

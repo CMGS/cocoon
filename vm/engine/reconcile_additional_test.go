@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -219,14 +218,6 @@ func TestReconcile_OrphanOverlayFixedByDoctorFix(t *testing.T) {
 	}
 	if _, err := os.Stat(overlayPath); !os.IsNotExist(err) {
 		t.Fatalf("expected orphan overlay to be removed from original location")
-	}
-
-	trashMatches, err := filepath.Glob(filepath.Join(cfg.TrashDir(), "*"+vmID+"-orphan-overlay.qcow2"))
-	if err != nil {
-		t.Fatalf("glob trash: %v", err)
-	}
-	if len(trashMatches) == 0 {
-		t.Fatalf("expected orphan overlay to be moved into trash")
 	}
 }
 
