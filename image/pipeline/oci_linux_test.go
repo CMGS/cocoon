@@ -73,7 +73,7 @@ if [ "${1:-}" != "inspect" ] || [ "${2:-}" != "--raw" ]; then
   echo "unexpected args: $*" >&2
   exit 1
 fi
-echo '` + rawManifest + `'
+printf '%s' '` + rawManifest + `'
 `
 	fakeSkopeoPath := filepath.Join(fakeBinDir, "skopeo")
 	if err := os.WriteFile(fakeSkopeoPath, []byte(fakeSkopeo), 0o755); err != nil {
