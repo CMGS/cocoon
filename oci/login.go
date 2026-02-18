@@ -102,19 +102,18 @@ func pingRegistry(ctx context.Context, registry, username, password string) erro
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	// 200 or 401 with a Www-Authenticate header (token flow) are both OK for
-	// basic credential verification. We only reject outright failures.
+	// 200 means direct basic auth succeeded.
 	if resp.StatusCode == http.StatusOK {
 		return nil
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
-		// Token-based registries (Docker Hub, ghcr.io) return 401 with a Bearer
-		// challenge on /v2/. In this flow, actual credential verification happens
-		// during the token exchange at push time, not here. This means login may
-		// succeed even if credentials are incorrect. A full token exchange would
-		// require parsing the Www-Authenticate realm URL and requesting a token —
-		// deferred to a future enhancement.
-		if strings.Contains(resp.Header.Get("Www-Authenticate"), "Bearer") {
+		wwwAuth := resp.Header.Get("Www-Authenticate")
+		if strings.Contains(wwwAuth, "Bearer") {
+			// Token-based registries (Docker Hub, ghcr.io) return 401 with a Bearer
+			// challenge on /v2/. Perform token exchange to verify credentials.
+			if err := verifyBearerCredentials(ctx, wwwAuth, username, password); err != nil {
+				return err
+			}
 			return nil
 		}
 		return fmt.Errorf("invalid credentials for %s (HTTP 401)", registry)
@@ -130,6 +129,69 @@ func pingRegistry(ctx context.Context, registry, username, password string) erro
 	}
 
 	return nil
+}
+
+// verifyBearerCredentials parses a Bearer Www-Authenticate challenge header and
+// performs a token exchange to verify the provided credentials.
+// Header format: Bearer realm="https://auth.example.com/token",service="registry.example.com",scope="..."
+func verifyBearerCredentials(ctx context.Context, wwwAuth, username, password string) error {
+	realm := extractBearerParam(wwwAuth, "realm")
+	if realm == "" {
+		// No realm found — cannot verify credentials via token exchange.
+		// Fall back to accepting (warn-only behavior for unusual registries).
+		return nil
+	}
+
+	service := extractBearerParam(wwwAuth, "service")
+
+	// Build token request URL.
+	tokenURL := realm
+	separator := "?"
+	if strings.Contains(tokenURL, "?") {
+		separator = "&"
+	}
+	if service != "" {
+		tokenURL += separator + "service=" + service
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tokenURL, nil)
+	if err != nil {
+		return fmt.Errorf("build token request: %w", err)
+	}
+	req.SetBasicAuth(username, password)
+
+	tokenResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("token exchange request to %s: %w", realm, err)
+	}
+	defer tokenResp.Body.Close() //nolint:errcheck
+
+	if tokenResp.StatusCode == http.StatusOK {
+		return nil
+	}
+	if tokenResp.StatusCode == http.StatusUnauthorized || tokenResp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("invalid credentials: token exchange returned HTTP %d", tokenResp.StatusCode)
+	}
+
+	// Unexpected status — log but don't fail (registry quirks).
+	return nil
+}
+
+// extractBearerParam extracts a parameter value from a Bearer Www-Authenticate header.
+// E.g., extractBearerParam(`Bearer realm="https://example.com/token",service="reg"`, "realm")
+// returns "https://example.com/token".
+func extractBearerParam(header, param string) string {
+	prefix := param + "=\""
+	idx := strings.Index(header, prefix)
+	if idx < 0 {
+		return ""
+	}
+	start := idx + len(prefix)
+	end := strings.IndexByte(header[start:], '"')
+	if end < 0 {
+		return ""
+	}
+	return header[start : start+end]
 }
 
 // cocoonKeychain is an authn.Keychain that reads from ~/.cocoon/config.json.

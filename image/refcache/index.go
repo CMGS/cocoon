@@ -237,6 +237,39 @@ func DeleteByBaseKey(cfg *config.CocoonConfig, baseKey string) error {
 	})
 }
 
+// PurgeBaseKey removes all entries that reference baseKey and cleans up entries
+// that become empty after removal. This prevents stale refs from accumulating
+// when images are deleted.
+func PurgeBaseKey(cfg *config.CocoonConfig, baseKey string) error {
+	if strings.TrimSpace(baseKey) == "" {
+		return nil
+	}
+	return withLock(cfg, func(idx indexFile) error {
+		changed := false
+		for ref, entry := range idx {
+			keys := entry.resolvedBaseKeys()
+			if !containsString(keys, baseKey) {
+				continue
+			}
+			keys = removeString(keys, baseKey)
+			if len(keys) == 0 {
+				delete(idx, ref)
+			} else {
+				setResolvedBaseKeys(&entry, keys)
+				if len(keys) > 1 {
+					entry.DigestFull = ""
+				}
+				idx[ref] = entry
+			}
+			changed = true
+		}
+		if !changed {
+			return nil
+		}
+		return save(cfg, idx)
+	})
+}
+
 func candidates(ref string) []string {
 	set := make(map[string]struct{})
 	add := func(v string) {

@@ -55,7 +55,7 @@ apt-get install -y nginx
 			wantSteps: 1,
 		},
 		{
-			name: "registry reference FROM",
+			name: "registry-like FROM with dot in host",
 			input: `FROM myregistry.io/ubuntu-vm:22.04
 RUN echo done
 `,
@@ -63,11 +63,10 @@ RUN echo done
 			wantSteps: 1,
 		},
 		{
-			name: "URL FROM",
+			name: "URL FROM rejected",
 			input: `FROM https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img
 `,
-			wantFrom:  "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img",
-			wantSteps: 0,
+			wantErr: true,
 		},
 		{
 			name:    "missing FROM",

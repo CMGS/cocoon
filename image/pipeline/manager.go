@@ -226,7 +226,13 @@ func (m *manager) Prepare(ctx context.Context, ref string) (*image.ImageIdentity
 	// This prevents short names like "ubuntu-22.04-cloudimg" from being misclassified as OCI
 	// refs and sent into the buildah/skopeo pipeline when they already exist in the cache.
 	if baseKey, found, resolveErr := refcache.ResolveBaseKey(m.cfg, ref); resolveErr != nil {
-		return nil, "", fmt.Errorf("resolve cached ref %q: %w", ref, resolveErr)
+		// If the ref is ambiguous (maps to multiple base keys), log a warning
+		// and fall through to the normal pull/identify path (treat as cache miss).
+		if errors.Is(resolveErr, refcache.ErrAmbiguousImageRef) {
+			log.Printf("image %q: ambiguous ref in cache (%v), treating as cache miss", ref, resolveErr)
+		} else {
+			return nil, "", fmt.Errorf("resolve cached ref %q: %w", ref, resolveErr)
+		}
 	} else if found {
 		basePath := m.cfg.BaseImagePath(baseKey)
 		if _, statErr := os.Stat(basePath); statErr == nil {
@@ -439,7 +445,7 @@ func (m *manager) VerifyBootability(ctx context.Context, imagePath string) (*ima
 	result.BootModes = []string{string(types.BootModeUEFI)}
 
 	// Attempt deep verification (platform-specific).
-	if err := deepVerifyBoot(imagePath, result); err != nil {
+	if err := deepVerifyBoot(ctx, imagePath, result); err != nil {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("deep verification error: %v", err))
 	}
 
@@ -589,6 +595,12 @@ func (m *manager) RemoveCached(ctx context.Context, baseKey string) error {
 
 	if err := os.Remove(basePath); err != nil {
 		return fmt.Errorf("remove cached image %s: %w", baseKey, err)
+	}
+
+	// Purge stale refcache entries pointing to this base key to prevent
+	// ambiguous ref accumulation (ErrAmbiguousImageRef).
+	if purgeErr := refcache.PurgeBaseKey(m.cfg, baseKey); purgeErr != nil {
+		log.Printf("warning: purge refcache entries for %s: %v", baseKey, purgeErr)
 	}
 
 	log.Printf("image cache: removed %s", baseKey)

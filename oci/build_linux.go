@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -130,8 +131,8 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 	if err != nil {
 		return nil, fmt.Errorf("read PARTUUID: %w", err)
 	}
-	if !isValidUUID(partUUID) {
-		return nil, fmt.Errorf("invalid PARTUUID format %q (expected UUID)", partUUID)
+	if !isValidUUID(partUUID) && !isValidMBRPartUUID(partUUID) {
+		return nil, fmt.Errorf("invalid PARTUUID format %q (expected UUID or MBR-style ID)", partUUID)
 	}
 	pw.Detail(partUUID)
 
@@ -142,10 +143,29 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 		return nil, fmt.Errorf("extract rootfs: %w", err)
 	}
 
-	// Exclude kernel and initrd from rootfs (they're in the kernel layer).
+	// Exclude all boot kernel/initrd files from rootfs (they're in the kernel layer).
+	// This covers not just the selected kernel+initrd but all vmlinuz*, initrd*, and
+	// initramfs* files in /boot to avoid duplicating data.
 	excludePaths := []string{
 		strings.TrimPrefix(ki.KernelPath, "/"),
 		strings.TrimPrefix(ki.InitrdPath, "/"),
+	}
+	for _, bf := range bootFiles {
+		base := filepath.Base(bf)
+		if strings.HasPrefix(base, "vmlinuz") || strings.HasPrefix(base, "initrd") || strings.HasPrefix(base, "initramfs") {
+			p := strings.TrimPrefix(bf, "/")
+			// Avoid duplicates.
+			isDup := false
+			for _, ep := range excludePaths {
+				if ep == p {
+					isDup = true
+					break
+				}
+			}
+			if !isDup {
+				excludePaths = append(excludePaths, p)
+			}
+		}
 	}
 	pw.Step("Building rootfs layer...")
 	rootfsTarPath := filepath.Join(tmpDir, "rootfs-layer.tar")
@@ -204,6 +224,10 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 	// not delete this layout directory.
 	pw.Step("Saving tag...")
 	if err := store.SaveTag(tag, layoutDir, info.manifestDigest); err != nil {
+		// Clean up blob refs registered above to avoid orphaned refs.
+		if _, refErr := RemoveBlobRefs(cfg, info.manifestDigest); refErr != nil {
+			log.Printf("warning: failed to clean blob refs after SaveTag failure (GC will reclaim): %v", refErr)
+		}
 		return nil, fmt.Errorf("save tag: %w", err)
 	}
 	pw.Detail(tag)
@@ -217,6 +241,10 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 }
 
 // applyStep executes a single Cocoonfile RUN or COPY step via virt-customize.
+//
+// COPY semantics: virt-customize --copy-in copies src INTO the dest directory.
+// This differs from Dockerfile COPY where dest can be a file path. The dest
+// argument must be a directory path in the guest filesystem.
 func applyStep(ctx context.Context, imagePath string, step Step) error {
 	switch step.Type {
 	case "run":
@@ -311,6 +339,7 @@ inspect-os
 		return "", fmt.Errorf("unexpected device path %q from inspect-os (expected /dev/...)", disk)
 	}
 
+	// Try GPT PARTUUID first.
 	script2 := fmt.Sprintf(`add %s
 run
 part-get-gpt-guid %s %d
@@ -318,19 +347,44 @@ part-get-gpt-guid %s %d
 	cmd2 := exec.CommandContext(ctx, "guestfish") //nolint:gosec
 	cmd2.Stdin = strings.NewReader(script2)
 	out2, err := cmd2.Output()
+	if err == nil {
+		uuid := strings.TrimSpace(string(out2))
+		if uuid != "" {
+			return uuid, nil
+		}
+	}
+
+	// Fallback for MBR images: synthesize a pseudo-UUID from the MBR disk ID
+	// and partition number. MBR disks have no GPT GUID but guestfish can
+	// return the 32-bit MBR disk identifier via part-get-mbr-id.
+	script3 := fmt.Sprintf(`add %s
+run
+part-get-mbr-id %s %d
+`, imagePath, disk, partNum)
+	cmd3 := exec.CommandContext(ctx, "guestfish") //nolint:gosec
+	cmd3.Stdin = strings.NewReader(script3)
+	out3, err := cmd3.Output()
 	if err != nil {
-		return "", fmt.Errorf("guestfish part-get-gpt-guid %s %d: %w", disk, partNum, err)
+		return "", fmt.Errorf("guestfish: no GPT GUID and MBR ID lookup failed for %s partition %d: %w", disk, partNum, err)
 	}
-	uuid := strings.TrimSpace(string(out2))
-	if uuid == "" {
-		return "", fmt.Errorf("empty PARTUUID for %s partition %d", disk, partNum)
+	mbrID := strings.TrimSpace(string(out3))
+	if mbrID == "" {
+		return "", fmt.Errorf("empty PARTUUID for %s partition %d (neither GPT GUID nor MBR ID found)", disk, partNum)
 	}
-	return uuid, nil
+	// Synthesize a UUID-like string from MBR ID + partition number.
+	// Format: {mbrID}-{partNum:02d} padded to look like a UUID.
+	syntheticUUID := fmt.Sprintf("%s-%02d", mbrID, partNum)
+	return syntheticUUID, nil
 }
 
 // parseDevicePartition splits a device path like "/dev/sda2" into disk "/dev/sda" and partition 2.
 // Also handles nvme style like "/dev/nvme0n1p2" -> "/dev/nvme0n1" and 2.
+// LVM (/dev/mapper/...) and device-mapper (/dev/dm-*) devices are not supported
+// because PARTUUID requires a physical partition.
 func parseDevicePartition(device string) (string, int, error) {
+	if strings.HasPrefix(device, "/dev/mapper/") || strings.HasPrefix(device, "/dev/dm-") {
+		return "", 0, fmt.Errorf("LVM/device-mapper root device %q is not supported: PARTUUID requires a physical partition", device)
+	}
 	// Find trailing digits.
 	i := len(device)
 	for i > 0 && device[i-1] >= '0' && device[i-1] <= '9' {
@@ -519,6 +573,14 @@ func isValidUUID(s string) bool {
 		}
 	}
 	return true
+}
+
+// isValidMBRPartUUID checks that s matches an MBR-style pseudo PARTUUID
+// synthesized from the MBR disk ID and partition number (e.g., "0x12345678-02").
+func isValidMBRPartUUID(s string) bool {
+	// Must contain at least one dash and have non-empty parts.
+	idx := strings.LastIndexByte(s, '-')
+	return idx > 0 && idx < len(s)-1
 }
 
 func copyFile(src, dst string) error {

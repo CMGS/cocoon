@@ -587,7 +587,11 @@ func imageBuildAction(c *cli.Context) error {
 		}
 
 		// FROM in Cocoonfile determines the base image.
+		// Resolve relative FROM paths relative to the Cocoonfile's directory.
 		imagePath = cf.From
+		if !filepath.IsAbs(imagePath) && cocoonfilePath != "" {
+			imagePath = filepath.Join(filepath.Dir(cocoonfilePath), imagePath)
+		}
 
 		// Positional arg overrides FROM if provided.
 		if c.NArg() > 0 {

@@ -61,12 +61,8 @@ func MigrateOCICache(cfg *config.CocoonConfig) error {
 			}
 		}
 
-		// Update tag index to point to new layout path.
-		if err := store.SaveTag(entry.Tag, newLayoutDir, entry.ManifestDigest); err != nil {
-			return fmt.Errorf("update tag index for %s: %w", entry.Tag, err)
-		}
-
-		// Register blob refs for this manifest.
+		// Register blob refs BEFORE saving tag to prevent a GC race window
+		// where blobs could be collected between SaveTag and AddBlobRefs.
 		blobDigests, blobSizes, collectErr := collectBlobDigestsFromLayout(newLayoutDir)
 		if collectErr != nil {
 			return fmt.Errorf("collect blob digests for %s: %w", entry.Tag, collectErr)
@@ -75,6 +71,11 @@ func MigrateOCICache(cfg *config.CocoonConfig) error {
 			if err := AddBlobRefs(cfg, entry.ManifestDigest, blobDigests, blobSizes); err != nil {
 				return fmt.Errorf("add blob refs for %s: %w", entry.Tag, err)
 			}
+		}
+
+		// Update tag index to point to new layout path.
+		if err := store.SaveTag(entry.Tag, newLayoutDir, entry.ManifestDigest); err != nil {
+			return fmt.Errorf("update tag index for %s: %w", entry.Tag, err)
 		}
 	}
 

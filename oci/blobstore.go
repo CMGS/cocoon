@@ -1,6 +1,8 @@
 package oci
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -81,10 +83,19 @@ func (bs *BlobStore) StoreBlob(srcPath, digest string) (string, error) {
 	}
 	defer sf.Close() //nolint:errcheck
 
-	if _, err = io.Copy(tmp, sf); err != nil {
+	// Compute digest during copy to verify content matches the expected digest.
+	h := sha256.New()
+	if _, err = io.Copy(io.MultiWriter(tmp, h), sf); err != nil {
 		_ = tmp.Close()
 		return "", fmt.Errorf("copy blob %s: %w", digest, err)
 	}
+
+	actualDigest := hex.EncodeToString(h.Sum(nil))
+	if actualDigest != digest {
+		_ = tmp.Close()
+		return "", fmt.Errorf("blob digest mismatch: expected %s, got %s", digest, actualDigest)
+	}
+
 	if err = tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		return "", fmt.Errorf("sync blob %s: %w", digest, err)
@@ -114,6 +125,13 @@ func (bs *BlobStore) StoreBlobFromBytes(data []byte, digest string) (string, err
 
 	if err := os.MkdirAll(filepath.Dir(blobPath), 0o750); err != nil {
 		return "", fmt.Errorf("create blob dir: %w", err)
+	}
+
+	// Verify content matches the provided digest.
+	h := sha256.Sum256(data)
+	actualDigest := hex.EncodeToString(h[:])
+	if actualDigest != digest {
+		return "", fmt.Errorf("blob digest mismatch: expected %s, got %s", digest, actualDigest)
 	}
 
 	// Write to temp file then rename for atomicity.
