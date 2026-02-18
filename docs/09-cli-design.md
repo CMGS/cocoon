@@ -131,8 +131,8 @@ cocoon/
 │   ├── local/
 │   │   ├── refcount.go       # ReferenceCounter impl (references.json + flock)
 │   │   ├── cow.go            # COWManager impl (qemu-img create/resize)
-│   │   ├── gc.go             # GarbageCollector impl (sweep + trash)
-│   │   └── gc_oci.go         # OCI GC: orphaned layouts + unreferenced blobs
+│   │   ├── gc.go             # GarbageCollector impl (permanent delete)
+│   │   └── gc_oci.go         # OCI GC: layouts, tags, manifest refs, blobs
 │   └── mocks/
 │       └── mock.go
 ├── vm/
@@ -290,14 +290,16 @@ type COWManager interface {
 }
 
 // GarbageCollector reclaims unreferenced storage resources.
+// All deletions are permanent. See docs/18-garbage-collection.md.
 // Locking order: gc.lock (Level 1) → references.lock (Level 2).
 type GarbageCollector interface {
-    CollectUnreferencedImages(gracePeriod time.Duration) ([]string, error)
+    CollectUnreferencedImages() ([]string, error)
     CollectOrphanedOverlays() ([]string, error)
     CollectOrphanedOCILayouts() ([]string, error)
+    CollectStaleOCITags() ([]string, error)
+    CollectOrphanedOCIManifestRefs() ([]string, error)
     CollectUnreferencedOCIBlobs() ([]string, error)
     CollectTempFiles(maxAge time.Duration) ([]string, error)
-    EmptyTrash(maxAge time.Duration) error
     FullGC() error
 }
 ```
@@ -568,7 +570,7 @@ func initCommand() *cli.Command {
 **Behavior**:
 
 1. Build config from `config.DefaultConfig()`, apply `--root-dir`, `--runtime-dir`, `--log-dir` overrides
-2. Create all directories via `cfg.EnsureDirs()` (db/, cache/images/, cache/manifests/, cache/locks/, cache/oci/blobs/sha256/, cache/oci/layouts/, vms/, temp/, trash/, firmware/, buildah/, runtime/vms/, log/)
+2. Create all directories via `cfg.EnsureDirs()` (db/, cache/images/, cache/manifests/, cache/locks/, cache/oci/blobs/sha256/, cache/oci/layouts/, vms/, temp/, firmware/, buildah/, runtime/vms/, log/)
 3. If `--with-uefi-firmware URL`: download to `firmware/CLOUDHV.fd` (0644), atomic rename
 4. Write `config.json` to `--config` path (default `/etc/cocoon/config.json`); skip if exists unless `--force`
 5. Print "Done. Run 'cocoon doctor' to verify system dependencies."
@@ -1311,6 +1313,11 @@ func imagesCommand() *cli.Command {
 - `image tag SOURCE_REF TARGET_REF` behavior:
   1. If `SOURCE_REF` is a local OCI build tag, creates/updates another local OCI tag pointing to the same layout.
   2. Otherwise, resolves a cached cloud image (`base_key`/manifest alias) and creates/updates a cloud-image alias in `cache/manifests/index.json`.
+- `image remove <ref>` behavior for OCI tags:
+  1. Removes only the requested tag entry from `db/oci-build-tags.json`.
+  2. Keeps the layout directory when other tags still reference the same `layout_path`.
+  3. Removes the layout directory only after the last tag referencing that layout is deleted.
+  4. Blob reference cleanup still keys off `manifest_digest` and only collects zero-ref blobs.
 - `image verify` resolution order:
   1. local OCI build tag (`cache/oci/layouts/...`) -> checks OCI layer media types and reports `direct` mode when kernel layer exists
   2. local file path
@@ -1434,14 +1441,6 @@ func gcCommand() *cli.Command {
         Name:  "gc",
         Usage: "Run garbage collection on unreferenced images and orphaned resources",
         Flags: []cli.Flag{
-            &cli.IntFlag{
-                Name:  "grace-period",
-                Usage: "hours before unreferenced images are collected (default: config value; 0 = collect immediately)",
-            },
-            &cli.BoolFlag{
-                Name:  "aggressive",
-                Usage: "collect unreferenced images immediately (alias for --grace-period 0)",
-            },
             &cli.BoolFlag{
                 Name:  "dry-run",
                 Usage: "only report what would be collected, don't actually delete",
@@ -1452,29 +1451,24 @@ func gcCommand() *cli.Command {
 }
 ```
 
-**GC Phases**: The garbage collector runs the following phases in order:
+**GC Phases**: The garbage collector runs 7 phases in order. All deletions are permanent (no trash). See [18-garbage-collection.md](./18-garbage-collection.md) for the full design.
 
-1. **Unreferenced base images**: Collect cloud image qcow2 files with zero VM references (subject to grace period).
-2. **Orphaned overlays**: Collect overlay.qcow2 files with missing config.json.
-3. **Orphaned OCI layouts**: Collect layout directories in `cache/oci/layouts/` not referenced by any tag in `oci-build-tags.json`.
-4. **Unreferenced OCI blobs**: Collect blobs from `cache/oci/blobs/sha256/` with zero manifest references in `oci-layer-refs.json`.
-5. **Temp files**: Collect files in `temp/` older than 1 hour.
-6. **Trash cleanup**: Permanently delete items in `trash/` older than the retention period.
+1. **Unreferenced base images**: Permanently delete cloud image qcow2 files with zero VM references.
+2. **Orphaned overlays**: Permanently delete VM directories where overlay.qcow2 exists but config.json is missing.
+3. **Orphaned OCI layouts**: Remove layout directories in `cache/oci/layouts/` not referenced by any tag.
+4. **Stale OCI tags**: Remove tags from `oci-build-tags.json` whose layout path no longer exists; cascade cleanup to orphaned manifests/blobs.
+5. **Orphaned OCI manifest refs**: Remove manifest digests from `oci-layer-refs.json` not associated with any live tag; delete zero-ref blobs.
+6. **Unreferenced OCI blobs**: Remove blobs from `cache/oci/blobs/sha256/` with zero manifest references.
+7. **Temp files**: Remove files in `temp/` older than 1 hour.
 
 **Example Usage**:
 
 ```bash
-# Run GC with default grace period (24h)
+# Run GC (permanently deletes all unreferenced resources)
 cocoon gc
 
 # Dry run to see what would be collected
 cocoon gc --dry-run
-
-# Run GC with custom grace period (12 hours)
-cocoon gc --grace-period 12
-
-# Run GC aggressively (collect unreferenced images immediately)
-cocoon gc --aggressive
 ```
 
 **Example Output**:
@@ -1482,15 +1476,16 @@ cocoon gc --aggressive
 ```
 collected image: a1b2c3d4e5f6a7b8_amd64
 collected orphaned OCI layout: 7f3a1b2c
+collected stale OCI tag: myregistry.io/old-image:v1
 collected unreferenced OCI blob: abc123def456...
 
-Collected 3 item(s): 1 images, 0 overlays, 1 OCI layouts, 1 OCI blobs, 0 temp files.
+Collected 4 item(s): 1 images, 0 overlays, 1 OCI layouts, 1 stale tags, 0 orphaned manifests, 1 OCI blobs, 0 temp files.
 ```
 
 **Dry-run output** reports candidates for each phase without deleting:
 
 ```
-Dry run (grace period: 24h0m0s)
+Dry run
 
 Unreferenced images (candidates for collection):
   a1b2c3d4e5f6a7b8_amd64
@@ -1500,12 +1495,15 @@ No orphaned overlays found.
 Orphaned OCI layouts (candidates for collection):
   7f3a1b2c
 
+Stale OCI tags (candidates for collection):
+  myregistry.io/old-image:v1
+
+No orphaned OCI manifest refs found.
+
 Unreferenced OCI blobs (candidates for collection):
   abc123def456...
 
 No temp files found for collection.
-
-No trash items found for permanent deletion.
 
 Use 'cocoon gc' without --dry-run to perform collection.
 ```
@@ -1583,7 +1581,7 @@ func doctorAction(c *cli.Context) error {
 **VM Reconciliation** (--fix repairs these):
 - Stale RUNNING state (CH process not found → mark ERROR)
 - Zombie socket / stale PID file → remove
-- Orphaned overlay (overlay exists, config missing) → move overlay to trash + cleanup VM dir
+- Orphaned overlay (overlay exists, config missing) → permanently delete VM dir
 - Missing reference (config exists, references missing vmID) → restore `references.json` entry
 - Dangling reference (references vmID missing/mismatched config) → remove stale vmID from `references.json`
 - Name index inconsistencies → detect in dry-run, rebuild only with `--fix`
@@ -1876,9 +1874,6 @@ type CocoonConfig struct {
     DefaultMemoryMB int64  `json:"default_memory_mb"` // Default memory in MB
     DefaultDiskSize string `json:"default_disk_size"`  // Default overlay disk size
 
-    GCGracePeriodHours int `json:"gc_grace_period_hours"`  // GC grace period
-    GCTrashRetentDays  int `json:"gc_trash_retention_days"` // Trash retention
-
     BootTimeoutSeconds int `json:"boot_timeout_seconds"` // Boot timeout (seconds)
     StopTimeoutSeconds int `json:"stop_timeout_seconds"` // Stop timeout (seconds)
 
@@ -1901,8 +1896,6 @@ type CocoonConfig struct {
   "default_cpus": 2,
   "default_memory_mb": 2048,
   "default_disk_size": "10G",
-  "gc_grace_period_hours": 24,
-  "gc_trash_retention_days": 7,
   "boot_timeout_seconds": 60,
   "stop_timeout_seconds": 30
 }
@@ -2016,8 +2009,8 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
 8. **Acquire name-index.lock** (Level 2 — never held with references.lock)
 9. **Remove name from name-index.json**
 10. **Release name-index.lock**
-11. **Delete resources**:
-    - Move overlay to trash: `mv overlay.qcow2 /var/lib/cocoon/trash/`
+11. **Delete resources** (permanent):
+    - Delete overlay: `rm overlay.qcow2`
     - Delete serial log: `rm /var/log/cocoon/{vm_id}-serial.log`
     - Delete API socket: `rm /run/cocoon/vms/{vm_id}/api.sock`
     - Delete VM directory: `rm -rf /var/lib/cocoon/vms/{vm_id}/`

@@ -401,6 +401,58 @@ func TestOCIGC_CollectStaleOCITags_CascadesBlobCleanup(t *testing.T) {
 	}
 }
 
+func TestOCIGC_CollectStaleOCITags_CascadeRespectsBlobGracePeriod(t *testing.T) {
+	cfg := newTestConfig(t)
+	gc := NewGarbageCollector(cfg)
+
+	layoutsDir := cfg.OCILayoutDir()
+	blobDir := cfg.OCIBlobDir()
+	oldTime := time.Now().Add(-10 * time.Minute)
+
+	// Create a live layout and a missing layout.
+	existingLayout := createFakeOCILayout(t, layoutsDir, "existing-layout", oldTime)
+	missingLayoutPath := filepath.Join(layoutsDir, "missing-layout")
+
+	tc := testableConfig{cfg: cfg}
+	writeTagIndex(t, tc, map[string]ociTagEntry{
+		"live-tag":  {LayoutPath: existingLayout, ManifestDigest: "sha256:live-manifest"},
+		"stale-tag": {LayoutPath: missingLayoutPath, ManifestDigest: "sha256:stale-manifest"},
+	})
+
+	// Create a RECENT blob (within 5-min grace period) only referenced by the stale manifest.
+	createFakeBlob(t, blobDir, "recent-blob", time.Now())
+	writeLayerRefs(t, tc, map[string][]string{
+		"recent-blob": {"sha256:stale-manifest"},
+	})
+
+	collected, err := gc.CollectStaleOCITags()
+	if err != nil {
+		t.Fatalf("CollectStaleOCITags: %v", err)
+	}
+	if len(collected) != 1 {
+		t.Fatalf("expected 1 stale tag, got %d: %v", len(collected), collected)
+	}
+
+	// The blob file should be preserved because it's within the grace period,
+	// even though its manifest ref was removed.
+	if _, err := os.Stat(filepath.Join(blobDir, "recent-blob")); err != nil {
+		t.Errorf("recent blob should be preserved by grace period: %v", err)
+	}
+
+	// But the layer-refs entry should be removed (manifest ref was orphaned).
+	var layerRefs ociLayerRefsIndex
+	data, err := os.ReadFile(cfg.OCILayerRefsFile())
+	if err != nil {
+		t.Fatalf("read layer refs: %v", err)
+	}
+	if err := json.Unmarshal(data, &layerRefs); err != nil {
+		t.Fatalf("unmarshal layer refs: %v", err)
+	}
+	if _, ok := layerRefs.Blobs["recent-blob"]; ok {
+		t.Error("recent-blob layer-refs entry should be removed (zero manifest refs)")
+	}
+}
+
 // --- CollectOrphanedOCIManifestRefs tests ---
 
 func TestOCIGC_CollectOrphanedManifestRefs_Empty(t *testing.T) {
