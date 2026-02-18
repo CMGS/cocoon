@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -238,11 +239,12 @@ func (c *client) ForceKill(vmID string) error {
 	if err != nil {
 		return fmt.Errorf("read PID for %s: %w", vmID, err)
 	}
-	if !utils.ValidateProcess(pid, "cloud-hypervisor") {
+	expectedProc := filepath.Base(c.cfg.CHBinary)
+	if !utils.ValidateProcess(pid, expectedProc) {
 		if utils.IsProcessAlive(pid) {
 			// PID exists but name doesn't match — genuinely reused by another
 			// process. Don't kill, but preserve PID file for diagnostics.
-			return fmt.Errorf("PID %d for %s is not cloud-hypervisor (PID reused by another process)", pid, vmID)
+			return fmt.Errorf("PID %d for %s is not %s (PID reused by another process)", pid, vmID, expectedProc)
 		}
 		// Process is gone. Clean up stale runtime files.
 		c.cleanupRuntimeFiles(vmID)
@@ -263,7 +265,7 @@ func (c *client) IsAlive(vmID string) bool {
 	if err != nil {
 		return false
 	}
-	return utils.ValidateProcess(pid, "cloud-hypervisor")
+	return utils.ValidateProcess(pid, filepath.Base(c.cfg.CHBinary))
 }
 
 // cleanupRuntimeFiles removes the PID file and API socket for a VM,
