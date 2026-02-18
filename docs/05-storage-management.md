@@ -830,9 +830,9 @@ OCI layout directories in `cache/oci/layouts/` that are not referenced by any ta
 
 **Detection:** Directory exists in `cache/oci/layouts/` but its path does not appear in any tag entry in the tag index.
 
-**Action:** Remove the orphaned layout directory with `os.RemoveAll`. Blob hardlinks in the layout are deleted, but the underlying shared blobs in `cache/oci/blobs/sha256/` are preserved (their hardlink count decreases but they remain accessible via other layouts or the shared store itself).
+**Action:** Remove the orphaned layout directory permanently with `os.RemoveAll` (not soft-deleted to trash, since layouts contain only hardlinks to shared blobs — no primary data is lost). Blob hardlinks in the layout are deleted, but the underlying shared blobs in `cache/oci/blobs/sha256/` are preserved (their hardlink count decreases but they remain accessible via other layouts or the shared store itself).
 
-**Locking**: GC lock (L1) followed by `oci-build-tags.lock` for an atomic tag index read. Layouts younger than 5 minutes are skipped as defense-in-depth against races with concurrent builds. Implemented in `storage/local/gc_oci.go` as `CollectOrphanedOCILayouts()`.
+**Locking**: GC lock (L1) followed by `oci-build-tags.lock` for an atomic tag index read. The tag lock is held for the entire orphan collection loop (read + iterate + delete) to prevent a concurrent `SaveTag` from adding a tag to a layout that is about to be deleted. Layouts younger than 5 minutes are skipped as defense-in-depth against races with concurrent builds. Implemented in `storage/local/gc_oci.go` as `CollectOrphanedOCILayouts()`.
 
 #### 5. Unreferenced OCI Blobs
 
@@ -840,7 +840,7 @@ Blobs in `cache/oci/blobs/sha256/` with zero manifest references in `oci-layer-r
 
 **Detection:** Blob file exists on disk and either has no entry in `oci-layer-refs.json` or has an entry with an empty `manifest_digests` array.
 
-**Action:** Remove the blob file from the shared store. Clean up the corresponding entry from `oci-layer-refs.json`.
+**Action:** Remove the blob file permanently from the shared store (not soft-deleted to trash, since blobs are content-addressed and can be re-fetched from the registry). Clean up the corresponding entry from `oci-layer-refs.json`.
 
 **Locking**: GC lock (L1) followed by `oci-layer-refs.lock` for atomic check-and-delete. The two locks are held simultaneously (L1 -> oci-layer-refs.lock), respecting the lock hierarchy. Implemented in `storage/local/gc_oci.go` as `CollectUnreferencedOCIBlobs()`.
 

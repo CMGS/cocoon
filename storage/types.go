@@ -38,6 +38,12 @@ type GCResult struct {
 	// CollectedOverlays lists VM IDs whose orphaned overlays were collected.
 	CollectedOverlays []string `json:"collected_overlays"`
 
+	// CollectedOCILayouts lists orphaned OCI layout directory names that were removed.
+	CollectedOCILayouts []string `json:"collected_oci_layouts"`
+
+	// CollectedOCIBlobs lists unreferenced OCI blob digests that were removed.
+	CollectedOCIBlobs []string `json:"collected_oci_blobs"`
+
 	// CollectedTempFiles lists temp filenames that were removed.
 	CollectedTempFiles []string `json:"collected_temp_files"`
 

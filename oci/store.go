@@ -3,6 +3,7 @@ package oci
 import (
 	"crypto/sha256"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -59,9 +60,11 @@ func (s *Store) SaveTag(tag, layoutPath, manifestDigest string) error {
 		return err
 	}
 	// Clean up old manifest's blob refs outside the tag lock.
+	// Log on failure instead of returning an error, since the tag index has
+	// already been updated; GC will eventually reclaim orphaned blob refs.
 	if oldManifestDigest != "" {
 		if _, refErr := RemoveBlobRefs(s.cfg, oldManifestDigest); refErr != nil {
-			return fmt.Errorf("clean old manifest %s blob refs: %w", oldManifestDigest, refErr)
+			log.Printf("warning: failed to clean old manifest %s blob refs (will be reclaimed by GC): %v", oldManifestDigest, refErr)
 		}
 	}
 	return nil

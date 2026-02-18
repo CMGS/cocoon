@@ -112,6 +112,13 @@ func (c *CocoonConfig) Validate() error {
 	if c.DefaultMemoryMB <= 0 {
 		return fmt.Errorf("config: DefaultMemoryMB must be > 0, got %d", c.DefaultMemoryMB)
 	}
+	// Guard against overflow: MemoryMB * 1024 * 1024 must fit in int64.
+	// 8 PB / (1024*1024) = 8_589_934_592 MB. Cap at 1 TB (1_048_576 MB)
+	// which is well above any practical use case.
+	const maxMemoryMB int64 = 1_048_576 // 1 TB
+	if c.DefaultMemoryMB > maxMemoryMB {
+		return fmt.Errorf("config: DefaultMemoryMB must be <= %d (1 TB), got %d", maxMemoryMB, c.DefaultMemoryMB)
+	}
 	if c.GCGracePeriodHours < 0 {
 		return fmt.Errorf("config: GCGracePeriodHours must be >= 0, got %d", c.GCGracePeriodHours)
 	}
@@ -282,11 +289,23 @@ func (c *CocoonConfig) VMCHLogPath(vmID string) string {
 	return filepath.Join(c.LogDir, vmID+"-ch.log")
 }
 
+// BaseImagePath returns the path to a cached base image.
+// The baseKey MUST have been validated via types.ParseBaseKey before calling.
 func (c *CocoonConfig) BaseImagePath(baseKey string) string {
+	// Defense-in-depth: reject path separators and traversal.
+	if strings.ContainsAny(baseKey, "/\\") || strings.Contains(baseKey, "..") {
+		return filepath.Join(c.RootDir, "cache", "images", "invalid-key.qcow2")
+	}
 	return filepath.Join(c.RootDir, "cache", "images", baseKey+".qcow2")
 }
 
+// ConversionLockPath returns the path to a per-image conversion lock.
+// The baseKey MUST have been validated via types.ParseBaseKey before calling.
 func (c *CocoonConfig) ConversionLockPath(baseKey string) string {
+	// Defense-in-depth: reject path separators and traversal.
+	if strings.ContainsAny(baseKey, "/\\") || strings.Contains(baseKey, "..") {
+		return filepath.Join(c.RootDir, "cache", "locks", "invalid-key.lock")
+	}
 	return filepath.Join(c.RootDir, "cache", "locks", baseKey+".lock")
 }
 

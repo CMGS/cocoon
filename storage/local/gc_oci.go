@@ -55,21 +55,22 @@ func (gc *fileGarbageCollector) CollectOrphanedOCILayouts() ([]string, error) {
 			return fmt.Errorf("read OCI layouts dir: %w", err)
 		}
 
-		// Load tag index under its lock to prevent TOCTOU with concurrent SaveTag.
+		// Load tag index under its lock and hold the lock through the entire
+		// orphan collection loop. This prevents a concurrent SaveTag from
+		// adding a tag to a layout we are about to delete.
 		knownLayouts := make(map[string]bool)
 		tagIdx := &ociTagIndex{Tags: make(map[string]ociTagEntry)}
 		tagLock := flock.New(gc.cfg.OCIBuildTagLock())
 		if err := tagLock.Lock(); err != nil {
 			return fmt.Errorf("acquire OCI build tag lock: %w", err)
 		}
+		defer tagLock.Unlock() //nolint:errcheck
 		tagIdxPath := gc.cfg.OCIBuildTagIndex()
 		if _, statErr := os.Stat(tagIdxPath); statErr == nil {
 			if readErr := utils.ReadJSON(tagIdxPath, tagIdx); readErr != nil {
-				_ = tagLock.Unlock()
 				return fmt.Errorf("read tag index: %w", readErr)
 			}
 		}
-		_ = tagLock.Unlock()
 
 		for _, entry := range tagIdx.Tags {
 			knownLayouts[entry.LayoutPath] = true

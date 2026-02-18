@@ -549,12 +549,33 @@ func (m *manager) ListCached(ctx context.Context) ([]*image.CachedImage, error) 
 // RemoveCached removes a cached base image identified by its base_key.
 // The base_key format is {checksum_16}_{arch}.
 // It refuses to remove images that are still referenced by VMs.
+//
+// The reference check and file deletion are performed atomically under
+// references.lock to prevent a TOCTOU race with concurrent VM creation
+// that could pin a reference between the check and the removal.
 func (m *manager) RemoveCached(ctx context.Context, baseKey string) error {
 	if _, _, err := types.ParseBaseKey(baseKey); err != nil {
 		return fmt.Errorf("invalid base_key: %w", err)
 	}
 
-	// Refuse to remove images still referenced by VMs.
+	basePath := m.cfg.BaseImagePath(baseKey)
+	if _, err := os.Stat(basePath); os.IsNotExist(err) {
+		return fmt.Errorf("cached image not found: %s", baseKey)
+	}
+
+	// Acquire references.lock to make the reference check + file deletion
+	// atomic, preventing races with concurrent AddReference calls.
+	fl := flock.New(m.cfg.ReferencesLock())
+	if err := fl.Lock(); err != nil {
+		return fmt.Errorf("acquire references lock for %s: %w", baseKey, err)
+	}
+	defer func() {
+		if err := fl.Unlock(); err != nil {
+			log.Printf("warning: failed to release references lock: %v", err)
+		}
+	}()
+
+	// Refuse to remove images still referenced by VMs (under lock).
 	if m.refCtr != nil {
 		referenced, err := m.refCtr.IsReferenced(baseKey)
 		if err != nil {
@@ -564,11 +585,6 @@ func (m *manager) RemoveCached(ctx context.Context, baseKey string) error {
 			refs, _ := m.refCtr.GetReferences(baseKey)
 			return fmt.Errorf("image %s is still referenced by VMs: %v", baseKey, refs)
 		}
-	}
-
-	basePath := m.cfg.BaseImagePath(baseKey)
-	if _, err := os.Stat(basePath); os.IsNotExist(err) {
-		return fmt.Errorf("cached image not found: %s", baseKey)
 	}
 
 	if err := os.Remove(basePath); err != nil {

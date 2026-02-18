@@ -105,6 +105,16 @@ func classifyError(reason string) types.ErrorType {
 		return types.ErrorInsufficientDisk
 	}
 
+	// Guest crash (e.g., triple fault, unexpected VM exit without kernel panic).
+	if strings.Contains(lower, "guest crash") || strings.Contains(lower, "unexpected vm exit") {
+		return types.ErrorGuestCrash
+	}
+
+	// Force kill failures (kill signal could not terminate the process).
+	if strings.Contains(lower, "force kill failed") || strings.Contains(lower, "forcekill") {
+		return types.ErrorForceKillFailed
+	}
+
 	// Resource exhaustion.
 	if strings.Contains(lower, "resource exhaustion") || strings.Contains(lower, "out of memory") || strings.Contains(lower, "oom") {
 		return types.ErrorResourceExhaustion

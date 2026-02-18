@@ -324,6 +324,7 @@ type Manager interface {
     Create(ctx context.Context, opts *CreateOptions) (*types.VMConfig, error)
     Start(ctx context.Context, vmID string) error
     Stop(ctx context.Context, vmID string, timeout time.Duration) error
+    Kill(ctx context.Context, vmID string) error
     Delete(ctx context.Context, vmID string, force bool) error
     Inspect(ctx context.Context, vmID string) (*types.VMInspect, error)
     List(ctx context.Context) ([]*types.VMInspect, error)
@@ -336,13 +337,14 @@ type Manager interface {
     LoadConfig(vmID string) (*types.VMConfig, error)
     LoadMetadata(vmID string) (*types.VMMetadataFile, error)
     SaveMetadata(meta *types.VMMetadataFile) error
+    UpdateMetadata(vmID string, mutate func(*types.VMMetadataFile)) error
 
     // Reconciliation (used by cocoon doctor).
     Reconcile(ctx context.Context, fix bool, force bool) ([]Inconsistency, error)
 }
 ```
 
-The concrete implementation is `vm/engine/manager.go`. `Start()` boots using the strategy stored in config.json (`uefi` by default for cloud images, or `direct` for OCI VM images).
+The concrete implementation is `vm/engine/manager.go`. `Kill()` handles state transitions, metadata cleanup (ProcessPID=0, StoppedAt), and the state machine. `UpdateMetadata()` acquires the per-VM metadata lock, loads the current metadata, applies the caller's mutation function, and saves it atomically. `Start()` boots using the strategy stored in config.json (`uefi` by default for cloud images, or `direct` for OCI VM images).
 
 ### 2.5 Manager Initialization
 
@@ -567,7 +569,7 @@ func initCommand() *cli.Command {
 **Behavior**:
 
 1. Build config from `config.DefaultConfig()`, apply `--root-dir`, `--runtime-dir`, `--log-dir` overrides
-2. Create all directories via `cfg.EnsureDirs()` (db/, cache/images/, cache/manifests/, cache/locks/, cache/oci-builds/, vms/, temp/, trash/, firmware/, buildah/, runtime/vms/, log/)
+2. Create all directories via `cfg.EnsureDirs()` (db/, cache/images/, cache/manifests/, cache/locks/, cache/oci/blobs/sha256/, cache/oci/layouts/, vms/, temp/, trash/, firmware/, buildah/, runtime/vms/, log/)
 3. If `--with-uefi-firmware URL`: download to `firmware/CLOUDHV.fd` (0644), atomic rename
 4. Write `config.json` to `--config` path (default `/etc/cocoon/config.json`); skip if exists unless `--force`
 5. Print "Done. Run 'cocoon doctor' to verify system dependencies."
@@ -629,7 +631,7 @@ func vmCreateFlags() []cli.Flag {
         &cli.BoolFlag{
             Name:   "oci",
             Hidden: true,
-            Usage:  "treat image as an OCI VM image — Phase 2, not yet implemented",
+            Usage:  "use OCI VM image (direct kernel boot)",
         },
         &cli.BoolFlag{
             Name:  "skip-verify",
@@ -648,7 +650,7 @@ func runCommand() *cli.Command {
         &cli.BoolFlag{
             Name:    "detach",
             Aliases: []string{"d"},
-            Usage:   "run VM in background (Phase 1: no-op; Phase 2: controls attach/detach mode)",
+            Usage:   "run VM in background",
         },
         &cli.BoolFlag{
             Name:  "rm",
@@ -868,7 +870,7 @@ func rmCommand() *cli.Command {
     return &cli.Command{
         Name:      "delete",
         Aliases:   []string{"rm"},
-        Usage:     "Remove a VM and cleanup storage",
+        Usage:     "Remove one or more VMs and cleanup storage",
         ArgsUsage: "VM_REF [VM_REF...]",
         Flags: []cli.Flag{
             &cli.BoolFlag{
@@ -1424,7 +1426,7 @@ func gcCommand() *cli.Command {
         Flags: []cli.Flag{
             &cli.IntFlag{
                 Name:  "grace-period",
-                Usage: "hours before unreferenced images are collected (0 = use config default)",
+                Usage: "hours before unreferenced images are collected (default: config value; 0 = collect immediately)",
             },
             &cli.BoolFlag{
                 Name:  "aggressive",
@@ -1564,6 +1566,7 @@ func doctorAction(c *cli.Context) error {
 - skopeo binary (minimum `1.14.0`)
 - guestfish binary (minimum `1.50.0`)
 - swtpm binary (TPM 2.0 emulator)
+- virt-customize binary (optional; required for Cocoonfile RUN/COPY steps)
 - /dev/kvm device
 - Directory structure (root, runtime, log, db, vm, cache, buildah, firmware)
 
@@ -1606,6 +1609,7 @@ buildah            pass    /usr/bin/buildah (version 1.35.2)
 skopeo             pass    /usr/bin/skopeo (version 1.14.4)
 guestfish          fail    binary not found in PATH (required for OCI-to-qcow2 conversion)
 swtpm              pass    /usr/bin/swtpm (TPM 2.0 emulator)
+virt-customize     warn    not found in PATH (optional: required for Cocoonfile RUN/COPY steps)
 kvm                pass    /dev/kvm
 dir/root-dir       pass    /var/lib/cocoon
 dir/runtime-dir    pass    /run/cocoon

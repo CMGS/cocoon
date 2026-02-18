@@ -376,6 +376,7 @@ The verification logic mirrors the `VerifyBootability()` function defined in the
 ```go
 type BootCheckResult struct {
     Bootable        bool     // Overall result
+    BootModes       []string // Supported boot modes ("uefi", "direct")
     KernelFound     bool     // /boot/vmlinuz* present
     InitrdFound     bool     // /boot/initrd* or /boot/initramfs* present
     SystemdFound    bool     // /sbin/init -> systemd

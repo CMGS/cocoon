@@ -266,6 +266,10 @@ func previewOrphanedOverlayCandidates(app *appContext) ([]string, error) {
 	return candidates, nil
 }
 
+// ociGCGracePeriod matches the 5-minute grace period used by the real GC
+// in storage/local/gc_oci.go to avoid races with concurrent builds.
+const ociGCGracePeriod = 5 * time.Minute
+
 func previewOrphanedOCILayoutCandidates(app *appContext) ([]string, error) {
 	layoutsDir := app.cfg.OCILayoutDir()
 	entries, err := os.ReadDir(layoutsDir)
@@ -288,15 +292,23 @@ func previewOrphanedOCILayoutCandidates(app *appContext) ([]string, error) {
 		knownLayouts[t.LayoutPath] = true
 	}
 
+	cutoff := time.Now().Add(-ociGCGracePeriod)
+
 	var candidates []string
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
 		layoutPath := filepath.Join(layoutsDir, entry.Name())
-		if !knownLayouts[layoutPath] {
-			candidates = append(candidates, entry.Name())
+		if knownLayouts[layoutPath] {
+			continue
 		}
+		// Apply the same 5-minute grace period as the real GC to avoid
+		// reporting layouts that would actually be skipped.
+		if info, statErr := entry.Info(); statErr == nil && info.ModTime().After(cutoff) {
+			continue
+		}
+		candidates = append(candidates, entry.Name())
 	}
 	sort.Strings(candidates)
 	return candidates, nil
@@ -333,6 +345,8 @@ func previewUnreferencedOCIBlobCandidates(app *appContext) ([]string, error) {
 		trackedSet[d] = true
 	}
 
+	cutoff := time.Now().Add(-ociGCGracePeriod)
+
 	var candidates []string
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -341,6 +355,11 @@ func previewUnreferencedOCIBlobCandidates(app *appContext) ([]string, error) {
 		digest := entry.Name()
 		// Candidate if: in unreferenced set OR not tracked at all.
 		if unreferencedSet[digest] || !trackedSet[digest] {
+			// Apply the same 5-minute grace period as the real GC to avoid
+			// reporting blobs that would actually be skipped.
+			if info, statErr := entry.Info(); statErr == nil && info.ModTime().After(cutoff) {
+				continue
+			}
 			candidates = append(candidates, digest)
 		}
 	}
