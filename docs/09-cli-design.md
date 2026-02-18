@@ -1462,7 +1462,7 @@ func gcCommand() *cli.Command {
 }
 ```
 
-**GC Phases**: The garbage collector runs 7 phases in order. All deletions are permanent (no trash). See [18-garbage-collection.md](./18-garbage-collection.md) for the full design.
+**GC Phases**: The garbage collector runs 8 phases in order. All deletions are permanent (no trash). See [18-garbage-collection.md](./18-garbage-collection.md) for the full design.
 
 1. **Unreferenced base images**: Permanently delete cloud image qcow2 files with zero VM references.
 2. **Orphaned overlays**: Permanently delete VM directories where overlay.qcow2 exists but config.json is missing.
@@ -1470,7 +1470,8 @@ func gcCommand() *cli.Command {
 4. **Stale OCI tags**: Remove tags from `oci-build-tags.json` whose layout path no longer exists; cascade cleanup to orphaned manifests/blobs.
 5. **Orphaned OCI manifest refs**: Remove manifest digests from `oci-layer-refs.json` not associated with any live tag; delete zero-ref blobs.
 6. **Unreferenced OCI blobs**: Remove blobs from `cache/oci/blobs/sha256/` with zero manifest references.
-7. **Temp entries**: Remove files/directories in `temp/` older than 1 hour.
+7. **Stale conversion locks**: Remove stale `cache/locks/*.lock` files when corresponding base image is missing and lock is not held.
+8. **Temp entries**: Remove files/directories in `temp/` older than 1 hour.
 
 **Example Usage**:
 
@@ -1490,7 +1491,7 @@ collected orphaned OCI layout: 7f3a1b2c
 collected stale OCI tag: myregistry.io/old-image:v1
 collected unreferenced OCI blob: abc123def456...
 
-Collected 4 item(s): 1 images, 0 overlays, 1 OCI layouts, 1 stale tags, 0 orphaned manifests, 1 OCI blobs, 0 temp files.
+Collected 4 item(s): 1 images, 0 overlays, 1 OCI layouts, 1 stale tags, 0 orphaned manifests, 1 OCI blobs, 0 stale locks, 0 temp files.
 ```
 
 **Dry-run output** reports candidates for each phase without deleting:

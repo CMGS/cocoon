@@ -229,6 +229,12 @@ func ResolveBaseKey(cfg *config.CocoonConfig, ref string) (string, bool, error) 
 			}
 		}
 
+		// Do not downgrade explicit tag/digest queries (e.g. repo:tag,
+		// repo@sha256:...) to tag-less aliases.
+		if hasExplicitTagOrDigestRef(ref) {
+			return nil
+		}
+
 		matches := make(map[string]struct{})
 		for _, candidate := range candidates(ref) {
 			if candidate == ref {
@@ -260,6 +266,21 @@ func ResolveBaseKey(cfg *config.CocoonConfig, ref string) (string, bool, error) 
 		return "", false, err
 	}
 	return baseKey, found, nil
+}
+
+func hasExplicitTagOrDigestRef(ref string) bool {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return false
+	}
+	if strings.Contains(ref, "@sha256:") {
+		return true
+	}
+	last := ref
+	if idx := strings.LastIndex(ref, "/"); idx >= 0 {
+		last = ref[idx+1:]
+	}
+	return strings.Contains(last, ":")
 }
 
 // RefsForBaseKey returns all IMAGE_REF aliases that currently map to base_key.
@@ -403,7 +424,25 @@ func trimKnownExt(v string) string {
 			return v[:len(v)-len(ext)]
 		}
 	}
+	// Do not treat dotted OCI tags like "ubuntu:24.04" as file extensions.
+	if looksLikeTaggedOCIRef(v) {
+		return v
+	}
 	return strings.TrimSuffix(v, filepath.Ext(v))
+}
+
+func looksLikeTaggedOCIRef(v string) bool {
+	// Digest-pinned refs should not be extension-trimmed.
+	if strings.Contains(v, "@sha256:") {
+		return true
+	}
+	// Heuristic: a colon after the last slash indicates a tag segment.
+	lastColon := strings.LastIndexByte(v, ':')
+	if lastColon < 0 {
+		return false
+	}
+	lastSlash := strings.LastIndexByte(v, '/')
+	return lastColon > lastSlash
 }
 
 func simplifyAlias(v string) string {

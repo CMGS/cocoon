@@ -20,7 +20,7 @@ Design principles:
 
 ## Resource Types
 
-GC manages 7 categories of resources:
+GC manages 8 categories of resources:
 
 | # | Resource | Detection Rule | Action |
 |---|----------|---------------|--------|
@@ -30,7 +30,8 @@ GC manages 7 categories of resources:
 | 4 | Stale OCI tags | Tag in `oci-build-tags.json` whose `layout_path` does not exist | Remove from index; cascade to orphaned manifests/blobs |
 | 5 | Orphaned OCI manifest refs | Manifest digest in `oci-layer-refs.json` not associated with any live tag | Remove from blob entries; delete zero-ref blobs |
 | 6 | Unreferenced OCI blobs | `cache/oci/blobs/sha256/` file with zero manifest refs | `os.Remove` |
-| 7 | Temp entries | Files/directories in `temp/` older than 1 hour | `os.RemoveAll` |
+| 7 | Stale conversion locks | `cache/locks/*.lock` older than grace, no corresponding base image, and lock not currently held | `os.Remove` |
+| 8 | Temp entries | Files/directories in `temp/` older than 1 hour | `os.RemoveAll` |
 
 ## Phase Execution Order
 
@@ -41,7 +42,8 @@ Phase 3: Orphaned OCI layouts          → permanent delete
 Phase 4: Stale OCI tags                → remove from tag index, cascade cleanup
 Phase 5: Orphaned OCI manifest refs    → remove from layer-refs, delete zero-ref blobs
 Phase 6: Unreferenced OCI blobs        → permanent delete
-Phase 7: Temp entries                  → permanent delete
+Phase 7: Stale conversion lock files   → permanent delete
+Phase 8: Temp entries                  → permanent delete
 ```
 
 Phases 3-6 form a cascade:
@@ -64,7 +66,8 @@ gc.lock (Level 1)
   ├── oci-build-txn.lock        — for Phase 4, 5 (serialize cross-index updates)
   │   ├── oci-build-tags.lock   — for Phase 4, 5 (read tag index)
   │   └── oci-layer-refs.lock   — for Phase 4, 5 (modify blob refs)
-  └── oci-layer-refs.lock       — for Phase 6 (atomic check-and-delete)
+  ├── oci-layer-refs.lock       — for Phase 6 (atomic check-and-delete)
+  └── conversion *.lock TryLock — for Phase 7 (best-effort held-lock detection)
 ```
 
 Never acquire Level 1 while holding Level 2. Within a single phase, locks are acquired in the order shown above and released in reverse order.
@@ -89,7 +92,7 @@ A blob is safe to delete when it has zero manifest references AND is older than 
 
 ### `cocoon gc`
 
-Runs all 7 phases and permanently deletes all collectable resources.
+Runs all 8 phases and permanently deletes all collectable resources.
 
 ```
 $ cocoon gc
@@ -97,7 +100,7 @@ collected image: a1b2c3d4e5f6a7b8_amd64
 collected orphaned overlay: vm-01HABC...
 collected stale OCI tag: myregistry.io/old-image:v1
 
-Collected 3 item(s): 1 images, 1 overlays, 0 OCI layouts, 1 stale tags, 0 orphaned manifests, 0 OCI blobs, 0 temp files.
+Collected 3 item(s): 1 images, 1 overlays, 0 OCI layouts, 1 stale tags, 0 orphaned manifests, 0 OCI blobs, 0 stale locks, 0 temp files.
 ```
 
 ### `cocoon gc --dry-run`

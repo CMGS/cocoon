@@ -483,12 +483,12 @@ func tagOCIImage(app *appContext, store *oci.Store, sourceRef, targetRef string)
 }
 
 func tagCloudImageAlias(c *cli.Context, app *appContext, store *oci.Store, sourceRef, targetRef string) error {
-	targetIsOCI, err := store.HasTag(targetRef)
+	resolvedOCITarget, targetIsOCI, err := resolveLocalOCITagRef(store, targetRef)
 	if err != nil {
 		return fmt.Errorf("check OCI target tag %q: %w", targetRef, err)
 	}
 	if targetIsOCI {
-		return fmt.Errorf("target ref %q already exists as an OCI build tag; choose a different target ref", targetRef)
+		return fmt.Errorf("target ref %q already exists as an OCI build tag (%s); choose a different target ref", targetRef, resolvedOCITarget)
 	}
 
 	baseKey, digestFull, err := resolveSourceCloudAlias(c, app, sourceRef)
