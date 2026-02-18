@@ -80,5 +80,7 @@ func processNameMatches(actual, expected string) bool {
 	if actual == expected {
 		return true
 	}
-	return strings.HasPrefix(expected, actual)
+	// Fallback for kernel-truncated comm names. Guard with minimum length to
+	// avoid broad prefix matching on short process names.
+	return len(actual) >= 15 && strings.HasPrefix(expected, actual)
 }
