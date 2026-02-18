@@ -25,11 +25,11 @@ func NewStore(cfg *config.CocoonConfig) *Store {
 	return &Store{cfg: cfg}
 }
 
-// LayoutDir returns the directory path for an OCI layout keyed by tag.
-// Uses first 16 chars of sha256(tag) to avoid filesystem issues with
+// LayoutDir returns the directory path for an OCI layout keyed by layoutKey.
+// Uses first 16 chars of sha256(layoutKey) to avoid filesystem issues with
 // registry references containing slashes and colons.
-func (s *Store) LayoutDir(tag string) string {
-	h := sha256.Sum256([]byte(tag))
+func (s *Store) LayoutDir(layoutKey string) string {
+	h := sha256.Sum256([]byte(layoutKey))
 	prefix := fmt.Sprintf("%x", h[:8]) // 16 hex chars
 	return filepath.Join(s.cfg.OCILayoutDir(), prefix)
 }

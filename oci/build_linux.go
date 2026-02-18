@@ -181,15 +181,12 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 		return nil, fmt.Errorf("assemble OCI layout: %w", err)
 	}
 	pw.Detail("sha256:" + info.manifestDigest[:12])
-	layoutDir, err := finalizeLayoutDir(store, tag, info.manifestDigest, layoutWorkDir)
-	if err != nil {
-		return nil, err
-	}
 
 	// Save tag in local index. Once saved, CollectOrphanedOCILayouts will
 	// not delete this layout directory.
 	pw.Step("Saving tag...")
-	if err := registerBlobRefsAndSaveTag(store, cfg, tag, layoutDir, info); err != nil {
+	layoutDir, err := registerBlobRefsAndSaveTag(store, cfg, tag, layoutWorkDir, info)
+	if err != nil {
 		return nil, err
 	}
 	pw.Detail(tag)
@@ -231,8 +228,15 @@ func finalizeLayoutDir(store *Store, tag, manifestDigest, layoutWorkDir string) 
 	return layoutDir, nil
 }
 
-func registerBlobRefsAndSaveTag(store *Store, cfg *config.CocoonConfig, tag, layoutDir string, info *assemblyInfo) error {
-	return store.withTxnLock(func() error {
+func registerBlobRefsAndSaveTag(store *Store, cfg *config.CocoonConfig, tag, layoutWorkDir string, info *assemblyInfo) (string, error) {
+	layoutDir := ""
+	err := store.withTxnLock(func() error {
+		finalizedLayoutDir, finalizeErr := finalizeLayoutDir(store, tag, info.manifestDigest, layoutWorkDir)
+		if finalizeErr != nil {
+			return finalizeErr
+		}
+		layoutDir = finalizedLayoutDir
+
 		// Register blob refs before saving tag, while sharing the same txn lock
 		// as SaveTag/RemoveTag to prevent cross-index races.
 		if err := AddBlobRefs(cfg, info.manifestDigest, info.blobDigests, info.blobSizes); err != nil {
@@ -248,6 +252,10 @@ func registerBlobRefsAndSaveTag(store *Store, cfg *config.CocoonConfig, tag, lay
 		}
 		return nil
 	})
+	if err != nil {
+		return "", err
+	}
+	return layoutDir, nil
 }
 
 // bootExcludePaths returns paths to exclude from the rootfs layer. It covers

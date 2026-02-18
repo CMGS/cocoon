@@ -380,10 +380,10 @@ func (c *CocoonConfig) VMDir() string              // RootDir/vms
 func (c *CocoonConfig) TempDir() string            // RootDir/temp
 func (c *CocoonConfig) TrashDir() string           // RootDir/trash
 func (c *CocoonConfig) DBDir() string              // RootDir/db
-func (c *CocoonConfig) OCIBuildCacheDir() string   // RootDir/cache/oci-builds (legacy, pre-migration)
 func (c *CocoonConfig) OCICacheDir() string        // RootDir/cache/oci
 func (c *CocoonConfig) OCIBlobDir() string         // RootDir/cache/oci/blobs/sha256
 func (c *CocoonConfig) OCILayoutDir() string       // RootDir/cache/oci/layouts
+func (c *CocoonConfig) OCIBuildTxnLock() string    // RootDir/db/oci-build-txn.lock
 func (c *CocoonConfig) OCIBuildTagIndex() string   // RootDir/db/oci-build-tags.json
 func (c *CocoonConfig) OCIBuildTagLock() string    // RootDir/db/oci-build-tags.lock
 func (c *CocoonConfig) OCILayerRefsFile() string   // RootDir/db/oci-layer-refs.json
@@ -411,10 +411,10 @@ func (c *CocoonConfig) CheckpointIndexLock() string                 // RootDir/c
 func (c *CocoonConfig) CheckpointSnapshotDir(ckptID string) string  // RootDir/checkpoints/{ckptID}/ch-snapshot
 
 // OCI VM Image Build (docs/04.1-oci-vm-images.md) — Implemented
-func (c *CocoonConfig) OCIBuildCacheDir() string                    // RootDir/cache/oci-builds (legacy, pre-migration)
 func (c *CocoonConfig) OCICacheDir() string                         // RootDir/cache/oci
 func (c *CocoonConfig) OCIBlobDir() string                          // RootDir/cache/oci/blobs/sha256
 func (c *CocoonConfig) OCILayoutDir() string                        // RootDir/cache/oci/layouts
+func (c *CocoonConfig) OCIBuildTxnLock() string                     // RootDir/db/oci-build-txn.lock
 func (c *CocoonConfig) OCIBuildTagIndex() string                    // RootDir/db/oci-build-tags.json
 func (c *CocoonConfig) OCIBuildTagLock() string                     // RootDir/db/oci-build-tags.lock
 func (c *CocoonConfig) OCILayerRefsFile() string                    // RootDir/db/oci-layer-refs.json
