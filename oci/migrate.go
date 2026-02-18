@@ -130,8 +130,8 @@ func collectBlobDigestsFromLayout(layoutDir string) ([]string, []int64, error) {
 	}
 
 	var idx ociIndex
-	if err := json.Unmarshal(indexData, &idx); err != nil {
-		return nil, nil, fmt.Errorf("parse index.json: %w", err)
+	if unmarshalErr := json.Unmarshal(indexData, &idx); unmarshalErr != nil {
+		return nil, nil, fmt.Errorf("parse index.json: %w", unmarshalErr)
 	}
 	if len(idx.Manifests) == 0 {
 		return nil, nil, fmt.Errorf("no manifests in index.json")
@@ -144,8 +144,8 @@ func collectBlobDigestsFromLayout(layoutDir string) ([]string, []int64, error) {
 	}
 
 	var manifest ociManifest
-	if err := json.Unmarshal(manifestData, &manifest); err != nil {
-		return nil, nil, fmt.Errorf("parse manifest: %w", err)
+	if unmarshalErr := json.Unmarshal(manifestData, &manifest); unmarshalErr != nil {
+		return nil, nil, fmt.Errorf("parse manifest: %w", unmarshalErr)
 	}
 
 	var digests []string

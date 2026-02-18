@@ -722,17 +722,27 @@ func (m *manager) Delete(ctx context.Context, vmID string, force bool) error {
 	// Load config to get the name and baseKey for cleanup.
 	vmCfg, cfgErr := m.LoadConfig(vmID)
 
+	// Best-effort cleanup: collect warnings for non-fatal failures so the
+	// caller knows about residual artifacts, but don't fail the delete.
+	var warnings []string
+
 	// Unpin reference: remove this VM from the base image's reference list.
 	if cfgErr == nil && vmCfg.BaseKey != "" {
-		_ = m.refCounter.RemoveReference(vmCfg.BaseKey, vmID)
+		if refErr := m.refCounter.RemoveReference(vmCfg.BaseKey, vmID); refErr != nil {
+			warnings = append(warnings, fmt.Sprintf("remove reference %s: %v", vmCfg.BaseKey, refErr))
+		}
 	}
 
 	// Remove COW overlay.
-	_ = m.cowMgr.RemoveOverlay(vmID)
+	if overlayErr := m.cowMgr.RemoveOverlay(vmID); overlayErr != nil {
+		warnings = append(warnings, fmt.Sprintf("remove overlay: %v", overlayErr))
+	}
 
 	// Remove name from index.
 	if cfgErr == nil && vmCfg.Name != "" {
-		_ = RemoveName(m.cfg, vmCfg.Name)
+		if nameErr := RemoveName(m.cfg, vmCfg.Name); nameErr != nil {
+			warnings = append(warnings, fmt.Sprintf("remove name %s: %v", vmCfg.Name, nameErr))
+		}
 	}
 
 	// Remove VM directories.
@@ -745,6 +755,10 @@ func (m *manager) Delete(ctx context.Context, vmID string, force bool) error {
 	_ = os.Remove(m.cfg.VMSerialLogPath(vmID))
 	_ = os.Remove(m.cfg.VMCHLogPath(vmID))
 	_ = os.Remove(m.cfg.VMSwtpmLogPath(vmID))
+
+	if len(warnings) > 0 {
+		log.Printf("delete %s: cleanup warnings: %v", vmID, warnings)
+	}
 
 	return nil
 }

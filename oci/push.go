@@ -110,9 +110,14 @@ func classifyPushError(err error) error {
 		"BAD_GATEWAY",
 		"SERVICE_UNAVAILABLE",
 		"TOO_MANY_REQUESTS",
+		"Service Unavailable",
+		"Too Many Requests",
+		"Internal Server Error",
+		"Bad Gateway",
 	}
+	errUpper := strings.ToUpper(errStr)
 	for _, p := range transientPatterns {
-		if strings.Contains(errStr, p) {
+		if strings.Contains(errUpper, strings.ToUpper(p)) {
 			return types.NewTransientError(fmt.Errorf("push %w", err))
 		}
 	}

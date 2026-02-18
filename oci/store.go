@@ -34,10 +34,18 @@ func (s *Store) LayoutDir(tag string) string {
 }
 
 // SaveTag records a tag-to-layout mapping in the tag index.
+// If the tag already exists with a different manifest digest, the old
+// manifest's blob references are cleaned up via RemoveBlobRefs to prevent
+// reference leaks.
 func (s *Store) SaveTag(tag, layoutPath, manifestDigest string) error {
-	return s.withLock(func(idx *TagIndex) error {
+	var oldManifestDigest string
+	err := s.withLock(func(idx *TagIndex) error {
 		if idx.Tags == nil {
 			idx.Tags = make(map[string]TagEntry)
+		}
+		// Track old manifest for blob ref cleanup when overwriting a tag.
+		if old, exists := idx.Tags[tag]; exists && old.ManifestDigest != manifestDigest {
+			oldManifestDigest = old.ManifestDigest
 		}
 		idx.Tags[tag] = TagEntry{
 			Tag:            tag,
@@ -47,6 +55,16 @@ func (s *Store) SaveTag(tag, layoutPath, manifestDigest string) error {
 		}
 		return s.save(idx)
 	})
+	if err != nil {
+		return err
+	}
+	// Clean up old manifest's blob refs outside the tag lock.
+	if oldManifestDigest != "" {
+		if _, refErr := RemoveBlobRefs(s.cfg, oldManifestDigest); refErr != nil {
+			return fmt.Errorf("clean old manifest %s blob refs: %w", oldManifestDigest, refErr)
+		}
+	}
+	return nil
 }
 
 // ResolveTag looks up a tag in the index and returns the layout path.
@@ -116,7 +134,11 @@ func (s *Store) RemoveTag(tag string) (string, []string, error) {
 	// Clean up blob references for this manifest.
 	var zeroRefBlobs []string
 	if manifestDigest != "" {
-		zeroRefBlobs, _ = RemoveBlobRefs(s.cfg, manifestDigest)
+		var refErr error
+		zeroRefBlobs, refErr = RemoveBlobRefs(s.cfg, manifestDigest)
+		if refErr != nil {
+			return manifestDigest, nil, fmt.Errorf("remove blob refs for %s: %w", manifestDigest, refErr)
+		}
 	}
 
 	return manifestDigest, zeroRefBlobs, nil

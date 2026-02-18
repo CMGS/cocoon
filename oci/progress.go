@@ -21,10 +21,10 @@ func NewProgressWriter(w io.Writer, total int) *ProgressWriter {
 // Step prints "Step N/M : description" and advances the counter.
 func (pw *ProgressWriter) Step(description string) {
 	pw.current++
-	fmt.Fprintf(pw.w, "Step %d/%d : %s\n", pw.current, pw.total, description)
+	_, _ = fmt.Fprintf(pw.w, "Step %d/%d : %s\n", pw.current, pw.total, description)
 }
 
 // Detail prints " ---> detail" as a sub-step detail line.
 func (pw *ProgressWriter) Detail(detail string) {
-	fmt.Fprintf(pw.w, " ---> %s\n", detail)
+	_, _ = fmt.Fprintf(pw.w, " ---> %s\n", detail)
 }

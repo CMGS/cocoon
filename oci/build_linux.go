@@ -33,25 +33,28 @@ type assemblyInfo struct {
 // to the image via virt-customize before rootfs extraction.
 //
 // See docs/04.1-oci-vm-images.md Section 3 for the full build pipeline.
-func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string, cf *Cocoonfile) (*BuildResult, error) {
-	// Validate input path.
+// validateBuildPrereqs checks that the image path is valid and required tools are available.
+func validateBuildPrereqs(imagePath string, cf *Cocoonfile) error {
 	if err := validateSafePath(imagePath); err != nil {
-		return nil, fmt.Errorf("invalid image path: %w", err)
+		return fmt.Errorf("invalid image path: %w", err)
 	}
 	if _, err := os.Stat(imagePath); err != nil {
-		return nil, fmt.Errorf("image file not found: %w", err)
+		return fmt.Errorf("image file not found: %w", err)
 	}
-
-	// Check guestfish is available.
 	if _, err := exec.LookPath("guestfish"); err != nil {
-		return nil, fmt.Errorf("guestfish not found in PATH: OCI VM image build requires libguestfs: %w", err)
+		return fmt.Errorf("guestfish not found in PATH: OCI VM image build requires libguestfs: %w", err)
 	}
-
-	// If Cocoonfile has customization steps, virt-customize is required.
 	if cf != nil && len(cf.Steps) > 0 {
 		if _, err := exec.LookPath("virt-customize"); err != nil {
-			return nil, fmt.Errorf("virt-customize not found in PATH: Cocoonfile RUN/COPY requires libguestfs-tools: %w", err)
+			return fmt.Errorf("virt-customize not found in PATH: Cocoonfile RUN/COPY requires libguestfs-tools: %w", err)
 		}
+	}
+	return nil
+}
+
+func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string, cf *Cocoonfile) (*BuildResult, error) {
+	if err := validateBuildPrereqs(imagePath, cf); err != nil {
+		return nil, err
 	}
 
 	// Calculate total build steps.
@@ -189,17 +192,21 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 	}
 	pw.Detail("sha256:" + info.manifestDigest[:12])
 
-	// Save tag in local index.
+	// Register blob references BEFORE saving the tag to minimize the race
+	// window with GC. Once refs are recorded, CollectUnreferencedOCIBlobs
+	// will not delete these blobs. The GC also has a 5-minute grace period
+	// as defense-in-depth (see gc_oci.go).
+	if err := AddBlobRefs(cfg, info.manifestDigest, info.blobDigests, info.blobSizes); err != nil {
+		return nil, fmt.Errorf("register blob refs: %w", err)
+	}
+
+	// Save tag in local index. Once saved, CollectOrphanedOCILayouts will
+	// not delete this layout directory.
 	pw.Step("Saving tag...")
 	if err := store.SaveTag(tag, layoutDir, info.manifestDigest); err != nil {
 		return nil, fmt.Errorf("save tag: %w", err)
 	}
 	pw.Detail(tag)
-
-	// Register blob references for GC tracking.
-	if err := AddBlobRefs(cfg, info.manifestDigest, info.blobDigests, info.blobSizes); err != nil {
-		return nil, fmt.Errorf("register blob refs: %w", err)
-	}
 
 	return &BuildResult{
 		Tag:            tag,
@@ -369,7 +376,7 @@ func extractRootfsTar(ctx context.Context, imagePath, tarPath string) error {
 }
 
 // assembleOCILayout writes a standard OCI image layout to layoutDir.
-// Blobs are stored in the shared BlobStore and hardlinked into the layout.
+// Blobs are stored in the shared BlobStore and hard-linked into the layout.
 // Returns an assemblyInfo with the manifest digest and all blob digests/sizes
 // for GC reference tracking.
 func assembleOCILayout(
