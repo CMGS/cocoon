@@ -303,12 +303,26 @@ func applyCocoonfileSteps(ctx context.Context, imagePath, tmpDir string, cf *Coc
 				resolved.Args = strings.Join(parts, " ")
 			}
 		}
-		pw.Step(fmt.Sprintf("%s %s", strings.ToUpper(resolved.Type), resolved.Args))
+		pw.Step(customizationStepProgressLabel(resolved.Type, i+1, len(cf.Steps)))
 		if err := applyStep(ctx, workCopy, resolved); err != nil {
 			return "", fmt.Errorf("Cocoonfile step %d (%s): %w", i+1, resolved.Type, err)
 		}
 	}
 	return workCopy, nil
+}
+
+func customizationStepProgressLabel(stepType string, stepIndex, total int) string {
+	op := strings.ToUpper(strings.TrimSpace(stepType))
+	if op == "" {
+		op = "STEP"
+	}
+	if total < 1 {
+		return op
+	}
+	if stepIndex < 1 {
+		stepIndex = 1
+	}
+	return fmt.Sprintf("%s [%d/%d]", op, stepIndex, total)
 }
 
 // applyStep executes a single Cocoonfile RUN or COPY step via virt-customize.
