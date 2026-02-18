@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	cli "github.com/urfave/cli/v2"
 	"golang.org/x/term"
@@ -80,33 +82,82 @@ func imageListCommand() *cli.Command {
 	}
 }
 
+// unifiedImageRow is the CLI view model for the unified image list output.
+type unifiedImageRow struct {
+	Type      string `json:"type"`
+	Ref       string `json:"ref"`
+	Digest    string `json:"digest"`
+	Size      int64  `json:"size"`
+	SizeHuman string `json:"size_human"`
+	Source    string `json:"source"`
+	CreatedAt string `json:"created_at"`
+}
+
 func imagesAction(c *cli.Context) error {
 	app, err := initApp(c)
 	if err != nil {
 		return err
 	}
 
+	format := c.String("format")
+	var rows []unifiedImageRow
+
+	// 1. Cloud images.
 	images, err := app.imgMgr.ListCached(c.Context)
 	if err != nil {
 		return fmt.Errorf("list cached images: %w", err)
 	}
-
-	format := c.String("format")
-	rows := make([]imageListInfo, 0, len(images))
 	for _, img := range images {
 		sourceRefs, _, refsErr := refcache.RefsForBaseKey(app.cfg, img.BaseKey)
 		if refsErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: read manifest cache for %s: %v\n", img.BaseKey, refsErr)
 		}
-		rows = append(rows, imageListInfo{
-			BaseKey:    img.BaseKey,
-			Size:       img.Size,
-			RefCount:   img.RefCount,
-			CachedAt:   img.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			SourceRef:  summarizeSourceRefs(sourceRefs),
-			SourceRefs: sourceRefs,
+		source := summarizeSourceRefs(sourceRefs)
+		rows = append(rows, unifiedImageRow{
+			Type:      "cloudimg",
+			Ref:       img.BaseKey,
+			Digest:    "", // cloud images don't have OCI digests
+			Size:      img.Size,
+			SizeHuman: humanBytes(img.Size),
+			Source:    source,
+			CreatedAt: img.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		})
 	}
+
+	// 2. OCI images.
+	ociImages, err := app.imgBuild.ListBuilds(c.Context)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: list OCI builds: %v\n", err)
+	} else {
+		for _, entry := range ociImages {
+			var size int64
+			if entry.LayoutPath != "" {
+				if s, sizeErr := oci.LayoutSize(entry.LayoutPath); sizeErr == nil {
+					size = s
+				}
+			}
+			digest := entry.ManifestDigest
+			if digest != "" && !strings.HasPrefix(digest, "sha256:") {
+				digest = "sha256:" + digest
+			}
+			rows = append(rows, unifiedImageRow{
+				Type:      "oci",
+				Ref:       entry.Tag,
+				Digest:    digest,
+				Size:      size,
+				SizeHuman: humanBytes(size),
+				Source:    "local",
+				CreatedAt: entry.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			})
+		}
+	}
+
+	// Sort by creation time, newest first.
+	sort.Slice(rows, func(i, j int) bool {
+		ti, _ := time.Parse("2006-01-02T15:04:05Z", rows[i].CreatedAt)
+		tj, _ := time.Parse("2006-01-02T15:04:05Z", rows[j].CreatedAt)
+		return ti.After(tj)
+	})
 
 	// JSON output.
 	if format == formatJSON {
@@ -114,29 +165,26 @@ func imagesAction(c *cli.Context) error {
 	}
 
 	// Table output (default).
-	headers := []string{"BASE KEY", "SIZE", "REF COUNT", "SOURCE REF", "CACHED AT"}
+	headers := []string{"TYPE", "REF", "DIGEST", "SIZE", "SOURCE", "CREATED"}
 	tableRows := make([][]string, 0, len(rows))
 	for _, row := range rows {
+		digest := row.Digest
+		if digest != "" {
+			digest = truncateDigest(digest)
+		} else {
+			digest = "-"
+		}
 		tableRows = append(tableRows, []string{
-			row.BaseKey,
-			humanBytes(row.Size),
-			fmt.Sprintf("%d", row.RefCount),
-			row.SourceRef,
-			row.CachedAt,
+			row.Type,
+			row.Ref,
+			digest,
+			row.SizeHuman,
+			row.Source,
+			row.CreatedAt,
 		})
 	}
 	printTable(headers, tableRows)
 	return nil
-}
-
-// imageListInfo is the CLI view model for image list output.
-type imageListInfo struct {
-	BaseKey    string   `json:"base_key"`
-	Size       int64    `json:"size"`
-	RefCount   int      `json:"ref_count"`
-	SourceRef  string   `json:"source_ref,omitempty"`
-	SourceRefs []string `json:"source_refs,omitempty"`
-	CachedAt   string   `json:"cached_at"`
 }
 
 func imagePullCommand() *cli.Command {
@@ -353,6 +401,29 @@ func imageRemoveAction(c *cli.Context) error {
 
 	ref := c.Args().Get(0)
 
+	// Try OCI image removal first.
+	store := oci.NewStore(app.cfg)
+	if _, resolveErr := store.ResolveTag(ref); resolveErr == nil {
+		manifestDigest, zeroRefBlobs, removeErr := store.RemoveTag(ref)
+		if removeErr != nil {
+			return fmt.Errorf("remove OCI image: %w", removeErr)
+		}
+		// Remove zero-referenced blobs from shared store.
+		blobStore := oci.NewBlobStore(app.cfg)
+		for _, digest := range zeroRefBlobs {
+			_ = blobStore.RemoveBlob(digest) // best-effort
+		}
+		fmt.Printf("Removed OCI image: %s\n", ref)
+		if manifestDigest != "" {
+			fmt.Printf("Manifest: %s\n", manifestDigest)
+		}
+		if len(zeroRefBlobs) > 0 {
+			fmt.Printf("Collected %d unreferenced blob(s)\n", len(zeroRefBlobs))
+		}
+		return nil
+	}
+
+	// Fall back to cloud image removal.
 	baseKey, err := resolveBaseKeyFromCache(c, app, ref)
 	if err != nil {
 		return err

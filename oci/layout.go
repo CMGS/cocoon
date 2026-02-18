@@ -80,6 +80,40 @@ func InspectLayout(layoutPath string) (*LayoutInfo, error) {
 	}, nil
 }
 
+// LayoutSize returns the total size of all blobs (config + layers) in an OCI layout.
+func LayoutSize(layoutPath string) (int64, error) {
+	indexPath := filepath.Join(layoutPath, "index.json")
+	indexData, err := os.ReadFile(indexPath) //nolint:gosec // G304: layoutPath is from local store
+	if err != nil {
+		return 0, fmt.Errorf("read index.json: %w", err)
+	}
+
+	var idx ociIndex
+	if err := json.Unmarshal(indexData, &idx); err != nil {
+		return 0, fmt.Errorf("parse index.json: %w", err)
+	}
+	if len(idx.Manifests) == 0 {
+		return 0, fmt.Errorf("no manifests in index.json")
+	}
+
+	manifestData, err := readBlob(layoutPath, idx.Manifests[0].Digest)
+	if err != nil {
+		return 0, fmt.Errorf("read manifest: %w", err)
+	}
+
+	var manifest ociManifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		return 0, fmt.Errorf("parse manifest: %w", err)
+	}
+
+	var total int64
+	total += manifest.Config.Size
+	for _, layer := range manifest.Layers {
+		total += layer.Size
+	}
+	return total, nil
+}
+
 // readBlob reads a blob from the OCI layout's blobs directory.
 // digest should be in the form "sha256:hexstring".
 func readBlob(layoutPath, digest string) ([]byte, error) {

@@ -294,6 +294,26 @@ func (c *CocoonConfig) OCIBuildCacheDir() string {
 	return filepath.Join(c.RootDir, "cache", "oci-builds")
 }
 
+func (c *CocoonConfig) OCICacheDir() string {
+	return filepath.Join(c.RootDir, "cache", "oci")
+}
+
+func (c *CocoonConfig) OCIBlobDir() string {
+	return filepath.Join(c.RootDir, "cache", "oci", "blobs", "sha256")
+}
+
+func (c *CocoonConfig) OCILayoutDir() string {
+	return filepath.Join(c.RootDir, "cache", "oci", "layouts")
+}
+
+func (c *CocoonConfig) OCILayerRefsFile() string {
+	return filepath.Join(c.RootDir, "db", "oci-layer-refs.json")
+}
+
+func (c *CocoonConfig) OCILayerRefsLock() string {
+	return filepath.Join(c.RootDir, "db", "oci-layer-refs.lock")
+}
+
 func (c *CocoonConfig) OCIBuildTagIndex() string {
 	return filepath.Join(c.RootDir, "db", "oci-build-tags.json")
 }
@@ -309,7 +329,8 @@ func (c *CocoonConfig) EnsureDirs() error {
 		c.ImageCacheDir(),
 		c.ManifestCacheDir(),
 		c.ConversionLockDir(),
-		c.OCIBuildCacheDir(),
+		c.OCIBlobDir(),
+		c.OCILayoutDir(),
 		c.VMDir(),
 		c.TempDir(),
 		c.TrashDir(),

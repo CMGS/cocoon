@@ -3,7 +3,7 @@
 **Version**: 1.0
 **Status**: Implemented
 **Phase**: Phase 1
-**Last Updated**: 2026-02-14
+**Last Updated**: 2026-02-18
 
 ## Overview
 
@@ -29,6 +29,8 @@ Level 2: Reference Counter Lock (global)
 Level 2: Name Index Lock (global, same level as references — never held together)
     ↓
 Level 2: OCI Build Tag Lock (global, same level — never held with references or name-index) — Implemented, oci/store.go
+    ↓
+Level 2: OCI Layer Refs Lock (global, same level — never held with references, name-index, or build-tags) — Implemented, oci/layerrefs.go
     ↓
 Level 2: OCI Reference Lock (global, same level — never held with references or name-index) — Phase 2, docs/04.1-oci-vm-images.md
     ↓
@@ -59,6 +61,7 @@ Level 6: dnsmasq Lock (global) — Phase 2, docs/16-networking.md
 - Network Lock (Phase 2): `/run/cocoon/vms/{vm-id}/network.lock`
 - Console Lock (Phase 2): `/run/cocoon/vms/{vm-id}/console.lock`
 - OCI Build Tag Lock: `/var/lib/cocoon/db/oci-build-tags.lock`
+- OCI Layer Refs Lock: `/var/lib/cocoon/db/oci-layer-refs.lock`
 - OCI Reference Lock (Phase 2): `/var/lib/cocoon/db/oci-references.lock`
 - Checkpoint Index Lock (Phase 2): `/var/lib/cocoon/checkpoints/checkpoint-index.lock`
 - OCI Cache Lock (Phase 2): `/var/lib/cocoon/cache/oci/{digest}.lock`
@@ -1349,6 +1352,8 @@ func lockWithTimeout(mu *sync.Mutex, timeout time.Duration) error {
 | GC operations | `/var/lib/cocoon/db/gc.lock` | Level 1 (highest) |
 | Reference counter | `/var/lib/cocoon/db/references.lock` | Level 2 |
 | Name index | `/var/lib/cocoon/db/name-index.lock` | Level 2 (never held with references.lock) |
+| OCI build tags | `/var/lib/cocoon/db/oci-build-tags.lock` | Level 2 (never held with references.lock) |
+| OCI layer refs | `/var/lib/cocoon/db/oci-layer-refs.lock` | Level 2 (never held with references.lock) |
 | Image conversion | `/var/lib/cocoon/cache/locks/{checksum}_{arch}.lock` | Level 3 |
 | VM metadata | `/var/lib/cocoon/vms/{vm-id}/metadata.lock` | Level 4 |
 | Checkpoint (Phase 2) | `/var/lib/cocoon/vms/{vm-id}/checkpoint.lock` | Level 5 |
