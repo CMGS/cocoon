@@ -296,29 +296,29 @@ func TestParseEscapeChar(t *testing.T) {
 		want    byte
 		wantErr bool
 	}{
-		{"^]", 0x1D, false},  // Ctrl-]
-		{"^A", 0x01, false},  // Ctrl-A
-		{"^C", 0x03, false},  // Ctrl-C
-		{"^_", 0x1F, false},  // Ctrl-_
-		{"^a", 0x01, false},  // lowercase caret notation
-		{"^z", 0x1A, false},  // Ctrl-Z
-		{"~", '~', false},    // printable char
-		{"#", '#', false},    // printable char
-		{" ", ' ', false},    // space (0x20)
-		{"^@", 0, true},      // NUL rejected
-		{"\x00", 0, true},    // raw NUL rejected
-		{"\x7F", 0, true},    // DEL rejected
-		{"^!", 0, true},      // invalid caret notation
-		{"ab", 0, true},      // too long
-		{"", 0, true},        // empty
-		{"abc", 0, true},     // way too long
+		{"^]", 0x1D, false},   // Ctrl-]
+		{"^A", 0x01, false},   // Ctrl-A
+		{"^C", 0x03, false},   // Ctrl-C
+		{"^_", 0x1F, false},   // Ctrl-_
+		{"^a", 0x01, false},   // lowercase caret notation
+		{"^z", 0x1A, false},   // Ctrl-Z
+		{"~", '~', false},     // printable char
+		{"#", '#', false},     // printable char
+		{" ", ' ', false},     // space (0x20)
+		{"^@", 0, true},       // NUL rejected
+		{"\x00", 0, true},     // raw NUL rejected
+		{"\x7F", 0, true},     // DEL rejected
+		{"^!", 0, true},       // invalid caret notation
+		{"ab", 0, true},       // too long
+		{"", 0, true},         // empty
+		{"abc", 0, true},      // way too long
 		{"\x1D", 0x1D, false}, // raw Ctrl-] byte
 		{"\x01", 0x01, false}, // raw Ctrl-A byte
 		// CR/LF rejected (conflict with line-start detection).
-		{"^M", 0, true},      // CR via caret notation
-		{"^J", 0, true},      // LF via caret notation
-		{"\r", 0, true},      // raw CR
-		{"\n", 0, true},      // raw LF
+		{"^M", 0, true}, // CR via caret notation
+		{"^J", 0, true}, // LF via caret notation
+		{"\r", 0, true}, // raw CR
+		{"\n", 0, true}, // raw LF
 		// '.' and '?' rejected (conflict with escape commands).
 		{".", 0, true},
 		{"?", 0, true},

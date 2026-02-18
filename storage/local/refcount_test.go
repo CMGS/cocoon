@@ -199,8 +199,8 @@ func TestRefCount_ConcurrentMultiKey(t *testing.T) {
 	cfg := newTestConfig(t)
 	rc := NewReferenceCounter(cfg)
 
-	const N = 10             // number of distinct keys
-	const refsPerKey = 5     // VMs per key
+	const N = 10         // number of distinct keys
+	const refsPerKey = 5 // VMs per key
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, N*refsPerKey*2) // buffered for all ops

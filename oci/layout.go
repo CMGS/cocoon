@@ -123,6 +123,9 @@ func readBlob(layoutPath, digest string) ([]byte, error) {
 		return nil, fmt.Errorf("unsupported digest format: %s", digest)
 	}
 	hex := digest[7:]
+	if len(hex) != 64 {
+		return nil, fmt.Errorf("invalid sha256 digest length (%d hex chars, want 64): %s", len(hex), digest)
+	}
 	// Validate hex part contains only hexadecimal characters to prevent path traversal.
 	for _, c := range hex {
 		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
