@@ -169,34 +169,28 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 
 	blobStore := NewBlobStore(cfg)
 	store := NewStore(cfg)
-	layoutDir := store.LayoutDir(tag)
+	layoutWorkDir, err := createLayoutWorkDir(cfg)
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(layoutWorkDir) //nolint:errcheck // best-effort cleanup if finalization fails
 
 	pw.Step("Assembling OCI layout...")
-	info, err := assembleOCILayout(layoutDir, vmConfig, kernelTarPath, kernelDigest, kernelSize, rootfsTarPath, rootfsDigest, rootfsSize, blobStore)
+	info, err := assembleOCILayout(layoutWorkDir, vmConfig, kernelTarPath, kernelDigest, kernelSize, rootfsTarPath, rootfsDigest, rootfsSize, blobStore)
 	if err != nil {
-		os.RemoveAll(layoutDir) //nolint:errcheck,gosec // best-effort cleanup of partial layout
 		return nil, fmt.Errorf("assemble OCI layout: %w", err)
 	}
 	pw.Detail("sha256:" + info.manifestDigest[:12])
-
-	// Register blob references BEFORE saving the tag to minimize the race
-	// window with GC. Once refs are recorded, CollectUnreferencedOCIBlobs
-	// will not delete these blobs. The GC also has a 5-minute grace period
-	// as defense-in-depth (see gc_oci.go).
-	if err := AddBlobRefs(cfg, info.manifestDigest, info.blobDigests, info.blobSizes); err != nil {
-		return nil, fmt.Errorf("register blob refs: %w", err)
+	layoutDir, err := finalizeLayoutDir(store, tag, info.manifestDigest, layoutWorkDir)
+	if err != nil {
+		return nil, err
 	}
 
 	// Save tag in local index. Once saved, CollectOrphanedOCILayouts will
 	// not delete this layout directory.
 	pw.Step("Saving tag...")
-	if err := store.SaveTag(tag, layoutDir, info.manifestDigest); err != nil {
-		// Best-effort rollback: only clean refs when this manifest is no longer
-		// referenced by any tag.
-		if refErr := store.cleanupManifestRefsIfUnreferenced(info.manifestDigest); refErr != nil {
-			log.Printf("warning: failed to clean blob refs after SaveTag failure (GC will reclaim): %v", refErr)
-		}
-		return nil, fmt.Errorf("save tag: %w", err)
+	if err := registerBlobRefsAndSaveTag(store, cfg, tag, layoutDir, info); err != nil {
+		return nil, err
 	}
 	pw.Detail(tag)
 
@@ -206,6 +200,54 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 		ManifestDigest: info.manifestDigest,
 		LayoutPath:     layoutDir,
 	}, nil
+}
+
+func createLayoutWorkDir(cfg *config.CocoonConfig) (string, error) {
+	if err := os.MkdirAll(cfg.OCILayoutDir(), 0o750); err != nil {
+		return "", fmt.Errorf("create OCI layout root: %w", err)
+	}
+	layoutWorkDir, err := os.MkdirTemp(cfg.OCILayoutDir(), "layout-build-*")
+	if err != nil {
+		return "", fmt.Errorf("create OCI layout temp dir: %w", err)
+	}
+	return layoutWorkDir, nil
+}
+
+func finalizeLayoutDir(store *Store, tag, manifestDigest, layoutWorkDir string) (string, error) {
+	layoutDir := store.LayoutDir(tag + "@" + manifestDigest)
+	if _, statErr := os.Stat(layoutDir); statErr == nil {
+		// Layout already exists (same tag+manifest built previously).
+		return layoutDir, nil
+	} else if !os.IsNotExist(statErr) {
+		return "", fmt.Errorf("stat finalized layout dir %s: %w", layoutDir, statErr)
+	}
+
+	if err := os.Rename(layoutWorkDir, layoutDir); err != nil {
+		// Another process may have won the race creating the same final layout.
+		if _, existsErr := os.Stat(layoutDir); existsErr != nil {
+			return "", fmt.Errorf("finalize OCI layout dir: %w", err)
+		}
+	}
+	return layoutDir, nil
+}
+
+func registerBlobRefsAndSaveTag(store *Store, cfg *config.CocoonConfig, tag, layoutDir string, info *assemblyInfo) error {
+	return store.withTxnLock(func() error {
+		// Register blob refs before saving tag, while sharing the same txn lock
+		// as SaveTag/RemoveTag to prevent cross-index races.
+		if err := AddBlobRefs(cfg, info.manifestDigest, info.blobDigests, info.blobSizes); err != nil {
+			return fmt.Errorf("register blob refs: %w", err)
+		}
+		if err := store.saveTagTxnLocked(tag, layoutDir, info.manifestDigest); err != nil {
+			// Best-effort rollback: only clean refs when this manifest is no longer
+			// referenced by any tag.
+			if refErr := store.cleanupManifestRefsIfUnreferencedTxnLocked(info.manifestDigest); refErr != nil {
+				log.Printf("warning: failed to clean blob refs after SaveTag failure (GC will reclaim): %v", refErr)
+			}
+			return fmt.Errorf("save tag: %w", err)
+		}
+		return nil
+	})
 }
 
 // bootExcludePaths returns paths to exclude from the rootfs layer. It covers

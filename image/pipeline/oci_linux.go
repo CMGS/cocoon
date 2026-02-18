@@ -115,24 +115,9 @@ func pullAndMountOCIPlatform(ctx context.Context, cfg *config.CocoonConfig, iden
 
 	// 2. Pull image with buildah, pinned to manifest digest when available
 	// to prevent TOCTOU races (tag updated between identify and pull).
-	pullRef := ref
-	fromRef := ref
-	if identity.ManifestDigest != "" {
-		pullRef = ref + "@sha256:" + identity.ManifestDigest
-		fromRef = pullRef
-	}
-	if _, err := runCmd(ctx, "buildah", "--root", root, "pull", pullRef); err != nil {
-		if identity.ManifestDigest != "" {
-			// Fall back to tag-based pull if digest-pinned pull fails
-			// (e.g., registry doesn't support digest references).
-			if _, fallbackErr := runCmd(ctx, "buildah", "--root", root, "pull", ref); fallbackErr != nil {
-				return classifyBuildahError(fmt.Errorf("buildah pull %s: %w", ref, fallbackErr))
-			}
-			// Keep pull/from consistent after fallback.
-			fromRef = ref
-		} else {
-			return classifyBuildahError(fmt.Errorf("buildah pull %s: %w", ref, err))
-		}
+	fromRef, err := pullOCIRef(ctx, root, ref, identity.ManifestDigest)
+	if err != nil {
+		return err
 	}
 
 	// 3. Create working container from the pulled image, pinned to the same
@@ -155,6 +140,38 @@ func pullAndMountOCIPlatform(ctx context.Context, cfg *config.CocoonConfig, iden
 	// 5. Populate the identity with transient paths.
 	identity.TempPath = mountPath
 	return nil
+}
+
+// pullOCIRef pulls an OCI ref with digest pinning when possible and returns
+// the reference that should be used by `buildah from`.
+func pullOCIRef(ctx context.Context, root, ref, expectedManifestDigest string) (string, error) {
+	pullRef := ref
+	if expectedManifestDigest != "" {
+		pullRef = ref + "@sha256:" + expectedManifestDigest
+	}
+	if _, err := runCmd(ctx, "buildah", "--root", root, "pull", pullRef); err == nil {
+		return pullRef, nil
+	} else if expectedManifestDigest == "" {
+		return "", classifyBuildahError(fmt.Errorf("buildah pull %s: %w", ref, err))
+	}
+
+	// Fall back to tag-based pull for registries that don't accept digest refs.
+	if _, fallbackErr := runCmd(ctx, "buildah", "--root", root, "pull", ref); fallbackErr != nil {
+		return "", classifyBuildahError(fmt.Errorf("buildah pull %s: %w", ref, fallbackErr))
+	}
+
+	// Re-identify to ensure mutable tag didn't drift during fallback.
+	latestIdentity, identifyErr := identifyOCIPlatform(ctx, ref)
+	if identifyErr != nil {
+		return "", fmt.Errorf("re-identify OCI ref %s after fallback pull: %w", ref, identifyErr)
+	}
+	if latestIdentity.ManifestDigest != expectedManifestDigest {
+		return "", types.NewTransientError(fmt.Errorf(
+			"OCI ref %s changed during fallback pull (expected manifest %s, got %s); retry",
+			ref, expectedManifestDigest, latestIdentity.ManifestDigest,
+		))
+	}
+	return ref, nil
 }
 
 // runCmd executes a command and returns its combined stdout output.

@@ -341,6 +341,10 @@ func (c *CocoonConfig) OCIBuildTagLock() string {
 	return filepath.Join(c.RootDir, "db", "oci-build-tags.lock")
 }
 
+func (c *CocoonConfig) OCIBuildTxnLock() string {
+	return filepath.Join(c.RootDir, "db", "oci-build-txn.lock")
+}
+
 // EnsureDirs creates all required directories.
 func (c *CocoonConfig) EnsureDirs() error {
 	dirs := []string{

@@ -177,6 +177,7 @@ func (m *manager) Convert(ctx context.Context, identity *image.ImageIdentity) (s
 // cleaned up.
 func (m *manager) convertOCIImage(ctx context.Context, identity *image.ImageIdentity, basePath, baseKey string) error {
 	log.Printf("image %s: converting OCI rootfs -> qcow2", baseKey)
+	defer cleanupBuildahContainerFromIdentity(identity, m.cfg)
 
 	// Ensure cache directory exists.
 	cacheDir := m.cfg.ImageCacheDir()
@@ -189,10 +190,6 @@ func (m *manager) convertOCIImage(ctx context.Context, identity *image.ImageIden
 
 	diskSize := "10G" // Default size for OCI conversion
 	if err := convertOCI(ctx, identity.TempPath, tmpPath, diskSize); err != nil {
-		// Clean up buildah container on conversion failure.
-		if identity.ContainerID != "" {
-			cleanupBuildahContainer(identity.ContainerID, m.cfg)
-		}
 		return types.NewPermanentError(fmt.Errorf("convert OCI %s: %w", baseKey, err))
 	}
 
@@ -205,13 +202,16 @@ func (m *manager) convertOCIImage(ctx context.Context, identity *image.ImageIden
 		return fmt.Errorf("convert %s: chmod read-only: %w", baseKey, err)
 	}
 
-	// Cleanup buildah container.
-	if identity.ContainerID != "" {
-		cleanupBuildahContainer(identity.ContainerID, m.cfg)
-	}
-
 	log.Printf("image %s: OCI conversion complete -> %s", baseKey, basePath)
 	return nil
+}
+
+func cleanupBuildahContainerFromIdentity(identity *image.ImageIdentity, cfg *config.CocoonConfig) {
+	if identity == nil || identity.ContainerID == "" {
+		return
+	}
+	cleanupBuildahContainer(identity.ContainerID, cfg)
+	identity.ContainerID = ""
 }
 
 // Prepare is the combined pull+convert+cache pipeline. It first checks whether
@@ -345,11 +345,10 @@ func (m *manager) prepareOCI(ctx context.Context, ref string) (*image.ImageIdent
 	log.Printf("image %s: pulling OCI image %q", baseKey, ref)
 	if err := pullAndMountOCIPlatform(ctx, m.cfg, identity); err != nil {
 		// Clean up partially-created buildah container on failure.
-		if identity.ContainerID != "" {
-			cleanupBuildahContainer(identity.ContainerID, m.cfg)
-		}
+		cleanupBuildahContainerFromIdentity(identity, m.cfg)
 		return nil, "", fmt.Errorf("pull OCI %q: %w", ref, err)
 	}
+	defer cleanupBuildahContainerFromIdentity(identity, m.cfg)
 
 	// Phase 6: Convert OCI rootfs -> qcow2 — inside lock.
 	log.Printf("image %s: converting OCI rootfs -> qcow2", baseKey)
@@ -374,10 +373,6 @@ func (m *manager) prepareOCI(ctx context.Context, ref string) (*image.ImageIdent
 
 	diskSize := "10G" // Default size for OCI conversion
 	if err := convertOCI(ctx, srcPath, tmpPath, diskSize); err != nil {
-		// Clean up buildah container on conversion failure.
-		if identity.ContainerID != "" {
-			cleanupBuildahContainer(identity.ContainerID, m.cfg)
-		}
 		return nil, "", types.NewPermanentError(fmt.Errorf("convert OCI %s: %w", baseKey, err))
 	}
 
@@ -388,11 +383,6 @@ func (m *manager) prepareOCI(ctx context.Context, ref string) (*image.ImageIdent
 	}
 	if err := os.Chmod(basePath, 0o444); err != nil { //nolint:gosec // G302: intentionally world-readable — base images are shared immutable backing files for COW overlays
 		return nil, "", fmt.Errorf("convert %s: chmod read-only: %w", baseKey, err)
-	}
-
-	// Cleanup buildah container.
-	if identity.ContainerID != "" {
-		cleanupBuildahContainer(identity.ContainerID, m.cfg)
 	}
 
 	log.Printf("image %s: OCI pull+conversion complete -> %s", baseKey, basePath)

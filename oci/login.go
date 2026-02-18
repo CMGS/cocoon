@@ -33,11 +33,42 @@ type dockerAuthEntry struct {
 	Auth string `json:"auth"`
 }
 
+func normalizeRegistry(registry string) (string, error) {
+	registry = strings.TrimSpace(registry)
+	if registry == "" {
+		return "", fmt.Errorf("registry cannot be empty")
+	}
+	if strings.Contains(registry, "://") {
+		u, err := url.Parse(registry)
+		if err != nil {
+			return "", fmt.Errorf("invalid registry %q: %w", registry, err)
+		}
+		if u.Host == "" {
+			return "", fmt.Errorf("invalid registry %q: missing host", registry)
+		}
+		registry = u.Host
+	}
+	registry = strings.TrimSuffix(registry, "/")
+	if slash := strings.IndexByte(registry, '/'); slash >= 0 {
+		registry = registry[:slash]
+	}
+	reg, err := name.NewRegistry(registry)
+	if err != nil {
+		return "", fmt.Errorf("invalid registry %q: %w", registry, err)
+	}
+	return reg.RegistryStr(), nil
+}
+
 // Login stores registry credentials in ~/.cocoon/config.json and verifies
 // them by pinging the registry.
 func Login(ctx context.Context, registry, username, password string) error {
+	normalizedRegistry, err := normalizeRegistry(registry)
+	if err != nil {
+		return err
+	}
+
 	// Verify credentials by pinging the registry's /v2/ endpoint.
-	if err := pingRegistry(ctx, registry, username, password); err != nil {
+	if err = pingRegistry(ctx, normalizedRegistry, username, password); err != nil {
 		return fmt.Errorf("registry authentication failed: %w", err)
 	}
 
@@ -58,7 +89,7 @@ func Login(ctx context.Context, registry, username, password string) error {
 
 	// Encode credentials.
 	encoded := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
-	cfg.Auths[registry] = dockerAuthEntry{Auth: encoded}
+	cfg.Auths[normalizedRegistry] = dockerAuthEntry{Auth: encoded}
 
 	// Marshal and write atomically with restrictive permissions.
 	data, err := json.MarshalIndent(cfg, "", "  ")
@@ -109,7 +140,7 @@ func pingRegistry(ctx context.Context, registry, username, password string) erro
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
 		wwwAuth := resp.Header.Get("Www-Authenticate")
-		if strings.Contains(wwwAuth, "Bearer") {
+		if hasBearerChallenge(wwwAuth) {
 			// Token-based registries (Docker Hub, ghcr.io) return 401 with a Bearer
 			// challenge on /v2/. Perform token exchange to verify credentials.
 			if err := verifyBearerCredentials(ctx, wwwAuth, username, password); err != nil {
@@ -230,21 +261,66 @@ func requestBearerToken(ctx context.Context, tokenURL, username, password string
 	return resp.StatusCode, token, nil
 }
 
+func hasBearerChallenge(header string) bool {
+	return strings.Contains(strings.ToLower(header), "bearer ")
+}
+
+func splitAuthParams(params string) []string {
+	var out []string
+	var current strings.Builder
+	inQuotes := false
+	for i := 0; i < len(params); i++ {
+		ch := params[i]
+		switch ch {
+		case '"':
+			inQuotes = !inQuotes
+			current.WriteByte(ch)
+		case ',':
+			if inQuotes {
+				current.WriteByte(ch)
+				continue
+			}
+			part := strings.TrimSpace(current.String())
+			if part != "" {
+				out = append(out, part)
+			}
+			current.Reset()
+		default:
+			current.WriteByte(ch)
+		}
+	}
+	last := strings.TrimSpace(current.String())
+	if last != "" {
+		out = append(out, last)
+	}
+	return out
+}
+
 // extractBearerParam extracts a parameter value from a Bearer Www-Authenticate header.
 // E.g., extractBearerParam(`Bearer realm="https://example.com/token",service="reg"`, "realm")
 // returns "https://example.com/token".
 func extractBearerParam(header, param string) string {
-	prefix := param + "=\""
-	idx := strings.Index(header, prefix)
-	if idx < 0 {
+	bearerIdx := strings.Index(strings.ToLower(header), "bearer ")
+	if bearerIdx < 0 {
 		return ""
 	}
-	start := idx + len(prefix)
-	end := strings.IndexByte(header[start:], '"')
-	if end < 0 {
+	header = strings.TrimSpace(header[bearerIdx:])
+	space := strings.IndexAny(header, " \t")
+	if space < 0 || space+1 >= len(header) {
 		return ""
 	}
-	return header[start : start+end]
+	for _, token := range splitAuthParams(header[space+1:]) {
+		key, value, ok := strings.Cut(token, "=")
+		if !ok {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(key), param) {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		return strings.Trim(value, "\"")
+	}
+	return ""
 }
 
 // cocoonKeychain is an authn.Keychain that reads from ~/.cocoon/config.json.
@@ -273,8 +349,7 @@ func (k *cocoonKeychain) Resolve(target authn.Resource) (authn.Authenticator, er
 		return authn.Anonymous, nil
 	}
 
-	registry := target.RegistryStr()
-	entry, ok := cfg.Auths[registry]
+	entry, ok := resolveAuthEntry(cfg.Auths, target.RegistryStr())
 	if !ok {
 		return authn.Anonymous, nil
 	}
@@ -293,6 +368,39 @@ func (k *cocoonKeychain) Resolve(target authn.Resource) (authn.Authenticator, er
 		Username: parts[0],
 		Password: parts[1],
 	}, nil
+}
+
+func resolveAuthEntry(auths map[string]dockerAuthEntry, registry string) (dockerAuthEntry, bool) {
+	if auths == nil {
+		return dockerAuthEntry{}, false
+	}
+	if entry, ok := auths[registry]; ok {
+		return entry, true
+	}
+	normalizedRegistry, err := normalizeRegistry(registry)
+	if err != nil {
+		return dockerAuthEntry{}, false
+	}
+
+	// Fast-path docker hub aliases (handles legacy configs).
+	if normalizedRegistry == "index.docker.io" {
+		for _, alias := range []string{"docker.io", "registry-1.docker.io", "https://index.docker.io/v1/"} {
+			if entry, ok := auths[alias]; ok {
+				return entry, true
+			}
+		}
+	}
+
+	for key, entry := range auths {
+		keyRegistry, keyErr := normalizeRegistry(key)
+		if keyErr != nil {
+			continue
+		}
+		if keyRegistry == normalizedRegistry {
+			return entry, true
+		}
+	}
+	return dockerAuthEntry{}, false
 }
 
 // splitOnce splits s on the first occurrence of sep, returning at most 2 parts.
