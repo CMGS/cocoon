@@ -15,7 +15,7 @@ Lightweight VM manager built on Cloud Hypervisor.
 - **Docker-like CLI** -- `cocoon run`, `cocoon list`, `cocoon stop`, `cocoon delete`
 - **State reconciliation** -- `cocoon doctor` detects and repairs metadata/process inconsistencies
 - **Zero-daemon architecture** -- one Cloud Hypervisor process per VM, no long-running daemon
-- **Garbage collection** -- automatic tracking of base image references with GC of unreferenced images, orphaned overlays, and temp files
+- **Garbage collection** -- automatic tracking and lock-safe GC of unreferenced images, orphaned overlays, orphaned OCI layouts/tags/manifest-refs/blobs, and expired temp entries (files/directories)
 
 ## Requirements
 
@@ -80,7 +80,7 @@ cocoon delete <vm>
 | `cocoon console VM` | Attach an interactive console to a running VM |
 | `cocoon image list` | List cached base images (alias: `ls`) |
 | `cocoon image pull IMAGE_REF` | Pull and cache an image without creating a VM |
-| `cocoon image build [IMAGE] [--file Cocoonfile] [--tag REF]` | Build an OCI VM image from a cloud image or Cocoonfile |
+| `cocoon image build [IMAGE] [--file Cocoonfile] [--tag REF]` | Build an OCI VM image from a cloud image or Cocoonfile (`--tag` omitted: derive name from source and append `:latest` when no explicit tag) |
 | `cocoon image tag SOURCE_REF TARGET_REF` | Create/update a local OCI tag or cloud-image alias |
 | `cocoon image push REF` | Push a locally built OCI VM image to a container registry |
 | `cocoon image login REGISTRY` | Log in to a container registry for push operations |
