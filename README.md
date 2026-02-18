@@ -153,3 +153,7 @@ See `make help` for all available targets.
 ## Documentation
 
 Design documents and RFCs are in the [`docs/`](./docs/) directory.
+
+## License
+
+This project is licensed under the MIT License. See [`LICENSE`](./LICENSE).
