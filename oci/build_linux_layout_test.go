@@ -43,21 +43,23 @@ func TestCustomizationStepProgressLabel(t *testing.T) {
 		stepType  string
 		stepIndex int
 		total     int
+		args      string
 		want      string
 	}{
-		{name: "run", stepType: "run", stepIndex: 1, total: 3, want: "RUN [1/3]"},
-		{name: "copy", stepType: "copy", stepIndex: 2, total: 3, want: "COPY [2/3]"},
-		{name: "unknown", stepType: "label", stepIndex: 1, total: 1, want: "LABEL [1/1]"},
-		{name: "empty-type", stepType: "", stepIndex: 1, total: 2, want: "STEP [1/2]"},
-		{name: "no-total", stepType: "run", stepIndex: 1, total: 0, want: "RUN"},
+		{name: "run-with-args", stepType: "run", stepIndex: 1, total: 3, args: "apt-get update && apt-get install -y nginx", want: "RUN [1/3] apt-get update && apt-get install -y nginx"},
+		{name: "copy-with-args", stepType: "copy", stepIndex: 2, total: 3, args: "./app /usr/local/bin/", want: "COPY [2/3] ./app /usr/local/bin/"},
+		{name: "run-no-args", stepType: "run", stepIndex: 1, total: 3, args: "", want: "RUN [1/3]"},
+		{name: "unknown", stepType: "label", stepIndex: 1, total: 1, args: "", want: "LABEL [1/1]"},
+		{name: "empty-type", stepType: "", stepIndex: 1, total: 2, args: "", want: "STEP [1/2]"},
+		{name: "no-total", stepType: "run", stepIndex: 1, total: 0, args: "echo hello", want: "RUN"},
+		{name: "whitespace-args", stepType: "run", stepIndex: 1, total: 2, args: "  ", want: "RUN [1/2]"},
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := customizationStepProgressLabel(tt.stepType, tt.stepIndex, tt.total); got != tt.want {
-				t.Fatalf("customizationStepProgressLabel(%q,%d,%d)=%q, want %q", tt.stepType, tt.stepIndex, tt.total, got, tt.want)
+			if got := customizationStepProgressLabel(tt.stepType, tt.stepIndex, tt.total, tt.args); got != tt.want {
+				t.Fatalf("customizationStepProgressLabel(%q,%d,%d,%q)=%q, want %q", tt.stepType, tt.stepIndex, tt.total, tt.args, got, tt.want)
 			}
 		})
 	}
