@@ -3,18 +3,24 @@ package oci
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/layout"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 
 	"github.com/CMGS/cocoon/config"
 	"github.com/CMGS/cocoon/types"
 )
+
+const pushProgressRefreshInterval = 250 * time.Millisecond
 
 // Push uploads a locally built OCI VM image to a container registry.
 // The ref must match a tag previously created by Build.
@@ -56,9 +62,26 @@ func Push(ctx context.Context, cfg *config.CocoonConfig, ref string) (*PushResul
 
 	// Push to registry using Cocoon's own keychain, falling back to Docker's default.
 	keychain := authn.NewMultiKeychain(CocoonKeychain(), authn.DefaultKeychain)
-	if err = remote.Write(tag, img, remote.WithAuthFromKeychain(keychain), remote.WithContext(ctx)); err != nil {
+	progressUpdates := make(chan v1.Update, 64)
+	progressDone := make(chan struct{})
+	var progressWG sync.WaitGroup
+	progressWG.Go(func() {
+		renderPushProgress(progressUpdates, progressDone, os.Stderr)
+	})
+	fmt.Fprintf(os.Stderr, "Pushing image: %s\n", ref)
+	if err = remote.Write(
+		tag,
+		img,
+		remote.WithAuthFromKeychain(keychain),
+		remote.WithContext(ctx),
+		remote.WithProgress(progressUpdates),
+	); err != nil {
+		close(progressDone)
+		progressWG.Wait()
 		return nil, classifyPushError(err)
 	}
+	close(progressDone)
+	progressWG.Wait()
 
 	// Get the manifest digest for the result.
 	manifestDigest, err := img.Digest()
@@ -134,4 +157,68 @@ func isNetworkError(err error) bool {
 		return true
 	}
 	return false
+}
+
+func renderPushProgress(updates <-chan v1.Update, done <-chan struct{}, w io.Writer) {
+	ticker := time.NewTicker(pushProgressRefreshInterval)
+	defer ticker.Stop()
+
+	var latest v1.Update
+	hasUpdate := false
+	for {
+		select {
+		case update, ok := <-updates:
+			if !ok {
+				updates = nil
+				continue
+			}
+			latest = update
+			hasUpdate = true
+		case <-ticker.C:
+			if !hasUpdate {
+				continue
+			}
+			_, _ = fmt.Fprintf(w, "\r%s", formatPushProgressLine(latest))
+		case <-done:
+			if hasUpdate {
+				_, _ = fmt.Fprintf(w, "\r%s\n", formatPushProgressLine(latest))
+			}
+			return
+		}
+	}
+}
+
+func formatPushProgressLine(update v1.Update) string {
+	if update.Total > 0 {
+		percent := int64(0)
+		if update.Complete > 0 {
+			percent = (update.Complete * 100) / update.Total
+		}
+		if percent > 100 {
+			percent = 100
+		}
+		return fmt.Sprintf("Pushing image: %3d%% (%s / %s)", percent, humanBytes(update.Complete), humanBytes(update.Total))
+	}
+	return fmt.Sprintf("Pushing image: %s", humanBytes(update.Complete))
+}
+
+func humanBytes(n int64) string {
+	if n < 0 {
+		return "0B"
+	}
+	const unit = int64(1024)
+	if n < unit {
+		return fmt.Sprintf("%dB", n)
+	}
+	div, exp := unit, 0
+	for value := n / unit; value >= unit; value /= unit {
+		div *= unit
+		exp++
+	}
+	suffixes := []string{"KB", "MB", "GB", "TB", "PB", "EB"}
+	if exp >= len(suffixes) {
+		exp = len(suffixes) - 1
+	}
+	value := float64(n) / float64(div)
+	return fmt.Sprintf("%.1f%s", value, suffixes[exp])
 }
