@@ -1,14 +1,20 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	cli "github.com/urfave/cli/v2"
+
 	"github.com/CMGS/cocoon/config"
+	"github.com/CMGS/cocoon/image"
+	imgmocks "github.com/CMGS/cocoon/image/mocks"
 	"github.com/CMGS/cocoon/image/refcache"
 	"github.com/CMGS/cocoon/oci"
 	"github.com/CMGS/cocoon/types"
@@ -25,6 +31,17 @@ func testCLIConfig(t *testing.T) *config.CocoonConfig {
 		t.Fatalf("EnsureDirs: %v", err)
 	}
 	return cfg
+}
+
+func testImageCLIContext(t *testing.T, args ...string) *cli.Context {
+	t.Helper()
+	fs := flag.NewFlagSet("images-test", flag.ContinueOnError)
+	fs.String("file", "", "")
+	fs.String("tag", "", "")
+	if err := fs.Parse(args); err != nil {
+		t.Fatalf("parse args: %v", err)
+	}
+	return cli.NewContext(nil, fs, nil)
 }
 
 func TestShouldFallbackToPrepare(t *testing.T) {
@@ -290,6 +307,45 @@ func TestNormalizePullableFROMRef(t *testing.T) {
 				t.Fatalf("normalizePullableFROMRef(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestResolveBuildImagePath_PositionalSourceUsesPrepareFallback(t *testing.T) {
+	t.Parallel()
+
+	cfg := testCLIConfig(t)
+	c := testImageCLIContext(t, "ubuntu:24.04")
+
+	var preparedRef string
+	app := &appContext{
+		cfg: cfg,
+		imgMgr: &imgmocks.MockManager{
+			PrepareFunc: func(_ context.Context, ref string) (*image.ImageIdentity, string, error) {
+				preparedRef = ref
+				return &image.ImageIdentity{
+					Checksum:   "0123456789abcdef",
+					Arch:       "amd64",
+					FullDigest: strings.Repeat("a", 64),
+				}, "/tmp/base.qcow2", nil
+			},
+		},
+	}
+
+	imagePath, tagSource, cleanup, err := resolveBuildImagePath(c, app, "")
+	if err != nil {
+		t.Fatalf("resolveBuildImagePath: %v", err)
+	}
+	if cleanup != nil {
+		t.Fatalf("cleanup should be nil for prepared positional sources")
+	}
+	if preparedRef != "docker.io/library/ubuntu:24.04" {
+		t.Fatalf("Prepare ref = %q, want docker.io/library/ubuntu:24.04", preparedRef)
+	}
+	if imagePath != "/tmp/base.qcow2" {
+		t.Fatalf("imagePath = %q, want /tmp/base.qcow2", imagePath)
+	}
+	if tagSource != "ubuntu:24.04" {
+		t.Fatalf("tagSource = %q, want ubuntu:24.04", tagSource)
 	}
 }
 

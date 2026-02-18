@@ -121,8 +121,12 @@ func TestStoreListTags(t *testing.T) {
 	os.MkdirAll(dir1, 0o755)
 	os.MkdirAll(dir2, 0o755)
 
-	store.SaveTag("tag1", dir1, "digest1")
-	store.SaveTag("tag2", dir2, "digest2")
+	if err := store.SaveTag("tag1", dir1, "digest1"); err != nil {
+		t.Fatalf("SaveTag tag1: %v", err)
+	}
+	if err := store.SaveTag("tag2", dir2, "digest2"); err != nil {
+		t.Fatalf("SaveTag tag2: %v", err)
+	}
 
 	tags, err = store.ListTags()
 	if err != nil {
@@ -148,10 +152,14 @@ func TestStoreOverwriteTag(t *testing.T) {
 	dir1 := store.LayoutDir(tag)
 	os.MkdirAll(dir1, 0o755)
 
-	store.SaveTag(tag, dir1, "digest-v1")
+	if err := store.SaveTag(tag, dir1, "digest-v1"); err != nil {
+		t.Fatalf("SaveTag digest-v1: %v", err)
+	}
 
 	// Overwrite with new digest.
-	store.SaveTag(tag, dir1, "digest-v2")
+	if err := store.SaveTag(tag, dir1, "digest-v2"); err != nil {
+		t.Fatalf("SaveTag digest-v2: %v", err)
+	}
 
 	tags, err := store.ListTags()
 	if err != nil {
