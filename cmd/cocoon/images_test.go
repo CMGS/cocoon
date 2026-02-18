@@ -3,6 +3,8 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -111,5 +113,66 @@ func TestEvaluateOCILayoutBootability_MissingKernelLayer(t *testing.T) {
 	}
 	if !foundKernelErr {
 		t.Fatalf("Errors=%v, expected kernel layer missing error", result.Errors)
+	}
+}
+
+func TestEnsureLatestTag(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "bare-name", in: "noble-server-cloudimg-amd64", want: "noble-server-cloudimg-amd64:latest"},
+		{name: "repo-without-tag", in: "cmgs/noble-server-cloudimg-amd64", want: "cmgs/noble-server-cloudimg-amd64:latest"},
+		{name: "registry-port-without-tag", in: "localhost:5000/noble-server-cloudimg-amd64", want: "localhost:5000/noble-server-cloudimg-amd64:latest"},
+		{name: "already-tagged", in: "cmgs/noble-server-cloudimg-amd64:v1", want: "cmgs/noble-server-cloudimg-amd64:v1"},
+		{name: "digest-ref", in: "cmgs/noble-server-cloudimg-amd64@sha256:deadbeef", want: "cmgs/noble-server-cloudimg-amd64@sha256:deadbeef"},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := ensureLatestTag(tt.in); got != tt.want {
+				t.Fatalf("ensureLatestTag(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveCocoonfileLocalPath(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	cocoonfilePath := filepath.Join(tmp, "Cocoonfile")
+	basePath := filepath.Join(tmp, "base.img")
+
+	if err := os.WriteFile(cocoonfilePath, []byte("FROM base.img\n"), 0o644); err != nil {
+		t.Fatalf("write Cocoonfile: %v", err)
+	}
+	if err := os.WriteFile(basePath, []byte("img"), 0o644); err != nil {
+		t.Fatalf("write base image: %v", err)
+	}
+
+	path, ok := resolveCocoonfileLocalPath(cocoonfilePath, "./base.img")
+	if !ok {
+		t.Fatal("resolveCocoonfileLocalPath should treat ./base.img as explicit local path")
+	}
+	if want := filepath.Join(tmp, "base.img"); path != want {
+		t.Fatalf("resolveCocoonfileLocalPath explicit path=%q, want %q", path, want)
+	}
+
+	path, ok = resolveCocoonfileLocalPath(cocoonfilePath, "base.img")
+	if !ok {
+		t.Fatal("resolveCocoonfileLocalPath should resolve existing bare file name relative to Cocoonfile")
+	}
+	if path != basePath {
+		t.Fatalf("resolveCocoonfileLocalPath existing bare path=%q, want %q", path, basePath)
+	}
+
+	if path, ok = resolveCocoonfileLocalPath(cocoonfilePath, "docker.io/library/ubuntu:22.04"); ok {
+		t.Fatalf("resolveCocoonfileLocalPath should not mark registry-like ref as local path, got %q", path)
 	}
 }
