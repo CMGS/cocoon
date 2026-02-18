@@ -111,7 +111,7 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 	}
 	pw := NewProgressWriter(os.Stderr, totalSteps)
 
-	tmpDir, err := os.MkdirTemp(cfg.TempDir(), "ocivm-build-*")
+	tmpDir, err := os.MkdirTemp(cfg.TempDir(), "oci-build-*")
 	if err != nil {
 		return nil, fmt.Errorf("create temp dir: %w", err)
 	}
