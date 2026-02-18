@@ -256,6 +256,43 @@ func TestStoreRemoveTagSharedManifestRefs(t *testing.T) {
 	}
 }
 
+func TestStoreRemoveTagSharedLayoutKeepsLayoutUntilLastTag(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(t)
+	store := NewStore(cfg)
+
+	layoutDir := store.LayoutDir("shared-layout")
+	if err := os.MkdirAll(layoutDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll layout: %v", err)
+	}
+
+	const manifest = "manifest-shared-layout"
+	if err := store.SaveTag("tag-layout-1", layoutDir, manifest); err != nil {
+		t.Fatalf("SaveTag tag-layout-1: %v", err)
+	}
+	if err := store.SaveTag("tag-layout-2", layoutDir, manifest); err != nil {
+		t.Fatalf("SaveTag tag-layout-2: %v", err)
+	}
+
+	if _, _, err := store.RemoveTag("tag-layout-1"); err != nil {
+		t.Fatalf("RemoveTag tag-layout-1: %v", err)
+	}
+	if _, err := os.Stat(layoutDir); err != nil {
+		t.Fatalf("layout should remain while another tag still references it: %v", err)
+	}
+	if _, err := store.ResolveTag("tag-layout-2"); err != nil {
+		t.Fatalf("ResolveTag tag-layout-2 after removing first tag: %v", err)
+	}
+
+	if _, _, err := store.RemoveTag("tag-layout-2"); err != nil {
+		t.Fatalf("RemoveTag tag-layout-2: %v", err)
+	}
+	if _, err := os.Stat(layoutDir); !os.IsNotExist(err) {
+		t.Fatalf("layout should be removed after last tag is deleted, stat err=%v", err)
+	}
+}
+
 func containsString(values []string, target string) bool {
 	for _, v := range values {
 		if v == target {

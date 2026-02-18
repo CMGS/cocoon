@@ -7,6 +7,7 @@ require (
 	github.com/google/go-containerregistry v0.20.7
 	github.com/oklog/ulid/v2 v2.1.0
 	github.com/urfave/cli/v2 v2.27.5
+	golang.org/x/sys v0.41.0
 	golang.org/x/term v0.40.0
 )
 
@@ -25,5 +26,4 @@ require (
 	github.com/vbatts/tar-split v0.12.2 // indirect
 	github.com/xrash/smetrics v0.0.0-20240521201337-686a1a2994c1 // indirect
 	golang.org/x/sync v0.18.0 // indirect
-	golang.org/x/sys v0.41.0 // indirect
 )
