@@ -19,9 +19,15 @@ func TestProcessNameMatches(t *testing.T) {
 		},
 		{
 			name:     "linux comm truncated prefix",
-			actual:   "cloud-hypervis",
+			actual:   "cloud-hyperviso",
 			expected: "cloud-hypervisor",
 			want:     true,
+		},
+		{
+			name:     "short prefix should not match",
+			actual:   "cloud",
+			expected: "cloud-hypervisor",
+			want:     false,
 		},
 		{
 			name:     "contains should not match",
