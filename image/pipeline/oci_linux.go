@@ -116,8 +116,10 @@ func pullAndMountOCIPlatform(ctx context.Context, cfg *config.CocoonConfig, iden
 	// 2. Pull image with buildah, pinned to manifest digest when available
 	// to prevent TOCTOU races (tag updated between identify and pull).
 	pullRef := ref
+	fromRef := ref
 	if identity.ManifestDigest != "" {
 		pullRef = ref + "@sha256:" + identity.ManifestDigest
+		fromRef = pullRef
 	}
 	if _, err := runCmd(ctx, "buildah", "--root", root, "pull", pullRef); err != nil {
 		if identity.ManifestDigest != "" {
@@ -126,6 +128,8 @@ func pullAndMountOCIPlatform(ctx context.Context, cfg *config.CocoonConfig, iden
 			if _, fallbackErr := runCmd(ctx, "buildah", "--root", root, "pull", ref); fallbackErr != nil {
 				return classifyBuildahError(fmt.Errorf("buildah pull %s: %w", ref, fallbackErr))
 			}
+			// Keep pull/from consistent after fallback.
+			fromRef = ref
 		} else {
 			return classifyBuildahError(fmt.Errorf("buildah pull %s: %w", ref, err))
 		}
@@ -134,7 +138,7 @@ func pullAndMountOCIPlatform(ctx context.Context, cfg *config.CocoonConfig, iden
 	// 3. Create working container from the pulled image, pinned to the same
 	// digest used for pull to prevent TOCTOU if the tag is mutated between
 	// pull and from.
-	containerOut, err := runCmd(ctx, "buildah", "--root", root, "from", pullRef)
+	containerOut, err := runCmd(ctx, "buildah", "--root", root, "from", fromRef)
 	if err != nil {
 		return classifyBuildahError(fmt.Errorf("buildah from %s: %w", ref, err))
 	}

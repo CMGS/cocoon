@@ -191,8 +191,9 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 	// not delete this layout directory.
 	pw.Step("Saving tag...")
 	if err := store.SaveTag(tag, layoutDir, info.manifestDigest); err != nil {
-		// Clean up blob refs registered above to avoid orphaned refs.
-		if _, refErr := RemoveBlobRefs(cfg, info.manifestDigest); refErr != nil {
+		// Best-effort rollback: only clean refs when this manifest is no longer
+		// referenced by any tag.
+		if refErr := store.cleanupManifestRefsIfUnreferenced(info.manifestDigest); refErr != nil {
 			log.Printf("warning: failed to clean blob refs after SaveTag failure (GC will reclaim): %v", refErr)
 		}
 		return nil, fmt.Errorf("save tag: %w", err)
