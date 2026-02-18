@@ -65,3 +65,20 @@ func truncateID(id string, maxLen int) string {
 	}
 	return id[:maxLen] + "..."
 }
+
+// truncateDigest shortens a digest string for table display.
+// Input can be "sha256:abcdef..." or just "abcdef...".
+// Returns "sha256:abcdef01..." (first 12 hex chars after sha256:).
+func truncateDigest(digest string) string {
+	if len(digest) > 7 && digest[:7] == "sha256:" {
+		hex := digest[7:]
+		if len(hex) > 12 {
+			return "sha256:" + hex[:12]
+		}
+		return digest
+	}
+	if len(digest) > 12 {
+		return digest[:12]
+	}
+	return digest
+}

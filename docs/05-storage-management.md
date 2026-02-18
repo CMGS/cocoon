@@ -3,7 +3,7 @@
 **Version**: 1.0
 **Status**: Implemented
 **Phase**: Phase 1
-**Last Updated**: 2026-02-14
+**Last Updated**: 2026-02-18
 
 ## Overview
 
@@ -26,7 +26,9 @@ Lock file paths are additionally documented in [06-concurrency.md](./06-concurre
 │   ├── name-index.json                   # name → vm_id mapping (derived, can be rebuilt)
 │   ├── name-index.lock                   # flock for name-index updates
 │   ├── oci-build-tags.json               # OCI build tag → layout path mapping (cocoon image build)
-│   └── oci-build-tags.lock               # flock for OCI build tag index updates
+│   ├── oci-build-tags.lock               # flock for OCI build tag index updates
+│   ├── oci-layer-refs.json               # Blob digest → [manifest digests] reference tracking (GC)
+│   └── oci-layer-refs.lock               # flock for oci-layer-refs.json updates
 ├── cache/
 │   ├── images/                           # Base qcow2 images (content-addressed)
 │   │   ├── {checksum_16}_{arch}.qcow2    # e.g., a1b2c3d4e5f6a7b8_amd64.qcow2
@@ -36,8 +38,12 @@ Lock file paths are additionally documented in [06-concurrency.md](./06-concurre
 │   │   └── index.lock                    # flock for manifest index updates
 │   ├── locks/
 │   │   └── {checksum_16}_{arch}.lock     # Per-image conversion lock
-│   └── oci-builds/                       # OCI VM image build outputs (cocoon image build)
-│       └── {build-tag}/                  # OCI layout directory per built image
+│   └── oci/                              # OCI VM image build cache (shared blob store)
+│       ├── blobs/sha256/{hex}            # Shared content-addressed blob store
+│       └── layouts/{hash16}/             # Per-tag OCI layouts (blobs are hardlinks)
+│           ├── oci-layout
+│           ├── index.json
+│           └── blobs/sha256/{hex}        # Hardlinks to ../../blobs/sha256/{hex}
 ├── buildah/                              # Buildah storage root
 ├── vms/
 │   ├── {vm-id}/                          # e.g., vm-01HXYZ.../
@@ -90,16 +96,24 @@ Phase 2 Planned Paths:
 │   │           ├── overlay.qcow2               # Disk state (qcow2 path only)
 │   │           └── upper/                      # Preserved overlayfs upperdir (overlayfs path only)
 │   │
-│   ├── OCI VM Image Cache (docs/04.1-oci-vm-images.md)
-│   │   ├── cache/oci/
-│   │   │   └── {manifest-digest}/              # Per-image extracted artifacts
-│   │   │       ├── manifest.json               # OCI manifest
-│   │   │       ├── config.json                 # OCI VM config blob (kernel cmdline, etc.)
-│   │   │       ├── vmlinuz                     # Extracted kernel (payload.kernel)
-│   │   │       ├── initrd.img                  # Extracted initrd (payload.initramfs)
-│   │   │       ├── rootfs/                     # Rootfs layer (extracted dir tree, read-only)
-│   │   │       ├── custom-1/                   # First customization layer (read-only, if present)
-│   │   │       └── custom-N/                   # Nth customization layer (read-only, if present)
+│   ├── OCI VM Image Build Cache (docs/04.1-oci-vm-images.md) — Implemented
+│   │   └── cache/oci/
+│   │       ├── blobs/sha256/{hex}              # Shared content-addressed blob store
+│   │       └── layouts/{hash16}/               # Per-tag OCI layouts
+│   │           ├── oci-layout
+│   │           ├── index.json
+│   │           └── blobs/sha256/{hex}          # Hardlinks to shared blob store
+│   │
+│   ├── OCI VM Image Pull Cache (docs/04.1-oci-vm-images.md) — Phase 2 Planned
+│   │   └── cache/oci/
+│   │       └── {manifest-digest}/              # Per-image extracted artifacts
+│   │           ├── manifest.json               # OCI manifest
+│   │           ├── config.json                 # OCI VM config blob (kernel cmdline, etc.)
+│   │           ├── vmlinuz                     # Extracted kernel (payload.kernel)
+│   │           ├── initrd.img                  # Extracted initrd (payload.initramfs)
+│   │           ├── rootfs/                     # Rootfs layer (extracted dir tree, read-only)
+│   │           ├── custom-1/                   # First customization layer (read-only, if present)
+│   │           └── custom-N/                   # Nth customization layer (read-only, if present)
 │   │   └── db/
 │   │       ├── oci-references.json             # manifest-digest -> [vm-id] ref tracking
 │   │       └── oci-references.lock             # flock for oci-references.json updates
@@ -167,8 +181,11 @@ Path notes:
 - **Checkpoint directories** use their own ID namespace (`ckpt-{ulid}`), separate from
   VM IDs (`vm-{ulid}`). The `ch-snapshot/` subdirectory name matches the
   `destination_url` parameter in Cloud Hypervisor's `PUT /api/v1/vm.snapshot` API.
-- **OCI cache** directories are keyed by manifest digest (content-addressable) and
-  shared across all VMs created from the same OCI image.
+- **OCI build cache** uses a shared blob store (`cache/oci/blobs/sha256/`) with
+  hardlink-based deduplication across per-tag layouts (`cache/oci/layouts/`).
+  Blob reference counts are tracked in `db/oci-layer-refs.json`.
+- **OCI pull cache** (Phase 2 planned) directories are keyed by manifest digest
+  (content-addressable) and shared across all VMs created from the same OCI image.
 - **Network namespace** files under `/run/cocoon/` are lost on reboot; the Start()
   flow transparently recreates them when needed (see docs/16 Section 2.4).
 
@@ -363,13 +380,18 @@ func (c *CocoonConfig) VMDir() string              // RootDir/vms
 func (c *CocoonConfig) TempDir() string            // RootDir/temp
 func (c *CocoonConfig) TrashDir() string           // RootDir/trash
 func (c *CocoonConfig) DBDir() string              // RootDir/db
-func (c *CocoonConfig) OCIBuildCacheDir() string   // RootDir/cache/oci-builds
+func (c *CocoonConfig) OCIBuildCacheDir() string   // RootDir/cache/oci-builds (legacy, pre-migration)
+func (c *CocoonConfig) OCICacheDir() string        // RootDir/cache/oci
+func (c *CocoonConfig) OCIBlobDir() string         // RootDir/cache/oci/blobs/sha256
+func (c *CocoonConfig) OCILayoutDir() string       // RootDir/cache/oci/layouts
 func (c *CocoonConfig) OCIBuildTagIndex() string   // RootDir/db/oci-build-tags.json
 func (c *CocoonConfig) OCIBuildTagLock() string    // RootDir/db/oci-build-tags.lock
+func (c *CocoonConfig) OCILayerRefsFile() string   // RootDir/db/oci-layer-refs.json
+func (c *CocoonConfig) OCILayerRefsLock() string   // RootDir/db/oci-layer-refs.lock
 
 // EnsureDirs creates all required directories (db, cache/images,
-// cache/manifests, cache/locks, cache/oci-builds, vms, temp, trash,
-// firmware, buildah, RuntimeDir/vms, LogDir).
+// cache/manifests, cache/locks, cache/oci/blobs/sha256, cache/oci/layouts,
+// vms, temp, trash, firmware, buildah, RuntimeDir/vms, LogDir).
 func (c *CocoonConfig) EnsureDirs() error { ... }
 ```
 
@@ -389,12 +411,16 @@ func (c *CocoonConfig) CheckpointIndexLock() string                 // RootDir/c
 func (c *CocoonConfig) CheckpointSnapshotDir(ckptID string) string  // RootDir/checkpoints/{ckptID}/ch-snapshot
 
 // OCI VM Image Build (docs/04.1-oci-vm-images.md) — Implemented
-func (c *CocoonConfig) OCIBuildCacheDir() string                    // RootDir/cache/oci-builds
+func (c *CocoonConfig) OCIBuildCacheDir() string                    // RootDir/cache/oci-builds (legacy, pre-migration)
+func (c *CocoonConfig) OCICacheDir() string                         // RootDir/cache/oci
+func (c *CocoonConfig) OCIBlobDir() string                          // RootDir/cache/oci/blobs/sha256
+func (c *CocoonConfig) OCILayoutDir() string                        // RootDir/cache/oci/layouts
 func (c *CocoonConfig) OCIBuildTagIndex() string                    // RootDir/db/oci-build-tags.json
 func (c *CocoonConfig) OCIBuildTagLock() string                     // RootDir/db/oci-build-tags.lock
+func (c *CocoonConfig) OCILayerRefsFile() string                    // RootDir/db/oci-layer-refs.json
+func (c *CocoonConfig) OCILayerRefsLock() string                    // RootDir/db/oci-layer-refs.lock
 
 // Phase 2 — OCI VM Boot (docs/04.1-oci-vm-images.md) — Planned
-func (c *CocoonConfig) OCICacheDir() string                         // RootDir/cache/oci
 func (c *CocoonConfig) OCICacheEntry(digest string) string          // RootDir/cache/oci/{digest}
 func (c *CocoonConfig) VMUpperDir(vmID string) string               // RootDir/vms/{vmID}/upper
 func (c *CocoonConfig) VMWorkDir(vmID string) string                // RootDir/vms/{vmID}/work
@@ -412,8 +438,9 @@ func (c *CocoonConfig) VMVirtiofsPIDPath(vmID, tag string) string    // RuntimeD
 func (c *CocoonConfig) SharesDir() string                            // RootDir/shares
 ```
 
-`EnsureDirs()` will be extended to create `RootDir/checkpoints`,
-`RootDir/cache/oci`, and `RootDir/shares` at startup. `RootDir/dnsmasq`
+`EnsureDirs()` already creates `RootDir/cache/oci/blobs/sha256` and
+`RootDir/cache/oci/layouts` at startup. It will be extended to create
+`RootDir/checkpoints` and `RootDir/shares` at startup. `RootDir/dnsmasq`
 is created when the first networked VM is provisioned. Per-VM directories
 (`checkpoints/{ckptID}`, `vms/{vmID}/upper`, `vms/{vmID}/work`,
 `vms/{vmID}/merged`, network namespace bind mounts, virtiofsd sockets)
@@ -713,6 +740,16 @@ func (gc *fileGarbageCollector) CollectOrphanedOverlays() ([]string, error) {
     ...
 }
 
+// CollectOrphanedOCILayouts removes OCI layout directories in
+// cache/oci/layouts/ not referenced by any tag in oci-build-tags.json.
+// Lock: gc.lock (L1) only.
+func (gc *fileGarbageCollector) CollectOrphanedOCILayouts() ([]string, error) { ... }
+
+// CollectUnreferencedOCIBlobs removes blobs from cache/oci/blobs/sha256/
+// with zero manifest references in oci-layer-refs.json.
+// Lock: gc.lock (L1) -> oci-layer-refs.lock for atomic check-and-delete.
+func (gc *fileGarbageCollector) CollectUnreferencedOCIBlobs() ([]string, error) { ... }
+
 // CollectTempFiles removes files in temp/ older than maxAge.
 // Files are permanently deleted (not moved to trash).
 // Lock: gc.lock (L1) only.
@@ -733,6 +770,8 @@ func (gc *fileGarbageCollector) FullGC() error {
 
     gc.CollectUnreferencedImages(gracePeriod)
     gc.CollectOrphanedOverlays()
+    gc.CollectOrphanedOCILayouts()
+    gc.CollectUnreferencedOCIBlobs()
     gc.CollectTempFiles(tempMaxAge)
     gc.EmptyTrash(trashRetention)
     return nil
@@ -745,8 +784,11 @@ GC operations must coordinate with concurrent VM create/delete operations. See [
 
 - Global GC lock at `/var/lib/cocoon/db/gc.lock` (Level 1 in lock hierarchy)
 - Atomic check-and-delete using reference counter lock (Level 2)
+- `oci-layer-refs.lock` (Level 2, same level as `references.lock`) for OCI blob reference tracking
 - Lock ordering to prevent deadlocks with VM operations
 - Crash recovery and lock auto-release
+
+**OCI lock note**: `oci-layer-refs.lock` is a Level 2 lock, at the same level as `references.lock`. These two locks protect different files and are never held simultaneously. During `CollectUnreferencedOCIBlobs()`, the lock acquisition order is: `gc.lock` (L1) -> `oci-layer-refs.lock` (L2), which respects the hierarchy.
 
 **Key guarantee**: GC cannot delete a base image while any VM references it, even under high concurrency or process crashes.
 
@@ -782,7 +824,27 @@ Files in the `/var/lib/cocoon/temp/` directory older than a threshold (default: 
 
 **Locking**: GC lock (L1) only, as temp files are not referenced.
 
-#### 4. Trash Cleanup
+#### 4. Orphaned OCI Layouts
+
+OCI layout directories in `cache/oci/layouts/` that are not referenced by any tag in `oci-build-tags.json`. These indicate layouts from deleted or re-tagged builds.
+
+**Detection:** Directory exists in `cache/oci/layouts/` but its path does not appear in any tag entry in the tag index.
+
+**Action:** Remove the orphaned layout directory with `os.RemoveAll`. Blob hardlinks in the layout are deleted, but the underlying shared blobs in `cache/oci/blobs/sha256/` are preserved (their hardlink count decreases but they remain accessible via other layouts or the shared store itself).
+
+**Locking**: GC lock (L1) only. Implemented in `storage/local/gc_oci.go` as `CollectOrphanedOCILayouts()`.
+
+#### 5. Unreferenced OCI Blobs
+
+Blobs in `cache/oci/blobs/sha256/` with zero manifest references in `oci-layer-refs.json`. These are blobs from builds whose tags have been deleted and whose layouts have been GC'd.
+
+**Detection:** Blob file exists on disk and either has no entry in `oci-layer-refs.json` or has an entry with an empty `manifest_digests` array.
+
+**Action:** Remove the blob file from the shared store. Clean up the corresponding entry from `oci-layer-refs.json`.
+
+**Locking**: GC lock (L1) followed by `oci-layer-refs.lock` for atomic check-and-delete. The two locks are held simultaneously (L1 -> oci-layer-refs.lock), respecting the lock hierarchy. Implemented in `storage/local/gc_oci.go` as `CollectUnreferencedOCIBlobs()`.
+
+#### 6. Trash Cleanup
 
 Permanently delete soft-deleted items from trash after a recovery period (default: 7 days).
 

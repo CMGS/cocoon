@@ -30,7 +30,7 @@ func NewStore(cfg *config.CocoonConfig) *Store {
 func (s *Store) LayoutDir(tag string) string {
 	h := sha256.Sum256([]byte(tag))
 	prefix := fmt.Sprintf("%x", h[:8]) // 16 hex chars
-	return filepath.Join(s.cfg.OCIBuildCacheDir(), prefix)
+	return filepath.Join(s.cfg.OCILayoutDir(), prefix)
 }
 
 // SaveTag records a tag-to-layout mapping in the tag index.
@@ -86,6 +86,40 @@ func (s *Store) ListTags() ([]TagEntry, error) {
 		return result[i].CreatedAt.After(result[j].CreatedAt)
 	})
 	return result, nil
+}
+
+// RemoveTag removes a tag from the index, its layout directory, and
+// cleans up blob references. Returns the manifest digest and any blob
+// digests that are now unreferenced (zero refs remaining).
+func (s *Store) RemoveTag(tag string) (string, []string, error) {
+	var manifestDigest string
+	var layoutPath string
+	err := s.withLock(func(idx *TagIndex) error {
+		entry, ok := idx.Tags[tag]
+		if !ok {
+			return fmt.Errorf("tag %q not found", tag)
+		}
+		manifestDigest = entry.ManifestDigest
+		layoutPath = entry.LayoutPath
+		delete(idx.Tags, tag)
+		return s.save(idx)
+	})
+	if err != nil {
+		return "", nil, err
+	}
+
+	// Remove layout directory (best-effort, outside lock).
+	if layoutPath != "" {
+		_ = os.RemoveAll(layoutPath)
+	}
+
+	// Clean up blob references for this manifest.
+	var zeroRefBlobs []string
+	if manifestDigest != "" {
+		zeroRefBlobs, _ = RemoveBlobRefs(s.cfg, manifestDigest)
+	}
+
+	return manifestDigest, zeroRefBlobs, nil
 }
 
 func (s *Store) load() (*TagIndex, error) {

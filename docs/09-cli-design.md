@@ -3,7 +3,7 @@
 **Version**: 1.0
 **Status**: Implemented
 **Phase**: Phase 1
-**Last Updated**: 2026-02-14
+**Last Updated**: 2026-02-18
 
 ## ⚠️ Supported Image Contract
 
@@ -122,6 +122,9 @@ cocoon/
 │   ├── login.go              # Registry login, credential storage (~/.cocoon/config.json)
 │   ├── layout.go             # InspectLayout: parse OCI layout metadata
 │   ├── store.go              # Tag index: local build tag → OCI layout mapping
+│   ├── blobstore.go          # Shared content-addressed blob store (cache/oci/blobs/)
+│   ├── migrate.go            # Migration from cache/oci-builds/ to cache/oci/
+│   ├── progress.go           # Docker-like step progress output to stderr
 │   └── builder.go            # image.Builder adapter (delegates to package functions)
 ├── storage/
 │   ├── storage.go            # ReferenceCounter, COWManager, GarbageCollector interfaces
@@ -129,7 +132,8 @@ cocoon/
 │   ├── local/
 │   │   ├── refcount.go       # ReferenceCounter impl (references.json + flock)
 │   │   ├── cow.go            # COWManager impl (qemu-img create/resize)
-│   │   └── gc.go             # GarbageCollector impl (sweep + trash)
+│   │   ├── gc.go             # GarbageCollector impl (sweep + trash)
+│   │   └── gc_oci.go         # OCI GC: orphaned layouts + unreferenced blobs
 │   └── mocks/
 │       └── mock.go
 ├── vm/
@@ -291,13 +295,15 @@ type COWManager interface {
 type GarbageCollector interface {
     CollectUnreferencedImages(gracePeriod time.Duration) ([]string, error)
     CollectOrphanedOverlays() ([]string, error)
+    CollectOrphanedOCILayouts() ([]string, error)
+    CollectUnreferencedOCIBlobs() ([]string, error)
     CollectTempFiles(maxAge time.Duration) ([]string, error)
     EmptyTrash(maxAge time.Duration) error
     FullGC() error
 }
 ```
 
-Concrete implementations live in `storage/local/` (refcount.go, cow.go, gc.go).
+Concrete implementations live in `storage/local/` (refcount.go, cow.go, gc.go, gc_oci.go).
 
 ### 2.4 VM Manager Interface
 
@@ -1299,7 +1305,26 @@ func imagesCommand() *cli.Command {
   2. cached image via `base_key`/manifest alias
   3. fallback `Prepare` only when not found locally
   4. if local cache resolution fails due ambiguity/corruption, return error (do not auto-pull)
-- `image list` table output includes a `SOURCE REF` summary column; JSON output includes `source_refs`.
+- `image list` shows a **unified table** combining both cloud images and OCI builds. The table columns are:
+
+  | Column | Description |
+  |--------|-------------|
+  | TYPE | `cloudimg` for cloud images, `oci` for OCI VM builds |
+  | REF | `base_key` for cloud images, tag name for OCI |
+  | DIGEST | Truncated `sha256:` manifest digest (first 12 hex chars) for OCI, `-` for cloud images |
+  | SIZE | Human-readable total size |
+  | SOURCE | Source reference string for cloud images, `local` for OCI builds |
+  | CREATED | ISO 8601 timestamp |
+
+  **Example output**:
+
+  ```
+  TYPE      REF                              DIGEST              SIZE      SOURCE     CREATED
+  cloudimg  a1b2c3d4e5f6a7b8_amd64          -                   2.1GB     https://   2026-02-15T10:00:00Z
+  oci       myregistry.io/ubuntu-vm:22.04   sha256:ef0123456789  1.8GB     local      2026-02-16T14:30:00Z
+  ```
+
+  JSON output includes `source_refs`.
 
 **Example Usage**:
 
@@ -1318,6 +1343,14 @@ cocoon image build /path/to/ubuntu-22.04-cloudimg.qcow2 --tag myorg/ubuntu-vm:22
 
 # Build using a Cocoonfile (see cocoonfile.example in project root)
 cocoon image build --file cocoonfile.example --tag myorg/ubuntu-vm:22.04
+
+# Build output includes progress to stderr:
+#   Step 1/8 : Detecting kernel...
+#    ---> 5.15.0-100-generic
+#   Step 2/8 : Extracting kernel and initrd...
+#   ...
+#   Step 8/8 : Saving tag...
+#    ---> myorg/ubuntu-vm:22.04
 
 # Log in to a container registry
 cocoon image login ghcr.io -u myuser
@@ -1407,6 +1440,15 @@ func gcCommand() *cli.Command {
 }
 ```
 
+**GC Phases**: The garbage collector runs the following phases in order:
+
+1. **Unreferenced base images**: Collect cloud image qcow2 files with zero VM references (subject to grace period).
+2. **Orphaned overlays**: Collect overlay.qcow2 files with missing config.json.
+3. **Orphaned OCI layouts**: Collect layout directories in `cache/oci/layouts/` not referenced by any tag in `oci-build-tags.json`.
+4. **Unreferenced OCI blobs**: Collect blobs from `cache/oci/blobs/sha256/` with zero manifest references in `oci-layer-refs.json`.
+5. **Temp files**: Collect files in `temp/` older than 1 hour.
+6. **Trash cleanup**: Permanently delete items in `trash/` older than the retention period.
+
 **Example Usage**:
 
 ```bash
@@ -1421,6 +1463,39 @@ cocoon gc --grace-period 12
 
 # Run GC aggressively (collect unreferenced images immediately)
 cocoon gc --aggressive
+```
+
+**Example Output**:
+
+```
+collected image: a1b2c3d4e5f6a7b8_amd64
+collected orphaned OCI layout: 7f3a1b2c
+collected unreferenced OCI blob: abc123def456...
+
+Collected 3 item(s): 1 images, 0 overlays, 1 OCI layouts, 1 OCI blobs, 0 temp files.
+```
+
+**Dry-run output** reports candidates for each phase without deleting:
+
+```
+Dry run (grace period: 24h0m0s)
+
+Unreferenced images (candidates for collection):
+  a1b2c3d4e5f6a7b8_amd64
+
+No orphaned overlays found.
+
+Orphaned OCI layouts (candidates for collection):
+  7f3a1b2c
+
+Unreferenced OCI blobs (candidates for collection):
+  abc123def456...
+
+No temp files found for collection.
+
+No trash items found for permanent deletion.
+
+Use 'cocoon gc' without --dry-run to perform collection.
 ```
 
 ### 4.15 cocoon doctor (System Health Check)

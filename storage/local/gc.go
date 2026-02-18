@@ -288,6 +288,14 @@ func (gc *fileGarbageCollector) FullGC() error {
 		return fmt.Errorf("collect orphaned overlays: %w", err)
 	}
 
+	if _, err := gc.CollectOrphanedOCILayouts(); err != nil {
+		return fmt.Errorf("collect orphaned OCI layouts: %w", err)
+	}
+
+	if _, err := gc.CollectUnreferencedOCIBlobs(); err != nil {
+		return fmt.Errorf("collect unreferenced OCI blobs: %w", err)
+	}
+
 	if _, err := gc.CollectTempFiles(tempMaxAge); err != nil {
 		return fmt.Errorf("collect temp files: %w", err)
 	}

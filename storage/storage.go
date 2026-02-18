@@ -85,6 +85,14 @@ type GarbageCollector interface {
 	// Returns the VM IDs that were collected.
 	CollectOrphanedOverlays() ([]string, error)
 
+	// CollectOrphanedOCILayouts removes OCI layout directories not referenced
+	// by the tag index. Returns collected layout directory names.
+	CollectOrphanedOCILayouts() ([]string, error)
+
+	// CollectUnreferencedOCIBlobs removes blobs from the shared blob store
+	// that have zero manifest references. Returns collected blob digests.
+	CollectUnreferencedOCIBlobs() ([]string, error)
+
 	// CollectTempFiles removes files in temp/ older than maxAge.
 	// Returns the filenames that were collected.
 	CollectTempFiles(maxAge time.Duration) ([]string, error)
@@ -93,6 +101,7 @@ type GarbageCollector interface {
 	EmptyTrash(maxAge time.Duration) error
 
 	// FullGC runs a complete garbage collection cycle:
-	// CollectUnreferencedImages + CollectOrphanedOverlays + CollectTempFiles + EmptyTrash.
+	// CollectUnreferencedImages + CollectOrphanedOverlays + CollectOrphanedOCILayouts +
+	// CollectUnreferencedOCIBlobs + CollectTempFiles + EmptyTrash.
 	FullGC() error
 }

@@ -42,9 +42,9 @@ func TestStoreLayoutDir(t *testing.T) {
 		t.Errorf("different tags produced same dir: %s", dir1)
 	}
 
-	// Should be under OCIBuildCacheDir.
-	if !strings.HasPrefix(dir1, cfg.OCIBuildCacheDir()) {
-		t.Errorf("LayoutDir not under OCIBuildCacheDir: %s", dir1)
+	// Should be under OCILayoutDir.
+	if !strings.HasPrefix(dir1, cfg.OCILayoutDir()) {
+		t.Errorf("LayoutDir not under OCILayoutDir: %s", dir1)
 	}
 }
 

@@ -19,6 +19,13 @@ import (
 	"github.com/CMGS/cocoon/config"
 )
 
+// assemblyInfo holds the results of assembleOCILayout for blob ref tracking.
+type assemblyInfo struct {
+	manifestDigest string
+	blobDigests    []string
+	blobSizes      []int64
+}
+
 // Build extracts kernel, initrd, and rootfs from a cloud image, packages them
 // as deterministic tar layers, and stores the result as an OCI image layout.
 //
@@ -47,6 +54,15 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 		}
 	}
 
+	// Calculate total build steps.
+	// Base steps: detect kernel, extract kernel+initrd, build kernel layer,
+	// read PARTUUID, extract rootfs, build rootfs layer, assemble OCI layout, save tag.
+	totalSteps := 8
+	if cf != nil && len(cf.Steps) > 0 {
+		totalSteps += len(cf.Steps)
+	}
+	pw := NewProgressWriter(os.Stderr, totalSteps)
+
 	tmpDir, err := os.MkdirTemp(cfg.TempDir(), "ocivm-build-*")
 	if err != nil {
 		return nil, fmt.Errorf("create temp dir: %w", err)
@@ -64,6 +80,7 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 
 		// Apply each RUN/COPY step via virt-customize.
 		for i, step := range cf.Steps {
+			pw.Step(fmt.Sprintf("%s %s", strings.ToUpper(step.Type), step.Args))
 			if err = applyStep(ctx, workImage, step); err != nil {
 				return nil, fmt.Errorf("Cocoonfile step %d (%s): %w", i+1, step.Type, err)
 			}
@@ -71,6 +88,7 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 	}
 
 	// Step 1-3: List /boot and detect kernel.
+	pw.Step("Detecting kernel...")
 	bootFiles, err := listBootFiles(ctx, workImage)
 	if err != nil {
 		return nil, fmt.Errorf("list boot files: %w", err)
@@ -80,8 +98,10 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 	if err != nil {
 		return nil, fmt.Errorf("detect kernel: %w", err)
 	}
+	pw.Detail(ki.Version)
 
 	// Step 4: Extract kernel and initrd.
+	pw.Step("Extracting kernel and initrd...")
 	kernelLocal := filepath.Join(tmpDir, "vmlinuz")
 	initrdLocal := filepath.Join(tmpDir, "initrd.img")
 
@@ -93,13 +113,16 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 	}
 
 	// Build kernel layer tar.
+	pw.Step("Building kernel layer...")
 	kernelTarPath := filepath.Join(tmpDir, "kernel-layer.tar")
 	kernelDigest, kernelSize, err := buildKernelLayerTar(kernelLocal, initrdLocal, kernelTarPath)
 	if err != nil {
 		return nil, fmt.Errorf("build kernel layer: %w", err)
 	}
+	pw.Detail("sha256:" + kernelDigest[:12])
 
 	// Step 5: Read PARTUUID.
+	pw.Step("Reading PARTUUID...")
 	partUUID, err := readPartUUID(ctx, workImage)
 	if err != nil {
 		return nil, fmt.Errorf("read PARTUUID: %w", err)
@@ -107,8 +130,10 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 	if !isValidUUID(partUUID) {
 		return nil, fmt.Errorf("invalid PARTUUID format %q (expected UUID)", partUUID)
 	}
+	pw.Detail(partUUID)
 
 	// Step 6: Extract rootfs as tar, rewrite deterministically.
+	pw.Step("Extracting rootfs...")
 	rawTarPath := filepath.Join(tmpDir, "rootfs-raw.tar")
 	if err = extractRootfsTar(ctx, workImage, rawTarPath); err != nil {
 		return nil, fmt.Errorf("extract rootfs: %w", err)
@@ -119,11 +144,13 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 		strings.TrimPrefix(ki.KernelPath, "/"),
 		strings.TrimPrefix(ki.InitrdPath, "/"),
 	}
+	pw.Step("Building rootfs layer...")
 	rootfsTarPath := filepath.Join(tmpDir, "rootfs-layer.tar")
 	rootfsDigest, rootfsSize, err := rewriteDeterministicTar(rawTarPath, rootfsTarPath, excludePaths)
 	if err != nil {
 		return nil, fmt.Errorf("rewrite rootfs tar: %w", err)
 	}
+	pw.Detail("sha256:" + rootfsDigest[:12])
 
 	// Step 7-8: Build config blob and assemble OCI layout.
 	arch := runtime.GOARCH
@@ -150,24 +177,34 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 		vmConfig.Labels = cf.Labels
 	}
 
+	blobStore := NewBlobStore(cfg)
 	store := NewStore(cfg)
 	layoutDir := store.LayoutDir(tag)
 
-	manifestDigest, err := assembleOCILayout(layoutDir, vmConfig, kernelTarPath, kernelDigest, kernelSize, rootfsTarPath, rootfsDigest, rootfsSize)
+	pw.Step("Assembling OCI layout...")
+	info, err := assembleOCILayout(layoutDir, vmConfig, kernelTarPath, kernelDigest, kernelSize, rootfsTarPath, rootfsDigest, rootfsSize, blobStore)
 	if err != nil {
 		os.RemoveAll(layoutDir) //nolint:errcheck,gosec // best-effort cleanup of partial layout
 		return nil, fmt.Errorf("assemble OCI layout: %w", err)
 	}
+	pw.Detail("sha256:" + info.manifestDigest[:12])
 
 	// Save tag in local index.
-	if err := store.SaveTag(tag, layoutDir, manifestDigest); err != nil {
+	pw.Step("Saving tag...")
+	if err := store.SaveTag(tag, layoutDir, info.manifestDigest); err != nil {
 		return nil, fmt.Errorf("save tag: %w", err)
+	}
+	pw.Detail(tag)
+
+	// Register blob references for GC tracking.
+	if err := AddBlobRefs(cfg, info.manifestDigest, info.blobDigests, info.blobSizes); err != nil {
+		return nil, fmt.Errorf("register blob refs: %w", err)
 	}
 
 	return &BuildResult{
 		Tag:            tag,
 		KernelVersion:  ki.Version,
-		ManifestDigest: manifestDigest,
+		ManifestDigest: info.manifestDigest,
 		LayoutPath:     layoutDir,
 	}, nil
 }
@@ -332,35 +369,33 @@ func extractRootfsTar(ctx context.Context, imagePath, tarPath string) error {
 }
 
 // assembleOCILayout writes a standard OCI image layout to layoutDir.
-// Returns the manifest digest (sha256 hex).
+// Blobs are stored in the shared BlobStore and hardlinked into the layout.
+// Returns an assemblyInfo with the manifest digest and all blob digests/sizes
+// for GC reference tracking.
 func assembleOCILayout(
 	layoutDir string,
 	vmConfig *VMImageConfig,
 	kernelTarPath, kernelDigest string, kernelSize int64,
 	rootfsTarPath, rootfsDigest string, rootfsSize int64,
-) (string, error) {
-	blobsDir := filepath.Join(layoutDir, "blobs", "sha256")
-	if err := os.MkdirAll(blobsDir, 0o755); err != nil { //nolint:gosec // G301
-		return "", fmt.Errorf("create blobs dir: %w", err)
-	}
-
-	// 1. Write config blob.
+	blobStore *BlobStore,
+) (*assemblyInfo, error) {
+	// 1. Build and store config blob in shared store.
 	configJSON, err := json.Marshal(vmConfig)
 	if err != nil {
-		return "", fmt.Errorf("marshal config: %w", err)
+		return nil, fmt.Errorf("marshal config: %w", err)
 	}
 	configDigest := sha256Hex(configJSON)
 	configSize := int64(len(configJSON))
-	if err = os.WriteFile(filepath.Join(blobsDir, configDigest), configJSON, 0o644); err != nil { //nolint:gosec // G306
-		return "", fmt.Errorf("write config blob: %w", err)
+	if _, err = blobStore.StoreBlobFromBytes(configJSON, configDigest); err != nil {
+		return nil, fmt.Errorf("store config blob: %w", err)
 	}
 
-	// 2. Copy layer tars into blobs dir.
-	if err = copyFile(kernelTarPath, filepath.Join(blobsDir, kernelDigest)); err != nil {
-		return "", fmt.Errorf("copy kernel layer: %w", err)
+	// 2. Store layer tars in shared store.
+	if _, err = blobStore.StoreBlob(kernelTarPath, kernelDigest); err != nil {
+		return nil, fmt.Errorf("store kernel blob: %w", err)
 	}
-	if err = copyFile(rootfsTarPath, filepath.Join(blobsDir, rootfsDigest)); err != nil {
-		return "", fmt.Errorf("copy rootfs layer: %w", err)
+	if _, err = blobStore.StoreBlob(rootfsTarPath, rootfsDigest); err != nil {
+		return nil, fmt.Errorf("store rootfs blob: %w", err)
 	}
 
 	// 3. Build manifest.
@@ -388,21 +423,28 @@ func assembleOCILayout(
 	}
 	manifestJSON, err := json.Marshal(manifest)
 	if err != nil {
-		return "", fmt.Errorf("marshal manifest: %w", err)
+		return nil, fmt.Errorf("marshal manifest: %w", err)
 	}
 	manifestDigest := sha256Hex(manifestJSON)
 	manifestSize := int64(len(manifestJSON))
-	if err = os.WriteFile(filepath.Join(blobsDir, manifestDigest), manifestJSON, 0o644); err != nil { //nolint:gosec // G306
-		return "", fmt.Errorf("write manifest blob: %w", err)
+	if _, err = blobStore.StoreBlobFromBytes(manifestJSON, manifestDigest); err != nil {
+		return nil, fmt.Errorf("store manifest blob: %w", err)
 	}
 
-	// 4. Write oci-layout file.
+	// 4. Create layout directory and hardlink all blobs from shared store.
+	for _, digest := range []string{configDigest, kernelDigest, rootfsDigest, manifestDigest} {
+		if err = blobStore.LinkBlobToLayout(digest, layoutDir); err != nil {
+			return nil, fmt.Errorf("link blob %s to layout: %w", digest, err)
+		}
+	}
+
+	// 5. Write oci-layout file.
 	ociLayout := `{"imageLayoutVersion":"1.0.0"}`
 	if err = os.WriteFile(filepath.Join(layoutDir, "oci-layout"), []byte(ociLayout+"\n"), 0o644); err != nil { //nolint:gosec // G306
-		return "", fmt.Errorf("write oci-layout: %w", err)
+		return nil, fmt.Errorf("write oci-layout: %w", err)
 	}
 
-	// 5. Write index.json.
+	// 6. Write index.json.
 	index := ociIndex{
 		SchemaVersion: 2,
 		MediaType:     "application/vnd.oci.image.index.v1+json",
@@ -416,13 +458,17 @@ func assembleOCILayout(
 	}
 	indexJSON, err := json.MarshalIndent(index, "", "  ")
 	if err != nil {
-		return "", fmt.Errorf("marshal index: %w", err)
+		return nil, fmt.Errorf("marshal index: %w", err)
 	}
 	if err = os.WriteFile(filepath.Join(layoutDir, "index.json"), append(indexJSON, '\n'), 0o644); err != nil { //nolint:gosec // G306
-		return "", fmt.Errorf("write index.json: %w", err)
+		return nil, fmt.Errorf("write index.json: %w", err)
 	}
 
-	return manifestDigest, nil
+	return &assemblyInfo{
+		manifestDigest: manifestDigest,
+		blobDigests:    []string{configDigest, kernelDigest, rootfsDigest, manifestDigest},
+		blobSizes:      []int64{configSize, kernelSize, rootfsSize, manifestSize},
+	}, nil
 }
 
 // validateSafePath checks that a path contains only safe characters for embedding

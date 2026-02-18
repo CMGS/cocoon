@@ -223,6 +223,8 @@ func TestEnsureDirs(t *testing.T) {
 		cfg.ImageCacheDir(),
 		cfg.ManifestCacheDir(),
 		cfg.ConversionLockDir(),
+		cfg.OCIBlobDir(),
+		cfg.OCILayoutDir(),
 		cfg.VMDir(),
 		cfg.TempDir(),
 		cfg.TrashDir(),
