@@ -4,6 +4,8 @@ package pipeline
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
@@ -20,7 +22,9 @@ func TestPullAndMountOCIPlatformFallbackUsesTagForFrom(t *testing.T) {
 	}
 
 	const ref = "example.com/repo:tag"
-	const manifest = "deadbeef"
+	rawManifest := `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"digest":"sha256:1111111111111111111111111111111111111111111111111111111111111111"},"layers":[{"digest":"sha256:2222222222222222222222222222222222222222222222222222222222222222"}]}`
+	manifestHash := sha256.Sum256([]byte(rawManifest))
+	manifest := hex.EncodeToString(manifestHash[:])
 	fakeBuildah := `#!/usr/bin/env bash
 set -euo pipefail
 if [ "$1" != "--root" ]; then
@@ -62,6 +66,18 @@ exit 1
 	fakeBuildahPath := filepath.Join(fakeBinDir, "buildah")
 	if err := os.WriteFile(fakeBuildahPath, []byte(fakeBuildah), 0o755); err != nil {
 		t.Fatalf("WriteFile fake buildah: %v", err)
+	}
+	fakeSkopeo := `#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" != "inspect" ] || [ "${2:-}" != "--raw" ]; then
+  echo "unexpected args: $*" >&2
+  exit 1
+fi
+echo '` + rawManifest + `'
+`
+	fakeSkopeoPath := filepath.Join(fakeBinDir, "skopeo")
+	if err := os.WriteFile(fakeSkopeoPath, []byte(fakeSkopeo), 0o755); err != nil {
+		t.Fatalf("WriteFile fake skopeo: %v", err)
 	}
 
 	t.Setenv("PATH", fakeBinDir+":"+os.Getenv("PATH"))
