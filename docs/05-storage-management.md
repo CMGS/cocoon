@@ -26,6 +26,7 @@ Lock file paths are additionally documented in [06-concurrency.md](./06-concurre
 │   ├── name-index.json                   # name → vm_id mapping (derived, can be rebuilt)
 │   ├── name-index.lock                   # flock for name-index updates
 │   ├── oci-build-tags.json               # OCI build tag → layout path mapping (cocoon image build)
+│   ├── oci-build-txn.lock                # flock for OCI cross-index txn serialization
 │   ├── oci-build-tags.lock               # flock for OCI build tag index updates
 │   ├── oci-layer-refs.json               # Blob digest → [manifest digests] reference tracking (GC)
 │   └── oci-layer-refs.lock               # flock for oci-layer-refs.json updates
@@ -40,7 +41,7 @@ Lock file paths are additionally documented in [06-concurrency.md](./06-concurre
 │   │   └── {checksum_16}_{arch}.lock     # Per-image conversion lock
 │   └── oci/                              # OCI VM image build cache (shared blob store)
 │       ├── blobs/sha256/{hex}            # Shared content-addressed blob store
-│       └── layouts/{hash16}/             # Per-tag OCI layouts (blobs are hardlinks)
+│       └── layouts/{hash16}/             # OCI layouts (keyed by tag+manifest, blobs are hardlinks)
 │           ├── oci-layout
 │           ├── index.json
 │           └── blobs/sha256/{hex}        # Hardlinks to ../../blobs/sha256/{hex}
@@ -99,7 +100,7 @@ Phase 2 Planned Paths:
 │   ├── OCI VM Image Build Cache (docs/04.1-oci-vm-images.md) — Implemented
 │   │   └── cache/oci/
 │   │       ├── blobs/sha256/{hex}              # Shared content-addressed blob store
-│   │       └── layouts/{hash16}/               # Per-tag OCI layouts
+│   │       └── layouts/{hash16}/               # OCI layouts (keyed by tag+manifest)
 │   │           ├── oci-layout
 │   │           ├── index.json
 │   │           └── blobs/sha256/{hex}          # Hardlinks to shared blob store
@@ -182,7 +183,7 @@ Path notes:
   VM IDs (`vm-{ulid}`). The `ch-snapshot/` subdirectory name matches the
   `destination_url` parameter in Cloud Hypervisor's `PUT /api/v1/vm.snapshot` API.
 - **OCI build cache** uses a shared blob store (`cache/oci/blobs/sha256/`) with
-  hardlink-based deduplication across per-tag layouts (`cache/oci/layouts/`).
+  hardlink-based deduplication across OCI layouts (`cache/oci/layouts/`).
   Blob reference counts are tracked in `db/oci-layer-refs.json`.
 - **OCI pull cache** (Phase 2 planned) directories are keyed by manifest digest
   (content-addressable) and shared across all VMs created from the same OCI image.
