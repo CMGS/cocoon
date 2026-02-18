@@ -1,9 +1,7 @@
 package engine
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -182,11 +180,6 @@ func TestResolveRuntimeImageRef_LocalCacheAlias(t *testing.T) {
 
 func TestResolveRuntimeImageRef_URLAndRegistry(t *testing.T) {
 	cfg := testResolverConfig(t)
-	prev := runSkopeoInspectRaw
-	runSkopeoInspectRaw = func(_ context.Context, _ string, _ string) ([]byte, error) {
-		return []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json"},"layers":[]}`), nil
-	}
-	t.Cleanup(func() { runSkopeoInspectRaw = prev })
 
 	urlResolved, err := resolveRuntimeImageRef(t.Context(), cfg, "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img")
 	if err != nil {
@@ -210,13 +203,8 @@ func TestResolveRuntimeImageRef_URLAndRegistry(t *testing.T) {
 
 func TestResolveRuntimeImageRef_RegistryProbeFailureReturnsError(t *testing.T) {
 	cfg := testResolverConfig(t)
-	prev := runSkopeoInspectRaw
-	runSkopeoInspectRaw = func(_ context.Context, _ string, _ string) ([]byte, error) {
-		return nil, errors.New("network timeout")
-	}
-	t.Cleanup(func() { runSkopeoInspectRaw = prev })
 
-	_, err := resolveRuntimeImageRef(t.Context(), cfg, "docker.io/library/ubuntu:24.04")
+	_, err := resolveRuntimeImageRef(t.Context(), cfg, "registry.example.com/ns/probe-error:latest")
 	if err == nil {
 		t.Fatal("expected registry probe error, got nil")
 	}
@@ -227,11 +215,6 @@ func TestResolveRuntimeImageRef_RegistryProbeFailureReturnsError(t *testing.T) {
 
 func TestResolveRuntimeImageRef_RegistryCocoonVMMediaTypes(t *testing.T) {
 	cfg := testResolverConfig(t)
-	prev := runSkopeoInspectRaw
-	runSkopeoInspectRaw = func(_ context.Context, _ string, _ string) ([]byte, error) {
-		return []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","artifactType":"application/vnd.cocoon.vm.image.v1","config":{"mediaType":"application/vnd.cocoon.vm.config.v1+json"},"layers":[{"mediaType":"application/vnd.cocoon.vm.kernel.v1.tar"},{"mediaType":"application/vnd.cocoon.vm.rootfs.v1.tar"}]}`), nil
-	}
-	t.Cleanup(func() { runSkopeoInspectRaw = prev })
 
 	resolved, err := resolveRuntimeImageRef(t.Context(), cfg, "registry.example.com/ns/cocoon-vm:latest")
 	if err != nil {
