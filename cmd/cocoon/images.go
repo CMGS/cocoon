@@ -328,7 +328,10 @@ func imageInspectAction(c *cli.Context) error {
 	// Fall back to cloud image cache.
 	baseKey, err := resolveBaseKeyFromCache(c, app, ref)
 	if err != nil {
-		return fmt.Errorf("image not found: %q is not a local OCI build tag or cached cloud image", ref)
+		if errors.Is(err, errImageNotFoundInLocalCache) {
+			return fmt.Errorf("image not found: %q is not a local OCI build tag or cached cloud image", ref)
+		}
+		return err
 	}
 
 	return inspectCloudImage(c, app, baseKey)
@@ -830,14 +833,22 @@ func resolveBuildImagePath(c *cli.Context, app *appContext, cocoonfilePath strin
 		if c.NArg() < 1 {
 			return "", "", nil, fmt.Errorf("CLOUD_IMAGE argument required (or use --file Cocoonfile)\n\nUsage: cocoon image build [CLOUD_IMAGE] [--tag REF] [--file Cocoonfile]")
 		}
-		source := c.Args().Get(0)
-		return source, source, nil, nil
+		source := strings.TrimSpace(c.Args().Get(0))
+		imagePath, cleanup, err := resolveBuildPositionalSource(c, app, source)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("resolve build source %q: %w", source, err)
+		}
+		return imagePath, source, cleanup, nil
 	}
 
 	// Positional arg overrides FROM if provided.
 	if c.NArg() > 0 {
-		source := c.Args().Get(0)
-		return source, source, nil, nil
+		source := strings.TrimSpace(c.Args().Get(0))
+		imagePath, cleanup, err := resolveBuildPositionalSource(c, app, source)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("resolve build source %q: %w", source, err)
+		}
+		return imagePath, source, cleanup, nil
 	}
 
 	cf, err := oci.ParseCocoonfile(cocoonfilePath)
@@ -850,6 +861,20 @@ func resolveBuildImagePath(c *cli.Context, app *appContext, cocoonfilePath strin
 		return "", "", nil, err
 	}
 	return imagePath, strings.TrimSpace(cf.From), cleanup, nil
+}
+
+func resolveBuildPositionalSource(c *cli.Context, app *appContext, source string) (string, func(), error) {
+	if source == "" {
+		return "", nil, fmt.Errorf("build source cannot be empty")
+	}
+	// Reuse Cocoonfile FROM resolution behavior with cwd as the base directory:
+	// local path -> local OCI tag -> pullable ref/URL.
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", nil, fmt.Errorf("get working directory: %w", err)
+	}
+	pseudoCocoonfilePath := filepath.Join(cwd, "Cocoonfile")
+	return resolveCocoonfileFrom(c, app, pseudoCocoonfilePath, source)
 }
 
 func resolveCocoonfileFrom(c *cli.Context, app *appContext, cocoonfilePath, from string) (string, func(), error) {
