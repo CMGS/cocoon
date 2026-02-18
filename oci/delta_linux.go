@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -407,8 +408,12 @@ func snapshotRootfs(rootDir string) (map[string]fileEntry, error) {
 			entry.Size = 0
 		case mode.IsRegular():
 			entry.Kind = deltaEntryFile
+		case shouldSkipSnapshotMode(mode):
+			log.Printf("warning: skipping special file in rootfs snapshot: %s (%s)", rel, mode.String())
+			return nil
 		default:
-			return fmt.Errorf("unsupported file type in rootfs snapshot: %s (%s)", rel, mode.String())
+			log.Printf("warning: skipping unsupported file type in rootfs snapshot: %s (%s)", rel, mode.String())
+			return nil
 		}
 		entries[rel] = entry
 		return nil
@@ -431,4 +436,20 @@ func modeToUnixPerm(mode fs.FileMode) int64 {
 		unixMode |= 0o1000
 	}
 	return unixMode
+}
+
+func shouldSkipSnapshotMode(mode fs.FileMode) bool {
+	if mode&os.ModeDevice != 0 {
+		return true
+	}
+	if mode&os.ModeNamedPipe != 0 {
+		return true
+	}
+	if mode&os.ModeSocket != 0 {
+		return true
+	}
+	if mode&os.ModeIrregular != 0 {
+		return true
+	}
+	return false
 }
