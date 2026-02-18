@@ -621,7 +621,7 @@ func isStuckInState(updatedAt string, timeout time.Duration) bool {
 // Only works on Linux where /proc is available; on other platforms it logs a
 // warning and returns nil.
 func detectOrphanedProcesses(knownPIDs map[int]string, chBinary string) []vm.Inconsistency {
-	hvName := (&types.VMMetadataFile{}).HypervisorProcessName(chBinary)
+	hvName := (&types.VMMetadataFile{}).HypervisorProcessName(chBinary) // nil metadata → basename(chBinary) → default
 	var orphans []vm.Inconsistency
 	entries, err := os.ReadDir("/proc")
 	if err != nil {

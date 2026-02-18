@@ -1,5 +1,10 @@
 package types
 
+import (
+	"path/filepath"
+	"strings"
+)
+
 // VMMetadataFile represents the mutable runtime state (metadata.json on disk).
 // Updated on every state transition.
 type VMMetadataFile struct {
@@ -42,13 +47,15 @@ const DefaultHypervisorProcess = "cloud-hypervisor"
 
 // HypervisorProcessName returns the expected process name for this VM.
 // It uses HypervisorBinary from metadata if set, otherwise falls back to
-// the configured binary name. If both are empty, returns the default.
+// the basename of the configured binary path. If both are empty, returns
+// the default. The config path is normalized to basename because
+// ValidateProcess compares against the process comm name, not the full path.
 func (m *VMMetadataFile) HypervisorProcessName(configBinary string) string {
 	if m != nil && m.HypervisorBinary != "" {
 		return m.HypervisorBinary
 	}
-	if configBinary != "" {
-		return configBinary
+	if name := filepath.Base(strings.TrimSpace(configBinary)); name != "" && name != "." {
+		return name
 	}
 	return DefaultHypervisorProcess
 }
