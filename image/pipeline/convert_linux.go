@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/CMGS/cocoon/utils"
 )
 
 // validateSafePath checks that a path contains only safe characters
@@ -54,9 +56,8 @@ func convertOCI(ctx context.Context, mountPath, outputPath, diskSize string) err
 	if err := validateSafePath(rootfsTarPath); err != nil {
 		return fmt.Errorf("invalid rootfs tar path: %w", err)
 	}
-	tarCmd := exec.CommandContext(ctx, "tar", "-C", mountPath, "-cf", rootfsTarPath, ".") //nolint:gosec // args are validated internal paths
-	if out, err := tarCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("pack rootfs tar: %s: %w", strings.TrimSpace(string(out)), err)
+	if err := utils.PackDirectoryToTar(ctx, mountPath, rootfsTarPath); err != nil {
+		return fmt.Errorf("pack rootfs tar: %w", err)
 	}
 	defer os.Remove(rootfsTarPath) //nolint:errcheck,gosec // best-effort temp cleanup
 

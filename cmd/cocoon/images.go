@@ -19,6 +19,7 @@ import (
 	"github.com/CMGS/cocoon/image/refcache"
 	"github.com/CMGS/cocoon/oci"
 	"github.com/CMGS/cocoon/types"
+	"github.com/CMGS/cocoon/utils"
 )
 
 var errImageNotFoundInLocalCache = errors.New("image not found in local cache")
@@ -982,10 +983,8 @@ func ociLayoutBlobPath(layoutPath, digest string) (string, error) {
 }
 
 func extractTarLayer(ctx context.Context, layerPath, targetDir string) error {
-	cmd := exec.CommandContext(ctx, "tar", "-xf", layerPath, "-C", targetDir) //nolint:gosec // paths are local validated paths
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("tar extract %s: %s: %w", layerPath, strings.TrimSpace(string(out)), err)
+	if err := utils.ExtractTarToDir(ctx, layerPath, targetDir); err != nil {
+		return fmt.Errorf("extract tar %s: %w", layerPath, err)
 	}
 	return nil
 }
@@ -1072,9 +1071,8 @@ func buildQcow2FromRootfs(ctx context.Context, rootfsPath, outputPath string) er
 	if err := validateSafeBuildPath(rootfsTarPath); err != nil {
 		return fmt.Errorf("invalid rootfs tar path: %w", err)
 	}
-	tarCmd := exec.CommandContext(ctx, "tar", "-C", rootfsPath, "-cf", rootfsTarPath, ".") //nolint:gosec // internal command invocation with validated local paths
-	if out, err := tarCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("pack rootfs tar: %s: %w", strings.TrimSpace(string(out)), err)
+	if err := utils.PackDirectoryToTar(ctx, rootfsPath, rootfsTarPath); err != nil {
+		return fmt.Errorf("pack rootfs tar: %w", err)
 	}
 	defer os.Remove(rootfsTarPath) //nolint:errcheck,gosec // best-effort cleanup of temporary file
 

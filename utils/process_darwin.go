@@ -3,20 +3,26 @@
 package utils
 
 import (
-	"fmt"
-	"os/exec"
+	"bytes"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
-// validateProcessImpl uses `ps` to verify the process name on macOS.
+// validateProcessImpl uses sysctl to verify the process name on macOS.
 func validateProcessImpl(pid int, expectedName string) bool {
-	out, err := exec.Command("ps", "-p", fmt.Sprintf("%d", pid), "-o", "comm=").Output() //nolint:gosec // G204: pid is an integer, not arbitrary user input
+	kinfo, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
 	if err != nil {
-		// If ps fails, we cannot verify the process identity. Return false
+		// If sysctl fails, we cannot verify the process identity. Return false
 		// (fail-safe) to prevent sending signals to a wrong process due to
 		// PID reuse.
 		return false
 	}
-	actual := strings.TrimSpace(string(out))
-	return strings.Contains(actual, expectedName)
+
+	raw := kinfo.Proc.P_comm[:]
+	if end := bytes.IndexByte(raw, 0); end >= 0 {
+		raw = raw[:end]
+	}
+	actual := strings.TrimSpace(string(raw))
+	return strings.Contains(actual, expectedName) || strings.HasPrefix(expectedName, actual)
 }

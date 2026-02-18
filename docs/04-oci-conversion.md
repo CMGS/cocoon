@@ -471,14 +471,13 @@ The rootfs is packed into an uncompressed tar archive to preserve dotfiles and a
 // Actual implementation
 rootfsTarPath := filepath.Join(filepath.Dir(outputPath),
     fmt.Sprintf(".rootfs-%d.tar", time.Now().UnixNano()))
-tarCmd := exec.CommandContext(ctx, "tar", "-C", mountPath, "-cf", rootfsTarPath, ".")
-if out, err := tarCmd.CombinedOutput(); err != nil {
-    return fmt.Errorf("pack rootfs tar: %s: %w", strings.TrimSpace(string(out)), err)
+if err := utils.PackDirectoryToTar(ctx, mountPath, rootfsTarPath); err != nil {
+    return fmt.Errorf("pack rootfs tar: %w", err)
 }
 defer os.Remove(rootfsTarPath)
 ```
 
-**Note**: The tar is **uncompressed** (`-cf`, not `-czf`). The `tar-in` guestfish command receives it without a compression flag.
+**Note**: The tar is **uncompressed** (written via Go `archive/tar`, not `-czf`). The `tar-in` guestfish command receives it without a compression flag.
 
 ### 5.5 Step 4: Guestfish Script (Partition + Format + Copy)
 

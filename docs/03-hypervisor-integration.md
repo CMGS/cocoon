@@ -368,7 +368,7 @@ func IsProcessAlive(pid int) bool {
 
 // utils.ValidateProcess checks if a process is alive AND matches the
 // expected name. Guards against PID reuse after a crash.
-// Implementation is platform-specific (Linux reads /proc, macOS uses ps).
+// Implementation is platform-specific (Linux reads /proc, macOS uses sysctl).
 func ValidateProcess(pid int, expectedName string) bool {
     if !IsProcessAlive(pid) {
         return false
@@ -1083,7 +1083,7 @@ func detectOrphanedProcesses(knownPIDs map[int]string) []vm.Inconsistency {
 
 ### 6.4 PID File Validation
 
-PID identity is validated via `utils.ValidateProcess`, which checks both liveness and process name (platform-specific: Linux reads `/proc/{pid}/cmdline`, macOS uses `ps`):
+PID identity is validated via `utils.ValidateProcess`, which checks both liveness and process name (platform-specific: Linux reads `/proc/{pid}/comm`, macOS uses `sysctl kern.proc.pid`):
 
 ```go
 func validatePIDFile(vmID string) error {
