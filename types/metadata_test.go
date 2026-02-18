@@ -30,10 +30,34 @@ func TestHypervisorProcessName(t *testing.T) {
 			want:         DefaultHypervisorProcess,
 		},
 		{
+			name:         "config is absolute path, returns basename",
+			meta:         &VMMetadataFile{},
+			configBinary: "/usr/local/bin/cloud-hypervisor",
+			want:         "cloud-hypervisor",
+		},
+		{
+			name:         "config is relative path, returns basename",
+			meta:         &VMMetadataFile{},
+			configBinary: "./bin/my-ch",
+			want:         "my-ch",
+		},
+		{
+			name:         "config with whitespace, returns trimmed basename",
+			meta:         &VMMetadataFile{},
+			configBinary: "  /usr/bin/ch  ",
+			want:         "ch",
+		},
+		{
 			name:         "nil metadata, config set",
 			meta:         nil,
 			configBinary: "custom-ch",
 			want:         "custom-ch",
+		},
+		{
+			name:         "nil metadata, config is path",
+			meta:         nil,
+			configBinary: "/opt/bin/cloud-hypervisor",
+			want:         "cloud-hypervisor",
 		},
 		{
 			name:         "nil metadata, config empty",
