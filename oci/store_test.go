@@ -46,6 +46,9 @@ func TestStoreLayoutDir(t *testing.T) {
 	if !strings.HasPrefix(dir1, cfg.OCILayoutDir()) {
 		t.Errorf("LayoutDir not under OCILayoutDir: %s", dir1)
 	}
+	if got := len(filepath.Base(dir1)); got != 64 {
+		t.Errorf("LayoutDir hash length = %d, want 64", got)
+	}
 }
 
 func TestStoreSaveResolve(t *testing.T) {
@@ -142,6 +145,48 @@ func TestStoreOverwriteTag(t *testing.T) {
 	}
 	if tags[0].ManifestDigest != "digest-v2" {
 		t.Errorf("expected digest-v2, got %s", tags[0].ManifestDigest)
+	}
+}
+
+func TestStoreHasTagAndRemoveMissingLayout(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(t)
+	store := NewStore(cfg)
+
+	tag := "myregistry.io/test:stale"
+	layoutPath := store.LayoutDir("stale-layout-key")
+
+	// Save tag entry without creating layout directory (stale index state).
+	if err := store.SaveTag(tag, layoutPath, "manifest-stale"); err != nil {
+		t.Fatalf("SaveTag: %v", err)
+	}
+
+	exists, err := store.HasTag(tag)
+	if err != nil {
+		t.Fatalf("HasTag: %v", err)
+	}
+	if !exists {
+		t.Fatalf("HasTag(%q)=false, want true", tag)
+	}
+
+	manifest, zeroRefBlobs, err := store.RemoveTag(tag)
+	if err != nil {
+		t.Fatalf("RemoveTag: %v", err)
+	}
+	if manifest != "manifest-stale" {
+		t.Fatalf("RemoveTag manifest=%q, want manifest-stale", manifest)
+	}
+	if len(zeroRefBlobs) != 0 {
+		t.Fatalf("RemoveTag zeroRefBlobs=%v, want empty", zeroRefBlobs)
+	}
+
+	exists, err = store.HasTag(tag)
+	if err != nil {
+		t.Fatalf("HasTag(after remove): %v", err)
+	}
+	if exists {
+		t.Fatalf("HasTag(%q)=true after remove, want false", tag)
 	}
 }
 

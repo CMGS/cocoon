@@ -396,8 +396,14 @@ func imageRemoveAction(c *cli.Context) error {
 	ref := c.Args().Get(0)
 
 	// Try OCI image removal first.
+	// Use tag-index existence instead of ResolveTag so we can clean stale tags
+	// even when the layout directory has already been deleted.
 	store := oci.NewStore(app.cfg)
-	if _, resolveErr := store.ResolveTag(ref); resolveErr == nil {
+	tagExists, tagErr := store.HasTag(ref)
+	if tagErr != nil {
+		return fmt.Errorf("check OCI tag %q: %w", ref, tagErr)
+	}
+	if tagExists {
 		manifestDigest, zeroRefBlobs, removeErr := store.RemoveTag(ref)
 		if removeErr != nil {
 			return fmt.Errorf("remove OCI image: %w", removeErr)
