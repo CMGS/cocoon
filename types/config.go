@@ -8,10 +8,11 @@ type VMConfig struct {
 	Name string `json:"name"`
 
 	// Image provenance
-	ImageRef       string `json:"image_ref"`
-	BaseKey        string `json:"base_key"`         // {checksum_16}_{arch}
-	BaseDigestFull string `json:"base_digest_full"` // Full SHA-256 (64 hex chars)
-	Arch           string `json:"arch"`
+	ImageRef       string      `json:"image_ref"`
+	BaseKey        string      `json:"base_key"`         // {checksum_16}_{arch}
+	BaseDigestFull string      `json:"base_digest_full"` // Full SHA-256 (64 hex chars)
+	Arch           string      `json:"arch"`
+	ImageType      VMImageType `json:"image_type,omitempty"`
 
 	// Boot configuration
 	BootStrategy  BootStrategy `json:"boot_strategy"`
@@ -38,6 +39,17 @@ type VMConfig struct {
 	// Schema version for migration
 	SchemaVersion int `json:"schema_version"`
 }
+
+// VMImageType describes the persisted VM image runtime category.
+type VMImageType string
+
+const (
+	// VMImageTypeQCOW2 is the legacy/default runtime path that boots from a
+	// qcow2 base image + per-VM qcow2 overlay.
+	VMImageTypeQCOW2 VMImageType = "qcow2"
+	// VMImageTypeOCIVM is the direct OCI VM runtime path (kernel/initrd/layers).
+	VMImageTypeOCIVM VMImageType = "oci-vm"
+)
 
 // CurrentConfigSchemaVersion is the current config.json schema version.
 const CurrentConfigSchemaVersion = 1

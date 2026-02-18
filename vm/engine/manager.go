@@ -207,15 +207,28 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 	if diskSize == "" {
 		diskSize = m.cfg.DefaultDiskSize
 	}
+
+	resolvedImage, err := resolveRuntimeImageRef(m.cfg, opts.Image)
+	if err != nil {
+		return nil, fmt.Errorf("resolve image reference %q: %w", opts.Image, err)
+	}
+
 	bootStrategy := opts.BootStrategy
 	if bootStrategy == "" {
 		bootStrategy = types.DefaultBootStrategy
 	}
 
+	if resolvedImage.Source == runtimeImageSourceLocalOCITag {
+		return nil, fmt.Errorf(
+			"image %q resolves to local OCI VM tag %q, but OCI VM runtime boot path is not enabled yet (issue #7)",
+			opts.Image, resolvedImage.LocalOCITag,
+		)
+	}
+
 	// Defense-in-depth: reject direct kernel boot until Phase 2 wires it
 	// to the image pipeline. See docs/04.1-oci-vm-images.md.
 	if bootStrategy == types.BootStrategyDirect {
-		return nil, fmt.Errorf("direct kernel boot is not yet implemented (Phase 2)")
+		return nil, fmt.Errorf("direct kernel boot runtime is not enabled yet for create/run (issue #7)")
 	}
 
 	// Generate name if not provided.
@@ -231,7 +244,7 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 	cachedBaseKeysBefore := m.snapshotCachedBaseKeys(ctx)
 
 	// Step 1: Prepare image (pull + convert + cache).
-	identity, baseImagePath, err := m.imgMgr.Prepare(ctx, opts.Image)
+	identity, baseImagePath, err := m.imgMgr.Prepare(ctx, resolvedImage.PrepareRef)
 	if err != nil {
 		return nil, fmt.Errorf("prepare image %s: %w", opts.Image, err)
 	}
@@ -279,6 +292,7 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 		BaseKey:        baseKey,
 		BaseDigestFull: identity.FullDigest,
 		Arch:           identity.Arch,
+		ImageType:      resolvedImage.VMImageType,
 		BootStrategy:   bootStrategy,
 		FirmwarePath:   firmwarePath,
 		CPUs:           cpus,
