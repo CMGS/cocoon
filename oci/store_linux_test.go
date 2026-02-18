@@ -20,7 +20,9 @@ func TestCleanupManifestRefsIfUnreferenced(t *testing.T) {
 	}
 
 	// No tag references this manifest: cleanup should remove refs.
-	if err := store.cleanupManifestRefsIfUnreferenced(manifest); err != nil {
+	if err := store.withTxnLock(func() error {
+		return store.cleanupManifestRefsIfUnreferencedTxnLocked(manifest)
+	}); err != nil {
 		t.Fatalf("cleanupManifestRefsIfUnreferenced (unreferenced): %v", err)
 	}
 	tracked, err := GetAllTrackedBlobs(cfg)
@@ -44,7 +46,9 @@ func TestCleanupManifestRefsIfUnreferenced(t *testing.T) {
 		t.Fatalf("SaveTag: %v", err)
 	}
 
-	if err := store.cleanupManifestRefsIfUnreferenced(manifest); err != nil {
+	if err := store.withTxnLock(func() error {
+		return store.cleanupManifestRefsIfUnreferencedTxnLocked(manifest)
+	}); err != nil {
 		t.Fatalf("cleanupManifestRefsIfUnreferenced (referenced): %v", err)
 	}
 	tracked, err = GetAllTrackedBlobs(cfg)

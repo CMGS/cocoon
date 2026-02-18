@@ -39,11 +39,18 @@ func (s *Store) LayoutDir(tag string) string {
 // manifest's blob references are cleaned up via RemoveBlobRefs to prevent
 // reference leaks.
 func (s *Store) SaveTag(tag, layoutPath, manifestDigest string) error {
-	return s.withLock(func(idx *TagIndex) error {
+	return s.withTxnLock(func() error {
+		return s.saveTagTxnLocked(tag, layoutPath, manifestDigest)
+	})
+}
+
+func (s *Store) saveTagTxnLocked(tag, layoutPath, manifestDigest string) error {
+	var oldManifestDigest string
+	oldManifestStillUsed := false
+	err := s.withLock(func(idx *TagIndex) error {
 		if idx.Tags == nil {
 			idx.Tags = make(map[string]TagEntry)
 		}
-		var oldManifestDigest string
 		// Track old manifest for blob ref cleanup when overwriting a tag.
 		if old, exists := idx.Tags[tag]; exists && old.ManifestDigest != manifestDigest {
 			oldManifestDigest = old.ManifestDigest
@@ -57,24 +64,29 @@ func (s *Store) SaveTag(tag, layoutPath, manifestDigest string) error {
 		if err := s.save(idx); err != nil {
 			return err
 		}
-		// Keep tag lookup and blob-ref cleanup in one critical section to
-		// avoid races where another tag update can happen between check/remove.
 		if oldManifestDigest != "" {
-			oldManifestStillUsed := false
 			for _, entry := range idx.Tags {
 				if entry.ManifestDigest == oldManifestDigest {
 					oldManifestStillUsed = true
 					break
 				}
 			}
-			if !oldManifestStillUsed {
-				if _, refErr := RemoveBlobRefs(s.cfg, oldManifestDigest); refErr != nil {
-					log.Printf("warning: failed to clean old manifest %s blob refs (will be reclaimed by GC): %v", oldManifestDigest, refErr)
-				}
-			}
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+
+	// Serialize cross-index changes with oci-build-txn.lock while still
+	// keeping same-level locks disjoint (tag lock and layer-refs lock are
+	// never held simultaneously).
+	if oldManifestDigest != "" && !oldManifestStillUsed {
+		if _, refErr := RemoveBlobRefs(s.cfg, oldManifestDigest); refErr != nil {
+			log.Printf("warning: failed to clean old manifest %s blob refs (will be reclaimed by GC): %v", oldManifestDigest, refErr)
+		}
+	}
+	return nil
 }
 
 // ResolveTag looks up a tag in the index and returns the layout path.
@@ -126,33 +138,41 @@ func (s *Store) RemoveTag(tag string) (string, []string, error) {
 	var manifestDigest string
 	var layoutPath string
 	var zeroRefBlobs []string
-	err := s.withLock(func(idx *TagIndex) error {
-		entry, ok := idx.Tags[tag]
-		if !ok {
-			return fmt.Errorf("tag %q not found", tag)
-		}
-		manifestDigest = entry.ManifestDigest
-		layoutPath = entry.LayoutPath
-		delete(idx.Tags, tag)
-		if err := s.save(idx); err != nil {
-			return err
-		}
-		// Keep tag index mutation and blob-ref cleanup in one critical section
-		// to avoid races with concurrent SaveTag/RemoveTag operations.
-		if manifestDigest != "" {
-			manifestStillUsed := false
-			for _, other := range idx.Tags {
-				if other.ManifestDigest == manifestDigest {
-					manifestStillUsed = true
-					break
+	err := s.withTxnLock(func() error {
+		manifestStillUsed := false
+		lockErr := s.withLock(func(idx *TagIndex) error {
+			entry, ok := idx.Tags[tag]
+			if !ok {
+				return fmt.Errorf("tag %q not found", tag)
+			}
+			manifestDigest = entry.ManifestDigest
+			layoutPath = entry.LayoutPath
+			delete(idx.Tags, tag)
+			if err := s.save(idx); err != nil {
+				return err
+			}
+			if manifestDigest != "" {
+				for _, other := range idx.Tags {
+					if other.ManifestDigest == manifestDigest {
+						manifestStillUsed = true
+						break
+					}
 				}
 			}
-			if !manifestStillUsed {
-				var refErr error
-				zeroRefBlobs, refErr = RemoveBlobRefs(s.cfg, manifestDigest)
-				if refErr != nil {
-					return fmt.Errorf("remove blob refs for %s: %w", manifestDigest, refErr)
-				}
+			return nil
+		})
+		if lockErr != nil {
+			return lockErr
+		}
+
+		// Serialize cross-index changes with oci-build-txn.lock while still
+		// keeping same-level locks disjoint (tag lock and layer-refs lock are
+		// never held simultaneously).
+		if manifestDigest != "" && !manifestStillUsed {
+			var refErr error
+			zeroRefBlobs, refErr = RemoveBlobRefs(s.cfg, manifestDigest)
+			if refErr != nil {
+				return fmt.Errorf("remove blob refs for %s: %w", manifestDigest, refErr)
 			}
 		}
 		return nil
@@ -203,4 +223,16 @@ func (s *Store) withLock(fn func(*TagIndex) error) error {
 		return err
 	}
 	return fn(idx)
+}
+
+func (s *Store) withTxnLock(fn func() error) error {
+	if err := os.MkdirAll(s.cfg.DBDir(), 0o755); err != nil { //nolint:gosec // G301: cocoon db dirs are shared runtime state
+		return fmt.Errorf("create db dir: %w", err)
+	}
+	fl := flock.New(s.cfg.OCIBuildTxnLock())
+	if err := fl.Lock(); err != nil {
+		return fmt.Errorf("acquire OCI build txn lock: %w", err)
+	}
+	defer fl.Unlock() //nolint:errcheck
+	return fn()
 }

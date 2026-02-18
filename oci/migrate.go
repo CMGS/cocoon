@@ -7,12 +7,23 @@ import (
 	"path/filepath"
 
 	"github.com/CMGS/cocoon/config"
+	"github.com/CMGS/cocoon/lock/flock"
 )
 
 // MigrateOCICache moves layouts from cache/oci-builds/ to cache/oci/layouts/
 // and populates the shared blob store from existing layout blobs.
 // Idempotent: skips layouts that already exist in the new location.
 func MigrateOCICache(cfg *config.CocoonConfig) error {
+	if err := os.MkdirAll(cfg.DBDir(), 0o755); err != nil { //nolint:gosec // G301: cocoon db dirs are shared runtime state
+		return fmt.Errorf("create db dir: %w", err)
+	}
+	// Serialize migration across concurrent CLI invocations.
+	migrateLock := flock.New(cfg.OCIBuildTxnLock())
+	if err := migrateLock.Lock(); err != nil {
+		return fmt.Errorf("acquire OCI migration lock: %w", err)
+	}
+	defer migrateLock.Unlock() //nolint:errcheck
+
 	oldDir := cfg.OCIBuildCacheDir()
 	if _, err := os.Stat(oldDir); os.IsNotExist(err) {
 		return nil // nothing to migrate
