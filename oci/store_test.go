@@ -76,10 +76,27 @@ func TestStoreSaveResolve(t *testing.T) {
 		t.Errorf("ResolveTag = %q, want %q", resolved, layoutDir)
 	}
 
+	entry, err := store.GetTag(tag)
+	if err != nil {
+		t.Fatalf("GetTag: %v", err)
+	}
+	if entry.Tag != tag {
+		t.Errorf("GetTag.Tag = %q, want %q", entry.Tag, tag)
+	}
+	if entry.LayoutPath != layoutDir {
+		t.Errorf("GetTag.LayoutPath = %q, want %q", entry.LayoutPath, layoutDir)
+	}
+	if entry.ManifestDigest != "abc123" {
+		t.Errorf("GetTag.ManifestDigest = %q, want %q", entry.ManifestDigest, "abc123")
+	}
+
 	// Resolve unknown tag should fail.
 	_, err = store.ResolveTag("unknown:tag")
 	if err == nil {
 		t.Error("expected error for unknown tag")
+	}
+	if _, err := store.GetTag("unknown:tag"); err == nil {
+		t.Error("expected error for unknown tag in GetTag")
 	}
 }
 

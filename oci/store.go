@@ -103,6 +103,23 @@ func (s *Store) HasTag(tag string) (bool, error) {
 	return exists, nil
 }
 
+// GetTag returns the tag entry from the local OCI build tag index.
+func (s *Store) GetTag(tag string) (TagEntry, error) {
+	var entry TagEntry
+	err := s.withLock(func(idx *TagIndex) error {
+		found, ok := idx.Tags[tag]
+		if !ok {
+			return fmt.Errorf("tag %q not found in local builds", tag)
+		}
+		entry = found
+		return nil
+	})
+	if err != nil {
+		return TagEntry{}, err
+	}
+	return entry, nil
+}
+
 // ResolveTag looks up a tag in the index and returns the layout path.
 func (s *Store) ResolveTag(tag string) (string, error) {
 	var layoutPath string

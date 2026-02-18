@@ -1266,6 +1266,12 @@ func imagesCommand() *cli.Command {
                 Action: imageInspectAction,
             },
             {
+                Name:      "tag",
+                Usage:     "Create or update a local image tag/alias",
+                ArgsUsage: "SOURCE_REF TARGET_REF",
+                Action:    imageTagAction,
+            },
+            {
                 Name:      "remove",
                 Aliases:   []string{"rm"},
                 Usage:     "Remove a cached image (only if unreferenced)",
@@ -1302,11 +1308,15 @@ func imagesCommand() *cli.Command {
 
 - `image pull` updates the local manifest cache (`cache/manifests/index.json`) to map `IMAGE_REF` aliases to `base_key`.
 - `image inspect` and `image remove` resolve `IMAGE_REF` from local cache only (`base_key` direct hit or manifest-cache alias), without pulling.
+- `image tag SOURCE_REF TARGET_REF` behavior:
+  1. If `SOURCE_REF` is a local OCI build tag, creates/updates another local OCI tag pointing to the same layout.
+  2. Otherwise, resolves a cached cloud image (`base_key`/manifest alias) and creates/updates a cloud-image alias in `cache/manifests/index.json`.
 - `image verify` resolution order:
-  1. local file path
-  2. cached image via `base_key`/manifest alias
-  3. fallback `Prepare` only when not found locally
-  4. if local cache resolution fails due ambiguity/corruption, return error (do not auto-pull)
+  1. local OCI build tag (`cache/oci/layouts/...`) -> checks OCI layer media types and reports `direct` mode when kernel layer exists
+  2. local file path
+  3. cached image via `base_key`/manifest alias
+  4. fallback `Prepare` only when not found locally
+  5. if local cache resolution fails due ambiguity/corruption, return error (do not auto-pull)
 - `image list` shows a **unified table** combining both cloud images and OCI builds. The table columns are:
 
   | Column | Description |
@@ -2073,6 +2083,9 @@ cocoon image list
 
 # Inspect image details
 cocoon image inspect myorg/ubuntu-bootable:22.04
+
+# Retag local image for a different registry namespace
+cocoon image tag myorg/ubuntu-bootable:22.04 ghcr.io/acme/ubuntu-bootable:22.04
 
 # Remove image (fails if VMs using it)
 cocoon image rm myorg/ubuntu-bootable:22.04

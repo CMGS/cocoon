@@ -12,6 +12,7 @@ import (
 	cli "github.com/urfave/cli/v2"
 	"golang.org/x/term"
 
+	"github.com/CMGS/cocoon/image"
 	"github.com/CMGS/cocoon/image/refcache"
 	"github.com/CMGS/cocoon/oci"
 	"github.com/CMGS/cocoon/types"
@@ -60,6 +61,7 @@ func imagesCommand() *cli.Command {
 			imagePushCommand(),
 			imageLoginCommand(),
 			imageInspectCommand(),
+			imageTagCommand(),
 			imageRemoveCommand(),
 			imageVerifyCommand(),
 		},
@@ -373,6 +375,117 @@ type cloudInspectInfo struct {
 	CachedAt   string   `json:"cached_at"`
 }
 
+func imageTagCommand() *cli.Command {
+	return &cli.Command{
+		Name:      "tag",
+		Usage:     "Create or update a local image tag/alias",
+		ArgsUsage: "SOURCE_REF TARGET_REF",
+		Action:    imageTagAction,
+	}
+}
+
+func imageTagAction(c *cli.Context) error {
+	if c.NArg() < 2 {
+		return fmt.Errorf("SOURCE_REF and TARGET_REF arguments required\n\nUsage: cocoon image tag SOURCE_REF TARGET_REF")
+	}
+
+	app, err := initApp(c)
+	if err != nil {
+		return err
+	}
+
+	sourceRef := strings.TrimSpace(c.Args().Get(0))
+	targetRef := strings.TrimSpace(c.Args().Get(1))
+	if sourceRef == "" || targetRef == "" {
+		return fmt.Errorf("source and target refs must be non-empty")
+	}
+	if sourceRef == targetRef {
+		fmt.Printf("Tag unchanged: %s\n", sourceRef)
+		return nil
+	}
+
+	store := oci.NewStore(app.cfg)
+	sourceIsOCI, err := store.HasTag(sourceRef)
+	if err != nil {
+		return fmt.Errorf("check OCI source tag %q: %w", sourceRef, err)
+	}
+	if sourceIsOCI {
+		return tagOCIImage(app, store, sourceRef, targetRef)
+	}
+	return tagCloudImageAlias(c, app, store, sourceRef, targetRef)
+}
+
+func tagOCIImage(app *appContext, store *oci.Store, sourceRef, targetRef string) error {
+	targetBaseKey, targetCloudFound, resolveErr := refcache.ResolveBaseKey(app.cfg, targetRef)
+	if resolveErr != nil {
+		return fmt.Errorf("check cloud image aliases for target %q: %w", targetRef, resolveErr)
+	}
+	if targetCloudFound {
+		return fmt.Errorf("target ref %q already maps to cached cloud image %s; choose a different target ref", targetRef, targetBaseKey)
+	}
+
+	entry, err := store.GetTag(sourceRef)
+	if err != nil {
+		return fmt.Errorf("read OCI source tag %q: %w", sourceRef, err)
+	}
+	if _, statErr := os.Stat(entry.LayoutPath); statErr != nil {
+		return fmt.Errorf("source OCI layout for %q is not available at %s: %w", sourceRef, entry.LayoutPath, statErr)
+	}
+	if saveErr := store.SaveTag(targetRef, entry.LayoutPath, entry.ManifestDigest); saveErr != nil {
+		return fmt.Errorf("save OCI tag %q: %w", targetRef, saveErr)
+	}
+
+	fmt.Printf("Tagged OCI image: %s -> %s\n", sourceRef, targetRef)
+	if entry.ManifestDigest != "" {
+		fmt.Printf("Manifest: %s\n", entry.ManifestDigest)
+	}
+	return nil
+}
+
+func tagCloudImageAlias(c *cli.Context, app *appContext, store *oci.Store, sourceRef, targetRef string) error {
+	targetIsOCI, err := store.HasTag(targetRef)
+	if err != nil {
+		return fmt.Errorf("check OCI target tag %q: %w", targetRef, err)
+	}
+	if targetIsOCI {
+		return fmt.Errorf("target ref %q already exists as an OCI build tag; choose a different target ref", targetRef)
+	}
+
+	baseKey, digestFull, err := resolveSourceCloudAlias(c, app, sourceRef)
+	if err != nil {
+		return err
+	}
+	if upsertErr := refcache.Upsert(app.cfg, targetRef, baseKey, digestFull); upsertErr != nil {
+		return fmt.Errorf("save cloud image alias %q -> %s: %w", targetRef, baseKey, upsertErr)
+	}
+
+	fmt.Printf("Tagged cloud image: %s -> %s\n", sourceRef, targetRef)
+	fmt.Printf("Base key: %s\n", baseKey)
+	return nil
+}
+
+func resolveSourceCloudAlias(c *cli.Context, app *appContext, sourceRef string) (string, string, error) {
+	baseKey, resolveErr := resolveBaseKeyFromCache(c, app, sourceRef)
+	if resolveErr == nil {
+		_, digest, refsErr := refcache.RefsForBaseKey(app.cfg, baseKey)
+		if refsErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: read manifest cache for %s: %v\n", baseKey, refsErr)
+			return baseKey, "", nil
+		}
+		return baseKey, digest, nil
+	}
+
+	// Allow local file sources by preparing them into cache before aliasing.
+	if _, statErr := os.Stat(sourceRef); statErr != nil {
+		return "", "", fmt.Errorf("resolve source cloud image %q: %w", sourceRef, resolveErr)
+	}
+	identity, _, prepErr := app.imgMgr.Prepare(c.Context, sourceRef)
+	if prepErr != nil {
+		return "", "", fmt.Errorf("prepare local source image %q: %w", sourceRef, prepErr)
+	}
+	return identity.BaseKey(), identity.FullDigest, nil
+}
+
 func imageRemoveCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "remove",
@@ -497,16 +610,45 @@ func imageVerifyAction(c *cli.Context) error {
 	arg := c.Args().Get(0)
 	format := c.String("format")
 
-	imagePath, err := resolveVerifyImagePath(c, app, arg)
+	result, err := resolveVerifyResult(c, app, arg)
 	if err != nil {
 		return err
 	}
 
-	result, err := app.imgMgr.VerifyBootability(c.Context, imagePath)
+	return renderVerifyResult(format, result)
+}
+
+func resolveVerifyResult(c *cli.Context, app *appContext, arg string) (*image.BootCheckResult, error) {
+	// Local OCI tags are verified from their OCI layout metadata.
+	store := oci.NewStore(app.cfg)
+	ociTagExists, err := store.HasTag(arg)
 	if err != nil {
-		return fmt.Errorf("verify image: %w", err)
+		return nil, fmt.Errorf("check OCI tag %q: %w", arg, err)
+	}
+	if ociTagExists {
+		layoutPath, resolveErr := store.ResolveTag(arg)
+		if resolveErr != nil {
+			return nil, fmt.Errorf("resolve OCI tag %q: %w", arg, resolveErr)
+		}
+		result, verifyErr := verifyOCILayoutBootability(layoutPath)
+		if verifyErr != nil {
+			return nil, fmt.Errorf("verify OCI image %q: %w", arg, verifyErr)
+		}
+		return result, nil
 	}
 
+	imagePath, resolveErr := resolveVerifyImagePath(c, app, arg)
+	if resolveErr != nil {
+		return nil, resolveErr
+	}
+	result, verifyErr := app.imgMgr.VerifyBootability(c.Context, imagePath)
+	if verifyErr != nil {
+		return nil, fmt.Errorf("verify image: %w", verifyErr)
+	}
+	return result, nil
+}
+
+func renderVerifyResult(format string, result *image.BootCheckResult) error {
 	// JSON output.
 	if format == formatJSON {
 		if err := printJSON(result); err != nil {
@@ -548,6 +690,74 @@ func imageVerifyAction(c *cli.Context) error {
 	}
 
 	return nil
+}
+
+func verifyOCILayoutBootability(layoutPath string) (*image.BootCheckResult, error) {
+	info, err := oci.InspectLayout(layoutPath)
+	if err != nil {
+		return nil, fmt.Errorf("inspect OCI layout: %w", err)
+	}
+	return evaluateOCILayoutBootability(info), nil
+}
+
+func evaluateOCILayoutBootability(info *oci.LayoutInfo) *image.BootCheckResult {
+	result := &image.BootCheckResult{
+		Bootable:  false,
+		BootModes: []string{},
+		Errors:    []string{},
+		Warnings:  []string{},
+	}
+	if info == nil {
+		result.Errors = append(result.Errors, "OCI layout metadata is empty")
+		return result
+	}
+
+	hasKernelLayer := false
+	hasRootfsLayer := false
+	for _, layer := range info.Layers {
+		switch layer.MediaType {
+		case oci.MediaTypeKernelLayer:
+			hasKernelLayer = true
+		case oci.MediaTypeRootfsLayer:
+			hasRootfsLayer = true
+		}
+	}
+
+	if hasKernelLayer {
+		result.BootModes = append(result.BootModes, string(types.BootModeDirect))
+		result.KernelChecked = true
+		result.KernelFound = true
+	}
+	if !hasKernelLayer {
+		result.Errors = append(result.Errors, "kernel layer not found in OCI manifest")
+	}
+	if !hasRootfsLayer {
+		result.Errors = append(result.Errors, "rootfs layer not found in OCI manifest")
+	}
+
+	validateOCIVMConfig(result, info.Config)
+
+	result.Bootable = len(result.Errors) == 0
+	return result
+}
+
+func validateOCIVMConfig(result *image.BootCheckResult, cfg *oci.VMImageConfig) {
+	if cfg == nil {
+		result.Errors = append(result.Errors, "OCI VM config blob is missing")
+		return
+	}
+	if strings.TrimSpace(cfg.KernelPath) == "" {
+		result.Warnings = append(result.Warnings, "config.kernel_path is empty")
+	}
+	if strings.TrimSpace(cfg.InitrdPath) == "" {
+		result.Warnings = append(result.Warnings, "config.initrd_path is empty")
+	} else {
+		result.InitrdChecked = true
+		result.InitrdFound = true
+	}
+	if strings.TrimSpace(cfg.KernelCmdline) == "" {
+		result.Warnings = append(result.Warnings, "config.kernel_cmdline is empty")
+	}
 }
 
 func imageBuildCommand() *cli.Command {

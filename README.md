@@ -6,7 +6,7 @@ Lightweight VM manager built on Cloud Hypervisor.
 
 - **UEFI boot** -- CLOUDHV.fd UEFI firmware by default (direct kernel boot for OCI VM images is Phase 2 planned)
 - **TPM 2.0 emulation** -- optional swtpm integration via `--tpm` flag for measured boot and guest attestation
-- **OCI VM image build** -- `cocoon image build` extracts kernel/rootfs from cloud images, packages as OCI with custom media types; supports Cocoonfile customization (see `cocoonfile.example`)
+- **OCI VM image build** -- `cocoon image build` extracts kernel/rootfs from cloud images, packages as OCI with custom media types; supports Cocoonfile customization (current output is always 2 layers: kernel + customized rootfs)
 - **OCI VM image push/login** -- `cocoon image push` uploads built images to any OCI registry; `cocoon image login` stores credentials
 - **Content-addressed image cache** -- base images deduplicated by SHA-256 checksum
 - **COW overlays** -- qcow2 copy-on-write disks backed by shared base images
@@ -81,6 +81,7 @@ cocoon delete <vm>
 | `cocoon image list` | List cached base images (alias: `ls`) |
 | `cocoon image pull IMAGE_REF` | Pull and cache an image without creating a VM |
 | `cocoon image build [IMAGE] [--file Cocoonfile] [--tag REF]` | Build an OCI VM image from a cloud image or Cocoonfile |
+| `cocoon image tag SOURCE_REF TARGET_REF` | Create/update a local OCI tag or cloud-image alias |
 | `cocoon image push REF` | Push a locally built OCI VM image to a container registry |
 | `cocoon image login REGISTRY` | Log in to a container registry for push operations |
 | `cocoon image inspect IMAGE_REF` | Show details of a cached cloud image or locally built OCI VM image |
@@ -96,7 +97,7 @@ cocoon delete <vm>
 
 ## Cocoonfile
 
-A Cocoonfile is a Dockerfile-like file for customizing VM images before packaging them as OCI. Supported directives: `FROM`, `RUN`, `COPY`, `LABEL`. See `cocoonfile.example` in the project root for a working example.
+A Cocoonfile is a Dockerfile-like file for customizing VM images before packaging them as OCI. Supported directives: `FROM`, `RUN`, `COPY`, `LABEL`. In the current implementation, `RUN`/`COPY` changes are applied before rootfs extraction, so the built OCI image is still always 2 layers (kernel + final rootfs), not extra per-step customization layers. See `cocoonfile.example` in the project root for a working example.
 
 ```bash
 # Build from a Cocoonfile
