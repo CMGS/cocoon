@@ -541,10 +541,21 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 	if state == types.VMStateStopping {
 		deadline := time.Now().Add(timeout)
 		for time.Now().Before(deadline) {
+			// Re-load metadata each iteration to pick up PID or state
+			// changes made by other processes (e.g., reconciliation).
+			freshMeta, reloadErr := m.LoadMetadata(vmID)
+			if reloadErr != nil {
+				return fmt.Errorf("reload metadata while waiting for stop: %w", reloadErr)
+			}
+			// If another process already transitioned us out of STOPPING, done.
+			if types.VMState(freshMeta.State) == types.VMStateStopped {
+				return nil
+			}
+
 			// Check both PID file (primary) and metadata PID (fallback).
 			alive := m.hyper.IsAlive(vmID)
-			if !alive && meta.ProcessPID > 0 {
-				alive = utils.ValidateProcess(meta.ProcessPID, "cloud-hypervisor")
+			if !alive && freshMeta.ProcessPID > 0 {
+				alive = utils.ValidateProcess(freshMeta.ProcessPID, "cloud-hypervisor")
 			}
 			if !alive {
 				now := time.Now().UTC().Format(time.RFC3339)
@@ -766,17 +777,48 @@ func (m *manager) Delete(ctx context.Context, vmID string, force bool) error {
 func (m *manager) ensureDeletePreconditions(ctx context.Context, vmID string, force bool, meta *types.VMMetadataFile) error {
 	state := types.VMState(meta.State)
 
-	// If running, require --force and attempt graceful stop first.
-	if state != types.VMStateRunning {
-		return nil
-	}
-	if !force {
-		return types.ErrVMRunning
-	}
-	if stopErr := m.Stop(ctx, vmID, time.Duration(m.cfg.StopTimeoutSeconds)*time.Second); stopErr != nil {
-		// Force kill the CH process directly.
+	switch state {
+	case types.VMStateRunning:
+		if !force {
+			return types.ErrVMRunning
+		}
+		// Attempt graceful stop first; force kill on failure.
+		if stopErr := m.Stop(ctx, vmID, time.Duration(m.cfg.StopTimeoutSeconds)*time.Second); stopErr != nil {
+			_ = m.hyper.ForceKill(vmID)
+			_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("force stop failed: %v", stopErr))
+		}
+
+	case types.VMStateStarting, types.VMStateStopping:
+		if !force {
+			return fmt.Errorf("%w: VM is in %s state, use --force to delete", types.ErrInvalidTransition, state)
+		}
+		// Force kill any live process and move to STOPPED so the subsequent
+		// STOPPED -> DELETED transition goes through normal validation.
 		_ = m.hyper.ForceKill(vmID)
-		_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("force stop failed: %v", stopErr))
+		if meta.ProcessPID > 0 && utils.ValidateProcess(meta.ProcessPID, "cloud-hypervisor") {
+			_ = utils.ForceKillProcess(meta.ProcessPID)
+		}
+		now := time.Now().UTC().Format(time.RFC3339)
+		_ = m.transitionStateWithUpdate(vmID, types.VMStateStopped, "force killed for delete", func(md *types.VMMetadataFile) {
+			md.StoppedAt = now
+			md.ProcessPID = 0
+		})
+
+	case types.VMStateError:
+		// Error state with a live process: force kill it.
+		if m.hyper.IsAlive(vmID) || (meta.ProcessPID > 0 && utils.ValidateProcess(meta.ProcessPID, "cloud-hypervisor")) {
+			if !force {
+				return fmt.Errorf("%w: VM is in ERROR state with a live process, use --force to delete", types.ErrInvalidTransition)
+			}
+			_ = m.hyper.ForceKill(vmID)
+			if meta.ProcessPID > 0 {
+				_ = utils.ForceKillProcess(meta.ProcessPID)
+			}
+		}
+		// ERROR -> DELETED is a valid transition, so no state change needed here.
+
+	default:
+		// CREATED, STOPPED, etc. — no preconditions needed.
 	}
 	return nil
 }
@@ -849,20 +891,19 @@ func readSerialLogExcerpt(path string, maxLines int) ([]string, error) {
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
 
-	lines := make([]string, 0, maxLines)
+	// Collect all lines, then return the tail. This avoids the O(n) per-line
+	// shifting cost of maintaining a sliding window during the scan.
+	var all []string
 	for scanner.Scan() {
-		line := scanner.Text()
-		if len(lines) < maxLines {
-			lines = append(lines, line)
-			continue
-		}
-		copy(lines, lines[1:])
-		lines[maxLines-1] = line
+		all = append(all, scanner.Text())
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
-	return lines, nil
+	if len(all) > maxLines {
+		all = all[len(all)-maxLines:]
+	}
+	return all, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -903,7 +944,9 @@ func (m *manager) transitionStateWithUpdate(vmID string, to types.VMState, reaso
 		meta.LastError = reason
 		meta.LastErrorType = string(classifyError(reason))
 		meta.LastErrorAt = time.Now().UTC().Format(time.RFC3339)
-		meta.ErrorCount++
+		if meta.ErrorCount < 1000 {
+			meta.ErrorCount++
+		}
 	}
 
 	if mutate != nil {
@@ -1040,9 +1083,10 @@ func resolveFirmwarePath(cfg *config.CocoonConfig, strategy types.BootStrategy, 
 	}
 }
 
-// generateDefaultName creates a name like "cocoon-a3f7b2c1".
+// generateDefaultName creates a name like "cocoon-a3f7b2c1d9e0f1a2".
+// Uses 8 random bytes (64-bit entropy) to keep collision probability low.
 func generateDefaultName() string {
-	b := make([]byte, 4)
+	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	return "cocoon-" + hex.EncodeToString(b)
 }

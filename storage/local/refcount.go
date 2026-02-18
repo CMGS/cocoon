@@ -101,9 +101,9 @@ func (rc *fileReferenceCounter) AddReference(baseKey, vmID, digestFull, sourceRe
 			refs[baseKey] = entry
 		}
 
-		// Idempotent: skip if vmID is already present.
+		// Idempotent: skip if vmID is already present (no write needed).
 		if slices.Contains(entry.Refs, vmID) {
-			return rc.saveRefs(refs)
+			return nil
 		}
 		entry.Refs = append(entry.Refs, vmID)
 

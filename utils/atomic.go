@@ -18,7 +18,9 @@ func AtomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	tmpPath := tmp.Name()
 
 	defer func() {
-		// Clean up temp file on failure.
+		// Clean up temp file on failure. The `err` variable is the
+		// named return — Go deferred closures see the final value
+		// of named returns, so this correctly detects any error path.
 		if err != nil {
 			_ = os.Remove(tmpPath)
 		}

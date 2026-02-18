@@ -628,11 +628,16 @@ func isStuckInState(updatedAt string, timeout time.Duration) bool {
 
 // detectOrphanedProcesses scans /proc for cloud-hypervisor and swtpm processes
 // that are not tracked by any VM's metadata.
+// Only works on Linux where /proc is available; on other platforms it logs a
+// warning and returns nil.
 func detectOrphanedProcesses(knownPIDs map[int]string) []vm.Inconsistency {
 	var orphans []vm.Inconsistency
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
-		return nil // Not on Linux or /proc unavailable
+		if !os.IsNotExist(err) {
+			log.Printf("warning: orphan process detection skipped: /proc unavailable: %v", err)
+		}
+		return nil
 	}
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
