@@ -144,3 +144,61 @@ func TestStoreOverwriteTag(t *testing.T) {
 		t.Errorf("expected digest-v2, got %s", tags[0].ManifestDigest)
 	}
 }
+
+func TestStoreRemoveTagSharedManifestRefs(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(t)
+	store := NewStore(cfg)
+
+	manifest := "manifest-shared"
+	blob := "blob-shared"
+	if err := AddBlobRefs(cfg, manifest, []string{blob}, []int64{123}); err != nil {
+		t.Fatalf("AddBlobRefs: %v", err)
+	}
+
+	dir1 := store.LayoutDir("tag-shared-1")
+	dir2 := store.LayoutDir("tag-shared-2")
+	if err := os.MkdirAll(dir1, 0o755); err != nil {
+		t.Fatalf("MkdirAll dir1: %v", err)
+	}
+	if err := os.MkdirAll(dir2, 0o755); err != nil {
+		t.Fatalf("MkdirAll dir2: %v", err)
+	}
+
+	if err := store.SaveTag("tag-shared-1", dir1, manifest); err != nil {
+		t.Fatalf("SaveTag tag-shared-1: %v", err)
+	}
+	if err := store.SaveTag("tag-shared-2", dir2, manifest); err != nil {
+		t.Fatalf("SaveTag tag-shared-2: %v", err)
+	}
+
+	if _, zeroRef, err := store.RemoveTag("tag-shared-1"); err != nil {
+		t.Fatalf("RemoveTag tag-shared-1: %v", err)
+	} else if len(zeroRef) != 0 {
+		t.Fatalf("expected no zero-ref blobs while shared tag remains, got %v", zeroRef)
+	}
+
+	trackedAfterFirstRemove, err := GetAllTrackedBlobs(cfg)
+	if err != nil {
+		t.Fatalf("GetAllTrackedBlobs after first remove: %v", err)
+	}
+	if !containsString(trackedAfterFirstRemove, blob) {
+		t.Fatalf("expected %q to remain tracked after removing first shared tag, got %v", blob, trackedAfterFirstRemove)
+	}
+
+	if _, zeroRef, err := store.RemoveTag("tag-shared-2"); err != nil {
+		t.Fatalf("RemoveTag tag-shared-2: %v", err)
+	} else if !containsString(zeroRef, blob) {
+		t.Fatalf("expected %q to become zero-ref after removing last shared tag, got %v", blob, zeroRef)
+	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, v := range values {
+		if v == target {
+			return true
+		}
+	}
+	return false
+}

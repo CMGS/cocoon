@@ -466,7 +466,9 @@ func (m *manager) VerifyBootability(ctx context.Context, imagePath string) (*ima
 	deepDone := result.KernelChecked || result.InitrdChecked || result.SystemdChecked || result.BootloaderChecked
 	if !deepDone {
 		// Deep verification did not run; keep optimistic result.
-		result.Warnings = append(result.Warnings, "deep boot contract verification requires guestfish (not available)")
+		if !hasDeepVerificationUnavailableWarning(result.Warnings) {
+			result.Warnings = append(result.Warnings, "deep boot contract verification requires guestfish (not available)")
+		}
 	} else {
 		evaluateDeepVerification(result)
 	}
@@ -475,6 +477,18 @@ func (m *manager) VerifyBootability(ctx context.Context, imagePath string) (*ima
 		imagePath, result.Bootable, result.BootModes, len(result.Errors), len(result.Warnings))
 
 	return result, nil
+}
+
+func hasDeepVerificationUnavailableWarning(warnings []string) bool {
+	for _, w := range warnings {
+		lw := strings.ToLower(w)
+		if strings.Contains(lw, "deep boot") &&
+			strings.Contains(lw, "verification") &&
+			(strings.Contains(lw, "guestfish") || strings.Contains(lw, "not available") || strings.Contains(lw, "not installed")) {
+			return true
+		}
+	}
+	return false
 }
 
 // evaluateDeepVerification checks deep verification results and populates

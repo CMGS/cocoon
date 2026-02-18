@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,38 +145,89 @@ func verifyBearerCredentials(ctx context.Context, wwwAuth, username, password st
 	}
 
 	service := extractBearerParam(wwwAuth, "service")
+	scope := extractBearerParam(wwwAuth, "scope")
 
-	// Build token request URL.
-	tokenURL := realm
-	separator := "?"
-	if strings.Contains(tokenURL, "?") {
-		separator = "&"
-	}
-	if service != "" {
-		tokenURL += separator + "service=" + service
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tokenURL, nil)
+	tokenURL, err := buildBearerTokenURL(realm, service, scope)
 	if err != nil {
-		return fmt.Errorf("build token request: %w", err)
+		return fmt.Errorf("build bearer token URL: %w", err)
 	}
-	req.SetBasicAuth(username, password)
 
-	tokenResp, err := http.DefaultClient.Do(req)
+	status, token, err := requestBearerToken(ctx, tokenURL, username, password)
 	if err != nil {
 		return fmt.Errorf("token exchange request to %s: %w", realm, err)
 	}
-	defer tokenResp.Body.Close() //nolint:errcheck
-
-	if tokenResp.StatusCode == http.StatusOK {
-		return nil
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		return fmt.Errorf("invalid credentials: token exchange returned HTTP %d", status)
 	}
-	if tokenResp.StatusCode == http.StatusUnauthorized || tokenResp.StatusCode == http.StatusForbidden {
-		return fmt.Errorf("invalid credentials: token exchange returned HTTP %d", tokenResp.StatusCode)
+	if status != http.StatusOK {
+		return fmt.Errorf("token exchange returned unexpected status HTTP %d", status)
+	}
+	if token == "" {
+		return fmt.Errorf("token exchange returned HTTP 200 but no token in response")
 	}
 
-	// Unexpected status — cannot confirm credentials are valid.
-	return fmt.Errorf("token exchange returned unexpected status HTTP %d", tokenResp.StatusCode)
+	// Detect registries that issue bearer tokens even for invalid credentials.
+	// In that case, a 200 response does not prove the supplied username/password.
+	probeUser := username + "__cocoon_invalid__"
+	probePass := password + "__cocoon_invalid__"
+	probeStatus, _, probeErr := requestBearerToken(ctx, tokenURL, probeUser, probePass)
+	if probeErr != nil {
+		return fmt.Errorf("invalid-credential probe request to %s: %w", realm, probeErr)
+	}
+	if probeStatus == http.StatusOK {
+		return fmt.Errorf("could not verify credentials: registry also issues tokens for invalid credentials")
+	}
+	if probeStatus != http.StatusUnauthorized && probeStatus != http.StatusForbidden {
+		return fmt.Errorf("could not verify credentials: invalid-credential probe returned HTTP %d", probeStatus)
+	}
+	return nil
+}
+
+func buildBearerTokenURL(realm, service, scope string) (string, error) {
+	u, err := url.Parse(realm)
+	if err != nil {
+		return "", err
+	}
+	q := u.Query()
+	if service != "" {
+		q.Set("service", service)
+	}
+	if scope != "" {
+		q.Set("scope", scope)
+	}
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
+func requestBearerToken(ctx context.Context, tokenURL, username, password string) (int, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tokenURL, nil)
+	if err != nil {
+		return 0, "", fmt.Errorf("build token request: %w", err)
+	}
+	req.SetBasicAuth(username, password)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, "", err
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusOK {
+		return resp.StatusCode, "", nil
+	}
+
+	var payload struct {
+		Token       string `json:"token"`
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return 0, "", fmt.Errorf("decode token response: %w", err)
+	}
+	token := strings.TrimSpace(payload.AccessToken)
+	if token == "" {
+		token = strings.TrimSpace(payload.Token)
+	}
+	return resp.StatusCode, token, nil
 }
 
 // extractBearerParam extracts a parameter value from a Bearer Www-Authenticate header.
