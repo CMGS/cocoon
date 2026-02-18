@@ -6,7 +6,7 @@ Lightweight VM manager built on Cloud Hypervisor.
 
 - **UEFI boot** -- CLOUDHV.fd UEFI firmware by default (direct kernel boot for OCI VM images is Phase 2 planned)
 - **TPM 2.0 emulation** -- optional swtpm integration via `--tpm` flag for measured boot and guest attestation
-- **OCI VM image build** -- `cocoon image build` extracts kernel/rootfs from cloud images, packages as OCI with custom media types; Cocoonfile builds from local OCI `FROM` tags reuse base layers and append a customization delta layer
+- **OCI VM image build** -- `cocoon image build` extracts kernel/rootfs from cloud images, packages as OCI with custom media types; when Cocoonfile has `RUN`/`COPY`, build emits one additional customization delta layer (if filesystem changed), and local OCI `FROM` tags reuse existing base layers
 - **OCI VM image push/login** -- `cocoon image push` uploads built images to any OCI registry; `cocoon image login` stores credentials
 - **Content-addressed image cache** -- base images deduplicated by SHA-256 checksum
 - **COW overlays** -- qcow2 copy-on-write disks backed by shared base images
@@ -95,9 +95,24 @@ cocoon delete <vm>
 | `cocoon doctor` | Check system health, dependencies, and VM state consistency |
 | `cocoon version` | Show version, git revision, and build timestamp |
 
+For OCI image operations (`image inspect`, `image verify`, `image remove`, `image push`, and OCI-source `image tag`), if you omit a tag, Cocoon resolves refs with an implicit `:latest` fallback.
+
 ## Cocoonfile
 
-A Cocoonfile is a Dockerfile-like file for customizing VM images before packaging them as OCI. Supported directives: `FROM`, `RUN`, `COPY`, `LABEL`. When `FROM` resolves to a local OCI tag and `RUN`/`COPY` steps are present, Cocoon reuses existing kernel/rootfs layers and adds one new customization delta layer for that build; otherwise, it builds a fresh kernel+rootfs image from the resolved base source. See `cocoonfile.example` in the project root for a working example.
+A Cocoonfile is a Dockerfile-like file for customizing VM images before packaging them as OCI. Supported directives: `FROM`, `RUN`, `COPY`, `LABEL`.
+
+`FROM` resolution is local-first and Docker-like:
+- Local file path (`/`, `./`, `../`) or existing relative file next to Cocoonfile -> use local image file
+- Local OCI tag (including implicit `:latest`) -> materialize from local OCI store
+- `http://` / `https://` -> download as cloud image source
+- Other refs -> normalize Docker-like (`ubuntu` -> `docker.io/library/ubuntu:latest`, `cmgs/img` -> `docker.io/cmgs/img:latest`, explicit registry host stays on that host) and pull via image pipeline
+
+Layering behavior:
+- With no `RUN`/`COPY`: output is kernel layer + rootfs layer
+- With `RUN`/`COPY`: output is kernel layer + base rootfs layer + one customization delta layer for that build (no extra layer when filesystem delta is empty)
+- When `FROM` is a local OCI tag, existing base layers are reused and only the delta layer is newly emitted
+
+See `cocoonfile.example` in the project root for a working example.
 
 ```bash
 # Build from a Cocoonfile

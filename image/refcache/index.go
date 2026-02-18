@@ -37,6 +37,10 @@ func indexPath(cfg *config.CocoonConfig) string {
 	return filepath.Join(cfg.ManifestCacheDir(), "index.json")
 }
 
+func verifiedPath(cfg *config.CocoonConfig) string {
+	return filepath.Join(cfg.ManifestCacheDir(), "verified.json")
+}
+
 func indexLockPath(cfg *config.CocoonConfig) string {
 	return filepath.Join(cfg.ManifestCacheDir(), "index.lock")
 }
@@ -72,6 +76,83 @@ func withLock(cfg *config.CocoonConfig, fn func(indexFile) error) error {
 		return err
 	}
 	return fn(idx)
+}
+
+type verifiedFile map[string]string
+
+func loadVerified(cfg *config.CocoonConfig) (verifiedFile, error) {
+	vf := make(verifiedFile)
+	path := verifiedPath(cfg)
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return vf, nil
+	}
+	if err := utils.ReadJSON(path, &vf); err != nil {
+		return nil, fmt.Errorf("read verified index: %w", err)
+	}
+	return vf, nil
+}
+
+func saveVerified(cfg *config.CocoonConfig, vf verifiedFile) error {
+	return utils.AtomicWriteJSON(verifiedPath(cfg), vf)
+}
+
+// MarkVerified records that a base image has passed bootability verification.
+func MarkVerified(cfg *config.CocoonConfig, baseKey string) error {
+	if strings.TrimSpace(baseKey) == "" {
+		return nil
+	}
+	return withLock(cfg, func(_ indexFile) error {
+		vf, err := loadVerified(cfg)
+		if err != nil {
+			return err
+		}
+		vf[baseKey] = time.Now().UTC().Format(time.RFC3339)
+		if err := saveVerified(cfg, vf); err != nil {
+			return fmt.Errorf("save verified index: %w", err)
+		}
+		return nil
+	})
+}
+
+// IsVerified reports whether the base image has a successful verify record.
+func IsVerified(cfg *config.CocoonConfig, baseKey string) (bool, error) {
+	if strings.TrimSpace(baseKey) == "" {
+		return false, nil
+	}
+	var verified bool
+	err := withLock(cfg, func(_ indexFile) error {
+		vf, err := loadVerified(cfg)
+		if err != nil {
+			return err
+		}
+		_, verified = vf[baseKey]
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return verified, nil
+}
+
+// DeleteVerified removes verification state for a base image.
+func DeleteVerified(cfg *config.CocoonConfig, baseKey string) error {
+	if strings.TrimSpace(baseKey) == "" {
+		return nil
+	}
+	return withLock(cfg, func(_ indexFile) error {
+		vf, err := loadVerified(cfg)
+		if err != nil {
+			return err
+		}
+		if _, ok := vf[baseKey]; !ok {
+			return nil
+		}
+		delete(vf, baseKey)
+		if err := saveVerified(cfg, vf); err != nil {
+			return fmt.Errorf("save verified index: %w", err)
+		}
+		return nil
+	})
 }
 
 // Upsert records the source IMAGE_REF mapping to base_key.

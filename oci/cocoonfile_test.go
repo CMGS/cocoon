@@ -63,10 +63,10 @@ RUN echo done
 			wantSteps: 1,
 		},
 		{
-			name: "URL FROM rejected",
+			name: "URL FROM accepted",
 			input: `FROM https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img
 `,
-			wantErr: true,
+			wantFrom: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img",
 		},
 		{
 			name:    "missing FROM",

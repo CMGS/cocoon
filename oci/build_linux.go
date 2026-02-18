@@ -89,17 +89,25 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 	if err != nil {
 		return nil, fmt.Errorf("read build context: %w", err)
 	}
-	useDeltaLayer := shouldUseDeltaLayer(buildCtx, cf)
+	useReusedDeltaLayer := shouldUseDeltaLayer(buildCtx, cf)
+	useCustomizationDelta := cf != nil && len(cf.Steps) > 0 && !useReusedDeltaLayer
 
 	// Calculate total build steps.
 	// Base steps: detect kernel, extract kernel+initrd, build kernel layer,
 	// read PARTUUID, extract rootfs, build rootfs layer, assemble OCI layout, save tag.
 	totalSteps := 8
-	if useDeltaLayer {
+	if useReusedDeltaLayer {
 		totalSteps = 7
 	}
 	if cf != nil && len(cf.Steps) > 0 {
 		totalSteps += len(cf.Steps)
+	}
+	if useCustomizationDelta {
+		// Additional steps beyond base build:
+		// 1) prepare base rootfs snapshot
+		// 2) extract customized rootfs
+		// 3) build customization delta layer
+		totalSteps += 3
 	}
 	pw := NewProgressWriter(os.Stderr, totalSteps)
 
@@ -115,9 +123,20 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 		return nil, err
 	}
 
+	kernelImage := workImage
+	rootfsBaseImage := workImage
+	baseRootfsDir := ""
+	if useCustomizationDelta {
+		rootfsBaseImage = imagePath
+		baseRootfsDir, err = materializeBaseRootfsSnapshot(ctx, tmpDir, imagePath, pw)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	// Step 1-3: List /boot and detect kernel.
 	pw.Step("Detecting kernel...")
-	bootFiles, err := listBootFiles(ctx, workImage)
+	bootFiles, err := listBootFiles(ctx, kernelImage)
 	if err != nil {
 		return nil, fmt.Errorf("list boot files: %w", err)
 	}
@@ -128,7 +147,20 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 	}
 	pw.Detail(ki.Version)
 
-	layerInputs, err := prepareLayerInputs(ctx, tmpDir, workImage, ki, bootFiles, pw, buildCtx, useDeltaLayer)
+	layerInputs, err := prepareLayerInputs(
+		ctx,
+		tmpDir,
+		kernelImage,
+		rootfsBaseImage,
+		workImage,
+		baseRootfsDir,
+		ki,
+		bootFiles,
+		pw,
+		buildCtx,
+		useReusedDeltaLayer,
+		useCustomizationDelta,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +177,7 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 	pw.Detail(partUUID)
 
 	// Step 7-8: Build config blob and assemble OCI layout.
-	vmConfig, err := buildVMConfig(cfg, partUUID, cf, buildCtx, useDeltaLayer)
+	vmConfig, err := buildVMConfig(cfg, partUUID, cf, buildCtx, useReusedDeltaLayer)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +192,7 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 
 	pw.Step("Assembling OCI layout...")
 	baseLayoutPath := ""
-	if useDeltaLayer {
+	if useReusedDeltaLayer {
 		baseLayoutPath = buildCtx.BaseLayoutPath
 	}
 	info, err := assembleOCILayout(layoutWorkDir, vmConfig, layerInputs, baseLayoutPath, blobStore)
@@ -189,29 +221,41 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 func prepareLayerInputs(
 	ctx context.Context,
 	tmpDir string,
+	kernelImage string,
+	rootfsBaseImage string,
 	workImage string,
+	baseRootfsDir string,
 	ki *KernelInfo,
 	bootFiles []string,
 	pw *ProgressWriter,
 	buildCtx *BuildContext,
-	useDeltaLayer bool,
+	useReusedDeltaLayer bool,
+	useCustomizationDelta bool,
 ) ([]layerInput, error) {
 	layerInputs := make([]layerInput, 0, 4)
-	if useDeltaLayer {
+	if useReusedDeltaLayer {
 		if err := appendReusedBaseLayers(buildCtx, pw, &layerInputs); err != nil {
 			return nil, err
 		}
-		if err := appendDeltaRootfsLayer(ctx, tmpDir, workImage, buildCtx, pw, &layerInputs); err != nil {
+		if err := appendDeltaRootfsLayer(ctx, tmpDir, workImage, buildCtx.BaseRootfsDir, pw, &layerInputs); err != nil {
 			return nil, err
 		}
 		return layerInputs, nil
 	}
 
-	if err := appendNewKernelLayer(ctx, tmpDir, workImage, ki, pw, &layerInputs); err != nil {
+	if err := appendNewKernelLayer(ctx, tmpDir, kernelImage, ki, pw, &layerInputs); err != nil {
 		return nil, err
 	}
-	if err := appendRootfsLayerFromImage(ctx, tmpDir, workImage, ki, bootFiles, pw, &layerInputs); err != nil {
+	if err := appendRootfsLayerFromImage(ctx, tmpDir, rootfsBaseImage, ki, bootFiles, pw, &layerInputs); err != nil {
 		return nil, err
+	}
+	if useCustomizationDelta {
+		if strings.TrimSpace(baseRootfsDir) == "" {
+			return nil, fmt.Errorf("base rootfs snapshot path is empty")
+		}
+		if err := appendDeltaRootfsLayer(ctx, tmpDir, workImage, baseRootfsDir, pw, &layerInputs); err != nil {
+			return nil, err
+		}
 	}
 	return layerInputs, nil
 }
@@ -309,11 +353,33 @@ func appendRootfsLayerFromImage(
 	return nil
 }
 
+func materializeBaseRootfsSnapshot(
+	ctx context.Context,
+	tmpDir string,
+	imagePath string,
+	pw *ProgressWriter,
+) (string, error) {
+	pw.Step("Preparing base rootfs snapshot...")
+	rawTarPath := filepath.Join(tmpDir, "rootfs-base-raw.tar")
+	if err := extractRootfsTar(ctx, imagePath, rawTarPath); err != nil {
+		return "", fmt.Errorf("extract base rootfs: %w", err)
+	}
+
+	baseRootfsDir := filepath.Join(tmpDir, "rootfs-base")
+	if err := os.MkdirAll(baseRootfsDir, 0o755); err != nil { //nolint:gosec // local build temp workspace
+		return "", fmt.Errorf("create base rootfs dir: %w", err)
+	}
+	if err := utils.ExtractTarToDir(ctx, rawTarPath, baseRootfsDir); err != nil {
+		return "", fmt.Errorf("extract base rootfs tar to dir: %w", err)
+	}
+	return baseRootfsDir, nil
+}
+
 func appendDeltaRootfsLayer(
 	ctx context.Context,
 	tmpDir string,
 	workImage string,
-	buildCtx *BuildContext,
+	baseRootfsDir string,
 	pw *ProgressWriter,
 	layerInputs *[]layerInput,
 ) error {
@@ -333,7 +399,7 @@ func appendDeltaRootfsLayer(
 
 	pw.Step("Building customization delta layer...")
 	deltaTarPath := filepath.Join(tmpDir, "rootfs-delta-layer.tar")
-	deltaDigest, deltaSize, changeCount, err := generateDeltaLayerTar(buildCtx.BaseRootfsDir, modifiedRootfsDir, deltaTarPath)
+	deltaDigest, deltaSize, changeCount, err := generateDeltaLayerTar(baseRootfsDir, modifiedRootfsDir, deltaTarPath)
 	if err != nil {
 		return fmt.Errorf("generate customization delta layer: %w", err)
 	}

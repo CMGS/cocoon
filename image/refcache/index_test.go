@@ -146,3 +146,39 @@ func TestDeleteByBaseKey_ClearsAmbiguousAlias(t *testing.T) {
 		t.Fatalf("ResolveBaseKey=%q, want %q", got, baseKeyB)
 	}
 }
+
+func TestVerifiedIndexLifecycle(t *testing.T) {
+	cfg := testConfig(t)
+	baseKey := "aaaa1111bbbb2222_amd64"
+
+	verified, err := IsVerified(cfg, baseKey)
+	if err != nil {
+		t.Fatalf("IsVerified(initial): %v", err)
+	}
+	if verified {
+		t.Fatal("IsVerified(initial)=true, want false")
+	}
+
+	if err := MarkVerified(cfg, baseKey); err != nil {
+		t.Fatalf("MarkVerified: %v", err)
+	}
+
+	verified, err = IsVerified(cfg, baseKey)
+	if err != nil {
+		t.Fatalf("IsVerified(after mark): %v", err)
+	}
+	if !verified {
+		t.Fatal("IsVerified(after mark)=false, want true")
+	}
+
+	if err := DeleteVerified(cfg, baseKey); err != nil {
+		t.Fatalf("DeleteVerified: %v", err)
+	}
+	verified, err = IsVerified(cfg, baseKey)
+	if err != nil {
+		t.Fatalf("IsVerified(after delete): %v", err)
+	}
+	if verified {
+		t.Fatal("IsVerified(after delete)=true, want false")
+	}
+}
