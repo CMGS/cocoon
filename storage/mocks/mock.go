@@ -114,13 +114,13 @@ func (m *MockCOWManager) GetOverlayInfo(vmID string) (*storage.OverlayInfo, erro
 // Each method can be overridden by setting the corresponding Func field.
 // If a Func field is nil, the method returns zero values.
 type MockGarbageCollector struct {
-	CollectUnreferencedImagesFunc  func(gracePeriod time.Duration) ([]string, error)
-	CollectOrphanedOverlaysFunc    func() ([]string, error)
-	CollectOrphanedOCILayoutsFunc  func() ([]string, error)
+	CollectUnreferencedImagesFunc   func(gracePeriod time.Duration) ([]string, error)
+	CollectOrphanedOverlaysFunc     func() ([]string, error)
+	CollectOrphanedOCILayoutsFunc   func() ([]string, error)
 	CollectUnreferencedOCIBlobsFunc func() ([]string, error)
-	CollectTempFilesFunc           func(maxAge time.Duration) ([]string, error)
-	EmptyTrashFunc                 func(maxAge time.Duration) error
-	FullGCFunc                     func() error
+	CollectTempFilesFunc            func(maxAge time.Duration) ([]string, error)
+	EmptyTrashFunc                  func(maxAge time.Duration) error
+	FullGCFunc                      func() error
 }
 
 // Compile-time check that MockGarbageCollector implements storage.GarbageCollector.

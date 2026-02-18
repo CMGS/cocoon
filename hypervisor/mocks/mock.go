@@ -18,19 +18,19 @@ import (
 // Each method can be overridden by setting the corresponding Func field.
 // If a Func field is nil, the method returns zero values.
 type MockClient struct {
-	LaunchFunc          func(ctx context.Context, vmID string, cfg *types.VMConfig) (int, error)
-	ShutdownFunc        func(ctx context.Context, vmID string, timeout time.Duration) error
-	ForceKillFunc       func(vmID string) error
-	IsAliveFunc         func(vmID string) bool
-	CreateVMFunc        func(ctx context.Context, socketPath string, vmCfg *hypervisor.CHVMConfig) error
-	BootVMFunc          func(ctx context.Context, socketPath string) error
-	ShutdownVMFunc      func(ctx context.Context, socketPath string) error
-	PowerButtonFunc     func(ctx context.Context, socketPath string) error
-	DeleteVMFunc        func(ctx context.Context, socketPath string) error
-	GetVMInfoFunc           func(ctx context.Context, socketPath string) (*hypervisor.CHVMInfo, error)
-	GetConsolePTYPathFunc   func(ctx context.Context, socketPath string) (string, error)
-	WaitForSocketFunc       func(ctx context.Context, socketPath string, timeout time.Duration) error
-	CheckSocketConnFunc func(socketPath string) error
+	LaunchFunc            func(ctx context.Context, vmID string, cfg *types.VMConfig) (int, error)
+	ShutdownFunc          func(ctx context.Context, vmID string, timeout time.Duration) error
+	ForceKillFunc         func(vmID string) error
+	IsAliveFunc           func(vmID string) bool
+	CreateVMFunc          func(ctx context.Context, socketPath string, vmCfg *hypervisor.CHVMConfig) error
+	BootVMFunc            func(ctx context.Context, socketPath string) error
+	ShutdownVMFunc        func(ctx context.Context, socketPath string) error
+	PowerButtonFunc       func(ctx context.Context, socketPath string) error
+	DeleteVMFunc          func(ctx context.Context, socketPath string) error
+	GetVMInfoFunc         func(ctx context.Context, socketPath string) (*hypervisor.CHVMInfo, error)
+	GetConsolePTYPathFunc func(ctx context.Context, socketPath string) (string, error)
+	WaitForSocketFunc     func(ctx context.Context, socketPath string, timeout time.Duration) error
+	CheckSocketConnFunc   func(socketPath string) error
 }
 
 // Compile-time check that MockClient implements hypervisor.Client.

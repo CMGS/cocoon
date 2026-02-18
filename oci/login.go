@@ -14,6 +14,8 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
+
+	cflock "github.com/CMGS/cocoon/lock/flock"
 )
 
 const registryHTTPTimeout = 30 * time.Second
@@ -84,6 +86,19 @@ func Login(ctx context.Context, registry, username, password string) error {
 		return err
 	}
 
+	dir := filepath.Dir(configPath)
+	if mkdirErr := os.MkdirAll(dir, 0o700); mkdirErr != nil {
+		return fmt.Errorf("create config directory: %w", mkdirErr)
+	}
+
+	// Lock to prevent concurrent Login calls from losing each other's credentials.
+	lockPath := configPath + ".lock"
+	fl := cflock.New(lockPath)
+	if lockErr := fl.Lock(); lockErr != nil {
+		return fmt.Errorf("acquire config lock: %w", lockErr)
+	}
+	defer fl.Unlock() //nolint:errcheck
+
 	// Read existing config or create empty.
 	cfg := &dockerAuthConfig{Auths: make(map[string]dockerAuthEntry)}
 	if data, readErr := os.ReadFile(configPath); readErr == nil { //nolint:gosec // G304: path is derived from user home dir
@@ -102,11 +117,6 @@ func Login(ctx context.Context, registry, username, password string) error {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
-	}
-
-	dir := filepath.Dir(configPath)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create config directory: %w", err)
 	}
 
 	tmpFile := configPath + ".tmp"

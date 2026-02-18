@@ -396,5 +396,3 @@ func assertContainsFlag(t *testing.T, args []string, key, value string) {
 	}
 	t.Errorf("expected args to contain %s %s, got %v", key, value, args)
 }
-
-
