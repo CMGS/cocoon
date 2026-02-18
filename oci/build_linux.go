@@ -5,6 +5,7 @@ package oci
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -74,21 +76,9 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 	defer os.RemoveAll(tmpDir) //nolint:errcheck // best-effort cleanup
 
 	// If Cocoonfile has customization steps, work on a writable copy.
-	workImage := imagePath
-	if cf != nil && len(cf.Steps) > 0 {
-		workCopy := filepath.Join(tmpDir, "work.qcow2")
-		if err = copyFile(imagePath, workCopy); err != nil {
-			return nil, fmt.Errorf("copy image for customization: %w", err)
-		}
-		workImage = workCopy
-
-		// Apply each RUN/COPY step via virt-customize.
-		for i, step := range cf.Steps {
-			pw.Step(fmt.Sprintf("%s %s", strings.ToUpper(step.Type), step.Args))
-			if err = applyStep(ctx, workImage, step); err != nil {
-				return nil, fmt.Errorf("Cocoonfile step %d (%s): %w", i+1, step.Type, err)
-			}
-		}
+	workImage, err := applyCocoonfileSteps(ctx, imagePath, tmpDir, cf, pw)
+	if err != nil {
+		return nil, err
 	}
 
 	// Step 1-3: List /boot and detect kernel.
@@ -127,7 +117,7 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 
 	// Step 5: Read PARTUUID.
 	pw.Step("Reading PARTUUID...")
-	partUUID, err := readPartUUID(ctx, workImage)
+	partUUID, err := readPartUUID(ctx, workImage, tmpDir)
 	if err != nil {
 		return nil, fmt.Errorf("read PARTUUID: %w", err)
 	}
@@ -143,30 +133,7 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 		return nil, fmt.Errorf("extract rootfs: %w", err)
 	}
 
-	// Exclude all boot kernel/initrd files from rootfs (they're in the kernel layer).
-	// This covers not just the selected kernel+initrd but all vmlinuz*, initrd*, and
-	// initramfs* files in /boot to avoid duplicating data.
-	excludePaths := []string{
-		strings.TrimPrefix(ki.KernelPath, "/"),
-		strings.TrimPrefix(ki.InitrdPath, "/"),
-	}
-	for _, bf := range bootFiles {
-		base := filepath.Base(bf)
-		if strings.HasPrefix(base, "vmlinuz") || strings.HasPrefix(base, "initrd") || strings.HasPrefix(base, "initramfs") {
-			p := strings.TrimPrefix(bf, "/")
-			// Avoid duplicates.
-			isDup := false
-			for _, ep := range excludePaths {
-				if ep == p {
-					isDup = true
-					break
-				}
-			}
-			if !isDup {
-				excludePaths = append(excludePaths, p)
-			}
-		}
-	}
+	excludePaths := bootExcludePaths(ki, bootFiles)
 	pw.Step("Building rootfs layer...")
 	rootfsTarPath := filepath.Join(tmpDir, "rootfs-layer.tar")
 	rootfsDigest, rootfsSize, err := rewriteDeterministicTar(rawTarPath, rootfsTarPath, excludePaths)
@@ -240,6 +207,56 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 	}, nil
 }
 
+// bootExcludePaths returns paths to exclude from the rootfs layer. It covers
+// the selected kernel+initrd and all vmlinuz*, initrd*, initramfs* in /boot.
+func bootExcludePaths(ki *KernelInfo, bootFiles []string) []string {
+	paths := []string{
+		strings.TrimPrefix(ki.KernelPath, "/"),
+		strings.TrimPrefix(ki.InitrdPath, "/"),
+	}
+	for _, bf := range bootFiles {
+		base := filepath.Base(bf)
+		if strings.HasPrefix(base, "vmlinuz") || strings.HasPrefix(base, "initrd") || strings.HasPrefix(base, "initramfs") {
+			p := strings.TrimPrefix(bf, "/")
+			if !slices.Contains(paths, p) {
+				paths = append(paths, p)
+			}
+		}
+	}
+	return paths
+}
+
+// applyCocoonfileSteps prepares a writable copy of the base image (if needed)
+// and applies Cocoonfile RUN/COPY steps. Returns the work image path.
+func applyCocoonfileSteps(ctx context.Context, imagePath, tmpDir string, cf *Cocoonfile, pw *ProgressWriter) (string, error) {
+	if cf == nil || len(cf.Steps) == 0 {
+		return imagePath, nil
+	}
+	workCopy := filepath.Join(tmpDir, "work.qcow2")
+	if err := copyFile(imagePath, workCopy); err != nil {
+		return "", fmt.Errorf("copy image for customization: %w", err)
+	}
+
+	// Apply each RUN/COPY step via virt-customize.
+	// Resolve COPY source paths relative to the Cocoonfile's directory
+	// so that --file /path/to/Cocoonfile works from any working directory.
+	for i, step := range cf.Steps {
+		resolved := step
+		if resolved.Type == "copy" && cf.BaseDir != "" {
+			parts := strings.Fields(resolved.Args)
+			if len(parts) >= 2 && !filepath.IsAbs(parts[0]) {
+				parts[0] = filepath.Join(cf.BaseDir, parts[0])
+				resolved.Args = strings.Join(parts, " ")
+			}
+		}
+		pw.Step(fmt.Sprintf("%s %s", strings.ToUpper(resolved.Type), resolved.Args))
+		if err := applyStep(ctx, workCopy, resolved); err != nil {
+			return "", fmt.Errorf("Cocoonfile step %d (%s): %w", i+1, resolved.Type, err)
+		}
+	}
+	return workCopy, nil
+}
+
 // applyStep executes a single Cocoonfile RUN or COPY step via virt-customize.
 //
 // COPY semantics: virt-customize --copy-in copies src INTO the dest directory.
@@ -301,10 +318,11 @@ func extractGuestFile(ctx context.Context, imagePath, guestPath, localPath strin
 	return nil
 }
 
-// readPartUUID dynamically detects the root partition and reads its GPT PARTUUID.
-// It uses guestfish inspect-os to find the root device, then extracts the disk
-// and partition number to query the PARTUUID via part-get-gpt-guid.
-func readPartUUID(ctx context.Context, imagePath string) (string, error) {
+// readPartUUID dynamically detects the root partition and reads its PARTUUID.
+// For GPT images, it reads the GPT GUID via guestfish part-get-gpt-guid.
+// For MBR images, it reads the 32-bit disk signature from MBR offset 440–443
+// and synthesizes a PARTUUID in Linux's native MBR format: {8-hex-sig}-{2-digit-partnum}.
+func readPartUUID(ctx context.Context, imagePath, tmpDir string) (string, error) {
 	// Use guestfish inspect to find the root partition dynamically.
 	// inspect-get-mountpoints returns mountpoints mapped to devices.
 	script := fmt.Sprintf(`add %s
@@ -354,27 +372,28 @@ part-get-gpt-guid %s %d
 		}
 	}
 
-	// Fallback for MBR images: synthesize a pseudo-UUID from the MBR disk ID
-	// and partition number. MBR disks have no GPT GUID but guestfish can
-	// return the 32-bit MBR disk identifier via part-get-mbr-id.
-	script3 := fmt.Sprintf(`add %s
-run
-part-get-mbr-id %s %d
-`, imagePath, disk, partNum)
-	cmd3 := exec.CommandContext(ctx, "guestfish") //nolint:gosec
-	cmd3.Stdin = strings.NewReader(script3)
-	out3, err := cmd3.Output()
+	// Fallback for MBR images: read the 32-bit disk signature from MBR bytes
+	// 440–443 using qemu-img dd (works with qcow2 and raw), then synthesize a
+	// PARTUUID in Linux's native MBR format: {8-hex-sig}-{2-digit-partnum}.
+	// This matches the kernel's blkdev_parts_gen_uuid() for MBR partitions,
+	// so root=PARTUUID=<sig>-<partnum> will resolve correctly at boot.
+	mbrBinPath := filepath.Join(tmpDir, "mbr-sector.bin")
+	cmd3 := exec.CommandContext(ctx, "qemu-img", "dd", "if="+imagePath, "of="+mbrBinPath, "bs=512", "count=1") //nolint:gosec
+	if out3, ddErr := cmd3.CombinedOutput(); ddErr != nil {
+		return "", fmt.Errorf("qemu-img dd (read MBR sector): %s: %w", strings.TrimSpace(string(out3)), ddErr)
+	}
+	mbrData, err := os.ReadFile(mbrBinPath) //nolint:gosec // G304: path in build tmpDir
 	if err != nil {
-		return "", fmt.Errorf("guestfish: no GPT GUID and MBR ID lookup failed for %s partition %d: %w", disk, partNum, err)
+		return "", fmt.Errorf("read MBR sector file: %w", err)
 	}
-	mbrID := strings.TrimSpace(string(out3))
-	if mbrID == "" {
-		return "", fmt.Errorf("empty PARTUUID for %s partition %d (neither GPT GUID nor MBR ID found)", disk, partNum)
+	if len(mbrData) < 444 {
+		return "", fmt.Errorf("MBR sector too short (%d bytes), cannot read disk signature", len(mbrData))
 	}
-	// Synthesize a UUID-like string from MBR ID + partition number.
-	// Format: {mbrID}-{partNum:02d} padded to look like a UUID.
-	syntheticUUID := fmt.Sprintf("%s-%02d", mbrID, partNum)
-	return syntheticUUID, nil
+	sig := binary.LittleEndian.Uint32(mbrData[440:444])
+	if sig == 0 {
+		return "", fmt.Errorf("MBR disk signature is zero for %s (image may lack an MBR disk ID)", disk)
+	}
+	return fmt.Sprintf("%08x-%02d", sig, partNum), nil
 }
 
 // parseDevicePartition splits a device path like "/dev/sda2" into disk "/dev/sda" and partition 2.
@@ -575,12 +594,24 @@ func isValidUUID(s string) bool {
 	return true
 }
 
-// isValidMBRPartUUID checks that s matches an MBR-style pseudo PARTUUID
-// synthesized from the MBR disk ID and partition number (e.g., "0x12345678-02").
+// isValidMBRPartUUID checks that s matches the Linux native MBR PARTUUID format:
+// {8 hex chars}-{2 digit partition number} (e.g., "a1b2c3d4-02").
 func isValidMBRPartUUID(s string) bool {
-	// Must contain at least one dash and have non-empty parts.
-	idx := strings.LastIndexByte(s, '-')
-	return idx > 0 && idx < len(s)-1
+	// Format: xxxxxxxx-dd (11 characters total).
+	if len(s) != 11 || s[8] != '-' {
+		return false
+	}
+	for _, c := range s[:8] {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	for _, c := range s[9:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func copyFile(src, dst string) error {

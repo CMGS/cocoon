@@ -102,15 +102,24 @@ type BootCheckResult struct {
 
 	// KernelFound indicates whether a Linux kernel was detected.
 	KernelFound bool `json:"kernel_found"`
+	// KernelChecked indicates the kernel check completed (guestfish ran without error).
+	// When false and KernelFound is false, the result is indeterminate, not negative.
+	KernelChecked bool `json:"kernel_checked"`
 
 	// InitrdFound indicates whether an initrd/initramfs was detected.
 	InitrdFound bool `json:"initrd_found"`
+	// InitrdChecked indicates the initrd check completed.
+	InitrdChecked bool `json:"initrd_checked"`
 
 	// SystemdFound indicates whether systemd was detected as the init system.
 	SystemdFound bool `json:"systemd_found"`
+	// SystemdChecked indicates the systemd check completed.
+	SystemdChecked bool `json:"systemd_checked"`
 
 	// BootloaderFound indicates whether a UEFI bootloader (GRUB) was detected.
 	BootloaderFound bool `json:"bootloader_found"`
+	// BootloaderChecked indicates the bootloader check completed.
+	BootloaderChecked bool `json:"bootloader_checked"`
 }
 
 // CachedImage describes a base image stored in the image cache.

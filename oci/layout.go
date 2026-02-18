@@ -107,6 +107,7 @@ func LayoutSize(layoutPath string) (int64, error) {
 	}
 
 	var total int64
+	total += idx.Manifests[0].Size // manifest blob itself
 	total += manifest.Config.Size
 	for _, layer := range manifest.Layers {
 		total += layer.Size
