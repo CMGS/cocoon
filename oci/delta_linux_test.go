@@ -142,6 +142,13 @@ func TestGenerateDeltaLayerTar_PermissionOnlyChangeSetuid(t *testing.T) {
 	if err := os.Chmod(modifiedPath, 0o4755); err != nil {
 		t.Fatalf("chmod modified setuid: %v", err)
 	}
+	modifiedInfo, err := os.Stat(modifiedPath)
+	if err != nil {
+		t.Fatalf("stat modified file: %v", err)
+	}
+	if modifiedInfo.Mode()&os.ModeSetuid == 0 {
+		t.Skip("filesystem does not preserve setuid bit for test file")
+	}
 
 	outTar := filepath.Join(t.TempDir(), "delta-setuid.tar")
 	_, size, changeCount, err := generateDeltaLayerTar(baseDir, modifiedDir, outTar)
