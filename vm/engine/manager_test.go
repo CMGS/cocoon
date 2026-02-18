@@ -15,6 +15,7 @@ import (
 	"github.com/CMGS/cocoon/image"
 	imgmocks "github.com/CMGS/cocoon/image/mocks"
 	"github.com/CMGS/cocoon/image/refcache"
+	"github.com/CMGS/cocoon/oci"
 	storemocks "github.com/CMGS/cocoon/storage/mocks"
 	"github.com/CMGS/cocoon/types"
 	"github.com/CMGS/cocoon/utils"
@@ -144,6 +145,9 @@ func TestCreate_HappyPath(t *testing.T) {
 	}
 	if vmCfg.Arch != "amd64" {
 		t.Errorf("Arch = %q, want %q", vmCfg.Arch, "amd64")
+	}
+	if vmCfg.ImageType != types.VMImageTypeQCOW2 {
+		t.Errorf("ImageType = %q, want %q", vmCfg.ImageType, types.VMImageTypeQCOW2)
 	}
 
 	// Verify config.json written to disk.
@@ -365,6 +369,35 @@ func TestCreate_InvalidBootStrategy(t *testing.T) {
 	}
 	if got, want := err.Error(), `invalid boot strategy: "invalid_strategy"`; !strings.Contains(got, want) {
 		t.Fatalf("Create error = %q, want substring %q", got, want)
+	}
+}
+
+func TestCreate_RejectsLocalOCITagUntilRuntimeEnabled(t *testing.T) {
+	t.Parallel()
+	td := setupTestManager(t)
+
+	store := oci.NewStore(td.cfg)
+	if err := store.SaveTag("demo:latest", filepath.Join(t.TempDir(), "layout"), "sha256:1111"); err != nil {
+		t.Fatalf("SaveTag: %v", err)
+	}
+
+	prepareCalled := false
+	td.imgMgr.PrepareFunc = func(_ context.Context, _ string) (*image.ImageIdentity, string, error) {
+		prepareCalled = true
+		return defaultMockIdentity(), filepath.Join(td.cfg.ImageCacheDir(), "unused.qcow2"), nil
+	}
+
+	_, err := td.mgr.Create(t.Context(), &vm.CreateOptions{
+		Image: "demo",
+	})
+	if err == nil {
+		t.Fatal("expected local OCI runtime error, got nil")
+	}
+	if !strings.Contains(err.Error(), "local OCI VM tag") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if prepareCalled {
+		t.Fatal("imgMgr.Prepare should not be called for unresolved OCI runtime path")
 	}
 }
 
@@ -997,6 +1030,9 @@ func TestCreate_DefaultValues(t *testing.T) {
 	}
 	if vmCfg.BootStrategy != types.DefaultBootStrategy {
 		t.Errorf("BootStrategy = %q, want default %q", vmCfg.BootStrategy, types.DefaultBootStrategy)
+	}
+	if vmCfg.ImageType != types.VMImageTypeQCOW2 {
+		t.Errorf("ImageType = %q, want default %q", vmCfg.ImageType, types.VMImageTypeQCOW2)
 	}
 }
 

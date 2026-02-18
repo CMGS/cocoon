@@ -68,12 +68,11 @@ func parseCreateOptions(c *cli.Context, cmdName string) (*vm.CreateOptions, erro
 		return nil, fmt.Errorf("IMAGE argument required\n\nUsage: cocoon %s IMAGE [flags]", cmdName)
 	}
 
-	// Auto-determine boot strategy: --oci uses direct kernel boot, otherwise UEFI.
+	// Auto image-type detection is handled by vm.Manager.Create.
+	// Hidden --oci remains a debug override to request direct boot explicitly.
 	var bootStrategy types.BootStrategy
 	if c.Bool("oci") {
-		return nil, fmt.Errorf("--oci (direct kernel boot) is not yet implemented; planned for Phase 2 (see docs/04.1-oci-vm-images.md)")
-	} else {
-		bootStrategy = types.BootStrategyUEFI
+		bootStrategy = types.BootStrategyDirect
 	}
 
 	cpus := c.Int("cpus")
