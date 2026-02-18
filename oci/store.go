@@ -26,12 +26,12 @@ func NewStore(cfg *config.CocoonConfig) *Store {
 }
 
 // LayoutDir returns the directory path for an OCI layout keyed by layoutKey.
-// Uses first 16 chars of sha256(layoutKey) to avoid filesystem issues with
-// registry references containing slashes and colons.
+// It uses the full sha256(layoutKey) hex digest to avoid truncated-hash
+// collisions between different tag+manifest combinations.
 func (s *Store) LayoutDir(layoutKey string) string {
 	h := sha256.Sum256([]byte(layoutKey))
-	prefix := fmt.Sprintf("%x", h[:8]) // 16 hex chars
-	return filepath.Join(s.cfg.OCILayoutDir(), prefix)
+	keyHash := fmt.Sprintf("%x", h[:]) // 64 hex chars
+	return filepath.Join(s.cfg.OCILayoutDir(), keyHash)
 }
 
 // SaveTag records a tag-to-layout mapping in the tag index.
@@ -87,6 +87,20 @@ func (s *Store) saveTagTxnLocked(tag, layoutPath, manifestDigest string) error {
 		}
 	}
 	return nil
+}
+
+// HasTag reports whether the tag exists in the local OCI build tag index.
+// Unlike ResolveTag, this does not verify layout path existence on disk.
+func (s *Store) HasTag(tag string) (bool, error) {
+	exists := false
+	err := s.withLock(func(idx *TagIndex) error {
+		_, exists = idx.Tags[tag]
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 // ResolveTag looks up a tag in the index and returns the layout path.

@@ -10,10 +10,17 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 )
+
+const registryHTTPTimeout = 30 * time.Second
+
+var registryHTTPClient = &http.Client{
+	Timeout: registryHTTPTimeout,
+}
 
 // cocoonConfigPath returns the path to ~/.cocoon/config.json.
 func cocoonConfigPath() (string, error) {
@@ -128,7 +135,7 @@ func pingRegistry(ctx context.Context, registry, username, password string) erro
 	}
 	req.SetBasicAuth(username, password)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := registryHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("ping %s: %w", registry, err)
 	}
@@ -237,7 +244,7 @@ func requestBearerToken(ctx context.Context, tokenURL, username, password string
 	}
 	req.SetBasicAuth(username, password)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := registryHTTPClient.Do(req)
 	if err != nil {
 		return 0, "", err
 	}

@@ -149,14 +149,19 @@ func pullOCIRef(ctx context.Context, root, ref, expectedManifestDigest string) (
 	if expectedManifestDigest != "" {
 		pullRef = ref + "@sha256:" + expectedManifestDigest
 	}
-	if _, err := runCmd(ctx, "buildah", "--root", root, "pull", pullRef); err == nil {
-		return pullRef, nil
+	if stableRef, err := runBuildahPull(ctx, root, pullRef); err == nil {
+		// Keep digest-pinned reference when digest pull succeeds.
+		if expectedManifestDigest != "" {
+			return pullRef, nil
+		}
+		return stableRef, nil
 	} else if expectedManifestDigest == "" {
 		return "", classifyBuildahError(fmt.Errorf("buildah pull %s: %w", ref, err))
 	}
 
 	// Fall back to tag-based pull for registries that don't accept digest refs.
-	if _, fallbackErr := runCmd(ctx, "buildah", "--root", root, "pull", ref); fallbackErr != nil {
+	stableRef, fallbackErr := runBuildahPull(ctx, root, ref)
+	if fallbackErr != nil {
 		return "", classifyBuildahError(fmt.Errorf("buildah pull %s: %w", ref, fallbackErr))
 	}
 
@@ -171,7 +176,54 @@ func pullOCIRef(ctx context.Context, root, ref, expectedManifestDigest string) (
 			ref, expectedManifestDigest, latestIdentity.ManifestDigest,
 		))
 	}
-	return ref, nil
+	if stableRef == ref {
+		return "", types.NewPermanentError(fmt.Errorf(
+			"buildah pull fallback for %s did not return an immutable local ref; refusing mutable tag for buildah from",
+			ref,
+		))
+	}
+	return stableRef, nil
+}
+
+func runBuildahPull(ctx context.Context, root, ref string) (string, error) {
+	out, err := runCmd(ctx, "buildah", "--root", root, "pull", "--quiet", ref)
+	if err != nil {
+		return "", err
+	}
+	return stableFromRefForPulledImage(ref, out), nil
+}
+
+func stableFromRefForPulledImage(defaultRef string, out []byte) string {
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "" {
+		return defaultRef
+	}
+	lines := strings.Split(trimmed, "\n")
+	last := strings.TrimSpace(lines[len(lines)-1])
+	if last == "" {
+		return defaultRef
+	}
+	// Prefer immutable local image IDs or digest refs as buildah from targets.
+	if isLikelyImageID(last) || strings.Contains(last, "@sha256:") {
+		return last
+	}
+	return defaultRef
+}
+
+func isLikelyImageID(v string) bool {
+	if withoutPrefix, ok := strings.CutPrefix(v, "sha256:"); ok {
+		v = withoutPrefix
+	}
+	if len(v) != 64 {
+		return false
+	}
+	for _, ch := range v {
+		isHex := (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')
+		if !isHex {
+			return false
+		}
+	}
+	return true
 }
 
 // runCmd executes a command and returns its combined stdout output.

@@ -41,7 +41,7 @@ Lock file paths are additionally documented in [06-concurrency.md](./06-concurre
 │   │   └── {checksum_16}_{arch}.lock     # Per-image conversion lock
 │   └── oci/                              # OCI VM image build cache (shared blob store)
 │       ├── blobs/sha256/{hex}            # Shared content-addressed blob store
-│       └── layouts/{hash16}/             # OCI layouts (keyed by tag+manifest, blobs are hardlinks)
+│       └── layouts/{hash64}/             # OCI layouts (keyed by full tag+manifest hash, blobs are hardlinks)
 │           ├── oci-layout
 │           ├── index.json
 │           └── blobs/sha256/{hex}        # Hardlinks to ../../blobs/sha256/{hex}
@@ -100,7 +100,7 @@ Phase 2 Planned Paths:
 │   ├── OCI VM Image Build Cache (docs/04.1-oci-vm-images.md) — Implemented
 │   │   └── cache/oci/
 │   │       ├── blobs/sha256/{hex}              # Shared content-addressed blob store
-│   │       └── layouts/{hash16}/               # OCI layouts (keyed by tag+manifest)
+│   │       └── layouts/{hash64}/               # OCI layouts (keyed by full tag+manifest hash)
 │   │           ├── oci-layout
 │   │           ├── index.json
 │   │           └── blobs/sha256/{hex}          # Hardlinks to shared blob store
