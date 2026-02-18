@@ -67,8 +67,7 @@ func generateDeltaLayerTar(baseRootfsDir, modifiedRootfsDir, outTarPath string) 
 	all := deletions
 	all = append(all, updates...)
 	if len(all) == 0 {
-		emptyDigest := sha256.Sum256(nil)
-		return hex.EncodeToString(emptyDigest[:]), 0, 0, nil
+		return "", 0, 0, nil
 	}
 
 	sort.Slice(all, func(i, j int) bool {
@@ -386,7 +385,7 @@ func snapshotRootfs(rootDir string) (map[string]fileEntry, error) {
 		entry := fileEntry{
 			AbsPath: path,
 			RelPath: rel,
-			Mode:    int64(mode.Perm()),
+			Mode:    modeToUnixPerm(mode),
 			Size:    info.Size(),
 		}
 		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
@@ -418,4 +417,18 @@ func snapshotRootfs(rootDir string) (map[string]fileEntry, error) {
 		return nil, err
 	}
 	return entries, nil
+}
+
+func modeToUnixPerm(mode fs.FileMode) int64 {
+	unixMode := int64(mode.Perm())
+	if mode&os.ModeSetuid != 0 {
+		unixMode |= 0o4000
+	}
+	if mode&os.ModeSetgid != 0 {
+		unixMode |= 0o2000
+	}
+	if mode&os.ModeSticky != 0 {
+		unixMode |= 0o1000
+	}
+	return unixMode
 }
