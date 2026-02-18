@@ -1200,8 +1200,9 @@ func imagesCommand() *cli.Command {
                 Usage:     "Pull and cache an image without creating a VM",
                 ArgsUsage: "IMAGE_REF",
                 Flags: []cli.Flag{
-                    // Note: --oci flag on pull is Phase 2 (not yet implemented).
-                    // Image type is auto-detected from the reference format.
+                    // Current behavior: image type is inferred from IMAGE_REF.
+                    // Future direct-kernel OCI pull flow (Phase 2) may add
+                    // explicit mode selection.
                     &cli.BoolFlag{
                         Name:  "skip-verify",
                         Usage: "skip bootability verification after pull",
