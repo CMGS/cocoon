@@ -101,7 +101,12 @@ func gcAction(c *cli.Context) error {
 	}
 
 	// Phase 6: Empty trash.
+	// When grace period is zero (aggressive mode), also bypass trash retention
+	// so that recently trashed items are permanently deleted.
 	trashRetention := time.Duration(app.cfg.GCTrashRetentDays) * 24 * time.Hour
+	if gracePeriod == 0 {
+		trashRetention = 0
+	}
 	if err := app.gc.EmptyTrash(trashRetention); err != nil {
 		return fmt.Errorf("empty trash: %w", err)
 	}
@@ -193,7 +198,12 @@ func gcDryRun(app *appContext, gracePeriod time.Duration) error {
 	}
 
 	// Phase 6 preview: old trash items (>retention).
+	// When grace period is zero (aggressive mode), also bypass trash retention
+	// so that recently trashed items are shown as candidates.
 	trashRetention := time.Duration(app.cfg.GCTrashRetentDays) * 24 * time.Hour
+	if gracePeriod == 0 {
+		trashRetention = 0
+	}
 	trashCandidates, err := previewOldFileCandidates(app.cfg.TrashDir(), trashRetention)
 	if err != nil {
 		return fmt.Errorf("preview trash cleanup: %w", err)
