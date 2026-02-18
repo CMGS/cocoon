@@ -192,7 +192,7 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inc
 	}
 
 	// Detect orphaned cloud-hypervisor and swtpm processes not tracked by any VM.
-	orphans := detectOrphanedProcesses(knownPIDs)
+	orphans := detectOrphanedProcesses(knownPIDs, m.cfg.CHBinary)
 	inconsistencies = append(inconsistencies, orphans...)
 
 	return inconsistencies, nil
@@ -310,10 +310,11 @@ func (m *manager) determineActualState(meta *types.VMMetadataFile, vmCfg *types.
 		socketPath = vmCfg.SocketPath
 	}
 
+	expectedProc := meta.HypervisorProcessName(m.cfg.CHBinary)
 	processRunning := utils.IsProcessAlive(pid)
 	processValid := false
 	if processRunning {
-		processValid = utils.ValidateProcess(pid, "cloud-hypervisor")
+		processValid = utils.ValidateProcess(pid, expectedProc)
 	}
 
 	socketConnectable := false
@@ -405,7 +406,7 @@ func (m *manager) detectZombieResources(vmID string, meta *types.VMMetadataFile,
 	}
 	if socketPath != "" {
 		if _, err := os.Stat(socketPath); err == nil {
-			if !utils.ValidateProcess(meta.ProcessPID, "cloud-hypervisor") {
+			if !utils.ValidateProcess(meta.ProcessPID, meta.HypervisorProcessName(m.cfg.CHBinary)) {
 				zombies = append(zombies, vm.Inconsistency{
 					VMID:     vmID,
 					Type:     vm.InconsistencyZombieSocket,
@@ -449,8 +450,8 @@ func (m *manager) applyFix(inc *vm.Inconsistency, force bool) error {
 			return err
 		}
 		if meta.ProcessPID > 0 {
-			// Only kill if it is actually cloud-hypervisor (guard against PID reuse).
-			if utils.ValidateProcess(meta.ProcessPID, "cloud-hypervisor") {
+			// Only kill if it is actually the hypervisor (guard against PID reuse).
+			if utils.ValidateProcess(meta.ProcessPID, meta.HypervisorProcessName(m.cfg.CHBinary)) {
 				_ = syscall.Kill(meta.ProcessPID, syscall.SIGKILL)
 			}
 			meta.ProcessPID = 0
@@ -561,8 +562,8 @@ func (m *manager) fixStateMismatch(inc *vm.Inconsistency, force bool) error {
 
 		// Kill zombie process if present and force is set.
 		if force && meta.ProcessPID > 0 && utils.IsProcessAlive(meta.ProcessPID) {
-			// Only kill if it is actually cloud-hypervisor.
-			if utils.ValidateProcess(meta.ProcessPID, "cloud-hypervisor") {
+			// Only kill if it is actually the hypervisor.
+			if utils.ValidateProcess(meta.ProcessPID, meta.HypervisorProcessName(m.cfg.CHBinary)) {
 				_ = syscall.Kill(meta.ProcessPID, syscall.SIGKILL)
 			}
 		}
@@ -614,11 +615,13 @@ func isStuckInState(updatedAt string, timeout time.Duration) bool {
 	return time.Since(t) > timeout
 }
 
-// detectOrphanedProcesses scans /proc for cloud-hypervisor and swtpm processes
+// detectOrphanedProcesses scans /proc for hypervisor and swtpm processes
 // that are not tracked by any VM's metadata.
+// chBinary is the configured hypervisor binary name (e.g. "cloud-hypervisor").
 // Only works on Linux where /proc is available; on other platforms it logs a
 // warning and returns nil.
-func detectOrphanedProcesses(knownPIDs map[int]string) []vm.Inconsistency {
+func detectOrphanedProcesses(knownPIDs map[int]string, chBinary string) []vm.Inconsistency {
+	hvName := (&types.VMMetadataFile{}).HypervisorProcessName(chBinary)
 	var orphans []vm.Inconsistency
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
@@ -635,7 +638,7 @@ func detectOrphanedProcesses(knownPIDs map[int]string) []vm.Inconsistency {
 		if _, known := knownPIDs[pid]; known {
 			continue
 		}
-		for _, procName := range []string{"cloud-hypervisor", "swtpm"} {
+		for _, procName := range []string{hvName, "swtpm"} {
 			if utils.ValidateProcess(pid, procName) {
 				orphans = append(orphans, vm.Inconsistency{
 					Type:     vm.InconsistencyZombieProcess,

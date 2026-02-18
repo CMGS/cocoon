@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -326,11 +327,12 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 
 	// Write initial metadata.json in CREATING state.
 	meta := &types.VMMetadataFile{
-		VMID:          vmID,
-		State:         string(types.VMStateCreating),
-		PreviousState: "",
-		UpdatedAt:     now,
-		SchemaVersion: types.CurrentMetadataSchemaVersion,
+		VMID:             vmID,
+		State:            string(types.VMStateCreating),
+		PreviousState:    "",
+		HypervisorBinary: filepath.Base(m.cfg.CHBinary),
+		UpdatedAt:        now,
+		SchemaVersion:    types.CurrentMetadataSchemaVersion,
 	}
 	metaPath := m.cfg.VMMetadataPath(vmID)
 	if err := utils.AtomicWriteJSON(metaPath, meta); err != nil {
@@ -579,7 +581,7 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 			// Check both PID file (primary) and metadata PID (fallback).
 			alive := m.hyper.IsAlive(vmID)
 			if !alive && freshMeta.ProcessPID > 0 {
-				alive = utils.ValidateProcess(freshMeta.ProcessPID, "cloud-hypervisor")
+				alive = utils.ValidateProcess(freshMeta.ProcessPID, freshMeta.HypervisorProcessName(m.cfg.CHBinary))
 			}
 			if !alive {
 				now := time.Now().UTC().Format(time.RFC3339)
@@ -661,7 +663,7 @@ func (m *manager) Kill(ctx context.Context, vmID string) error {
 
 	// Safety net: if the PID file was already cleaned up but the CH process
 	// is still running, use the PID from metadata to kill it directly.
-	if meta.ProcessPID > 0 && utils.ValidateProcess(meta.ProcessPID, "cloud-hypervisor") {
+	if meta.ProcessPID > 0 && utils.ValidateProcess(meta.ProcessPID, meta.HypervisorProcessName(m.cfg.CHBinary)) {
 		log.Printf("kill %s: PID file missing but process %d still alive, killing via metadata PID", vmID, meta.ProcessPID)
 		_ = utils.ForceKillProcess(meta.ProcessPID)
 	}
@@ -736,7 +738,7 @@ func (m *manager) Delete(ctx context.Context, vmID string, force bool) error {
 	// Safety net: if the PID file was already cleaned up (e.g., by a prior
 	// failed ForceKill) but the CH process is still running, use the PID
 	// from metadata to kill it directly.
-	if metaPresent && meta.ProcessPID > 0 && utils.ValidateProcess(meta.ProcessPID, "cloud-hypervisor") {
+	if metaPresent && meta.ProcessPID > 0 && utils.ValidateProcess(meta.ProcessPID, meta.HypervisorProcessName(m.cfg.CHBinary)) {
 		_ = utils.ForceKillProcess(meta.ProcessPID)
 	}
 
@@ -819,7 +821,7 @@ func (m *manager) ensureDeletePreconditions(ctx context.Context, vmID string, fo
 		// Force kill any live process and move to STOPPED so the subsequent
 		// STOPPED -> DELETED transition goes through normal validation.
 		_ = m.hyper.ForceKill(vmID)
-		if meta.ProcessPID > 0 && utils.ValidateProcess(meta.ProcessPID, "cloud-hypervisor") {
+		if meta.ProcessPID > 0 && utils.ValidateProcess(meta.ProcessPID, meta.HypervisorProcessName(m.cfg.CHBinary)) {
 			_ = utils.ForceKillProcess(meta.ProcessPID)
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
@@ -830,7 +832,7 @@ func (m *manager) ensureDeletePreconditions(ctx context.Context, vmID string, fo
 
 	case types.VMStateError:
 		// Error state with a live process: force kill it.
-		if m.hyper.IsAlive(vmID) || (meta.ProcessPID > 0 && utils.ValidateProcess(meta.ProcessPID, "cloud-hypervisor")) {
+		if m.hyper.IsAlive(vmID) || (meta.ProcessPID > 0 && utils.ValidateProcess(meta.ProcessPID, meta.HypervisorProcessName(m.cfg.CHBinary))) {
 			if !force {
 				return fmt.Errorf("%w: VM is in ERROR state with a live process, use --force to delete", types.ErrInvalidTransition)
 			}

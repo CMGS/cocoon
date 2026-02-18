@@ -9,6 +9,7 @@ type VMMetadataFile struct {
 
 	// Runtime (changes with each start/stop cycle)
 	ProcessPID       int    `json:"process_pid,omitempty"`
+	HypervisorBinary string `json:"hypervisor_binary,omitempty"`
 	BootTime         string `json:"boot_time,omitempty"`
 	LastBootMode     string `json:"last_boot_mode,omitempty"`
 	LastFirmwarePath string `json:"last_firmware_path,omitempty"`
@@ -33,3 +34,21 @@ type VMMetadataFile struct {
 
 // CurrentMetadataSchemaVersion is the current metadata.json schema version.
 const CurrentMetadataSchemaVersion = 1
+
+// DefaultHypervisorProcess is the fallback process name used when
+// VMMetadataFile.HypervisorBinary is empty (backward compatibility with
+// VMs created before the field was introduced).
+const DefaultHypervisorProcess = "cloud-hypervisor"
+
+// HypervisorProcessName returns the expected process name for this VM.
+// It uses HypervisorBinary from metadata if set, otherwise falls back to
+// the configured binary name. If both are empty, returns the default.
+func (m *VMMetadataFile) HypervisorProcessName(configBinary string) string {
+	if m != nil && m.HypervisorBinary != "" {
+		return m.HypervisorBinary
+	}
+	if configBinary != "" {
+		return configBinary
+	}
+	return DefaultHypervisorProcess
+}
