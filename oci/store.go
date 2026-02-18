@@ -168,6 +168,7 @@ func (s *Store) ListTags() ([]TagEntry, error) {
 func (s *Store) RemoveTag(tag string) (string, []string, error) {
 	var manifestDigest string
 	var layoutPath string
+	var layoutStillUsed bool
 	var zeroRefBlobs []string
 	err := s.withTxnLock(func() error {
 		manifestStillUsed := false
@@ -182,12 +183,14 @@ func (s *Store) RemoveTag(tag string) (string, []string, error) {
 			if err := s.save(idx); err != nil {
 				return err
 			}
-			if manifestDigest != "" {
-				for _, other := range idx.Tags {
+			for _, other := range idx.Tags {
+				if manifestDigest != "" {
 					if other.ManifestDigest == manifestDigest {
 						manifestStillUsed = true
-						break
 					}
+				}
+				if layoutPath != "" && other.LayoutPath == layoutPath {
+					layoutStillUsed = true
 				}
 			}
 			return nil
@@ -213,7 +216,7 @@ func (s *Store) RemoveTag(tag string) (string, []string, error) {
 	}
 
 	// Remove layout directory (best-effort, outside lock).
-	if layoutPath != "" {
+	if layoutPath != "" && !layoutStillUsed {
 		_ = os.RemoveAll(layoutPath)
 	}
 
