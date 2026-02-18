@@ -737,7 +737,7 @@ func (gc *fileGarbageCollector) CollectOrphanedOCIManifestRefs() ([]string, erro
 // Lock: gc.lock (L1) -> oci-layer-refs.lock for atomic check-and-delete.
 func (gc *fileGarbageCollector) CollectUnreferencedOCIBlobs() ([]string, error) { ... }
 
-// CollectTempFiles removes files in temp/ older than maxAge.
+// CollectTempFiles removes files/directories in temp/ older than maxAge.
 // Lock: gc.lock (L1) only.
 func (gc *fileGarbageCollector) CollectTempFiles(maxAge time.Duration) ([]string, error) { ... }
 

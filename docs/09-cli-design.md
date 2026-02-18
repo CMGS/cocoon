@@ -1463,7 +1463,7 @@ func gcCommand() *cli.Command {
 4. **Stale OCI tags**: Remove tags from `oci-build-tags.json` whose layout path no longer exists; cascade cleanup to orphaned manifests/blobs.
 5. **Orphaned OCI manifest refs**: Remove manifest digests from `oci-layer-refs.json` not associated with any live tag; delete zero-ref blobs.
 6. **Unreferenced OCI blobs**: Remove blobs from `cache/oci/blobs/sha256/` with zero manifest references.
-7. **Temp files**: Remove files in `temp/` older than 1 hour.
+7. **Temp entries**: Remove files/directories in `temp/` older than 1 hour.
 
 **Example Usage**:
 
