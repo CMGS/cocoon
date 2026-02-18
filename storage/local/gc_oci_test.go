@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/CMGS/cocoon/config"
+	"github.com/CMGS/cocoon/lock/flock"
 )
 
 // --- OCI GC tests ---
@@ -160,6 +161,55 @@ func TestOCIGC_CollectOrphanedLayouts_GracePeriod(t *testing.T) {
 	}
 	if len(collected) != 0 {
 		t.Errorf("expected 0 collected (grace period), got %d: %v", len(collected), collected)
+	}
+}
+
+func TestOCIGC_CollectOrphanedLayouts_WaitsForTxnLock(t *testing.T) {
+	cfg := newTestConfig(t)
+	gc := NewGarbageCollector(cfg)
+
+	layoutsDir := cfg.OCILayoutDir()
+	oldTime := time.Now().Add(-10 * time.Minute)
+	createFakeOCILayout(t, layoutsDir, "txn-blocked-orphan", oldTime)
+	writeTagIndex(t, testableConfig{cfg: cfg}, map[string]ociTagEntry{})
+
+	// Hold txn lock to simulate an in-progress build finalization.
+	txnLock := flock.New(cfg.OCIBuildTxnLock())
+	if err := txnLock.Lock(); err != nil {
+		t.Fatalf("lock txn: %v", err)
+	}
+
+	type result struct {
+		collected []string
+		err       error
+	}
+	done := make(chan result, 1)
+	go func() {
+		collected, err := gc.CollectOrphanedOCILayouts()
+		done <- result{collected: collected, err: err}
+	}()
+
+	select {
+	case r := <-done:
+		t.Fatalf("CollectOrphanedOCILayouts returned while txn lock held: collected=%v err=%v", r.collected, r.err)
+	case <-time.After(200 * time.Millisecond):
+		// Expected: blocked on txn lock.
+	}
+
+	if err := txnLock.Unlock(); err != nil {
+		t.Fatalf("unlock txn: %v", err)
+	}
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("CollectOrphanedOCILayouts: %v", r.err)
+		}
+		if len(r.collected) != 1 || r.collected[0] != "txn-blocked-orphan" {
+			t.Fatalf("collected=%v, want [txn-blocked-orphan]", r.collected)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("CollectOrphanedOCILayouts did not complete after txn lock release")
 	}
 }
 

@@ -41,7 +41,7 @@ const ociGCGracePeriod = 5 * time.Minute
 // CollectOrphanedOCILayouts removes OCI layout directories in cache/oci/layouts/
 // that are not referenced by any tag in oci-build-tags.json.
 //
-// Lock: gc.lock (L1) -> oci-build-tags.lock for atomic tag index read.
+// Lock: gc.lock (L1) -> oci-build-txn.lock -> oci-build-tags.lock.
 func (gc *fileGarbageCollector) CollectOrphanedOCILayouts() ([]string, error) {
 	var collected []string
 
@@ -54,6 +54,13 @@ func (gc *fileGarbageCollector) CollectOrphanedOCILayouts() ([]string, error) {
 			}
 			return fmt.Errorf("read OCI layouts dir: %w", err)
 		}
+
+		// Serialize with concurrent build finalize+SaveTag operations.
+		txnLock := flock.New(gc.cfg.OCIBuildTxnLock())
+		if err := txnLock.Lock(); err != nil {
+			return fmt.Errorf("acquire OCI build txn lock: %w", err)
+		}
+		defer txnLock.Unlock() //nolint:errcheck
 
 		// Load tag index under its lock and hold the lock through the entire
 		// orphan collection loop. This prevents a concurrent SaveTag from

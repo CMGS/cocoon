@@ -1313,6 +1313,10 @@ func imagesCommand() *cli.Command {
 - `image tag SOURCE_REF TARGET_REF` behavior:
   1. If `SOURCE_REF` is a local OCI build tag, creates/updates another local OCI tag pointing to the same layout.
   2. Otherwise, resolves a cached cloud image (`base_key`/manifest alias) and creates/updates a cloud-image alias in `cache/manifests/index.json`.
+- `image build` default tag behavior (when `--tag` is omitted):
+  1. Derive the name from the effective build source (`CLOUD_IMAGE` or Cocoonfile `FROM`).
+  2. Strip local file extension when applicable.
+  3. Append `:latest` if no explicit tag suffix is present.
 - `image remove <ref>` behavior for OCI tags:
   1. Removes only the requested tag entry from `db/oci-build-tags.json`.
   2. Keeps the layout directory when other tags still reference the same `layout_path`.

@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/CMGS/cocoon/config"
 	"github.com/CMGS/cocoon/image"
+	"github.com/CMGS/cocoon/image/refcache"
 )
 
 // --- Test helpers ---
@@ -99,6 +101,26 @@ func TestPrepare_CachesResult(t *testing.T) {
 	}
 	if path2 != basePath {
 		t.Errorf("Prepare (2nd): path = %q, want %q", path2, basePath)
+	}
+}
+
+func TestPrepare_AmbiguousRefcacheRefReturnsError(t *testing.T) {
+	cfg := newTestConfig(t)
+	mgr := New(cfg, fakeReferenceCounter{}).(*manager)
+
+	if err := refcache.Upsert(cfg, "ubuntu:22.04", "1111111111111111_amd64", "digest-a"); err != nil {
+		t.Fatalf("Upsert ubuntu:22.04: %v", err)
+	}
+	if err := refcache.Upsert(cfg, "ubuntu:24.04", "2222222222222222_amd64", "digest-b"); err != nil {
+		t.Fatalf("Upsert ubuntu:24.04: %v", err)
+	}
+
+	_, _, err := mgr.Prepare(context.Background(), "ubuntu")
+	if err == nil {
+		t.Fatal("Prepare(ubuntu): expected ambiguous ref error, got nil")
+	}
+	if !errors.Is(err, refcache.ErrAmbiguousImageRef) {
+		t.Fatalf("Prepare(ubuntu): error=%v, want ErrAmbiguousImageRef", err)
 	}
 }
 

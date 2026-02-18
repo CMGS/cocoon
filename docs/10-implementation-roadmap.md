@@ -669,8 +669,7 @@ func SetupVMDirectory(vmID string) error {
 ├── cache/manifests/
 ├── cache/images/
 ├── vms/
-├── temp/
-└── trash/
+└── temp/
 ```
 
 **Day 2: Reference Counter**
@@ -683,7 +682,7 @@ func SetupVMDirectory(vmID string) error {
 
 **Day 4-5: Garbage Collector**
 - Find unused base images
-- Safe deletion with trash
+- Lock-safe permanent deletion of unreferenced resources
 - Test recovery scenarios
 
 **Milestone**: 100 VMs created from single base image, GC removes unused images

@@ -719,7 +719,7 @@ func (gc *fileGarbageCollector) CollectOrphanedOverlays() ([]string, error) { ..
 
 // CollectOrphanedOCILayouts removes OCI layout directories in
 // cache/oci/layouts/ not referenced by any tag in oci-build-tags.json.
-// Lock: gc.lock (L1) -> oci-build-tags.lock.
+// Lock: gc.lock (L1) -> oci-build-txn.lock -> oci-build-tags.lock.
 func (gc *fileGarbageCollector) CollectOrphanedOCILayouts() ([]string, error) { ... }
 
 // CollectStaleOCITags removes tags whose layout path no longer exists.
@@ -800,7 +800,7 @@ OCI layout directories in `cache/oci/layouts/` that are not referenced by any ta
 
 **Action:** Remove the orphaned layout directory permanently with `os.RemoveAll`. Blob hardlinks in the layout are deleted, but the underlying shared blobs in `cache/oci/blobs/sha256/` are preserved.
 
-**Locking**: GC lock (L1) followed by `oci-build-tags.lock` for an atomic tag index read. Layouts younger than 5 minutes are skipped as defense-in-depth against races with concurrent builds.
+**Locking**: GC lock (L1) -> `oci-build-txn.lock` -> `oci-build-tags.lock` for an atomic tag-index snapshot serialized with concurrent build finalize/save-tag. Layouts younger than 5 minutes are skipped as defense-in-depth.
 
 #### 4. Stale OCI Tags
 
@@ -832,15 +832,15 @@ Blobs in `cache/oci/blobs/sha256/` with zero manifest references in `oci-layer-r
 
 **Locking**: GC lock (L1) followed by `oci-layer-refs.lock` for atomic check-and-delete.
 
-#### 7. Temporary Files
+#### 7. Temporary Entries
 
-Files in the `/var/lib/cocoon/temp/` directory older than a threshold (default: 1 hour).
+Files/directories in the `/var/lib/cocoon/temp/` directory older than a threshold (default: 1 hour).
 
 **Source:** Failed image conversions, interrupted downloads, or crashed operations.
 
-**Action:** Permanently delete expired temp files.
+**Action:** Permanently delete expired temp entries with `os.RemoveAll`.
 
-**Locking**: GC lock (L1) only, as temp files are not referenced.
+**Locking**: GC lock (L1) only, as temp entries are not referenced.
 
 ### Defense-in-Depth Grace Periods
 
@@ -849,7 +849,7 @@ OCI resources use a 5-minute defense-in-depth grace period to prevent races with
 - OCI layouts (Phase 3)
 - OCI blobs (Phase 5, 6)
 
-Temp files use a 1-hour max age (hardcoded in `FullGC()`).
+Temp entries use a 1-hour max age (hardcoded in `FullGC()`).
 
 ### Garbage Collection Invocation
 

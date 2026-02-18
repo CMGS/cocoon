@@ -209,15 +209,15 @@ func (s *Store) RemoveTag(tag string) (string, []string, error) {
 				return fmt.Errorf("remove blob refs for %s: %w", manifestDigest, refErr)
 			}
 		}
+		// Remove layout directory while still holding txn lock so concurrent
+		// SaveTag/Tag operations cannot re-point a tag to this path mid-delete.
+		if layoutPath != "" && !layoutStillUsed {
+			_ = os.RemoveAll(layoutPath)
+		}
 		return nil
 	})
 	if err != nil {
 		return "", nil, err
-	}
-
-	// Remove layout directory (best-effort, outside lock).
-	if layoutPath != "" && !layoutStillUsed {
-		_ = os.RemoveAll(layoutPath)
 	}
 
 	return manifestDigest, zeroRefBlobs, nil

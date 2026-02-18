@@ -2,6 +2,7 @@ package local
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -162,13 +163,24 @@ func (gc *fileGarbageCollector) CollectOrphanedOverlays() ([]string, error) {
 			overlayPath := filepath.Join(gc.cfg.VMDir(), vmID, "overlay.qcow2")
 			configPath := filepath.Join(gc.cfg.VMDir(), vmID, "config.json")
 
-			overlayExists := fileExists(overlayPath)
-			configExists := fileExists(configPath)
+			overlayExists, overlayErr := fileExists(overlayPath)
+			if overlayErr != nil {
+				log.Printf("gc: stat overlay for %s: %v", vmID, overlayErr)
+				continue
+			}
+			configExists, configErr := fileExists(configPath)
+			if configErr != nil {
+				log.Printf("gc: stat config for %s: %v", vmID, configErr)
+				continue
+			}
 
 			if overlayExists && !configExists {
 				// Orphaned overlay -- permanently delete the VM directory.
 				vmDir := filepath.Join(gc.cfg.VMDir(), vmID)
-				_ = os.RemoveAll(vmDir)
+				if err := os.RemoveAll(vmDir); err != nil {
+					log.Printf("gc: remove orphaned VM dir %s: %v", vmDir, err)
+					continue
+				}
 				collected = append(collected, vmID)
 			}
 		}
@@ -181,7 +193,7 @@ func (gc *fileGarbageCollector) CollectOrphanedOverlays() ([]string, error) {
 	return collected, err
 }
 
-// CollectTempFiles removes files in temp/ older than maxAge.
+// CollectTempFiles removes entries (files/directories) in temp/ older than maxAge.
 //
 // Lock: gc.lock (L1) only.
 func (gc *fileGarbageCollector) CollectTempFiles(maxAge time.Duration) ([]string, error) {
@@ -205,7 +217,7 @@ func (gc *fileGarbageCollector) CollectTempFiles(maxAge time.Duration) ([]string
 			}
 			if info.ModTime().Before(cutoff) {
 				path := filepath.Join(gc.cfg.TempDir(), entry.Name())
-				if err := os.Remove(path); err != nil {
+				if err := os.RemoveAll(path); err != nil {
 					continue // non-fatal
 				}
 				collected = append(collected, entry.Name())
@@ -260,7 +272,15 @@ func (gc *fileGarbageCollector) FullGC() error {
 }
 
 // fileExists reports whether path exists on the filesystem.
-func fileExists(path string) bool {
+// It returns os.Stat errors other than not-exist so callers can avoid
+// false "missing" conclusions on transient I/O failures.
+func fileExists(path string) (bool, error) {
 	_, err := os.Stat(path)
-	return err == nil
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
 }
