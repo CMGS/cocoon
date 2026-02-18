@@ -134,3 +134,121 @@ func TestTarHelpersRespectCanceledContext(t *testing.T) {
 		t.Fatalf("ExtractTarToDir with canceled context: got %v, want %v", err, context.Canceled)
 	}
 }
+
+func TestExtractTarToDir_PreservesSpecialModeBits(t *testing.T) {
+	t.Parallel()
+
+	tarPath := filepath.Join(t.TempDir(), "special-mode.tar")
+	f, err := os.Create(tarPath) //nolint:gosec // test temp file
+	if err != nil {
+		t.Fatalf("create tar: %v", err)
+	}
+	tw := tar.NewWriter(f)
+	payload := []byte("#!/bin/sh\necho ok\n")
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     "bin/tool",
+		Mode:     0o4755,
+		Size:     int64(len(payload)),
+		Typeflag: tar.TypeReg,
+	}); err != nil {
+		t.Fatalf("write header: %v", err)
+	}
+	if _, err := tw.Write(payload); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close file: %v", err)
+	}
+
+	dstDir := t.TempDir()
+	if err := ExtractTarToDir(context.Background(), tarPath, dstDir); err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(dstDir, "bin", "tool"))
+	if err != nil {
+		t.Fatalf("stat extracted file: %v", err)
+	}
+	if info.Mode()&os.ModeSetuid == 0 {
+		t.Skip("filesystem does not preserve setuid bit")
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("perm=%#o, want %#o", got, 0o755)
+	}
+}
+
+func TestExtractTarToDir_SkipsSpecialTarEntries(t *testing.T) {
+	t.Parallel()
+
+	tarPath := filepath.Join(t.TempDir(), "special-entry.tar")
+	f, err := os.Create(tarPath) //nolint:gosec // test temp file
+	if err != nil {
+		t.Fatalf("create tar: %v", err)
+	}
+	tw := tar.NewWriter(f)
+
+	// Char device entry: should be skipped, not fail extraction.
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     "dev/null",
+		Mode:     0o666,
+		Typeflag: tar.TypeChar,
+		Devmajor: 1,
+		Devminor: 3,
+	}); err != nil {
+		t.Fatalf("write char header: %v", err)
+	}
+
+	payload := []byte("ok\n")
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     "etc/ok.txt",
+		Mode:     0o644,
+		Size:     int64(len(payload)),
+		Typeflag: tar.TypeReg,
+	}); err != nil {
+		t.Fatalf("write regular header: %v", err)
+	}
+	if _, err := tw.Write(payload); err != nil {
+		t.Fatalf("write regular payload: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar writer: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close tar file: %v", err)
+	}
+
+	dstDir := t.TempDir()
+	if err := ExtractTarToDir(context.Background(), tarPath, dstDir); err != nil {
+		t.Fatalf("extract tar with special entries: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dstDir, "etc", "ok.txt")) //nolint:gosec // test path
+	if err != nil {
+		t.Fatalf("read extracted file: %v", err)
+	}
+	if got, want := string(data), "ok\n"; got != want {
+		t.Fatalf("content mismatch: got %q, want %q", got, want)
+	}
+
+	if _, err := os.Stat(filepath.Join(dstDir, "dev", "null")); !os.IsNotExist(err) {
+		t.Fatalf("special node should be skipped, stat err=%v", err)
+	}
+}
+
+func TestTarEntryModeOrDefault_PreservesModeBits(t *testing.T) {
+	t.Parallel()
+
+	hdr := &tar.Header{Name: "bin/tool", Mode: 0o6755, Typeflag: tar.TypeReg}
+	mode := tarEntryModeOrDefault(hdr, 0o644)
+	if mode.Perm() != 0o755 {
+		t.Fatalf("perm=%#o, want %#o", mode.Perm(), 0o755)
+	}
+	if mode&os.ModeSetuid == 0 {
+		t.Fatalf("setuid bit missing in mode=%v", mode)
+	}
+	if mode&os.ModeSetgid == 0 {
+		t.Fatalf("setgid bit missing in mode=%v", mode)
+	}
+}

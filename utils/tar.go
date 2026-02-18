@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -177,7 +178,8 @@ func ExtractTarToDir(ctx context.Context, tarPath, targetDir string) error {
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil { //nolint:gosec // parent path is validated to stay under targetDir
 				return fmt.Errorf("create parent directory for %q: %w", targetPath, err)
 			}
-			out, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, tarEntryModeOrDefault(hdr, 0o644)) //nolint:gosec // extracted path is validated to stay under targetDir
+			mode := tarEntryModeOrDefault(hdr, 0o644)
+			out, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode) //nolint:gosec // extracted path is validated to stay under targetDir
 			if err != nil {
 				return fmt.Errorf("create file %q: %w", targetPath, err)
 			}
@@ -187,6 +189,9 @@ func ExtractTarToDir(ctx context.Context, tarPath, targetDir string) error {
 			}
 			if err := out.Close(); err != nil {
 				return fmt.Errorf("close file %q: %w", targetPath, err)
+			}
+			if err := os.Chmod(targetPath, mode); err != nil {
+				return fmt.Errorf("set file mode for %q: %w", targetPath, err)
 			}
 		case tar.TypeSymlink:
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil { //nolint:gosec // parent path is validated to stay under targetDir
@@ -214,6 +219,10 @@ func ExtractTarToDir(ctx context.Context, tarPath, targetDir string) error {
 			}
 		case tar.TypeXHeader, tar.TypeXGlobalHeader:
 			// Metadata entries are handled by archive/tar and have no filesystem effect here.
+			continue
+		case tar.TypeChar, tar.TypeBlock, tar.TypeFifo:
+			// Device/FIFO nodes are skipped in non-privileged extraction contexts.
+			log.Printf("warning: skipping special tar entry %q type=%d", hdr.Name, hdr.Typeflag)
 			continue
 		default:
 			return fmt.Errorf("unsupported tar entry type %d for %q", hdr.Typeflag, hdr.Name)
@@ -255,9 +264,19 @@ func resolveTarEntryPath(baseDir, entryName string) (string, error) {
 }
 
 func tarEntryModeOrDefault(hdr *tar.Header, fallback os.FileMode) os.FileMode {
-	mode := hdr.FileInfo().Mode().Perm()
-	if mode == 0 {
+	mode := hdr.FileInfo().Mode()
+	out := mode.Perm()
+	if mode&os.ModeSetuid != 0 {
+		out |= os.ModeSetuid
+	}
+	if mode&os.ModeSetgid != 0 {
+		out |= os.ModeSetgid
+	}
+	if mode&os.ModeSticky != 0 {
+		out |= os.ModeSticky
+	}
+	if out == 0 {
 		return fallback
 	}
-	return mode
+	return out
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"syscall"
 	"testing"
 )
 
@@ -268,4 +269,37 @@ func mapKeys(m map[string]*tar.Header) []string {
 	}
 	slices.Sort(keys)
 	return keys
+}
+
+func TestSnapshotRootfs_SkipsSpecialFiles(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "regular.txt"), []byte("ok\n"), 0o644); err != nil { //nolint:gosec // test setup
+		t.Fatalf("write regular file: %v", err)
+	}
+	fifoPath := filepath.Join(root, "named.pipe")
+	if err := syscall.Mkfifo(fifoPath, 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+
+	entries, err := snapshotRootfs(root)
+	if err != nil {
+		t.Fatalf("snapshotRootfs: %v", err)
+	}
+	if _, ok := entries["regular.txt"]; !ok {
+		t.Fatalf("snapshot missing regular.txt, entries=%v", keys(entries))
+	}
+	if _, ok := entries["named.pipe"]; ok {
+		t.Fatalf("snapshot should skip fifo named.pipe, entries=%v", keys(entries))
+	}
+}
+
+func keys(m map[string]fileEntry) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	slices.Sort(out)
+	return out
 }
