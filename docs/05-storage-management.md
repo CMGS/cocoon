@@ -832,7 +832,7 @@ OCI layout directories in `cache/oci/layouts/` that are not referenced by any ta
 
 **Action:** Remove the orphaned layout directory with `os.RemoveAll`. Blob hardlinks in the layout are deleted, but the underlying shared blobs in `cache/oci/blobs/sha256/` are preserved (their hardlink count decreases but they remain accessible via other layouts or the shared store itself).
 
-**Locking**: GC lock (L1) only. Implemented in `storage/local/gc_oci.go` as `CollectOrphanedOCILayouts()`.
+**Locking**: GC lock (L1) followed by `oci-build-tags.lock` for an atomic tag index read. Layouts younger than 5 minutes are skipped as defense-in-depth against races with concurrent builds. Implemented in `storage/local/gc_oci.go` as `CollectOrphanedOCILayouts()`.
 
 #### 5. Unreferenced OCI Blobs
 

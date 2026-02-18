@@ -89,8 +89,8 @@ func LayoutSize(layoutPath string) (int64, error) {
 	}
 
 	var idx ociIndex
-	if err := json.Unmarshal(indexData, &idx); err != nil {
-		return 0, fmt.Errorf("parse index.json: %w", err)
+	if unmarshalErr := json.Unmarshal(indexData, &idx); unmarshalErr != nil {
+		return 0, fmt.Errorf("parse index.json: %w", unmarshalErr)
 	}
 	if len(idx.Manifests) == 0 {
 		return 0, fmt.Errorf("no manifests in index.json")
@@ -102,8 +102,8 @@ func LayoutSize(layoutPath string) (int64, error) {
 	}
 
 	var manifest ociManifest
-	if err := json.Unmarshal(manifestData, &manifest); err != nil {
-		return 0, fmt.Errorf("parse manifest: %w", err)
+	if unmarshalErr := json.Unmarshal(manifestData, &manifest); unmarshalErr != nil {
+		return 0, fmt.Errorf("parse manifest: %w", unmarshalErr)
 	}
 
 	var total int64

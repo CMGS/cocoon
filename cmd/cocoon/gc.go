@@ -19,7 +19,7 @@ func gcCommand() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.IntFlag{
 				Name:  "grace-period",
-				Usage: "hours before unreferenced images are collected (0 = use config default)",
+				Usage: "hours before unreferenced images are collected (default: config value; 0 = collect immediately)",
 			},
 			&cli.BoolFlag{
 				Name:  "aggressive",

@@ -33,10 +33,15 @@ type ociBlobRefEntry struct {
 	CreatedAt       time.Time `json:"created_at"`
 }
 
+// ociGCGracePeriod is the defense-in-depth grace period for OCI GC operations.
+// Layouts and blobs younger than this are skipped to prevent races with
+// concurrent builds that have not yet recorded their tag/blob references.
+const ociGCGracePeriod = 5 * time.Minute
+
 // CollectOrphanedOCILayouts removes OCI layout directories in cache/oci/layouts/
 // that are not referenced by any tag in oci-build-tags.json.
 //
-// Lock: gc.lock (L1) only.
+// Lock: gc.lock (L1) -> oci-build-tags.lock for atomic tag index read.
 func (gc *fileGarbageCollector) CollectOrphanedOCILayouts() ([]string, error) {
 	var collected []string
 
@@ -60,15 +65,17 @@ func (gc *fileGarbageCollector) CollectOrphanedOCILayouts() ([]string, error) {
 		tagIdxPath := gc.cfg.OCIBuildTagIndex()
 		if _, statErr := os.Stat(tagIdxPath); statErr == nil {
 			if readErr := utils.ReadJSON(tagIdxPath, tagIdx); readErr != nil {
-				tagLock.Unlock()
+				_ = tagLock.Unlock()
 				return fmt.Errorf("read tag index: %w", readErr)
 			}
 		}
-		tagLock.Unlock()
+		_ = tagLock.Unlock()
 
 		for _, entry := range tagIdx.Tags {
 			knownLayouts[entry.LayoutPath] = true
 		}
+
+		cutoff := time.Now().Add(-ociGCGracePeriod)
 
 		for _, entry := range entries {
 			if !entry.IsDir() {
@@ -77,6 +84,12 @@ func (gc *fileGarbageCollector) CollectOrphanedOCILayouts() ([]string, error) {
 			layoutPath := filepath.Join(layoutsDir, entry.Name())
 			if knownLayouts[layoutPath] {
 				continue // referenced by a tag
+			}
+
+			// Defense-in-depth: skip recently-created layouts that may be
+			// from a build in progress (not yet recorded in tag index).
+			if info, statErr := entry.Info(); statErr == nil && info.ModTime().After(cutoff) {
+				continue
 			}
 
 			// Orphaned layout -- remove it.
@@ -127,6 +140,7 @@ func (gc *fileGarbageCollector) CollectUnreferencedOCIBlobs() ([]string, error) 
 			}
 		}
 
+		cutoff := time.Now().Add(-ociGCGracePeriod)
 		changed := false
 		for _, entry := range entries {
 			if entry.IsDir() {
@@ -138,6 +152,12 @@ func (gc *fileGarbageCollector) CollectUnreferencedOCIBlobs() ([]string, error) 
 			blobRef, exists := layerRefs.Blobs[digest]
 			if exists && len(blobRef.ManifestDigests) > 0 {
 				continue // still referenced
+			}
+
+			// Defense-in-depth: skip recently-created blobs that may be
+			// from a build in progress (refs not yet recorded).
+			if info, statErr := entry.Info(); statErr == nil && info.ModTime().After(cutoff) {
+				continue
 			}
 
 			// Unreferenced blob -- remove it.

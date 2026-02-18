@@ -57,7 +57,7 @@ func (bs *BlobStore) StoreBlob(srcPath, digest string) (string, error) {
 		return blobPath, nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(blobPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(blobPath), 0o750); err != nil {
 		return "", fmt.Errorf("create blob dir: %w", err)
 	}
 
@@ -74,12 +74,12 @@ func (bs *BlobStore) StoreBlob(srcPath, digest string) (string, error) {
 		}
 	}()
 
-	sf, err := os.Open(srcPath)
+	sf, err := os.Open(srcPath) //nolint:gosec // G304: srcPath is a build pipeline temp file validated by caller
 	if err != nil {
 		_ = tmp.Close()
 		return "", fmt.Errorf("open source %s: %w", srcPath, err)
 	}
-	defer sf.Close()
+	defer sf.Close() //nolint:errcheck
 
 	if _, err = io.Copy(tmp, sf); err != nil {
 		_ = tmp.Close()
@@ -112,7 +112,7 @@ func (bs *BlobStore) StoreBlobFromBytes(data []byte, digest string) (string, err
 		return blobPath, nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(blobPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(blobPath), 0o750); err != nil {
 		return "", fmt.Errorf("create blob dir: %w", err)
 	}
 
@@ -154,7 +154,7 @@ func (bs *BlobStore) LinkBlobToLayout(digest, layoutDir string) error {
 	}
 	src := bs.BlobPath(digest)
 	dstDir := filepath.Join(layoutDir, "blobs", "sha256")
-	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+	if err := os.MkdirAll(dstDir, 0o750); err != nil {
 		return fmt.Errorf("create layout blobs dir: %w", err)
 	}
 
@@ -178,29 +178,29 @@ func (bs *BlobStore) RemoveBlob(digest string) error {
 
 // copyFileSync copies src to dst with fsync for durability.
 func copyFileSync(src, dst string) error {
-	sf, err := os.Open(src)
+	sf, err := os.Open(src) //nolint:gosec // G304: src is a shared blob store path
 	if err != nil {
 		return err
 	}
-	defer sf.Close()
+	defer sf.Close() //nolint:errcheck
 
-	df, err := os.Create(dst)
+	df, err := os.Create(dst) //nolint:gosec // G304: dst is a layout blob path
 	if err != nil {
 		return err
 	}
 
 	if _, err = io.Copy(df, sf); err != nil {
-		df.Close()
-		os.Remove(dst) // clean up partial file
+		_ = df.Close()
+		_ = os.Remove(dst)
 		return err
 	}
 	if err = df.Sync(); err != nil {
-		df.Close()
-		os.Remove(dst) // clean up partial file
+		_ = df.Close()
+		_ = os.Remove(dst)
 		return err
 	}
 	if err = df.Close(); err != nil {
-		os.Remove(dst) // clean up partial file
+		_ = os.Remove(dst)
 		return err
 	}
 	return nil

@@ -128,28 +128,22 @@ func imagesAction(c *cli.Context) error {
 	ociImages, err := app.imgBuild.ListBuilds(c.Context)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: list OCI builds: %v\n", err)
-	} else {
-		for _, entry := range ociImages {
-			var size int64
-			if entry.LayoutPath != "" {
-				if s, sizeErr := oci.LayoutSize(entry.LayoutPath); sizeErr == nil {
-					size = s
-				}
-			}
-			digest := entry.ManifestDigest
-			if digest != "" && !strings.HasPrefix(digest, "sha256:") {
-				digest = "sha256:" + digest
-			}
-			rows = append(rows, unifiedImageRow{
-				Type:      "oci",
-				Ref:       entry.Tag,
-				Digest:    digest,
-				Size:      size,
-				SizeHuman: humanBytes(size),
-				Source:    "local",
-				CreatedAt: entry.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			})
+	}
+	for _, entry := range ociImages {
+		size := ociEntrySize(entry.LayoutPath)
+		digest := entry.ManifestDigest
+		if digest != "" && !strings.HasPrefix(digest, "sha256:") {
+			digest = "sha256:" + digest
 		}
+		rows = append(rows, unifiedImageRow{
+			Type:      "oci",
+			Ref:       entry.Tag,
+			Digest:    digest,
+			Size:      size,
+			SizeHuman: humanBytes(size),
+			Source:    "local",
+			CreatedAt: entry.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		})
 	}
 
 	// Sort by creation time, newest first.
@@ -724,6 +718,17 @@ func imageLoginAction(c *cli.Context) error {
 
 	fmt.Printf("Login succeeded for %s\n", registry)
 	return nil
+}
+
+func ociEntrySize(layoutPath string) int64 {
+	if layoutPath == "" {
+		return 0
+	}
+	s, err := oci.LayoutSize(layoutPath)
+	if err != nil {
+		return 0
+	}
+	return s
 }
 
 func summarizeSourceRefs(refs []string) string {
