@@ -59,11 +59,6 @@ func initApp(_ *cli.Context) (*appContext, error) {
 		return nil, fmt.Errorf("ensure directories: %w", err)
 	}
 
-	// Migrate old OCI cache layout (cache/oci-builds/ -> cache/oci/).
-	if err := oci.MigrateOCICache(cfg); err != nil {
-		return nil, fmt.Errorf("migrate OCI cache: %w", err)
-	}
-
 	// Initialize managers.
 	hyper := cloudhypervisor.New(cfg)
 	refCtr := local.NewReferenceCounter(cfg)
