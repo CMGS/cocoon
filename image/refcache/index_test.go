@@ -182,3 +182,30 @@ func TestVerifiedIndexLifecycle(t *testing.T) {
 		t.Fatal("IsVerified(after delete)=true, want false")
 	}
 }
+
+func TestUpsert_DottedOCITagDoesNotCreateTruncatedTagAlias(t *testing.T) {
+	cfg := testConfig(t)
+
+	ref := "docker.io/library/ubuntu:24.04"
+	baseKey := "dddd1111eeee2222_amd64"
+	if err := Upsert(cfg, ref, baseKey, ""); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	got, ok, err := ResolveBaseKey(cfg, ref)
+	if err != nil {
+		t.Fatalf("ResolveBaseKey(exact): %v", err)
+	}
+	if !ok || got != baseKey {
+		t.Fatalf("ResolveBaseKey(exact) = (%q,%v), want (%q,true)", got, ok, baseKey)
+	}
+
+	// Regression guard: "ubuntu:24.04" must NOT alias to "ubuntu:24".
+	got, ok, err = ResolveBaseKey(cfg, "docker.io/library/ubuntu:24")
+	if err != nil {
+		t.Fatalf("ResolveBaseKey(truncated): %v", err)
+	}
+	if ok {
+		t.Fatalf("ResolveBaseKey(truncated) = (%q,true), want miss", got)
+	}
+}

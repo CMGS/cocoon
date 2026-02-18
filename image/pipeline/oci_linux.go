@@ -241,14 +241,14 @@ func runCmd(ctx context.Context, name string, args ...string) ([]byte, error) {
 
 // classifySkopeoError classifies skopeo errors as transient or permanent.
 func classifySkopeoError(err error) error {
-	msg := err.Error()
+	msg := strings.ToLower(err.Error())
 	// Auth failures and not-found are permanent.
 	if strings.Contains(msg, "unauthorized") ||
 		strings.Contains(msg, "authentication required") ||
 		strings.Contains(msg, "denied") ||
 		strings.Contains(msg, "not found") ||
 		strings.Contains(msg, "manifest unknown") ||
-		strings.Contains(msg, "NAME_UNKNOWN") {
+		strings.Contains(msg, "name_unknown") {
 		return types.NewPermanentError(err)
 	}
 	// Network/timeout errors are transient.

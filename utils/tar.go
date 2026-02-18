@@ -3,6 +3,7 @@ package utils
 import (
 	"archive/tar"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -10,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // PackDirectoryToTar writes sourceDir contents to an uncompressed tar archive.
@@ -267,6 +269,9 @@ func extractTarEntry(tr *tar.Reader, hdr *tar.Header, targetDir string) error {
 		if err := os.Chmod(targetPath, mode); err != nil {
 			return fmt.Errorf("set directory mode for %q: %w", targetPath, err)
 		}
+		if err := applyTarOwnership(targetPath, hdr, false); err != nil {
+			return fmt.Errorf("set directory ownership for %q: %w", targetPath, err)
+		}
 	case tar.TypeReg, 0:
 		if hdr.Size < 0 {
 			return fmt.Errorf("invalid negative file size for %q: %d", hdr.Name, hdr.Size)
@@ -289,6 +294,9 @@ func extractTarEntry(tr *tar.Reader, hdr *tar.Header, targetDir string) error {
 		if err := os.Chmod(targetPath, mode); err != nil {
 			return fmt.Errorf("set file mode for %q: %w", targetPath, err)
 		}
+		if err := applyTarOwnership(targetPath, hdr, false); err != nil {
+			return fmt.Errorf("set file ownership for %q: %w", targetPath, err)
+		}
 	case tar.TypeSymlink:
 		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil { //nolint:gosec // parent path is validated to stay under targetDir
 			return fmt.Errorf("create parent directory for symlink %q: %w", targetPath, err)
@@ -298,6 +306,9 @@ func extractTarEntry(tr *tar.Reader, hdr *tar.Header, targetDir string) error {
 		}
 		if err := os.Symlink(hdr.Linkname, targetPath); err != nil {
 			return fmt.Errorf("create symlink %q -> %q: %w", targetPath, hdr.Linkname, err)
+		}
+		if err := applyTarOwnership(targetPath, hdr, true); err != nil {
+			return fmt.Errorf("set symlink ownership for %q: %w", targetPath, err)
 		}
 	case tar.TypeLink:
 		linkTarget, err := resolveTarEntryPath(targetDir, hdr.Linkname)
@@ -312,6 +323,9 @@ func extractTarEntry(tr *tar.Reader, hdr *tar.Header, targetDir string) error {
 		}
 		if err := os.Link(linkTarget, targetPath); err != nil {
 			return fmt.Errorf("create hardlink %q -> %q: %w", targetPath, linkTarget, err)
+		}
+		if err := applyTarOwnership(targetPath, hdr, false); err != nil {
+			return fmt.Errorf("set hardlink ownership for %q: %w", targetPath, err)
 		}
 	case tar.TypeXHeader, tar.TypeXGlobalHeader:
 		// Metadata entries are handled by archive/tar and have no filesystem effect here.
@@ -374,6 +388,29 @@ func tarEntryModeOrDefault(hdr *tar.Header, fallback os.FileMode) os.FileMode {
 		return fallback
 	}
 	return out
+}
+
+func applyTarOwnership(targetPath string, hdr *tar.Header, isSymlink bool) error {
+	if hdr == nil {
+		return nil
+	}
+	var err error
+	if isSymlink {
+		err = os.Lchown(targetPath, hdr.Uid, hdr.Gid)
+	} else {
+		err = os.Chown(targetPath, hdr.Uid, hdr.Gid)
+	}
+	if err == nil {
+		return nil
+	}
+	// Best-effort in unprivileged/test contexts.
+	if errors.Is(err, os.ErrPermission) ||
+		errors.Is(err, syscall.EPERM) ||
+		errors.Is(err, syscall.ENOSYS) ||
+		errors.Is(err, syscall.EOPNOTSUPP) {
+		return nil
+	}
+	return err
 }
 
 func removeDirChildren(dir string) error {

@@ -6,12 +6,15 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/CMGS/cocoon/config"
 	"github.com/CMGS/cocoon/image"
+	"github.com/CMGS/cocoon/types"
 )
 
 func TestPullAndMountOCIPlatformFallbackUsesStableRefForFrom(t *testing.T) {
@@ -187,5 +190,27 @@ printf '%s' '` + rawManifest + `'
 	err := pullAndMountOCIPlatform(context.Background(), cfg, identity)
 	if err == nil {
 		t.Fatal("expected pullAndMountOCIPlatform to fail when fallback pull lacks immutable local ref")
+	}
+}
+
+func TestClassifySkopeoError_CaseInsensitivePermanent(t *testing.T) {
+	t.Parallel()
+
+	err := classifySkopeoError(fmt.Errorf("skopeo inspect failed: MANIFEST UNKNOWN"))
+	var classified *types.ClassifiedError
+	if !errors.As(err, &classified) {
+		t.Fatalf("expected classified error, got %T", err)
+	}
+	if classified.Category != types.ErrorCategoryPermanent {
+		t.Fatalf("category=%s, want %s", classified.Category, types.ErrorCategoryPermanent)
+	}
+}
+
+func TestClassifySkopeoError_DefaultTransient(t *testing.T) {
+	t.Parallel()
+
+	err := classifySkopeoError(fmt.Errorf("skopeo inspect failed: temporary i/o timeout"))
+	if !types.IsTransient(err) {
+		t.Fatalf("expected transient error, got %v", err)
 	}
 }

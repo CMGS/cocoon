@@ -313,3 +313,25 @@ func TestResolveLocalOCITagRef_DefaultLatest(t *testing.T) {
 		t.Fatalf("resolved ref = %q, want %q", resolved, "demo:latest")
 	}
 }
+
+func TestTagCloudImageAlias_RejectsImplicitLatestOCICollision(t *testing.T) {
+	t.Parallel()
+
+	cfg := testCLIConfig(t)
+	store := oci.NewStore(cfg)
+	if err := store.SaveTag("demo:latest", "/tmp/layout-demo", "sha256:1111"); err != nil {
+		t.Fatalf("SaveTag: %v", err)
+	}
+
+	app := &appContext{cfg: cfg}
+	err := tagCloudImageAlias(nil, app, store, "some-cloud-source", "demo")
+	if err == nil {
+		t.Fatal("expected OCI collision error, got nil")
+	}
+	if !strings.Contains(err.Error(), "already exists as an OCI build tag") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "demo:latest") {
+		t.Fatalf("expected resolved latest tag in error, got: %v", err)
+	}
+}
