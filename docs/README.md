@@ -24,7 +24,7 @@ This directory contains design documents, specifications, and RFCs for Cocoon. T
 
 | Doc | Title | Status | Description |
 |-----|-------|--------|-------------|
-| [04.1-oci-vm-images.md](./04.1-oci-vm-images.md) | OCI VM Image Format | Partial | Build/push/login/inspect implemented; direct kernel boot and virtiofs rootfs are Phase 2 planned |
+| [04.1-oci-vm-images.md](./04.1-oci-vm-images.md) | OCI VM Image Format | Partial | Build/push/login/tag/inspect/verify/list implemented; direct kernel boot and virtiofs rootfs are Phase 2 planned |
 | [11-bootable-oci-build.md](./11-bootable-oci-build.md) | Building Bootable OCI Images | Planned | Guidance on building custom OCI images that satisfy the Boot Contract |
 | [12-console.md](./12-console.md) | VM Console | Implemented | Interactive bidirectional console via PTY, escape sequence handling, and terminal raw mode |
 | [13-pause-resume.md](./13-pause-resume.md) | VM Pause and Resume | Planned | PAUSED state machine extension, vCPU freeze/unfreeze via CH API, and reconciliation |

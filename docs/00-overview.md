@@ -239,7 +239,7 @@ Design docs: [00-overview](./00-overview.md) through [10-implementation-roadmap]
 
 Phase 2 adds OCI VM image tooling, interactive access, VM state management, fast provisioning, and networking.
 
-- **OCI VM Image Build/Push/Login** ([docs/04.1](./04.1-oci-vm-images.md)): `cocoon image build` extracts kernel/rootfs from cloud images, packages as OCI with custom media types; Cocoonfile customization (FROM/RUN/COPY/LABEL); `cocoon image push` to registries; `cocoon image login` for credential management -- **Implemented**
+- **OCI VM Image Build/Push/Login/Tag/Inspect** ([docs/04.1](./04.1-oci-vm-images.md)): `cocoon image build` extracts kernel/rootfs from cloud images, packages as OCI with custom media types; Cocoonfile customization (FROM/RUN/COPY/LABEL); `cocoon image push` to registries; `cocoon image login` for credential management; `cocoon image tag` for local image aliasing; `cocoon image inspect` for OCI/cloud image metadata; `cocoon image verify` for OCI layout bootability checks -- **Implemented**
 - **Console** ([docs/12](./12-console.md)): Interactive bidirectional PTY console via `cocoon console`, dual-port strategy (serial for logs, virtio-console for interactive access), SSH-style escape sequences -- **Implemented**
 - **Pause/Resume** ([docs/13](./13-pause-resume.md)): New PAUSED state in the VM state machine, vCPU freeze/unfreeze via Cloud Hypervisor `vm.pause`/`vm.resume` API, prerequisite for checkpoint/restore
 - **Warm Start** ([docs/15](./15-warm-start.md)): VM checkpoint and restore for sub-second creation (~200ms vs 5-30s cold boot), golden checkpoint workflow, snapshot management with GC integration
@@ -318,7 +318,7 @@ Cocoon is a general-purpose lightweight VM manager. Common use cases include:
 
 **Implemented (Phase 2)**:
 - **OCI VM Image Build**: `cocoon image build` (kernel/rootfs extraction, OCI packaging, Cocoonfile)
-- **OCI VM Image Push/Login**: `cocoon image push` + `cocoon image login` (go-containerregistry)
+- **OCI VM Image Push/Login/Tag/Inspect**: `cocoon image push` + `cocoon image login` + `cocoon image tag` + `cocoon image inspect` + `cocoon image verify` (go-containerregistry)
 - **Console**: virtio-console PTY via Cloud Hypervisor `vm.info` API
 
 **Planned (Phase 2)**:

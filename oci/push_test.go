@@ -5,6 +5,8 @@ import (
 	"net"
 	"testing"
 
+	"github.com/google/go-containerregistry/pkg/v1"
+
 	"github.com/CMGS/cocoon/types"
 )
 
@@ -73,6 +75,75 @@ func TestClassifyPushError(t *testing.T) {
 			classified := classifyPushError(tt.err)
 			if types.IsTransient(classified) != tt.wantTransient {
 				t.Errorf("IsTransient = %v, want %v", types.IsTransient(classified), tt.wantTransient)
+			}
+		})
+	}
+}
+
+func TestFormatPushProgressLine(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   v1.Update
+		want string
+	}{
+		{
+			name: "known total with percent",
+			in: v1.Update{
+				Complete: 512,
+				Total:    1024,
+			},
+			want: "Pushing image:  50% (512B / 1.0KB)",
+		},
+		{
+			name: "unknown total",
+			in: v1.Update{
+				Complete: 2048,
+			},
+			want: "Pushing image: 2.0KB",
+		},
+		{
+			name: "clamp over 100 percent",
+			in: v1.Update{
+				Complete: 2048,
+				Total:    1024,
+			},
+			want: "Pushing image: 100% (2.0KB / 1.0KB)",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := formatPushProgressLine(tt.in); got != tt.want {
+				t.Fatalf("formatPushProgressLine() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHumanBytes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   int64
+		want string
+	}{
+		{name: "bytes", in: 999, want: "999B"},
+		{name: "kb", in: 1024, want: "1.0KB"},
+		{name: "mb", in: 1024 * 1024, want: "1.0MB"},
+		{name: "negative", in: -1, want: "0B"},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := humanBytes(tt.in); got != tt.want {
+				t.Fatalf("humanBytes(%d) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}
