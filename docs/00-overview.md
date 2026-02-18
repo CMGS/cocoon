@@ -3,7 +3,7 @@
 **Version**: 1.0
 **Status**: Implemented
 **Phase**: Phase 1
-**Last Updated**: 2026-02-15
+**Last Updated**: 2026-02-18
 
 ## ⚠️ Supported Image Contract
 
@@ -50,12 +50,13 @@ cocoon image pull https://download.fedoraproject.org/pub/fedora/linux/releases/3
 # Example: Pull a pre-built bootable OCI image (if available)
 cocoon image pull myorg/ubuntu-bootable:22.04
 
-# Building your own: See docs/11-bootable-oci-build.md (Phase 2 - planned)
-# Currently: Use cloud images (recommended) instead of building custom OCI
+# Build your own OCI VM image from a cloud image/Cocoonfile (implemented)
+cocoon image build --file cocoonfile.example --tag myorg/ubuntu-bootable:22.04
 ```
 
 **Reality Check**: Building bootable OCI images is complex (kernel installation, GRUB setup, ESP partition).
-For Phase 1, **we recommend using cloud images** instead. See [11-bootable-oci-build.md](./11-bootable-oci-build.md) for details.
+`cocoon image build` (see [04.1-oci-vm-images.md](./04.1-oci-vm-images.md)) covers the common cloud-image-based workflow.
+For from-scratch distro assembly, see [11-bootable-oci-build.md](./11-bootable-oci-build.md) (still planned).
 
 **CI/Verified Images**: For deterministic testing, Cocoon provides pinned reference images with fixed digests.
 See [04-oci-conversion.md § 10 Verified Images](./04-oci-conversion.md#10-verified-images-ci-reference) for the CI verification matrix.
@@ -71,11 +72,10 @@ See [04-oci-conversion.md § 10 Verified Images](./04-oci-conversion.md#10-verif
   - Fedora: https://fedoraproject.org/cloud/download
   - Debian: https://cloud.debian.org/images/cloud/
 
-**Option 2: Build Custom Bootable OCI (Advanced - Phase 2)**:
-- Requires multi-stage Dockerfile with package installation
-- Must install: kernel, initrd, systemd, GRUB (cloud-init is optional for the user's use case)
-- Must configure: ESP partition, GRUB config, bootloader installation
-- See [11-bootable-oci-build.md](./11-bootable-oci-build.md) for build process
+**Option 2: Build/Pull Bootable OCI VM Images (Advanced, partially implemented)**:
+- Implemented: `cocoon image build` + `cocoon image push` + `cocoon image login` pipeline for cloud-image-based OCI VM builds (see [04.1-oci-vm-images.md](./04.1-oci-vm-images.md))
+- Advanced from-scratch image assembly remains user-managed and complex (kernel/initrd/systemd/GRUB/ESP)
+- See [11-bootable-oci-build.md](./11-bootable-oci-build.md) for the planned end-to-end custom build guidance
 
 **What DOESN'T Work**:
 - ❌ Regular container images: `ubuntu:latest`, `python:3.11`, `node:20`
