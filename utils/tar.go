@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -319,7 +318,6 @@ func extractTarEntry(tr *tar.Reader, hdr *tar.Header, targetDir string) error {
 		return nil
 	case tar.TypeChar, tar.TypeBlock, tar.TypeFifo:
 		// Device/FIFO nodes are skipped in non-privileged extraction contexts.
-		log.Printf("warning: skipping special tar entry %q type=%d", hdr.Name, hdr.Typeflag)
 		return nil
 	default:
 		return fmt.Errorf("unsupported tar entry type %d for %q", hdr.Typeflag, hdr.Name)
