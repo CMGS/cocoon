@@ -6,7 +6,7 @@ Lightweight VM manager built on Cloud Hypervisor.
 
 - **UEFI boot** -- CLOUDHV.fd UEFI firmware by default (direct kernel boot for OCI VM images is Phase 2 planned)
 - **TPM 2.0 emulation** -- optional swtpm integration via `--tpm` flag for measured boot and guest attestation
-- **OCI VM image build** -- `cocoon image build` extracts kernel/rootfs from cloud images, packages as OCI with custom media types; supports Cocoonfile customization (current output is always 2 layers: kernel + customized rootfs)
+- **OCI VM image build** -- `cocoon image build` extracts kernel/rootfs from cloud images, packages as OCI with custom media types; Cocoonfile builds from local OCI `FROM` tags reuse base layers and append a customization delta layer
 - **OCI VM image push/login** -- `cocoon image push` uploads built images to any OCI registry; `cocoon image login` stores credentials
 - **Content-addressed image cache** -- base images deduplicated by SHA-256 checksum
 - **COW overlays** -- qcow2 copy-on-write disks backed by shared base images
@@ -97,7 +97,7 @@ cocoon delete <vm>
 
 ## Cocoonfile
 
-A Cocoonfile is a Dockerfile-like file for customizing VM images before packaging them as OCI. Supported directives: `FROM`, `RUN`, `COPY`, `LABEL`. In the current implementation, `RUN`/`COPY` changes are applied before rootfs extraction, so the built OCI image is still always 2 layers (kernel + final rootfs), not extra per-step customization layers. See `cocoonfile.example` in the project root for a working example.
+A Cocoonfile is a Dockerfile-like file for customizing VM images before packaging them as OCI. Supported directives: `FROM`, `RUN`, `COPY`, `LABEL`. When `FROM` resolves to a local OCI tag and `RUN`/`COPY` steps are present, Cocoon reuses existing kernel/rootfs layers and adds one new customization delta layer for that build; otherwise, it builds a fresh kernel+rootfs image from the resolved base source. See `cocoonfile.example` in the project root for a working example.
 
 ```bash
 # Build from a Cocoonfile
