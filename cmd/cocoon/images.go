@@ -879,7 +879,7 @@ func materializeOCITagForBuild(ctx context.Context, app *appContext, store *oci.
 		return "", nil, fmt.Errorf("inspect local OCI layout %s: %w", entry.LayoutPath, err)
 	}
 
-	kernelDigest, rootfsDigests, err := locateLayerDigests(info)
+	kernelLayer, rootfsLayers, err := locateLayerDescriptors(info)
 	if err != nil {
 		return "", nil, fmt.Errorf("resolve layers from local OCI tag %q: %w", tag, err)
 	}
@@ -898,15 +898,15 @@ func materializeOCITagForBuild(ctx context.Context, app *appContext, store *oci.
 		return "", nil, fmt.Errorf("create rootfs workspace: %w", mkErr)
 	}
 
-	for _, digest := range rootfsDigests {
-		layerPath, layerErr := ociLayoutBlobPath(entry.LayoutPath, digest)
+	for _, layer := range rootfsLayers {
+		layerPath, layerErr := ociLayoutBlobPath(entry.LayoutPath, layer.Digest)
 		if layerErr != nil {
 			cleanup()
-			return "", nil, fmt.Errorf("resolve rootfs layer %s: %w", digest, layerErr)
+			return "", nil, fmt.Errorf("resolve rootfs layer %s: %w", layer.Digest, layerErr)
 		}
 		if layerErr = extractTarLayer(ctx, layerPath, rootfsDir); layerErr != nil {
 			cleanup()
-			return "", nil, fmt.Errorf("extract rootfs layer %s: %w", digest, layerErr)
+			return "", nil, fmt.Errorf("extract rootfs layer %s: %w", layer.Digest, layerErr)
 		}
 	}
 
@@ -915,14 +915,14 @@ func materializeOCITagForBuild(ctx context.Context, app *appContext, store *oci.
 		cleanup()
 		return "", nil, fmt.Errorf("create kernel workspace: %w", mkErr)
 	}
-	kernelLayerPath, err := ociLayoutBlobPath(entry.LayoutPath, kernelDigest)
+	kernelLayerPath, err := ociLayoutBlobPath(entry.LayoutPath, kernelLayer.Digest)
 	if err != nil {
 		cleanup()
-		return "", nil, fmt.Errorf("resolve kernel layer %s: %w", kernelDigest, err)
+		return "", nil, fmt.Errorf("resolve kernel layer %s: %w", kernelLayer.Digest, err)
 	}
 	if err := extractTarLayer(ctx, kernelLayerPath, kernelDir); err != nil {
 		cleanup()
-		return "", nil, fmt.Errorf("extract kernel layer %s: %w", kernelDigest, err)
+		return "", nil, fmt.Errorf("extract kernel layer %s: %w", kernelLayer.Digest, err)
 	}
 
 	bootDir := filepath.Join(rootfsDir, "boot")
@@ -942,32 +942,50 @@ func materializeOCITagForBuild(ctx context.Context, app *appContext, store *oci.
 		return "", nil, fmt.Errorf("materialize qcow2 from local OCI tag %q: %w", tag, err)
 	}
 
+	var baseCfg oci.VMImageConfig
+	if info.Config != nil {
+		baseCfg = *info.Config
+	}
+	buildCtx := &oci.BuildContext{
+		SourceType:     oci.BuildSourceLocalOCITag,
+		BaseTag:        tag,
+		BaseLayoutPath: entry.LayoutPath,
+		BaseConfig:     baseCfg,
+		KernelLayer:    kernelLayer,
+		RootfsLayers:   rootfsLayers,
+		BaseRootfsDir:  rootfsDir,
+	}
+	if err := oci.WriteBuildContextForImage(baseImagePath, buildCtx); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("write build context for local OCI tag %q: %w", tag, err)
+	}
+
 	return baseImagePath, cleanup, nil
 }
 
-func locateLayerDigests(info *oci.LayoutInfo) (string, []string, error) {
+func locateLayerDescriptors(info *oci.LayoutInfo) (oci.LayerInfo, []oci.LayerInfo, error) {
 	if info == nil {
-		return "", nil, fmt.Errorf("layout info is nil")
+		return oci.LayerInfo{}, nil, fmt.Errorf("layout info is nil")
 	}
-	var kernelDigest string
-	rootfsDigests := make([]string, 0, len(info.Layers))
+	var kernelLayer oci.LayerInfo
+	rootfsLayers := make([]oci.LayerInfo, 0, len(info.Layers))
 	for _, layer := range info.Layers {
 		switch layer.MediaType {
 		case oci.MediaTypeKernelLayer:
-			if kernelDigest == "" {
-				kernelDigest = layer.Digest
+			if kernelLayer.Digest == "" {
+				kernelLayer = layer
 			}
 		case oci.MediaTypeRootfsLayer:
-			rootfsDigests = append(rootfsDigests, layer.Digest)
+			rootfsLayers = append(rootfsLayers, layer)
 		}
 	}
-	if kernelDigest == "" {
-		return "", nil, fmt.Errorf("kernel layer not found")
+	if kernelLayer.Digest == "" {
+		return oci.LayerInfo{}, nil, fmt.Errorf("kernel layer not found")
 	}
-	if len(rootfsDigests) == 0 {
-		return "", nil, fmt.Errorf("rootfs layer not found")
+	if len(rootfsLayers) == 0 {
+		return oci.LayerInfo{}, nil, fmt.Errorf("rootfs layer not found")
 	}
-	return kernelDigest, rootfsDigests, nil
+	return kernelLayer, rootfsLayers, nil
 }
 
 func ociLayoutBlobPath(layoutPath, digest string) (string, error) {

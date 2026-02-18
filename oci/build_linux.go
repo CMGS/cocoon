@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/CMGS/cocoon/config"
+	"github.com/CMGS/cocoon/utils"
 )
 
 // assemblyInfo holds the results of assembleOCILayout for blob ref tracking.
@@ -27,6 +29,29 @@ type assemblyInfo struct {
 	manifestDigest string
 	blobDigests    []string
 	blobSizes      []int64
+}
+
+type layerInput struct {
+	MediaType string
+	DigestHex string
+	Size      int64
+	TarPath   string
+}
+
+func shouldUseDeltaLayer(buildCtx *BuildContext, cf *Cocoonfile) bool {
+	if buildCtx == nil || cf == nil || len(cf.Steps) == 0 {
+		return false
+	}
+	if buildCtx.SourceType != BuildSourceLocalOCITag {
+		return false
+	}
+	if buildCtx.KernelLayer.Digest == "" || len(buildCtx.RootfsLayers) == 0 {
+		return false
+	}
+	if strings.TrimSpace(buildCtx.BaseRootfsDir) == "" || strings.TrimSpace(buildCtx.BaseLayoutPath) == "" {
+		return false
+	}
+	return true
 }
 
 // Build extracts kernel, initrd, and rootfs from a cloud image, packages them
@@ -60,10 +85,19 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 		return nil, err
 	}
 
+	buildCtx, err := ReadBuildContextForImage(imagePath)
+	if err != nil {
+		return nil, fmt.Errorf("read build context: %w", err)
+	}
+	useDeltaLayer := shouldUseDeltaLayer(buildCtx, cf)
+
 	// Calculate total build steps.
 	// Base steps: detect kernel, extract kernel+initrd, build kernel layer,
 	// read PARTUUID, extract rootfs, build rootfs layer, assemble OCI layout, save tag.
 	totalSteps := 8
+	if useDeltaLayer {
+		totalSteps = 7
+	}
 	if cf != nil && len(cf.Steps) > 0 {
 		totalSteps += len(cf.Steps)
 	}
@@ -94,26 +128,10 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 	}
 	pw.Detail(ki.Version)
 
-	// Step 4: Extract kernel and initrd.
-	pw.Step("Extracting kernel and initrd...")
-	kernelLocal := filepath.Join(tmpDir, "vmlinuz")
-	initrdLocal := filepath.Join(tmpDir, "initrd.img")
-
-	if err = extractGuestFile(ctx, workImage, ki.KernelPath, kernelLocal); err != nil {
-		return nil, fmt.Errorf("extract kernel: %w", err)
-	}
-	if err = extractGuestFile(ctx, workImage, ki.InitrdPath, initrdLocal); err != nil {
-		return nil, fmt.Errorf("extract initrd: %w", err)
-	}
-
-	// Build kernel layer tar.
-	pw.Step("Building kernel layer...")
-	kernelTarPath := filepath.Join(tmpDir, "kernel-layer.tar")
-	kernelDigest, kernelSize, err := buildKernelLayerTar(kernelLocal, initrdLocal, kernelTarPath)
+	layerInputs, err := prepareLayerInputs(ctx, tmpDir, workImage, ki, bootFiles, pw, buildCtx, useDeltaLayer)
 	if err != nil {
-		return nil, fmt.Errorf("build kernel layer: %w", err)
+		return nil, err
 	}
-	pw.Detail("sha256:" + kernelDigest[:12])
 
 	// Step 5: Read PARTUUID.
 	pw.Step("Reading PARTUUID...")
@@ -126,45 +144,10 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 	}
 	pw.Detail(partUUID)
 
-	// Step 6: Extract rootfs as tar, rewrite deterministically.
-	pw.Step("Extracting rootfs...")
-	rawTarPath := filepath.Join(tmpDir, "rootfs-raw.tar")
-	if err = extractRootfsTar(ctx, workImage, rawTarPath); err != nil {
-		return nil, fmt.Errorf("extract rootfs: %w", err)
-	}
-
-	excludePaths := bootExcludePaths(ki, bootFiles)
-	pw.Step("Building rootfs layer...")
-	rootfsTarPath := filepath.Join(tmpDir, "rootfs-layer.tar")
-	rootfsDigest, rootfsSize, err := rewriteDeterministicTar(rawTarPath, rootfsTarPath, excludePaths)
-	if err != nil {
-		return nil, fmt.Errorf("rewrite rootfs tar: %w", err)
-	}
-	pw.Detail("sha256:" + rootfsDigest[:12])
-
 	// Step 7-8: Build config blob and assemble OCI layout.
-	arch := runtime.GOARCH
-	memMB := cfg.DefaultMemoryMB
-	if memMB < 0 || memMB > 1<<31-1 {
-		return nil, fmt.Errorf("default_memory_mb %d out of range", memMB)
-	}
-	vmConfig := &VMImageConfig{
-		Arch:            arch,
-		DefaultCPUs:     cfg.DefaultCPUs,
-		DefaultMemoryMB: int(memMB),
-		KernelCmdline: fmt.Sprintf(
-			"console=hvc0 root=PARTUUID=%s ro quiet",
-			partUUID,
-		),
-		KernelPath:     "/vmlinuz",
-		InitrdPath:     "/initrd.img",
-		VirtiofsTag:    "cocoon-rootfs",
-		RootfsPartUUID: partUUID,
-	}
-
-	// Merge Cocoonfile labels into config if present.
-	if cf != nil && len(cf.Labels) > 0 {
-		vmConfig.Labels = cf.Labels
+	vmConfig, err := buildVMConfig(cfg, partUUID, cf, buildCtx, useDeltaLayer)
+	if err != nil {
+		return nil, err
 	}
 
 	blobStore := NewBlobStore(cfg)
@@ -176,7 +159,11 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 	defer os.RemoveAll(layoutWorkDir) //nolint:errcheck // best-effort cleanup if finalization fails
 
 	pw.Step("Assembling OCI layout...")
-	info, err := assembleOCILayout(layoutWorkDir, vmConfig, kernelTarPath, kernelDigest, kernelSize, rootfsTarPath, rootfsDigest, rootfsSize, blobStore)
+	baseLayoutPath := ""
+	if useDeltaLayer {
+		baseLayoutPath = buildCtx.BaseLayoutPath
+	}
+	info, err := assembleOCILayout(layoutWorkDir, vmConfig, layerInputs, baseLayoutPath, blobStore)
 	if err != nil {
 		return nil, fmt.Errorf("assemble OCI layout: %w", err)
 	}
@@ -197,6 +184,207 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 		ManifestDigest: info.manifestDigest,
 		LayoutPath:     layoutDir,
 	}, nil
+}
+
+func prepareLayerInputs(
+	ctx context.Context,
+	tmpDir string,
+	workImage string,
+	ki *KernelInfo,
+	bootFiles []string,
+	pw *ProgressWriter,
+	buildCtx *BuildContext,
+	useDeltaLayer bool,
+) ([]layerInput, error) {
+	layerInputs := make([]layerInput, 0, 4)
+	if useDeltaLayer {
+		if err := appendReusedBaseLayers(buildCtx, pw, &layerInputs); err != nil {
+			return nil, err
+		}
+		if err := appendDeltaRootfsLayer(ctx, tmpDir, workImage, buildCtx, pw, &layerInputs); err != nil {
+			return nil, err
+		}
+		return layerInputs, nil
+	}
+
+	if err := appendNewKernelLayer(ctx, tmpDir, workImage, ki, pw, &layerInputs); err != nil {
+		return nil, err
+	}
+	if err := appendRootfsLayerFromImage(ctx, tmpDir, workImage, ki, bootFiles, pw, &layerInputs); err != nil {
+		return nil, err
+	}
+	return layerInputs, nil
+}
+
+func appendReusedBaseLayers(buildCtx *BuildContext, pw *ProgressWriter, layerInputs *[]layerInput) error {
+	kernelHex, err := digestHex(buildCtx.KernelLayer.Digest)
+	if err != nil {
+		return fmt.Errorf("invalid base kernel layer digest: %w", err)
+	}
+	*layerInputs = append(*layerInputs, layerInput{
+		MediaType: MediaTypeKernelLayer,
+		DigestHex: kernelHex,
+		Size:      buildCtx.KernelLayer.Size,
+	})
+	for _, layer := range buildCtx.RootfsLayers {
+		digestHexValue, digestErr := digestHex(layer.Digest)
+		if digestErr != nil {
+			return fmt.Errorf("invalid base rootfs layer digest %q: %w", layer.Digest, digestErr)
+		}
+		*layerInputs = append(*layerInputs, layerInput{
+			MediaType: MediaTypeRootfsLayer,
+			DigestHex: digestHexValue,
+			Size:      layer.Size,
+		})
+	}
+	pw.Step("Reusing base layers...")
+	pw.Detail(fmt.Sprintf("base rootfs layers: %d", len(buildCtx.RootfsLayers)))
+	return nil
+}
+
+func appendNewKernelLayer(
+	ctx context.Context,
+	tmpDir string,
+	workImage string,
+	ki *KernelInfo,
+	pw *ProgressWriter,
+	layerInputs *[]layerInput,
+) error {
+	pw.Step("Extracting kernel and initrd...")
+	kernelLocal := filepath.Join(tmpDir, "vmlinuz")
+	initrdLocal := filepath.Join(tmpDir, "initrd.img")
+
+	if err := extractGuestFile(ctx, workImage, ki.KernelPath, kernelLocal); err != nil {
+		return fmt.Errorf("extract kernel: %w", err)
+	}
+	if err := extractGuestFile(ctx, workImage, ki.InitrdPath, initrdLocal); err != nil {
+		return fmt.Errorf("extract initrd: %w", err)
+	}
+
+	pw.Step("Building kernel layer...")
+	kernelTarPath := filepath.Join(tmpDir, "kernel-layer.tar")
+	kernelDigest, kernelSize, err := buildKernelLayerTar(kernelLocal, initrdLocal, kernelTarPath)
+	if err != nil {
+		return fmt.Errorf("build kernel layer: %w", err)
+	}
+	pw.Detail("sha256:" + kernelDigest[:12])
+	*layerInputs = append(*layerInputs, layerInput{
+		MediaType: MediaTypeKernelLayer,
+		DigestHex: kernelDigest,
+		Size:      kernelSize,
+		TarPath:   kernelTarPath,
+	})
+	return nil
+}
+
+func appendRootfsLayerFromImage(
+	ctx context.Context,
+	tmpDir string,
+	workImage string,
+	ki *KernelInfo,
+	bootFiles []string,
+	pw *ProgressWriter,
+	layerInputs *[]layerInput,
+) error {
+	pw.Step("Extracting rootfs...")
+	rawTarPath := filepath.Join(tmpDir, "rootfs-raw.tar")
+	if err := extractRootfsTar(ctx, workImage, rawTarPath); err != nil {
+		return fmt.Errorf("extract rootfs: %w", err)
+	}
+
+	excludePaths := bootExcludePaths(ki, bootFiles)
+	pw.Step("Building rootfs layer...")
+	rootfsTarPath := filepath.Join(tmpDir, "rootfs-layer.tar")
+	rootfsDigest, rootfsSize, err := rewriteDeterministicTar(rawTarPath, rootfsTarPath, excludePaths)
+	if err != nil {
+		return fmt.Errorf("rewrite rootfs tar: %w", err)
+	}
+	pw.Detail("sha256:" + rootfsDigest[:12])
+	*layerInputs = append(*layerInputs, layerInput{
+		MediaType: MediaTypeRootfsLayer,
+		DigestHex: rootfsDigest,
+		Size:      rootfsSize,
+		TarPath:   rootfsTarPath,
+	})
+	return nil
+}
+
+func appendDeltaRootfsLayer(
+	ctx context.Context,
+	tmpDir string,
+	workImage string,
+	buildCtx *BuildContext,
+	pw *ProgressWriter,
+	layerInputs *[]layerInput,
+) error {
+	pw.Step("Extracting customized rootfs...")
+	rawTarPath := filepath.Join(tmpDir, "rootfs-customized-raw.tar")
+	if err := extractRootfsTar(ctx, workImage, rawTarPath); err != nil {
+		return fmt.Errorf("extract customized rootfs: %w", err)
+	}
+
+	modifiedRootfsDir := filepath.Join(tmpDir, "rootfs-customized")
+	if err := os.MkdirAll(modifiedRootfsDir, 0o755); err != nil { //nolint:gosec // local build temp workspace
+		return fmt.Errorf("create customized rootfs dir: %w", err)
+	}
+	if err := utils.ExtractTarToDir(ctx, rawTarPath, modifiedRootfsDir); err != nil {
+		return fmt.Errorf("extract customized rootfs tar to dir: %w", err)
+	}
+
+	pw.Step("Building customization delta layer...")
+	deltaTarPath := filepath.Join(tmpDir, "rootfs-delta-layer.tar")
+	deltaDigest, deltaSize, changeCount, err := generateDeltaLayerTar(buildCtx.BaseRootfsDir, modifiedRootfsDir, deltaTarPath)
+	if err != nil {
+		return fmt.Errorf("generate customization delta layer: %w", err)
+	}
+	if changeCount == 0 {
+		pw.Detail("no filesystem changes")
+		return nil
+	}
+	*layerInputs = append(*layerInputs, layerInput{
+		MediaType: MediaTypeRootfsLayer,
+		DigestHex: deltaDigest,
+		Size:      deltaSize,
+		TarPath:   deltaTarPath,
+	})
+	pw.Detail("sha256:" + deltaDigest[:12])
+	return nil
+}
+
+func buildVMConfig(
+	cfg *config.CocoonConfig,
+	partUUID string,
+	cf *Cocoonfile,
+	buildCtx *BuildContext,
+	useDeltaLayer bool,
+) (*VMImageConfig, error) {
+	memMB := cfg.DefaultMemoryMB
+	if memMB < 0 || memMB > 1<<31-1 {
+		return nil, fmt.Errorf("default_memory_mb %d out of range", memMB)
+	}
+
+	vmConfig := &VMImageConfig{
+		Arch:            runtime.GOARCH,
+		DefaultCPUs:     cfg.DefaultCPUs,
+		DefaultMemoryMB: int(memMB),
+		KernelCmdline:   fmt.Sprintf("console=hvc0 root=PARTUUID=%s ro quiet", partUUID),
+		KernelPath:      "/vmlinuz",
+		InitrdPath:      "/initrd.img",
+		VirtiofsTag:     "cocoon-rootfs",
+		RootfsPartUUID:  partUUID,
+	}
+
+	labels := map[string]string{}
+	if useDeltaLayer {
+		maps.Copy(labels, buildCtx.BaseConfig.Labels)
+	}
+	if cf != nil && len(cf.Labels) > 0 {
+		maps.Copy(labels, cf.Labels)
+	}
+	if len(labels) > 0 {
+		vmConfig.Labels = labels
+	}
+	return vmConfig, nil
 }
 
 func createLayoutWorkDir(cfg *config.CocoonConfig) (string, error) {
@@ -510,10 +698,14 @@ func extractRootfsTar(ctx context.Context, imagePath, tarPath string) error {
 func assembleOCILayout(
 	layoutDir string,
 	vmConfig *VMImageConfig,
-	kernelTarPath, kernelDigest string, kernelSize int64,
-	rootfsTarPath, rootfsDigest string, rootfsSize int64,
+	layers []layerInput,
+	baseLayoutPath string,
 	blobStore *BlobStore,
 ) (*assemblyInfo, error) {
+	if len(layers) == 0 {
+		return nil, fmt.Errorf("assemble OCI layout: no layers provided")
+	}
+
 	// 1. Build and store config blob in shared store.
 	configJSON, err := json.Marshal(vmConfig)
 	if err != nil {
@@ -525,12 +717,30 @@ func assembleOCILayout(
 		return nil, fmt.Errorf("store config blob: %w", err)
 	}
 
-	// 2. Store layer tars in shared store.
-	if _, err = blobStore.StoreBlob(kernelTarPath, kernelDigest); err != nil {
-		return nil, fmt.Errorf("store kernel blob: %w", err)
-	}
-	if _, err = blobStore.StoreBlob(rootfsTarPath, rootfsDigest); err != nil {
-		return nil, fmt.Errorf("store rootfs blob: %w", err)
+	manifestLayers := make([]ociDescriptor, 0, len(layers))
+	blobDigests := make([]string, 0, len(layers)+2)
+	blobSizes := make([]int64, 0, len(layers)+2)
+	blobDigests = append(blobDigests, configDigest)
+	blobSizes = append(blobSizes, configSize)
+
+	for _, layer := range layers {
+		if layer.MediaType == "" {
+			return nil, fmt.Errorf("assemble OCI layout: layer media type is empty")
+		}
+		if layer.DigestHex == "" {
+			return nil, fmt.Errorf("assemble OCI layout: layer digest is empty")
+		}
+		ensureErr := ensureLayerBlobPresent(blobStore, layer, baseLayoutPath)
+		if ensureErr != nil {
+			return nil, ensureErr
+		}
+		manifestLayers = append(manifestLayers, ociDescriptor{
+			MediaType: layer.MediaType,
+			Digest:    "sha256:" + layer.DigestHex,
+			Size:      layer.Size,
+		})
+		blobDigests = append(blobDigests, layer.DigestHex)
+		blobSizes = append(blobSizes, layer.Size)
 	}
 
 	// 3. Build manifest.
@@ -543,18 +753,7 @@ func assembleOCILayout(
 			Digest:    "sha256:" + configDigest,
 			Size:      configSize,
 		},
-		Layers: []ociDescriptor{
-			{
-				MediaType: MediaTypeKernelLayer,
-				Digest:    "sha256:" + kernelDigest,
-				Size:      kernelSize,
-			},
-			{
-				MediaType: MediaTypeRootfsLayer,
-				Digest:    "sha256:" + rootfsDigest,
-				Size:      rootfsSize,
-			},
-		},
+		Layers: manifestLayers,
 	}
 	manifestJSON, err := json.Marshal(manifest)
 	if err != nil {
@@ -567,7 +766,8 @@ func assembleOCILayout(
 	}
 
 	// 4. Create layout directory and hardlink all blobs from shared store.
-	for _, digest := range []string{configDigest, kernelDigest, rootfsDigest, manifestDigest} {
+	linkDigests := append(append([]string{}, blobDigests...), manifestDigest)
+	for _, digest := range linkDigests {
 		if err = blobStore.LinkBlobToLayout(digest, layoutDir); err != nil {
 			return nil, fmt.Errorf("link blob %s to layout: %w", digest, err)
 		}
@@ -599,11 +799,36 @@ func assembleOCILayout(
 		return nil, fmt.Errorf("write index.json: %w", err)
 	}
 
+	blobDigests = append(blobDigests, manifestDigest)
+	blobSizes = append(blobSizes, manifestSize)
 	return &assemblyInfo{
 		manifestDigest: manifestDigest,
-		blobDigests:    []string{configDigest, kernelDigest, rootfsDigest, manifestDigest},
-		blobSizes:      []int64{configSize, kernelSize, rootfsSize, manifestSize},
+		blobDigests:    blobDigests,
+		blobSizes:      blobSizes,
 	}, nil
+}
+
+func ensureLayerBlobPresent(blobStore *BlobStore, layer layerInput, baseLayoutPath string) error {
+	if layer.TarPath != "" {
+		if _, err := blobStore.StoreBlob(layer.TarPath, layer.DigestHex); err != nil {
+			return fmt.Errorf("store layer blob %s: %w", layer.DigestHex, err)
+		}
+		return nil
+	}
+	if blobStore.BlobExists(layer.DigestHex) {
+		return nil
+	}
+	if strings.TrimSpace(baseLayoutPath) == "" {
+		return fmt.Errorf("missing source layout for existing layer %s", layer.DigestHex)
+	}
+	srcPath := filepath.Join(baseLayoutPath, "blobs", "sha256", layer.DigestHex)
+	if _, err := os.Stat(srcPath); err != nil {
+		return fmt.Errorf("source layer blob %s missing from base layout: %w", layer.DigestHex, err)
+	}
+	if _, err := blobStore.StoreBlob(srcPath, layer.DigestHex); err != nil {
+		return fmt.Errorf("import layer blob %s from base layout: %w", layer.DigestHex, err)
+	}
+	return nil
 }
 
 // validateSafePath rejects control characters that can break command invocation.
@@ -624,6 +849,24 @@ func validateSafePath(path string) error {
 func sha256Hex(data []byte) string {
 	h := sha256.Sum256(data)
 	return hex.EncodeToString(h[:])
+}
+
+func digestHex(digest string) (string, error) {
+	const prefix = "sha256:"
+	if !strings.HasPrefix(digest, prefix) {
+		return "", fmt.Errorf("unsupported digest format %q", digest)
+	}
+	hexDigest := strings.TrimPrefix(digest, prefix)
+	if len(hexDigest) != 64 {
+		return "", fmt.Errorf("invalid digest length for %q", digest)
+	}
+	for _, c := range hexDigest {
+		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+		if !isHex {
+			return "", fmt.Errorf("invalid digest characters for %q", digest)
+		}
+	}
+	return strings.ToLower(hexDigest), nil
 }
 
 // isValidUUID checks that s matches UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.
