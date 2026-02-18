@@ -8,10 +8,24 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/CMGS/cocoon/config"
 	"github.com/CMGS/cocoon/image/refcache"
 	"github.com/CMGS/cocoon/oci"
 	"github.com/CMGS/cocoon/types"
 )
+
+func testCLIConfig(t *testing.T) *config.CocoonConfig {
+	t.Helper()
+	root := t.TempDir()
+	cfg := config.DefaultConfig()
+	cfg.RebaseRootDir(root)
+	cfg.RuntimeDir = filepath.Join(root, "run")
+	cfg.LogDir = filepath.Join(root, "log")
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	return cfg
+}
 
 func TestShouldFallbackToPrepare(t *testing.T) {
 	t.Parallel()
@@ -218,5 +232,84 @@ func TestResolveCocoonfileLocalPath(t *testing.T) {
 
 	if path, ok = resolveCocoonfileLocalPath(cocoonfilePath, "docker.io/library/ubuntu:22.04"); ok {
 		t.Fatalf("resolveCocoonfileLocalPath should not mark registry-like ref as local path, got %q", path)
+	}
+}
+
+func TestNormalizeDockerLikeOCIRef(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "official-image-with-tag", in: "ubuntu:24.04", want: "docker.io/library/ubuntu:24.04"},
+		{name: "official-image-without-tag", in: "ubuntu", want: "docker.io/library/ubuntu:latest"},
+		{name: "user-namespace-with-tag", in: "cmgs/test:v1", want: "docker.io/cmgs/test:v1"},
+		{name: "user-namespace-without-tag", in: "cmgs/test", want: "docker.io/cmgs/test:latest"},
+		{name: "explicit-registry-with-tag", in: "ghcr.io/cmgs/test:v2", want: "ghcr.io/cmgs/test:v2"},
+		{name: "explicit-registry-without-tag", in: "localhost:5000/cmgs/test", want: "localhost:5000/cmgs/test:latest"},
+		{name: "digest-reference", in: "cmgs/test@sha256:deadbeef", want: "docker.io/cmgs/test@sha256:deadbeef"},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := normalizeDockerLikeOCIRef(tt.in)
+			if got != tt.want {
+				t.Fatalf("normalizeDockerLikeOCIRef(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizePullableFROMRef(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "cloud-image-url-unchanged",
+			in:   "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img",
+			want: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img",
+		},
+		{name: "docker-short-ref", in: "ubuntu:24.04", want: "docker.io/library/ubuntu:24.04"},
+		{name: "docker-short-ref-default-latest", in: "ubuntu", want: "docker.io/library/ubuntu:latest"},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := normalizePullableFROMRef(tt.in)
+			if got != tt.want {
+				t.Fatalf("normalizePullableFROMRef(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveLocalOCITagRef_DefaultLatest(t *testing.T) {
+	t.Parallel()
+
+	cfg := testCLIConfig(t)
+	store := oci.NewStore(cfg)
+	if err := store.SaveTag("demo:latest", "/tmp/layout-demo", "sha256:1111"); err != nil {
+		t.Fatalf("SaveTag: %v", err)
+	}
+
+	resolved, exists, err := resolveLocalOCITagRef(store, "demo")
+	if err != nil {
+		t.Fatalf("resolveLocalOCITagRef: %v", err)
+	}
+	if !exists {
+		t.Fatal("resolveLocalOCITagRef should resolve demo -> demo:latest")
+	}
+	if resolved != "demo:latest" {
+		t.Fatalf("resolved ref = %q, want %q", resolved, "demo:latest")
 	}
 }

@@ -1309,14 +1309,21 @@ func imagesCommand() *cli.Command {
 **Cache Resolution Behavior**:
 
 - `image pull` updates the local manifest cache (`cache/manifests/index.json`) to map `IMAGE_REF` aliases to `base_key`.
-- `image inspect` and `image remove` resolve `IMAGE_REF` from local cache only (`base_key` direct hit or manifest-cache alias), without pulling.
+- `image inspect`, `image remove`, and `image verify` resolve local OCI tags with an implicit `:latest` fallback when no tag/digest is provided.
+- `image inspect` and `image remove` resolve cloud-image `IMAGE_REF` from local cache only (`base_key` direct hit or manifest-cache alias), without pulling.
 - `image tag SOURCE_REF TARGET_REF` behavior:
-  1. If `SOURCE_REF` is a local OCI build tag, creates/updates another local OCI tag pointing to the same layout.
+  1. If `SOURCE_REF` is a local OCI build tag (implicit `:latest` fallback supported), creates/updates another local OCI tag pointing to the same layout.
   2. Otherwise, resolves a cached cloud image (`base_key`/manifest alias) and creates/updates a cloud-image alias in `cache/manifests/index.json`.
+- `image push <ref>` for local OCI images applies implicit `:latest` when no tag/digest is present.
 - `image build` default tag behavior (when `--tag` is omitted):
   1. Derive the name from the effective build source (`CLOUD_IMAGE` or Cocoonfile `FROM`).
   2. Strip local file extension when applicable.
   3. Append `:latest` if no explicit tag suffix is present.
+- Cocoonfile `FROM` resolution behavior:
+  1. Local file path/relative existing file next to Cocoonfile.
+  2. Local OCI tag (implicit `:latest` fallback).
+  3. `http(s)` cloud-image URL via image pipeline prepare.
+  4. Docker-like OCI ref normalization and prepare fallback (`ubuntu` -> `docker.io/library/ubuntu:latest`).
 - `image remove <ref>` behavior for OCI tags:
   1. Removes only the requested tag entry from `db/oci-build-tags.json`.
   2. Keeps the layout directory when other tags still reference the same `layout_path`.

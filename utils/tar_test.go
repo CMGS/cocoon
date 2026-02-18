@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -250,5 +251,146 @@ func TestTarEntryModeOrDefault_PreservesModeBits(t *testing.T) {
 	}
 	if mode&os.ModeSetgid == 0 {
 		t.Fatalf("setgid bit missing in mode=%v", mode)
+	}
+}
+
+func TestExtractOCILayerTarToDir_AppliesWhiteoutFile(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	layer1 := filepath.Join(root, "layer1.tar")
+	layer2 := filepath.Join(root, "layer2.tar")
+	outDir := filepath.Join(root, "out")
+
+	createLayerTar(t, layer1, []tarEntrySpec{
+		{name: "foo.txt", body: []byte("foo"), mode: 0o644, typ: tar.TypeReg},
+		{name: "keep.txt", body: []byte("keep"), mode: 0o644, typ: tar.TypeReg},
+	})
+	createLayerTar(t, layer2, []tarEntrySpec{
+		{name: ".wh.foo.txt", body: nil, mode: 0o000, typ: tar.TypeReg},
+		{name: "new.txt", body: []byte("new"), mode: 0o644, typ: tar.TypeReg},
+	})
+
+	if err := ExtractOCILayerTarToDir(context.Background(), layer1, outDir); err != nil {
+		t.Fatalf("extract layer1: %v", err)
+	}
+	if err := ExtractOCILayerTarToDir(context.Background(), layer2, outDir); err != nil {
+		t.Fatalf("extract layer2: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(outDir, "foo.txt")); !os.IsNotExist(err) {
+		t.Fatalf("foo.txt should be removed by whiteout, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, ".wh.foo.txt")); !os.IsNotExist(err) {
+		t.Fatalf("whiteout marker should not be materialized, stat err=%v", err)
+	}
+
+	keep, err := os.ReadFile(filepath.Join(outDir, "keep.txt")) //nolint:gosec // test path
+	if err != nil {
+		t.Fatalf("read keep.txt: %v", err)
+	}
+	if string(keep) != "keep" {
+		t.Fatalf("keep.txt content=%q, want keep", string(keep))
+	}
+
+	newData, err := os.ReadFile(filepath.Join(outDir, "new.txt")) //nolint:gosec // test path
+	if err != nil {
+		t.Fatalf("read new.txt: %v", err)
+	}
+	if string(newData) != "new" {
+		t.Fatalf("new.txt content=%q, want new", string(newData))
+	}
+}
+
+func TestExtractOCILayerTarToDir_AppliesOpaqueWhiteout(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	layer1 := filepath.Join(root, "layer1.tar")
+	layer2 := filepath.Join(root, "layer2.tar")
+	outDir := filepath.Join(root, "out")
+
+	createLayerTar(t, layer1, []tarEntrySpec{
+		{name: "etc/a.conf", body: []byte("a"), mode: 0o644, typ: tar.TypeReg},
+		{name: "etc/b.conf", body: []byte("b"), mode: 0o644, typ: tar.TypeReg},
+	})
+	createLayerTar(t, layer2, []tarEntrySpec{
+		{name: "etc/.wh..wh..opq", body: nil, mode: 0o000, typ: tar.TypeReg},
+		{name: "etc/c.conf", body: []byte("c"), mode: 0o644, typ: tar.TypeReg},
+	})
+
+	if err := ExtractOCILayerTarToDir(context.Background(), layer1, outDir); err != nil {
+		t.Fatalf("extract layer1: %v", err)
+	}
+	if err := ExtractOCILayerTarToDir(context.Background(), layer2, outDir); err != nil {
+		t.Fatalf("extract layer2: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(outDir, "etc", "a.conf")); !os.IsNotExist(err) {
+		t.Fatalf("etc/a.conf should be removed by opaque whiteout, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "etc", "b.conf")); !os.IsNotExist(err) {
+		t.Fatalf("etc/b.conf should be removed by opaque whiteout, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "etc", ".wh..wh..opq")); !os.IsNotExist(err) {
+		t.Fatalf("opaque whiteout marker should not be materialized, stat err=%v", err)
+	}
+
+	cData, err := os.ReadFile(filepath.Join(outDir, "etc", "c.conf")) //nolint:gosec // test path
+	if err != nil {
+		t.Fatalf("read etc/c.conf: %v", err)
+	}
+	if string(cData) != "c" {
+		t.Fatalf("etc/c.conf content=%q, want c", string(cData))
+	}
+}
+
+type tarEntrySpec struct {
+	name string
+	body []byte
+	mode int64
+	typ  byte
+}
+
+func createLayerTar(t *testing.T, tarPath string, entries []tarEntrySpec) {
+	t.Helper()
+
+	f, err := os.Create(tarPath) //nolint:gosec // test temp file
+	if err != nil {
+		t.Fatalf("create tar %s: %v", tarPath, err)
+	}
+	tw := tar.NewWriter(f)
+
+	for _, entry := range entries {
+		size := int64(len(entry.body))
+		hdr := &tar.Header{
+			Name:     entry.name,
+			Mode:     entry.mode,
+			Size:     size,
+			Typeflag: entry.typ,
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			_ = tw.Close()
+			_ = f.Close()
+			t.Fatalf("write header %s: %v", entry.name, err)
+		}
+		if size > 0 {
+			if _, err := tw.Write(entry.body); err != nil {
+				_ = tw.Close()
+				_ = f.Close()
+				t.Fatalf("write body %s: %v", entry.name, err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		_ = f.Close()
+		t.Fatalf("close tar writer: %v", err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		_ = f.Close()
+		t.Fatalf("seek tar file: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close tar file: %v", err)
 	}
 }

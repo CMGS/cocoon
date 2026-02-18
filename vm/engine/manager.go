@@ -246,25 +246,11 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 	}
 
 	// Step 1c: Verify bootability (unless skipped).
-	skipVerifyForCacheHit := false
-	if !opts.SkipVerify && cachedBaseKeysBefore != nil {
-		if _, ok := cachedBaseKeysBefore[baseKey]; ok {
-			skipVerifyForCacheHit = true
-			log.Printf("image %s (%s): cache hit, skipping bootability verification", opts.Image, baseKey)
-		}
-	}
+	skipVerifyForCacheHit := m.shouldSkipVerifyForCacheHit(opts.SkipVerify, cachedBaseKeysBefore, baseKey, opts.Image)
 	if !opts.SkipVerify && !skipVerifyForCacheHit {
-		result, verifyErr := m.imgMgr.VerifyBootability(ctx, baseImagePath)
-		if verifyErr != nil {
+		if verifyErr := m.verifyPreparedBaseImage(ctx, opts.Image, baseImagePath, baseKey); verifyErr != nil {
 			_ = m.refCounter.RemoveReference(baseKey, vmID)
-			return nil, fmt.Errorf("verify bootability for %s: %w", opts.Image, verifyErr)
-		}
-		if !result.Bootable {
-			_ = m.refCounter.RemoveReference(baseKey, vmID)
-			return nil, fmt.Errorf("%w: %s - %v", types.ErrImageNotBootable, opts.Image, result.Errors)
-		}
-		for _, w := range result.Warnings {
-			log.Printf("image %s: bootability warning: %s", opts.Image, w)
+			return nil, verifyErr
 		}
 	}
 
@@ -383,6 +369,41 @@ func (m *manager) snapshotCachedBaseKeys(ctx context.Context) map[string]struct{
 		keys[img.BaseKey] = struct{}{}
 	}
 	return keys
+}
+
+func (m *manager) shouldSkipVerifyForCacheHit(skipVerify bool, cachedBaseKeysBefore map[string]struct{}, baseKey, imageRef string) bool {
+	if skipVerify || cachedBaseKeysBefore == nil {
+		return false
+	}
+	if _, ok := cachedBaseKeysBefore[baseKey]; !ok {
+		return false
+	}
+	verified, verifyStateErr := refcache.IsVerified(m.cfg, baseKey)
+	if verifyStateErr != nil {
+		log.Printf("warning: read verify state for %s: %v", baseKey, verifyStateErr)
+		return false
+	}
+	if verified {
+		log.Printf("image %s (%s): cache hit with verified record, skipping bootability verification", imageRef, baseKey)
+	}
+	return verified
+}
+
+func (m *manager) verifyPreparedBaseImage(ctx context.Context, imageRef, baseImagePath, baseKey string) error {
+	result, verifyErr := m.imgMgr.VerifyBootability(ctx, baseImagePath)
+	if verifyErr != nil {
+		return fmt.Errorf("verify bootability for %s: %w", imageRef, verifyErr)
+	}
+	if !result.Bootable {
+		return fmt.Errorf("%w: %s - %v", types.ErrImageNotBootable, imageRef, result.Errors)
+	}
+	for _, warning := range result.Warnings {
+		log.Printf("image %s: bootability warning: %s", imageRef, warning)
+	}
+	if markErr := refcache.MarkVerified(m.cfg, baseKey); markErr != nil {
+		log.Printf("warning: persist verify state for %s: %v", baseKey, markErr)
+	}
+	return nil
 }
 
 // bootResult holds the outcome of a successful boot attempt.

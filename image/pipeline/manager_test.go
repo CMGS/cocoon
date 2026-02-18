@@ -277,6 +277,36 @@ func TestPrepareOCI_ConcurrentDedup(t *testing.T) {
 	}
 }
 
+func TestRemoveCached_ClearsVerifiedState(t *testing.T) {
+	t.Parallel()
+
+	cfg := newTestConfig(t)
+	mgr := New(cfg, fakeReferenceCounter{}).(*manager)
+
+	baseKey := "abcdef0123456789_amd64"
+	basePath := cfg.BaseImagePath(baseKey)
+	createFakeQcow2(t, basePath)
+
+	if err := refcache.MarkVerified(cfg, baseKey); err != nil {
+		t.Fatalf("MarkVerified: %v", err)
+	}
+
+	if err := mgr.RemoveCached(context.Background(), baseKey); err != nil {
+		t.Fatalf("RemoveCached: %v", err)
+	}
+	if _, err := os.Stat(basePath); !os.IsNotExist(err) {
+		t.Fatalf("base image should be removed, stat err=%v", err)
+	}
+
+	verified, err := refcache.IsVerified(cfg, baseKey)
+	if err != nil {
+		t.Fatalf("IsVerified: %v", err)
+	}
+	if verified {
+		t.Fatal("verified state should be removed with cached image")
+	}
+}
+
 func TestHasDeepVerificationUnavailableWarning(t *testing.T) {
 	t.Parallel()
 

@@ -635,6 +635,9 @@ func (m *manager) RemoveCached(ctx context.Context, baseKey string) error {
 	if purgeErr := refcache.PurgeBaseKey(m.cfg, baseKey); purgeErr != nil {
 		log.Printf("warning: purge refcache entries for %s: %v", baseKey, purgeErr)
 	}
+	if verifyStateErr := refcache.DeleteVerified(m.cfg, baseKey); verifyStateErr != nil {
+		log.Printf("warning: remove verify state for %s: %v", baseKey, verifyStateErr)
+	}
 
 	log.Printf("image cache: removed %s", baseKey)
 	return nil

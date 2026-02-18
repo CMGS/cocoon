@@ -17,6 +17,7 @@ import (
 
 	"github.com/CMGS/cocoon/image"
 	"github.com/CMGS/cocoon/image/refcache"
+	"github.com/CMGS/cocoon/lock/flock"
 	"github.com/CMGS/cocoon/oci"
 	"github.com/CMGS/cocoon/types"
 	"github.com/CMGS/cocoon/utils"
@@ -217,7 +218,8 @@ func imagePullAction(c *cli.Context) error {
 	ref := c.Args().Get(0)
 
 	// Check if the image is already cached before pulling.
-	_, wasCached := resolveBaseKeyFromCache(c, app, ref)
+	_, cacheLookupErr := resolveBaseKeyFromCache(c, app, ref)
+	cachedBefore := cacheLookupErr == nil
 
 	// Use the Prepare pipeline to pull + convert + cache the image.
 	identity, basePath, err := app.imgMgr.Prepare(c.Context, ref)
@@ -230,18 +232,9 @@ func imagePullAction(c *cli.Context) error {
 	// VerifyBootability requires guestfish for deep checks (Linux-only).
 	// On Darwin or when guestfish is unavailable, it falls back to basic
 	// qcow2 validation with an optimistic result.
-	if !c.Bool("skip-verify") && wasCached != nil {
-		result, verifyErr := app.imgMgr.VerifyBootability(c.Context, basePath)
-		if verifyErr != nil {
-			return fmt.Errorf("verify bootability for %q: %w", ref, verifyErr)
-		} else if !result.Bootable {
-			if len(result.Errors) > 0 {
-				return fmt.Errorf("%w: %s - %v", types.ErrImageNotBootable, ref, result.Errors)
-			}
-			return fmt.Errorf("%w: %s", types.ErrImageNotBootable, ref)
-		}
-		for _, w := range result.Warnings {
-			fmt.Fprintf(os.Stderr, "Warning: image %s: %s\n", ref, w)
+	if shouldVerifyPulledImage(app, identity.BaseKey(), cachedBefore, c.Bool("skip-verify")) {
+		if err := verifyPulledImage(c.Context, app, ref, basePath, identity.BaseKey()); err != nil {
+			return err
 		}
 	}
 	if idxErr := refcache.Upsert(app.cfg, ref, identity.BaseKey(), identity.FullDigest); idxErr != nil {
@@ -252,6 +245,38 @@ func imagePullAction(c *cli.Context) error {
 	fmt.Printf("Base key: %s\n", identity.BaseKey())
 	fmt.Printf("Cached at: %s\n", basePath)
 
+	return nil
+}
+
+func shouldVerifyPulledImage(app *appContext, baseKey string, cachedBefore bool, skipVerify bool) bool {
+	if skipVerify {
+		return false
+	}
+	verified, err := refcache.IsVerified(app.cfg, baseKey)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: read verify state for %s: %v\n", baseKey, err)
+		return true
+	}
+	return !cachedBefore || !verified
+}
+
+func verifyPulledImage(ctx context.Context, app *appContext, ref, basePath, baseKey string) error {
+	result, verifyErr := app.imgMgr.VerifyBootability(ctx, basePath)
+	if verifyErr != nil {
+		return fmt.Errorf("verify bootability for %q: %w", ref, verifyErr)
+	}
+	if !result.Bootable {
+		if len(result.Errors) > 0 {
+			return fmt.Errorf("%w: %s - %v", types.ErrImageNotBootable, ref, result.Errors)
+		}
+		return fmt.Errorf("%w: %s", types.ErrImageNotBootable, ref)
+	}
+	for _, warning := range result.Warnings {
+		fmt.Fprintf(os.Stderr, "Warning: image %s: %s\n", ref, warning)
+	}
+	if markErr := refcache.MarkVerified(app.cfg, baseKey); markErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: persist verify state for %s: %v\n", baseKey, markErr)
+	}
 	return nil
 }
 
@@ -288,8 +313,16 @@ func imageInspectAction(c *cli.Context) error {
 	// 2. Try cloud image cache.
 	// 3. Error.
 	store := oci.NewStore(app.cfg)
-	if layoutPath, resolveErr := store.ResolveTag(ref); resolveErr == nil {
-		return inspectOCIImage(ref, layoutPath)
+	ociRef, ociExists, ociErr := resolveLocalOCITagRef(store, ref)
+	if ociErr != nil {
+		return fmt.Errorf("check OCI tag %q: %w", ref, ociErr)
+	}
+	if ociExists {
+		layoutPath, resolveErr := store.ResolveTag(ociRef)
+		if resolveErr != nil {
+			return fmt.Errorf("resolve OCI tag %q: %w", ociRef, resolveErr)
+		}
+		return inspectOCIImage(ociRef, layoutPath)
 	}
 
 	// Fall back to cloud image cache.
@@ -411,12 +444,13 @@ func imageTagAction(c *cli.Context) error {
 	}
 
 	store := oci.NewStore(app.cfg)
-	sourceIsOCI, err := store.HasTag(sourceRef)
+	ociSourceRef, sourceIsOCI, err := resolveLocalOCITagRef(store, sourceRef)
 	if err != nil {
 		return fmt.Errorf("check OCI source tag %q: %w", sourceRef, err)
 	}
 	if sourceIsOCI {
-		return tagOCIImage(app, store, sourceRef, targetRef)
+		targetRef = ensureLatestTag(targetRef)
+		return tagOCIImage(app, store, ociSourceRef, targetRef)
 	}
 	return tagCloudImageAlias(c, app, store, sourceRef, targetRef)
 }
@@ -518,12 +552,12 @@ func imageRemoveAction(c *cli.Context) error {
 	// Use tag-index existence instead of ResolveTag so we can clean stale tags
 	// even when the layout directory has already been deleted.
 	store := oci.NewStore(app.cfg)
-	tagExists, tagErr := store.HasTag(ref)
+	ociRef, tagExists, tagErr := resolveLocalOCITagRef(store, ref)
 	if tagErr != nil {
 		return fmt.Errorf("check OCI tag %q: %w", ref, tagErr)
 	}
 	if tagExists {
-		manifestDigest, zeroRefBlobs, removeErr := store.RemoveTag(ref)
+		manifestDigest, zeroRefBlobs, removeErr := store.RemoveTag(ociRef)
 		if removeErr != nil {
 			return fmt.Errorf("remove OCI image: %w", removeErr)
 		}
@@ -532,7 +566,7 @@ func imageRemoveAction(c *cli.Context) error {
 		for _, digest := range zeroRefBlobs {
 			_ = blobStore.RemoveBlob(digest) // best-effort
 		}
-		fmt.Printf("Removed OCI image: %s\n", ref)
+		fmt.Printf("Removed OCI image: %s\n", ociRef)
 		if manifestDigest != "" {
 			fmt.Printf("Manifest: %s\n", manifestDigest)
 		}
@@ -627,18 +661,18 @@ func imageVerifyAction(c *cli.Context) error {
 func resolveVerifyResult(c *cli.Context, app *appContext, arg string) (*image.BootCheckResult, error) {
 	// Local OCI tags are verified from their OCI layout metadata.
 	store := oci.NewStore(app.cfg)
-	ociTagExists, err := store.HasTag(arg)
+	ociRef, ociTagExists, err := resolveLocalOCITagRef(store, arg)
 	if err != nil {
 		return nil, fmt.Errorf("check OCI tag %q: %w", arg, err)
 	}
 	if ociTagExists {
-		layoutPath, resolveErr := store.ResolveTag(arg)
+		layoutPath, resolveErr := store.ResolveTag(ociRef)
 		if resolveErr != nil {
-			return nil, fmt.Errorf("resolve OCI tag %q: %w", arg, resolveErr)
+			return nil, fmt.Errorf("resolve OCI tag %q: %w", ociRef, resolveErr)
 		}
 		result, verifyErr := verifyOCILayoutBootability(layoutPath)
 		if verifyErr != nil {
-			return nil, fmt.Errorf("verify OCI image %q: %w", arg, verifyErr)
+			return nil, fmt.Errorf("verify OCI image %q: %w", ociRef, verifyErr)
 		}
 		return result, nil
 	}
@@ -823,9 +857,6 @@ func resolveCocoonfileFrom(c *cli.Context, app *appContext, cocoonfilePath, from
 	if from == "" {
 		return "", nil, fmt.Errorf("cocoonfile FROM is empty")
 	}
-	if strings.HasPrefix(from, "http://") || strings.HasPrefix(from, "https://") {
-		return "", nil, fmt.Errorf("FROM does not support URL schemes (got %q); use an OCI reference or local path", from)
-	}
 
 	// Explicit/existing local paths are always preferred.
 	if imagePath, isPath := resolveCocoonfileLocalPath(cocoonfilePath, from); isPath {
@@ -834,20 +865,74 @@ func resolveCocoonfileFrom(c *cli.Context, app *appContext, cocoonfilePath, from
 
 	// Local OCI build tags take precedence over remote pulls.
 	store := oci.NewStore(app.cfg)
-	tagExists, err := store.HasTag(from)
+	localOCITag, tagExists, err := resolveLocalOCITagRef(store, from)
 	if err != nil {
 		return "", nil, fmt.Errorf("check local OCI tag %q: %w", from, err)
 	}
 	if tagExists {
-		return materializeOCITagForBuild(c.Context, app, store, from)
+		return materializeOCITagForBuild(c.Context, app, store, localOCITag)
 	}
 
 	// Fallback: treat FROM as a pullable reference.
-	_, basePath, err := app.imgMgr.Prepare(c.Context, from)
+	// Docker-like behavior:
+	// - "ubuntu:latest"           -> docker.io/library/ubuntu:latest
+	// - "cmgs/myimg:latest"       -> docker.io/cmgs/myimg:latest
+	// - "ghcr.io/ns/img:latest"   -> unchanged (explicit registry)
+	// - "https://..."             -> unchanged (cloud image URL)
+	pullRef := normalizePullableFROMRef(from)
+	identity, basePath, err := app.imgMgr.Prepare(c.Context, pullRef)
 	if err != nil {
-		return "", nil, fmt.Errorf("resolve FROM %q via pull: %w", from, err)
+		return "", nil, fmt.Errorf("resolve FROM %q via pull (%q): %w", from, pullRef, err)
+	}
+	if idxErr := refcache.Upsert(app.cfg, from, identity.BaseKey(), identity.FullDigest); idxErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: update manifest cache for FROM %q: %v\n", from, idxErr)
+	}
+	if pullRef != from {
+		if idxErr := refcache.Upsert(app.cfg, pullRef, identity.BaseKey(), identity.FullDigest); idxErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: update manifest cache for FROM %q: %v\n", pullRef, idxErr)
+		}
 	}
 	return basePath, nil, nil
+}
+
+func normalizePullableFROMRef(from string) string {
+	ref := strings.TrimSpace(from)
+	if ref == "" {
+		return ref
+	}
+	if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
+		return ref
+	}
+	return normalizeDockerLikeOCIRef(ref)
+}
+
+func normalizeDockerLikeOCIRef(ref string) string {
+	namePart := ref
+	digestPart := ""
+	if idx := strings.Index(ref, "@"); idx >= 0 {
+		namePart = ref[:idx]
+		digestPart = ref[idx:]
+	}
+
+	var normalized string
+	if strings.Count(namePart, "/") == 0 {
+		normalized = "docker.io/library/" + namePart + digestPart
+	} else {
+		first, _, _ := strings.Cut(namePart, "/")
+		if isExplicitRegistryHost(first) {
+			normalized = ref
+		} else {
+			normalized = "docker.io/" + namePart + digestPart
+		}
+	}
+	if digestPart != "" {
+		return normalized
+	}
+	return ensureLatestTag(normalized)
+}
+
+func isExplicitRegistryHost(segment string) bool {
+	return segment == "localhost" || strings.Contains(segment, ".") || strings.Contains(segment, ":")
 }
 
 func resolveCocoonfileLocalPath(cocoonfilePath, from string) (string, bool) {
@@ -866,6 +951,14 @@ func resolveCocoonfileLocalPath(cocoonfilePath, from string) (string, bool) {
 }
 
 func materializeOCITagForBuild(ctx context.Context, app *appContext, store *oci.Store, tag string) (string, func(), error) {
+	// Hold build txn lock for the full materialization so a concurrent
+	// `image rm` cannot delete the layout mid-read.
+	txnLock := flock.New(app.cfg.OCIBuildTxnLock())
+	if err := txnLock.Lock(); err != nil {
+		return "", nil, fmt.Errorf("acquire OCI build txn lock for FROM %q: %w", tag, err)
+	}
+	defer txnLock.Unlock() //nolint:errcheck
+
 	entry, err := store.GetTag(tag)
 	if err != nil {
 		return "", nil, fmt.Errorf("read local OCI tag %q: %w", tag, err)
@@ -1007,7 +1100,7 @@ func ociLayoutBlobPath(layoutPath, digest string) (string, error) {
 }
 
 func extractTarLayer(ctx context.Context, layerPath, targetDir string) error {
-	if err := utils.ExtractTarToDir(ctx, layerPath, targetDir); err != nil {
+	if err := utils.ExtractOCILayerTarToDir(ctx, layerPath, targetDir); err != nil {
 		return fmt.Errorf("extract tar %s: %w", layerPath, err)
 	}
 	return nil
@@ -1208,6 +1301,52 @@ func ensureLatestTag(tag string) string {
 	return tag + ":latest"
 }
 
+func hasExplicitTagOrDigest(ref string) bool {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return false
+	}
+	if strings.Contains(ref, "@sha256:") {
+		return true
+	}
+	last := ref
+	if idx := strings.LastIndex(ref, "/"); idx >= 0 {
+		last = ref[idx+1:]
+	}
+	return strings.Contains(last, ":")
+}
+
+func resolveLocalOCITagRef(store *oci.Store, ref string) (string, bool, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", false, nil
+	}
+
+	exists, err := store.HasTag(ref)
+	if err != nil {
+		return "", false, err
+	}
+	if exists {
+		return ref, true, nil
+	}
+
+	if hasExplicitTagOrDigest(ref) {
+		return "", false, nil
+	}
+	latest := ensureLatestTag(ref)
+	if latest == ref {
+		return "", false, nil
+	}
+	exists, err = store.HasTag(latest)
+	if err != nil {
+		return "", false, err
+	}
+	if exists {
+		return latest, true, nil
+	}
+	return "", false, nil
+}
+
 func imageBuildAction(c *cli.Context) error {
 	app, err := initApp(c)
 	if err != nil {
@@ -1263,7 +1402,10 @@ func imagePushAction(c *cli.Context) error {
 		return err
 	}
 
-	ref := c.Args().Get(0)
+	ref := strings.TrimSpace(c.Args().Get(0))
+	if !hasExplicitTagOrDigest(ref) {
+		ref = ensureLatestTag(ref)
+	}
 
 	result, err := app.imgBuild.Push(c.Context, ref)
 	if err != nil {

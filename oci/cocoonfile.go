@@ -131,13 +131,6 @@ func parseCocoonfile(scanner *bufio.Scanner) (*Cocoonfile, error) {
 		return nil, fmt.Errorf("Cocoonfile must contain a FROM directive")
 	}
 
-	// Validate FROM: URL schemes are not supported.
-	// Non-URL values may be local paths or OCI references; concrete resolution
-	// happens in the CLI build path.
-	if strings.HasPrefix(cf.From, "http://") || strings.HasPrefix(cf.From, "https://") {
-		return nil, fmt.Errorf("FROM does not support URL schemes (got %q)", cf.From)
-	}
-
 	return cf, nil
 }
 

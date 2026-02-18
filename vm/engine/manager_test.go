@@ -14,6 +14,7 @@ import (
 	hypermocks "github.com/CMGS/cocoon/hypervisor/mocks"
 	"github.com/CMGS/cocoon/image"
 	imgmocks "github.com/CMGS/cocoon/image/mocks"
+	"github.com/CMGS/cocoon/image/refcache"
 	storemocks "github.com/CMGS/cocoon/storage/mocks"
 	"github.com/CMGS/cocoon/types"
 	"github.com/CMGS/cocoon/utils"
@@ -238,6 +239,9 @@ func TestCreate_DefaultSkipVerifyOnCacheHit(t *testing.T) {
 
 	identity := defaultMockIdentity()
 	basePath := filepath.Join(td.cfg.ImageCacheDir(), identity.BaseKey()+".qcow2")
+	if err := refcache.MarkVerified(td.cfg, identity.BaseKey()); err != nil {
+		t.Fatalf("MarkVerified: %v", err)
+	}
 	td.imgMgr.ListCachedFunc = func(_ context.Context) ([]*image.CachedImage, error) {
 		return []*image.CachedImage{
 			{BaseKey: identity.BaseKey(), Path: basePath},
@@ -266,6 +270,43 @@ func TestCreate_DefaultSkipVerifyOnCacheHit(t *testing.T) {
 	}
 	if verifyCallCount != 0 {
 		t.Errorf("VerifyBootability called %d times, want 0", verifyCallCount)
+	}
+}
+
+func TestCreate_CacheHitWithoutVerifiedStateRunsVerify(t *testing.T) {
+	t.Parallel()
+	td := setupTestManager(t)
+
+	identity := defaultMockIdentity()
+	basePath := filepath.Join(td.cfg.ImageCacheDir(), identity.BaseKey()+".qcow2")
+	td.imgMgr.ListCachedFunc = func(_ context.Context) ([]*image.CachedImage, error) {
+		return []*image.CachedImage{
+			{BaseKey: identity.BaseKey(), Path: basePath},
+		}, nil
+	}
+	td.imgMgr.PrepareFunc = func(_ context.Context, _ string) (*image.ImageIdentity, string, error) {
+		return identity, basePath, nil
+	}
+	verifyCallCount := 0
+	td.imgMgr.VerifyBootabilityFunc = func(_ context.Context, _ string) (*image.BootCheckResult, error) {
+		verifyCallCount++
+		return &image.BootCheckResult{Bootable: true}, nil
+	}
+	td.cowMgr.CreateOverlayFunc = func(baseKey, vmID, diskSize string) (string, error) {
+		return filepath.Join(td.cfg.RootDir, "vms", vmID, "overlay.qcow2"), nil
+	}
+
+	vmCfg, err := td.mgr.Create(t.Context(), &vm.CreateOptions{
+		Image: "docker.io/library/ubuntu:22.04",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if vmCfg == nil {
+		t.Fatal("expected non-nil VMConfig")
+	}
+	if verifyCallCount != 1 {
+		t.Errorf("VerifyBootability called %d times, want 1", verifyCallCount)
 	}
 }
 
