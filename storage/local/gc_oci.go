@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/CMGS/cocoon/lock/flock"
+	"github.com/CMGS/cocoon/storage"
 	"github.com/CMGS/cocoon/utils"
 )
 
@@ -33,10 +34,8 @@ type ociBlobRefEntry struct {
 	CreatedAt       time.Time `json:"created_at"`
 }
 
-// ociGCGracePeriod is the defense-in-depth grace period for OCI GC operations.
-// Layouts and blobs younger than this are skipped to prevent races with
-// concurrent builds that have not yet recorded their tag/blob references.
-const ociGCGracePeriod = 5 * time.Minute
+// ociGCGracePeriod is an alias for the canonical constant in the storage package.
+const ociGCGracePeriod = storage.OCIGCGracePeriod
 
 // CollectOrphanedOCILayouts removes OCI layout directories in cache/oci/layouts/
 // that are not referenced by any tag in oci-build-tags.json.
@@ -224,13 +223,8 @@ func (gc *fileGarbageCollector) CollectStaleOCITags() ([]string, error) {
 				layerRefs.Blobs[digest] = blobRef
 				changed = true
 
-				// If zero refs remain, delete the blob file (with grace
-				// period to protect in-progress builds).
-				if len(filtered) == 0 {
-					blobPath := filepath.Join(blobDir, digest)
-					if info, statErr := os.Stat(blobPath); statErr == nil && info.ModTime().Before(cutoff) {
-						_ = os.Remove(blobPath) // best-effort
-					}
+				// If zero refs remain, try to delete the blob file.
+				if len(filtered) == 0 && tryDeleteZeroRefBlob(blobDir, digest, cutoff) {
 					delete(layerRefs.Blobs, digest)
 				}
 			}
@@ -329,12 +323,8 @@ func (gc *fileGarbageCollector) CollectOrphanedOCIManifestRefs() ([]string, erro
 				layerRefs.Blobs[digest] = blobRef
 				changed = true
 
-				// If zero refs remain, delete the blob (with grace period).
-				if len(filtered) == 0 {
-					blobPath := filepath.Join(blobDir, digest)
-					if info, statErr := os.Stat(blobPath); statErr == nil && info.ModTime().Before(cutoff) {
-						_ = os.Remove(blobPath) // best-effort
-					}
+				// If zero refs remain, try to delete the blob.
+				if len(filtered) == 0 && tryDeleteZeroRefBlob(blobDir, digest, cutoff) {
 					delete(layerRefs.Blobs, digest)
 				}
 			}
@@ -451,4 +441,21 @@ func filterManifestDigests(digests []string, removeSet map[string]bool) []string
 		}
 	}
 	return result
+}
+
+// tryDeleteZeroRefBlob attempts to delete a blob file that has zero manifest
+// references. If the file is within the grace period, the blob entry is kept
+// in the index so Phase 6 can track and eventually clean it. Returns true if
+// the entry should be removed from the index (file deleted or already gone).
+func tryDeleteZeroRefBlob(blobDir, digest string, cutoff time.Time) bool {
+	blobPath := filepath.Join(blobDir, digest)
+	info, statErr := os.Stat(blobPath)
+	if statErr != nil {
+		return true // file already gone — remove dangling entry
+	}
+	if info.ModTime().Before(cutoff) {
+		_ = os.Remove(blobPath) // best-effort
+		return true
+	}
+	return false // within grace — keep zero-ref entry for Phase 6
 }

@@ -489,7 +489,8 @@ func TestOCIGC_CollectStaleOCITags_CascadeRespectsBlobGracePeriod(t *testing.T) 
 		t.Errorf("recent blob should be preserved by grace period: %v", err)
 	}
 
-	// But the layer-refs entry should be removed (manifest ref was orphaned).
+	// The layer-refs entry should be kept (zero-ref but file preserved by grace).
+	// Phase 6 will handle final cleanup once the grace period expires.
 	var layerRefs ociLayerRefsIndex
 	data, err := os.ReadFile(cfg.OCILayerRefsFile())
 	if err != nil {
@@ -498,8 +499,12 @@ func TestOCIGC_CollectStaleOCITags_CascadeRespectsBlobGracePeriod(t *testing.T) 
 	if err := json.Unmarshal(data, &layerRefs); err != nil {
 		t.Fatalf("unmarshal layer refs: %v", err)
 	}
-	if _, ok := layerRefs.Blobs["recent-blob"]; ok {
-		t.Error("recent-blob layer-refs entry should be removed (zero manifest refs)")
+	blobEntry, ok := layerRefs.Blobs["recent-blob"]
+	if !ok {
+		t.Fatal("recent-blob layer-refs entry should be kept (file preserved by grace)")
+	}
+	if len(blobEntry.ManifestDigests) != 0 {
+		t.Errorf("recent-blob manifest digests should be empty, got %v", blobEntry.ManifestDigests)
 	}
 }
 
@@ -601,5 +606,22 @@ func TestOCIGC_CollectOrphanedManifestRefs_GracePeriod(t *testing.T) {
 	// But the blob file should be preserved due to grace period (it's recent).
 	if _, err := os.Stat(filepath.Join(blobDir, "recent-blob")); err != nil {
 		t.Errorf("recent blob should be preserved by grace period: %v", err)
+	}
+
+	// The layer-refs entry should be kept (zero-ref but file preserved by grace).
+	var layerRefs ociLayerRefsIndex
+	data, err := os.ReadFile(cfg.OCILayerRefsFile())
+	if err != nil {
+		t.Fatalf("read layer refs: %v", err)
+	}
+	if err := json.Unmarshal(data, &layerRefs); err != nil {
+		t.Fatalf("unmarshal layer refs: %v", err)
+	}
+	blobEntry, ok := layerRefs.Blobs["recent-blob"]
+	if !ok {
+		t.Fatal("recent-blob layer-refs entry should be kept (file preserved by grace)")
+	}
+	if len(blobEntry.ManifestDigests) != 0 {
+		t.Errorf("recent-blob manifest digests should be empty, got %v", blobEntry.ManifestDigests)
 	}
 }
