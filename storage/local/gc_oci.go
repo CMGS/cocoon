@@ -208,6 +208,7 @@ func (gc *fileGarbageCollector) CollectStaleOCITags() ([]string, error) {
 		}
 
 		changed := false
+		cutoff := time.Now().Add(-ociGCGracePeriod)
 		blobDir := gc.cfg.OCIBlobDir()
 		for digest, blobRef := range layerRefs.Blobs {
 			filtered := filterManifestDigests(blobRef.ManifestDigests, orphanSet)
@@ -216,10 +217,13 @@ func (gc *fileGarbageCollector) CollectStaleOCITags() ([]string, error) {
 				layerRefs.Blobs[digest] = blobRef
 				changed = true
 
-				// If zero refs remain, delete the blob file.
+				// If zero refs remain, delete the blob file (with grace
+				// period to protect in-progress builds).
 				if len(filtered) == 0 {
 					blobPath := filepath.Join(blobDir, digest)
-					_ = os.Remove(blobPath) // best-effort
+					if info, statErr := os.Stat(blobPath); statErr == nil && info.ModTime().Before(cutoff) {
+						_ = os.Remove(blobPath) // best-effort
+					}
 					delete(layerRefs.Blobs, digest)
 				}
 			}
