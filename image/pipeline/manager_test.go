@@ -48,10 +48,10 @@ func createFakeQcow2(t *testing.T, path string) {
 // pipeline manager only uses it in ListCached/RemoveCached, not in Prepare.
 type fakeReferenceCounter struct{}
 
-func (fakeReferenceCounter) AddReference(_, _, _, _ string) error    { return nil }
-func (fakeReferenceCounter) RemoveReference(_, _ string) error       { return nil }
+func (fakeReferenceCounter) AddReference(_, _, _, _ string) error     { return nil }
+func (fakeReferenceCounter) RemoveReference(_, _ string) error        { return nil }
 func (fakeReferenceCounter) GetReferences(_ string) ([]string, error) { return nil, nil }
-func (fakeReferenceCounter) IsReferenced(_ string) (bool, error)     { return false, nil }
+func (fakeReferenceCounter) IsReferenced(_ string) (bool, error)      { return false, nil }
 func (fakeReferenceCounter) GetUnreferencedImages() ([]string, error) { return nil, nil }
 
 // --- Tests for Prepare: cache result ---
@@ -115,11 +115,11 @@ func TestPrepare_CachesResult(t *testing.T) {
 // so subsequent goroutines observe a cache hit.
 //
 // The pattern tested is:
-//   1. N goroutines all get the same identity (identify phase, outside lock)
-//   2. They all enter Convert and contend on the flock
-//   3. The first goroutine to acquire the lock finds no cache and we
-//      pre-populate the cache file for it (simulating conversion)
-//   4. Subsequent goroutines acquire the lock and see the cache hit
+//  1. N goroutines all get the same identity (identify phase, outside lock)
+//  2. They all enter Convert and contend on the flock
+//  3. The first goroutine to acquire the lock finds no cache and we
+//     pre-populate the cache file for it (simulating conversion)
+//  4. Subsequent goroutines acquire the lock and see the cache hit
 func TestConvert_ConcurrentDedup(t *testing.T) {
 	cfg := newTestConfig(t)
 
@@ -177,9 +177,10 @@ func TestConvert_ConcurrentDedup(t *testing.T) {
 // functions require real tools (skopeo, buildah), we test the concurrency
 // mechanism by directly invoking the lock+cache pattern that prepareOCI uses.
 // We replicate the exact flow:
-//   Phase 1: identifyOCIPlatform (simulated)
-//   Phase 2: Fast-path cache check
-//   Phase 3-6: Lock -> double-check cache -> pull+convert -> unlock
+//
+//	Phase 1: identifyOCIPlatform (simulated)
+//	Phase 2: Fast-path cache check
+//	Phase 3-6: Lock -> double-check cache -> pull+convert -> unlock
 //
 // A conversion counter tracks how many goroutines would have performed
 // the actual conversion (entered the critical section when cache is cold).

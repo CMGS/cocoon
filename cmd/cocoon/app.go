@@ -23,8 +23,8 @@ import (
 type appContext struct {
 	cfg      *config.CocoonConfig
 	vmMgr    vm.Manager
-	imgMgr   image.Manager  // Cloud image pipeline (pull/convert/cache).
-	imgBuild image.Builder  // OCI VM image build/push/login.
+	imgMgr   image.Manager // Cloud image pipeline (pull/convert/cache).
+	imgBuild image.Builder // OCI VM image build/push/login.
 	hyper    hypervisor.Client
 	refCtr   storage.ReferenceCounter
 	cowMgr   storage.COWManager

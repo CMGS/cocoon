@@ -309,12 +309,12 @@ func inspectCloudImage(c *cli.Context, app *appContext, baseKey string) error {
 
 // ociInspectInfo is the output for OCI VM image inspection.
 type ociInspectInfo struct {
-	Type           string           `json:"type"`
-	Tag            string           `json:"tag"`
-	ManifestDigest string           `json:"manifest_digest"`
-	Layers         []oci.LayerInfo  `json:"layers"`
+	Type           string             `json:"type"`
+	Tag            string             `json:"tag"`
+	ManifestDigest string             `json:"manifest_digest"`
+	Layers         []oci.LayerInfo    `json:"layers"`
 	Config         *oci.VMImageConfig `json:"config"`
-	LayoutPath     string           `json:"layout_path"`
+	LayoutPath     string             `json:"layout_path"`
 }
 
 // cloudInspectInfo is the output for cloud image inspection.

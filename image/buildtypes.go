@@ -26,9 +26,9 @@ type BuildEntry struct {
 
 // InspectResult holds metadata from an OCI VM image layout inspection.
 type InspectResult struct {
-	ManifestDigest string            `json:"manifest_digest"`
-	Layers         []InspectLayer    `json:"layers"`
-	Config         map[string]any    `json:"config"`
+	ManifestDigest string         `json:"manifest_digest"`
+	Layers         []InspectLayer `json:"layers"`
+	Config         map[string]any `json:"config"`
 }
 
 // InspectLayer describes a single layer in the OCI manifest.

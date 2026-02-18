@@ -25,12 +25,12 @@ func TestNormalizeHeader(t *testing.T) {
 		AccessTime: time.Now(),
 		ChangeTime: time.Now(),
 		PAXRecords: map[string]string{
-			"SCHILY.acl.access":  "some-acl",
-			"SCHILY.acl.default": "some-default-acl",
+			"SCHILY.acl.access":      "some-acl",
+			"SCHILY.acl.default":     "some-default-acl",
 			"SCHILY.xattr.user.test": "keep-this",
-			"atime": "1234567890",
-			"ctime": "1234567890",
-			"mtime": "1234567890",
+			"atime":                  "1234567890",
+			"ctime":                  "1234567890",
+			"mtime":                  "1234567890",
 		},
 	}
 

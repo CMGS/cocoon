@@ -143,8 +143,8 @@ func rewriteDeterministicTar(srcTar, dstTar string, excludePaths []string) (stri
 // Returns the sha256 digest (hex-encoded, no prefix) and size of the tar.
 func buildKernelLayerTar(kernelPath, initrdPath, outPath string) (string, int64, error) {
 	type fileEntry struct {
-		tarName  string
-		srcPath  string
+		tarName string
+		srcPath string
 	}
 
 	// Sorted order: initrd.img before vmlinuz.
