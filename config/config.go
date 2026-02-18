@@ -309,10 +309,6 @@ func (c *CocoonConfig) ConversionLockPath(baseKey string) string {
 	return filepath.Join(c.RootDir, "cache", "locks", baseKey+".lock")
 }
 
-func (c *CocoonConfig) OCIBuildCacheDir() string {
-	return filepath.Join(c.RootDir, "cache", "oci-builds")
-}
-
 func (c *CocoonConfig) OCICacheDir() string {
 	return filepath.Join(c.RootDir, "cache", "oci")
 }
