@@ -14,6 +14,7 @@ Design principles:
 - **Permanent deletion**: All GC operations permanently remove files. There is no recovery mechanism for GC'd resources.
 - **No grace period for images**: Unreferenced base images are collected immediately. The reference counter ensures in-use images are never collected.
 - **Defense-in-depth grace for OCI**: OCI layouts and blobs younger than 5 minutes are skipped to prevent races with concurrent builds that have not yet recorded their references.
+- **Build staging isolation**: OCI build temp layout directories are created under `temp/oci-layout-builds/` (not under `cache/oci/layouts/`) so Phase 3 only scans finalized layout directories.
 - **Dry-run support**: `cocoon gc --dry-run` previews what would be collected without making changes.
 - **Lock-safe**: Each phase acquires the appropriate locks to prevent races with concurrent VM creation/deletion.
 
@@ -25,7 +26,7 @@ GC manages 7 categories of resources:
 |---|----------|---------------|--------|
 | 1 | Unreferenced base images | `cache/images/*.qcow2` with zero refs in `references.json` | `os.Remove` |
 | 2 | Orphaned overlays | VM dir has `overlay.qcow2` but no `config.json` | `os.RemoveAll(vmDir)` |
-| 3 | Orphaned OCI layouts | `cache/oci/layouts/` dir not referenced by any tag | `os.RemoveAll(layoutDir)` |
+| 3 | Orphaned OCI layouts | Finalized directory in `cache/oci/layouts/` not referenced by any tag | `os.RemoveAll(layoutDir)` |
 | 4 | Stale OCI tags | Tag in `oci-build-tags.json` whose `layout_path` does not exist | Remove from index; cascade to orphaned manifests/blobs |
 | 5 | Orphaned OCI manifest refs | Manifest digest in `oci-layer-refs.json` not associated with any live tag | Remove from blob entries; delete zero-ref blobs |
 | 6 | Unreferenced OCI blobs | `cache/oci/blobs/sha256/` file with zero manifest refs | `os.Remove` |

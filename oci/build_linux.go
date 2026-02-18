@@ -200,10 +200,13 @@ func Build(ctx context.Context, cfg *config.CocoonConfig, imagePath, tag string,
 }
 
 func createLayoutWorkDir(cfg *config.CocoonConfig) (string, error) {
-	if err := os.MkdirAll(cfg.OCILayoutDir(), 0o750); err != nil {
-		return "", fmt.Errorf("create OCI layout root: %w", err)
+	// Build temp layouts live under temp/ (not cache/oci/layouts/) so GC phase 3
+	// never sweeps an in-progress build directory.
+	layoutTempRoot := filepath.Join(cfg.TempDir(), "oci-layout-builds")
+	if err := os.MkdirAll(layoutTempRoot, 0o750); err != nil {
+		return "", fmt.Errorf("create OCI layout temp root: %w", err)
 	}
-	layoutWorkDir, err := os.MkdirTemp(cfg.OCILayoutDir(), "layout-build-*")
+	layoutWorkDir, err := os.MkdirTemp(layoutTempRoot, "layout-build-*")
 	if err != nil {
 		return "", fmt.Errorf("create OCI layout temp dir: %w", err)
 	}
