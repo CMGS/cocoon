@@ -13,8 +13,6 @@ import (
 )
 
 func TestPullAndMountOCIPlatformFallbackUsesTagForFrom(t *testing.T) {
-	t.Parallel()
-
 	tmp := t.TempDir()
 	fakeBinDir := filepath.Join(tmp, "bin")
 	if err := os.MkdirAll(fakeBinDir, 0o755); err != nil {
