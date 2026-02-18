@@ -114,21 +114,22 @@ func (m *MockCOWManager) GetOverlayInfo(vmID string) (*storage.OverlayInfo, erro
 // Each method can be overridden by setting the corresponding Func field.
 // If a Func field is nil, the method returns zero values.
 type MockGarbageCollector struct {
-	CollectUnreferencedImagesFunc   func(gracePeriod time.Duration) ([]string, error)
-	CollectOrphanedOverlaysFunc     func() ([]string, error)
-	CollectOrphanedOCILayoutsFunc   func() ([]string, error)
-	CollectUnreferencedOCIBlobsFunc func() ([]string, error)
-	CollectTempFilesFunc            func(maxAge time.Duration) ([]string, error)
-	EmptyTrashFunc                  func(maxAge time.Duration) error
-	FullGCFunc                      func() error
+	CollectUnreferencedImagesFunc      func() ([]string, error)
+	CollectOrphanedOverlaysFunc        func() ([]string, error)
+	CollectOrphanedOCILayoutsFunc      func() ([]string, error)
+	CollectStaleOCITagsFunc            func() ([]string, error)
+	CollectOrphanedOCIManifestRefsFunc func() ([]string, error)
+	CollectUnreferencedOCIBlobsFunc    func() ([]string, error)
+	CollectTempFilesFunc               func(maxAge time.Duration) ([]string, error)
+	FullGCFunc                         func() error
 }
 
 // Compile-time check that MockGarbageCollector implements storage.GarbageCollector.
 var _ storage.GarbageCollector = (*MockGarbageCollector)(nil)
 
-func (m *MockGarbageCollector) CollectUnreferencedImages(gracePeriod time.Duration) ([]string, error) {
+func (m *MockGarbageCollector) CollectUnreferencedImages() ([]string, error) {
 	if m.CollectUnreferencedImagesFunc != nil {
-		return m.CollectUnreferencedImagesFunc(gracePeriod)
+		return m.CollectUnreferencedImagesFunc()
 	}
 	return []string{}, nil
 }
@@ -147,6 +148,20 @@ func (m *MockGarbageCollector) CollectOrphanedOCILayouts() ([]string, error) {
 	return []string{}, nil
 }
 
+func (m *MockGarbageCollector) CollectStaleOCITags() ([]string, error) {
+	if m.CollectStaleOCITagsFunc != nil {
+		return m.CollectStaleOCITagsFunc()
+	}
+	return []string{}, nil
+}
+
+func (m *MockGarbageCollector) CollectOrphanedOCIManifestRefs() ([]string, error) {
+	if m.CollectOrphanedOCIManifestRefsFunc != nil {
+		return m.CollectOrphanedOCIManifestRefsFunc()
+	}
+	return []string{}, nil
+}
+
 func (m *MockGarbageCollector) CollectUnreferencedOCIBlobs() ([]string, error) {
 	if m.CollectUnreferencedOCIBlobsFunc != nil {
 		return m.CollectUnreferencedOCIBlobsFunc()
@@ -159,13 +174,6 @@ func (m *MockGarbageCollector) CollectTempFiles(maxAge time.Duration) ([]string,
 		return m.CollectTempFilesFunc(maxAge)
 	}
 	return []string{}, nil
-}
-
-func (m *MockGarbageCollector) EmptyTrash(maxAge time.Duration) error {
-	if m.EmptyTrashFunc != nil {
-		return m.EmptyTrashFunc(maxAge)
-	}
-	return nil
 }
 
 func (m *MockGarbageCollector) FullGC() error {

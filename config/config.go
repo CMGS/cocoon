@@ -39,10 +39,6 @@ type CocoonConfig struct {
 	DefaultMemoryMB int64  `json:"default_memory_mb"`
 	DefaultDiskSize string `json:"default_disk_size"`
 
-	// GC configuration.
-	GCGracePeriodHours int `json:"gc_grace_period_hours"`
-	GCTrashRetentDays  int `json:"gc_trash_retention_days"`
-
 	// Boot timeout in seconds.
 	BootTimeoutSeconds int `json:"boot_timeout_seconds"`
 	// Stop timeout in seconds.
@@ -70,9 +66,6 @@ func DefaultConfig() *CocoonConfig {
 		DefaultCPUs:     2,
 		DefaultMemoryMB: 2048,
 		DefaultDiskSize: "10G",
-
-		GCGracePeriodHours: 24,
-		GCTrashRetentDays:  7,
 
 		BootTimeoutSeconds: 60,
 		StopTimeoutSeconds: 30,
@@ -118,9 +111,6 @@ func (c *CocoonConfig) Validate() error {
 	const maxMemoryMB int64 = 1_048_576 // 1 TB
 	if c.DefaultMemoryMB > maxMemoryMB {
 		return fmt.Errorf("config: DefaultMemoryMB must be <= %d (1 TB), got %d", maxMemoryMB, c.DefaultMemoryMB)
-	}
-	if c.GCGracePeriodHours < 0 {
-		return fmt.Errorf("config: GCGracePeriodHours must be >= 0, got %d", c.GCGracePeriodHours)
 	}
 	if c.BootTimeoutSeconds < 0 {
 		return fmt.Errorf("config: BootTimeoutSeconds must be >= 0, got %d", c.BootTimeoutSeconds)
@@ -197,10 +187,6 @@ func (c *CocoonConfig) VMDir() string {
 
 func (c *CocoonConfig) TempDir() string {
 	return filepath.Join(c.RootDir, "temp")
-}
-
-func (c *CocoonConfig) TrashDir() string {
-	return filepath.Join(c.RootDir, "trash")
 }
 
 func (c *CocoonConfig) FirmwareDir() string {
@@ -352,7 +338,6 @@ func (c *CocoonConfig) EnsureDirs() error {
 		c.OCILayoutDir(),
 		c.VMDir(),
 		c.TempDir(),
-		c.TrashDir(),
 		c.FirmwareDir(),
 		c.BuildahRoot,
 		filepath.Join(c.RuntimeDir, "vms"),

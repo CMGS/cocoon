@@ -17,14 +17,6 @@ func gcCommand() *cli.Command {
 		Name:  "gc",
 		Usage: "Run garbage collection on unreferenced images and orphaned resources",
 		Flags: []cli.Flag{
-			&cli.IntFlag{
-				Name:  "grace-period",
-				Usage: "hours before unreferenced images are collected (default: config value; 0 = collect immediately)",
-			},
-			&cli.BoolFlag{
-				Name:  "aggressive",
-				Usage: "collect unreferenced images immediately (alias for --grace-period 0)",
-			},
 			&cli.BoolFlag{
 				Name:  "dry-run",
 				Usage: "only report what would be collected, don't actually delete",
@@ -40,23 +32,14 @@ func gcAction(c *cli.Context) error {
 		return err
 	}
 
-	gracePeriodHours := c.Int("grace-period")
-	if c.Bool("aggressive") {
-		gracePeriodHours = 0
-	} else if !c.IsSet("grace-period") {
-		gracePeriodHours = app.cfg.GCGracePeriodHours
-	}
-	gracePeriod := time.Duration(gracePeriodHours) * time.Hour
-
 	dryRun := c.Bool("dry-run")
 
 	if dryRun {
-		return gcDryRun(app, gracePeriod)
+		return gcDryRun(app)
 	}
 
-	// Run full GC cycle with the specified grace period.
 	// Phase 1: Collect unreferenced images.
-	images, err := app.gc.CollectUnreferencedImages(gracePeriod)
+	images, err := app.gc.CollectUnreferencedImages()
 	if err != nil {
 		return fmt.Errorf("collect unreferenced images: %w", err)
 	}
@@ -82,7 +65,25 @@ func gcAction(c *cli.Context) error {
 		fmt.Printf("collected orphaned OCI layout: %s\n", name)
 	}
 
-	// Phase 4: Collect unreferenced OCI blobs.
+	// Phase 4: Collect stale OCI tags.
+	staleTags, err := app.gc.CollectStaleOCITags()
+	if err != nil {
+		return fmt.Errorf("collect stale OCI tags: %w", err)
+	}
+	for _, tag := range staleTags {
+		fmt.Printf("collected stale OCI tag: %s\n", tag)
+	}
+
+	// Phase 5: Collect orphaned OCI manifest refs.
+	orphanedManifests, err := app.gc.CollectOrphanedOCIManifestRefs()
+	if err != nil {
+		return fmt.Errorf("collect orphaned OCI manifest refs: %w", err)
+	}
+	for _, digest := range orphanedManifests {
+		fmt.Printf("collected orphaned OCI manifest ref: %s\n", digest)
+	}
+
+	// Phase 6: Collect unreferenced OCI blobs.
 	ociBlobs, err := app.gc.CollectUnreferencedOCIBlobs()
 	if err != nil {
 		return fmt.Errorf("collect unreferenced OCI blobs: %w", err)
@@ -91,7 +92,7 @@ func gcAction(c *cli.Context) error {
 		fmt.Printf("collected unreferenced OCI blob: %s\n", digest)
 	}
 
-	// Phase 5: Collect temp files.
+	// Phase 7: Collect temp files.
 	tempFiles, err := app.gc.CollectTempFiles(1 * time.Hour)
 	if err != nil {
 		return fmt.Errorf("collect temp files: %w", err)
@@ -100,35 +101,23 @@ func gcAction(c *cli.Context) error {
 		fmt.Printf("collected temp file: %s\n", name)
 	}
 
-	// Phase 6: Empty trash.
-	// When grace period is zero (aggressive mode), also bypass trash retention
-	// so that recently trashed items are permanently deleted.
-	trashRetention := time.Duration(app.cfg.GCTrashRetentDays) * 24 * time.Hour
-	if gracePeriod == 0 {
-		trashRetention = 0
-	}
-	if err := app.gc.EmptyTrash(trashRetention); err != nil {
-		return fmt.Errorf("empty trash: %w", err)
-	}
-
-	total := len(images) + len(overlays) + len(ociLayouts) + len(ociBlobs) + len(tempFiles)
+	total := len(images) + len(overlays) + len(ociLayouts) + len(staleTags) + len(orphanedManifests) + len(ociBlobs) + len(tempFiles)
 	if total == 0 {
 		fmt.Println("Nothing to collect.")
 	} else {
-		fmt.Printf("\nCollected %d item(s): %d images, %d overlays, %d OCI layouts, %d OCI blobs, %d temp files.\n",
-			total, len(images), len(overlays), len(ociLayouts), len(ociBlobs), len(tempFiles))
+		fmt.Printf("\nCollected %d item(s): %d images, %d overlays, %d OCI layouts, %d stale tags, %d orphaned manifests, %d OCI blobs, %d temp files.\n",
+			total, len(images), len(overlays), len(ociLayouts), len(staleTags), len(orphanedManifests), len(ociBlobs), len(tempFiles))
 	}
 
 	return nil
 }
 
 // gcDryRun reports what would be collected without making changes.
-// It uses the read-only methods from ReferenceCounter to identify candidates.
-func gcDryRun(app *appContext, gracePeriod time.Duration) error {
-	fmt.Printf("Dry run (grace period: %s)\n\n", gracePeriod)
+func gcDryRun(app *appContext) error {
+	fmt.Println("Dry run")
 
-	// Phase 1 preview: unreferenced images that also passed grace period.
-	imageCandidates, err := previewUnreferencedImageCandidates(app, gracePeriod)
+	// Phase 1 preview: unreferenced images.
+	imageCandidates, err := previewUnreferencedImageCandidates(app)
 	if err != nil {
 		return fmt.Errorf("preview unreferenced images: %w", err)
 	}
@@ -169,7 +158,35 @@ func gcDryRun(app *appContext, gracePeriod time.Duration) error {
 		fmt.Println("\nNo orphaned OCI layouts found.")
 	}
 
-	// Phase 4 preview: unreferenced OCI blobs.
+	// Phase 4 preview: stale OCI tags.
+	staleTagCandidates, err := previewStaleOCITagCandidates(app)
+	if err != nil {
+		return fmt.Errorf("preview stale OCI tags: %w", err)
+	}
+	if len(staleTagCandidates) > 0 {
+		fmt.Println("\nStale OCI tags (candidates for collection):")
+		for _, tag := range staleTagCandidates {
+			fmt.Printf("  %s\n", tag)
+		}
+	} else {
+		fmt.Println("\nNo stale OCI tags found.")
+	}
+
+	// Phase 5 preview: orphaned OCI manifest refs.
+	orphanedManifestCandidates, err := previewOrphanedOCIManifestRefCandidates(app)
+	if err != nil {
+		return fmt.Errorf("preview orphaned OCI manifest refs: %w", err)
+	}
+	if len(orphanedManifestCandidates) > 0 {
+		fmt.Println("\nOrphaned OCI manifest refs (candidates for collection):")
+		for _, digest := range orphanedManifestCandidates {
+			fmt.Printf("  %s\n", digest)
+		}
+	} else {
+		fmt.Println("\nNo orphaned OCI manifest refs found.")
+	}
+
+	// Phase 6 preview: unreferenced OCI blobs.
 	ociBlobCandidates, err := previewUnreferencedOCIBlobCandidates(app)
 	if err != nil {
 		return fmt.Errorf("preview unreferenced OCI blobs: %w", err)
@@ -183,7 +200,7 @@ func gcDryRun(app *appContext, gracePeriod time.Duration) error {
 		fmt.Println("\nNo unreferenced OCI blobs found.")
 	}
 
-	// Phase 5 preview: old temp files (>1h).
+	// Phase 7 preview: old temp files (>1h).
 	tempCandidates, err := previewOldFileCandidates(app.cfg.TempDir(), 1*time.Hour)
 	if err != nil {
 		return fmt.Errorf("preview temp files: %w", err)
@@ -197,44 +214,19 @@ func gcDryRun(app *appContext, gracePeriod time.Duration) error {
 		fmt.Println("\nNo temp files found for collection.")
 	}
 
-	// Phase 6 preview: old trash items (>retention).
-	// When grace period is zero (aggressive mode), also bypass trash retention
-	// so that recently trashed items are shown as candidates.
-	trashRetention := time.Duration(app.cfg.GCTrashRetentDays) * 24 * time.Hour
-	if gracePeriod == 0 {
-		trashRetention = 0
-	}
-	trashCandidates, err := previewOldFileCandidates(app.cfg.TrashDir(), trashRetention)
-	if err != nil {
-		return fmt.Errorf("preview trash cleanup: %w", err)
-	}
-	if len(trashCandidates) > 0 {
-		fmt.Println("\nTrash items (candidates for permanent deletion):")
-		for _, name := range trashCandidates {
-			fmt.Printf("  %s\n", name)
-		}
-	} else {
-		fmt.Println("\nNo trash items found for permanent deletion.")
-	}
-
 	fmt.Printf("\nUse 'cocoon gc' without --dry-run to perform collection.\n")
 	return nil
 }
 
-func previewUnreferencedImageCandidates(app *appContext, gracePeriod time.Duration) ([]string, error) {
+func previewUnreferencedImageCandidates(app *appContext) ([]string, error) {
 	unreferenced, err := app.refCtr.GetUnreferencedImages()
 	if err != nil {
 		return nil, err
 	}
 
-	cutoff := time.Now().Add(-gracePeriod)
 	candidates := make([]string, 0, len(unreferenced))
 	for _, baseKey := range unreferenced {
-		fi, err := os.Stat(app.cfg.BaseImagePath(baseKey))
-		if err != nil {
-			continue
-		}
-		if fi.ModTime().After(cutoff) {
+		if _, err := os.Stat(app.cfg.BaseImagePath(baseKey)); err != nil {
 			continue
 		}
 		candidates = append(candidates, baseKey)
@@ -319,6 +311,57 @@ func previewOrphanedOCILayoutCandidates(app *appContext) ([]string, error) {
 			continue
 		}
 		candidates = append(candidates, entry.Name())
+	}
+	sort.Strings(candidates)
+	return candidates, nil
+}
+
+func previewStaleOCITagCandidates(app *appContext) ([]string, error) {
+	store := oci.NewStore(app.cfg)
+	tags, err := store.ListTags()
+	if err != nil {
+		return nil, err
+	}
+
+	var candidates []string
+	for _, t := range tags {
+		if _, statErr := os.Stat(t.LayoutPath); os.IsNotExist(statErr) {
+			candidates = append(candidates, t.Tag)
+		}
+	}
+	sort.Strings(candidates)
+	return candidates, nil
+}
+
+func previewOrphanedOCIManifestRefCandidates(app *appContext) ([]string, error) {
+	store := oci.NewStore(app.cfg)
+	tags, err := store.ListTags()
+	if err != nil {
+		return nil, err
+	}
+
+	// Build live manifest set.
+	liveManifests := make(map[string]bool)
+	for _, t := range tags {
+		// Only count tags whose layout still exists.
+		if _, statErr := os.Stat(t.LayoutPath); statErr == nil {
+			liveManifests[t.ManifestDigest] = true
+		}
+	}
+
+	// Get all manifest digests referenced in layer refs.
+	allManifests, err := oci.GetAllManifestDigests(app.cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	var candidates []string
+	seen := make(map[string]bool)
+	for _, md := range allManifests {
+		if !liveManifests[md] && !seen[md] {
+			candidates = append(candidates, md)
+			seen[md] = true
+		}
 	}
 	sort.Strings(candidates)
 	return candidates, nil

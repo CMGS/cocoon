@@ -37,7 +37,7 @@ func TestGC_CollectUnreferenced_Empty(t *testing.T) {
 	cfg := newTestConfig(t)
 	gc := NewGarbageCollector(cfg)
 
-	collected, err := gc.CollectUnreferencedImages(0)
+	collected, err := gc.CollectUnreferencedImages()
 	if err != nil {
 		t.Fatalf("CollectUnreferencedImages: %v", err)
 	}
@@ -65,8 +65,8 @@ func TestGC_SafeDelete(t *testing.T) {
 		t.Fatalf("AddReference: %v", err)
 	}
 
-	// Run GC with zero grace period (collect anything unreferenced).
-	collected, err := gc.CollectUnreferencedImages(0)
+	// Run GC — all unreferenced images are collected immediately.
+	collected, err := gc.CollectUnreferencedImages()
 	if err != nil {
 		t.Fatalf("CollectUnreferencedImages: %v", err)
 	}
@@ -84,41 +84,9 @@ func TestGC_SafeDelete(t *testing.T) {
 		t.Errorf("referenced image was removed (should have been preserved): %v", err)
 	}
 
-	// Verify unreferenced image was moved to trash.
+	// Verify unreferenced image was permanently deleted.
 	if _, err := os.Stat(cfg.BaseImagePath(unreferencedKey)); !os.IsNotExist(err) {
-		t.Errorf("unreferenced image still exists at original path (should have been trashed)")
-	}
-
-	// Verify trash directory has the collected file.
-	entries, err := os.ReadDir(cfg.TrashDir())
-	if err != nil {
-		t.Fatalf("ReadDir trash: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Errorf("trash entry count = %d, want 1", len(entries))
-	}
-}
-
-func TestGC_RespectsGracePeriod(t *testing.T) {
-	cfg := newTestConfig(t)
-	gc := NewGarbageCollector(cfg)
-
-	// Create an unreferenced image with mtime = now (very recent).
-	recentKey := "cccc777788889999_amd64"
-	createFakeImage(t, cfg, recentKey, time.Now())
-
-	// GC with 24h grace period should NOT collect a recently created image.
-	collected, err := gc.CollectUnreferencedImages(24 * time.Hour)
-	if err != nil {
-		t.Fatalf("CollectUnreferencedImages: %v", err)
-	}
-	if len(collected) != 0 {
-		t.Errorf("collected = %v, want empty (image is too recent)", collected)
-	}
-
-	// Image should still exist.
-	if _, err := os.Stat(cfg.BaseImagePath(recentKey)); err != nil {
-		t.Errorf("recent image was removed despite grace period: %v", err)
+		t.Errorf("unreferenced image still exists at original path (should have been deleted)")
 	}
 }
 
@@ -161,7 +129,7 @@ func TestGC_ConcurrentWithRefCount(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if _, err := gc.CollectUnreferencedImages(0); err != nil {
+		if _, err := gc.CollectUnreferencedImages(); err != nil {
 			errCh <- fmt.Errorf("GC: %w", err)
 		}
 	}()
@@ -235,7 +203,7 @@ func TestGC_ConcurrentMultipleGCRuns(t *testing.T) {
 	for i := 0; i < numGCRuns; i++ {
 		go func(idx int) {
 			defer wg.Done()
-			collected, err := gc.CollectUnreferencedImages(0)
+			collected, err := gc.CollectUnreferencedImages()
 			results[idx] = collected
 			errs[idx] = err
 		}(i)
@@ -297,7 +265,7 @@ func TestGC_AddReferenceDuringGC(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		gcCollected, gcErr = gc.CollectUnreferencedImages(0)
+		gcCollected, gcErr = gc.CollectUnreferencedImages()
 	}()
 
 	wg.Wait()
@@ -308,7 +276,7 @@ func TestGC_AddReferenceDuringGC(t *testing.T) {
 
 	// Two valid outcomes, both safe:
 	// 1. GC checked the key BEFORE AddReference -> image collected, reference
-	//    points to moved file (acceptable; the ref is to a since-collected image).
+	//    points to deleted file (acceptable; the ref is to a since-collected image).
 	// 2. GC checked the key AFTER AddReference -> image preserved.
 	//
 	// In neither case should there be a crash, race, or data corruption.
@@ -321,6 +289,6 @@ func TestGC_AddReferenceDuringGC(t *testing.T) {
 			t.Errorf("image not collected but also not on disk: %v", err)
 		}
 	}
-	// If gcCollected contains baseKey, the image was moved to trash before
+	// If gcCollected contains baseKey, the image was deleted before
 	// AddReference ran. That's also a valid outcome.
 }

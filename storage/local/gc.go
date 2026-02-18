@@ -78,11 +78,10 @@ func (gc *fileGarbageCollector) withRefsLock(fn func(refs types.ReferencesFile) 
 
 // --- GarbageCollector interface ---
 
-// CollectUnreferencedImages soft-deletes base images with zero references
-// whose mtime is older than gracePeriod.
+// CollectUnreferencedImages permanently deletes base images with zero references.
 //
 // Lock order: gc.lock (L1) -> references.lock (L2) per image.
-func (gc *fileGarbageCollector) CollectUnreferencedImages(gracePeriod time.Duration) ([]string, error) {
+func (gc *fileGarbageCollector) CollectUnreferencedImages() ([]string, error) {
 	var collected []string
 
 	err := gc.withGCLock(func() error {
@@ -93,15 +92,13 @@ func (gc *fileGarbageCollector) CollectUnreferencedImages(gracePeriod time.Durat
 			return fmt.Errorf("glob image cache: %w", err)
 		}
 
-		cutoff := time.Now().Add(-gracePeriod)
-
 		for _, imagePath := range matches {
 			baseKey := strings.TrimSuffix(filepath.Base(imagePath), ".qcow2")
 
 			// Atomic check-and-delete under references.lock.
-			// Both the reference check AND the file rename happen inside the
+			// Both the reference check AND the file removal happen inside the
 			// lock to prevent a TOCTOU race where a new VM pins a reference
-			// between the check and the rename.
+			// between the check and the delete.
 			var didCollect bool
 			if err := gc.withRefsLock(func(refs types.ReferencesFile) (types.ReferencesFile, error) {
 				entry := refs[baseKey]
@@ -109,19 +106,8 @@ func (gc *fileGarbageCollector) CollectUnreferencedImages(gracePeriod time.Durat
 					return nil, nil // still referenced
 				}
 
-				fi, err := os.Stat(imagePath)
-				if err != nil {
-					return nil, nil // vanished, skip
-				}
-				if fi.ModTime().After(cutoff) {
-					return nil, nil // too recent
-				}
-
-				// Move the image to trash while still holding the lock.
-				// Prefix with UnixNano timestamp to avoid name collisions.
-				trashName := fmt.Sprintf("%d_%s", time.Now().UnixNano(), filepath.Base(imagePath))
-				trashPath := filepath.Join(gc.cfg.TrashDir(), trashName)
-				if err := os.Rename(imagePath, trashPath); err != nil {
+				// Permanently delete the image while still holding the lock.
+				if err := os.Remove(imagePath); err != nil {
 					return nil, nil // non-fatal: skip this image
 				}
 
@@ -152,7 +138,7 @@ func (gc *fileGarbageCollector) CollectUnreferencedImages(gracePeriod time.Durat
 }
 
 // CollectOrphanedOverlays finds VM directories where overlay.qcow2 exists
-// but config.json is missing, and moves them to trash/.
+// but config.json is missing, and permanently deletes them.
 //
 // Lock: gc.lock (L1) only.
 func (gc *fileGarbageCollector) CollectOrphanedOverlays() ([]string, error) {
@@ -180,15 +166,9 @@ func (gc *fileGarbageCollector) CollectOrphanedOverlays() ([]string, error) {
 			configExists := fileExists(configPath)
 
 			if overlayExists && !configExists {
-				// Orphaned overlay -- move to trash.
-				// Prefix with UnixNano timestamp to avoid name collisions.
-				trashName := fmt.Sprintf("%d_%s-orphan-overlay.qcow2", time.Now().UnixNano(), vmID)
-				trashPath := filepath.Join(gc.cfg.TrashDir(), trashName)
-				if err := os.Rename(overlayPath, trashPath); err != nil {
-					continue // non-fatal
-				}
-				// Clean up the now-empty VM directory.
-				_ = os.RemoveAll(filepath.Join(gc.cfg.VMDir(), vmID))
+				// Orphaned overlay -- permanently delete the VM directory.
+				vmDir := filepath.Join(gc.cfg.VMDir(), vmID)
+				_ = os.RemoveAll(vmDir)
 				collected = append(collected, vmID)
 			}
 		}
@@ -240,47 +220,15 @@ func (gc *fileGarbageCollector) CollectTempFiles(maxAge time.Duration) ([]string
 	return collected, err
 }
 
-// EmptyTrash permanently deletes items in trash/ older than maxAge.
-//
-// Lock: gc.lock (L1) only.
-func (gc *fileGarbageCollector) EmptyTrash(maxAge time.Duration) error {
-	return gc.withGCLock(func() error {
-		entries, err := os.ReadDir(gc.cfg.TrashDir())
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return fmt.Errorf("read trash directory: %w", err)
-		}
-
-		cutoff := time.Now().Add(-maxAge)
-
-		for _, entry := range entries {
-			info, err := entry.Info()
-			if err != nil {
-				continue
-			}
-			if info.ModTime().Before(cutoff) {
-				path := filepath.Join(gc.cfg.TrashDir(), entry.Name())
-				_ = os.RemoveAll(path) // best effort
-			}
-		}
-		return nil
-	})
-}
-
-// FullGC runs a complete garbage collection cycle using the grace periods
-// from configuration.
+// FullGC runs a complete garbage collection cycle.
 //
 // Each phase acquires gc.lock independently. This is NOT atomic across the
 // full cycle -- an interleaving VM creation between phases is safe because
 // each phase performs its own reference check under lock.
 func (gc *fileGarbageCollector) FullGC() error {
-	gracePeriod := time.Duration(gc.cfg.GCGracePeriodHours) * time.Hour
-	trashRetention := time.Duration(gc.cfg.GCTrashRetentDays) * 24 * time.Hour
 	tempMaxAge := 1 * time.Hour
 
-	if _, err := gc.CollectUnreferencedImages(gracePeriod); err != nil {
+	if _, err := gc.CollectUnreferencedImages(); err != nil {
 		return fmt.Errorf("collect unreferenced images: %w", err)
 	}
 
@@ -292,16 +240,20 @@ func (gc *fileGarbageCollector) FullGC() error {
 		return fmt.Errorf("collect orphaned OCI layouts: %w", err)
 	}
 
+	if _, err := gc.CollectStaleOCITags(); err != nil {
+		return fmt.Errorf("collect stale OCI tags: %w", err)
+	}
+
+	if _, err := gc.CollectOrphanedOCIManifestRefs(); err != nil {
+		return fmt.Errorf("collect orphaned OCI manifest refs: %w", err)
+	}
+
 	if _, err := gc.CollectUnreferencedOCIBlobs(); err != nil {
 		return fmt.Errorf("collect unreferenced OCI blobs: %w", err)
 	}
 
 	if _, err := gc.CollectTempFiles(tempMaxAge); err != nil {
 		return fmt.Errorf("collect temp files: %w", err)
-	}
-
-	if err := gc.EmptyTrash(trashRetention); err != nil {
-		return fmt.Errorf("empty trash: %w", err)
 	}
 
 	return nil

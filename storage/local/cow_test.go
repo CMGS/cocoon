@@ -38,22 +38,13 @@ func TestRemoveOverlay_RemovesOnlyOverlayFile(t *testing.T) {
 		t.Fatalf("RemoveOverlay: %v", err)
 	}
 
+	// Overlay should be permanently deleted.
 	if _, err := os.Stat(overlayPath); !os.IsNotExist(err) {
-		t.Fatalf("overlay should be removed from vmDir, stat err=%v", err)
+		t.Fatalf("overlay should be removed, stat err=%v", err)
 	}
+	// Config should remain.
 	if _, err := os.Stat(configPath); err != nil {
 		t.Fatalf("config should remain in vmDir, stat err=%v", err)
-	}
-
-	trashEntries, err := os.ReadDir(cfg.TrashDir())
-	if err != nil {
-		t.Fatalf("ReadDir trash: %v", err)
-	}
-	if len(trashEntries) != 1 {
-		t.Fatalf("trash entry count=%d, want 1", len(trashEntries))
-	}
-	if filepath.Ext(trashEntries[0].Name()) != ".qcow2" {
-		t.Fatalf("trash entry %q should be qcow2 file", trashEntries[0].Name())
 	}
 }
 

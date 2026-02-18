@@ -56,8 +56,7 @@ Lock file paths are additionally documented in [06-concurrency.md](./06-concurre
 │   └── ...
 ├── firmware/                             # Boot firmware binaries
 │   └── CLOUDHV.fd                        # UEFI firmware (OVMF for Cloud Hypervisor)
-├── temp/                                 # Scratch space for conversions
-└── trash/                                # Soft-deleted images/overlays (for recovery)
+└── temp/                                 # Scratch space for conversions
 
 /run/cocoon/                              # Runtime/ephemeral (tmpfs, cleared on reboot)
 └── vms/
@@ -356,10 +355,6 @@ type CocoonConfig struct {
     DefaultMemoryMB int64  `json:"default_memory_mb"`  // Default: 2048
     DefaultDiskSize string `json:"default_disk_size"`   // Default: "10G"
 
-    // GC configuration (see Garbage Collection section)
-    GCGracePeriodHours int `json:"gc_grace_period_hours"`    // Default: 24
-    GCTrashRetentDays  int `json:"gc_trash_retention_days"`  // Default: 7
-
     // Timeouts
     BootTimeoutSeconds int `json:"boot_timeout_seconds"`  // Default: 60
     StopTimeoutSeconds int `json:"stop_timeout_seconds"`  // Default: 30
@@ -379,7 +374,6 @@ func (c *CocoonConfig) ManifestCacheDir() string   // RootDir/cache/manifests
 func (c *CocoonConfig) ConversionLockDir() string  // RootDir/cache/locks
 func (c *CocoonConfig) VMDir() string              // RootDir/vms
 func (c *CocoonConfig) TempDir() string            // RootDir/temp
-func (c *CocoonConfig) TrashDir() string           // RootDir/trash
 func (c *CocoonConfig) DBDir() string              // RootDir/db
 func (c *CocoonConfig) OCICacheDir() string        // RootDir/cache/oci
 func (c *CocoonConfig) OCIBlobDir() string         // RootDir/cache/oci/blobs/sha256
@@ -392,7 +386,7 @@ func (c *CocoonConfig) OCILayerRefsLock() string   // RootDir/db/oci-layer-refs.
 
 // EnsureDirs creates all required directories (db, cache/images,
 // cache/manifests, cache/locks, cache/oci/blobs/sha256, cache/oci/layouts,
-// vms, temp, trash, firmware, buildah, RuntimeDir/vms, LogDir).
+// vms, temp, firmware, buildah, RuntimeDir/vms, LogDir).
 func (c *CocoonConfig) EnsureDirs() error { ... }
 ```
 
@@ -504,18 +498,11 @@ func (m *fileCOWManager) CreateOverlay(baseKey, vmID, diskSize string) (string, 
     return overlayPath, nil
 }
 
-// RemoveOverlay soft-deletes the overlay by moving it to trash/ with a
-// timestamped prefix ({unixNano}_{vmID}-overlay.qcow2). If rename fails
-// (e.g., cross-filesystem), it falls back to hard delete (os.Remove).
+// RemoveOverlay permanently removes the overlay disk file for vmID.
 // The VM directory itself is preserved for the caller to handle.
 func (m *fileCOWManager) RemoveOverlay(vmID string) error {
     overlayPath := m.cfg.VMOverlayPath(vmID)
-    trashName := fmt.Sprintf("%d_%s-overlay.qcow2", time.Now().UnixNano(), vmID)
-    trashPath := filepath.Join(m.cfg.TrashDir(), trashName)
-    if err := os.Rename(overlayPath, trashPath); err != nil {
-        return os.Remove(overlayPath) // fallback: hard delete
-    }
-    return nil
+    return os.Remove(overlayPath)
 }
 ```
 
@@ -696,7 +683,7 @@ Reference counting operations must be **cross-process safe**. See [06-concurrenc
 
 ### Overview
 
-Garbage collection automatically reclaims disk space from resources that are no longer needed. The system uses grace periods to avoid premature deletion of recently created resources.
+Garbage collection automatically reclaims disk space from resources that are no longer needed. All GC deletions are permanent. See [18-garbage-collection.md](./18-garbage-collection.md) for the full GC design document.
 
 ```go
 // fileGarbageCollector implements GarbageCollector (storage/local/gc.go).
@@ -713,38 +700,37 @@ func NewGarbageCollector(cfg *config.CocoonConfig) storage.GarbageCollector {
     return &fileGarbageCollector{cfg: cfg}
 }
 
-// CollectUnreferencedImages soft-deletes base images with zero references
-// whose mtime is older than gracePeriod.
+// CollectUnreferencedImages permanently deletes base images with zero
+// references. No grace period -- if an image has zero refs, it is collected.
 //
 // For each candidate image, atomically under references.lock (L2):
 //   1. Check refs -- skip if still referenced.
-//   2. Check mtime -- skip if newer than cutoff.
-//   3. Move image to trash/ with UnixNano timestamp prefix.
-//   4. Delete the entry from references.json (if a zero-ref entry exists).
+//   2. os.Remove the image file.
+//   3. Delete the entry from references.json (if a zero-ref entry exists).
 //
 // Returns collected base_key strings (not file paths).
-func (gc *fileGarbageCollector) CollectUnreferencedImages(gracePeriod time.Duration) ([]string, error) {
-    // gc.withGCLock -> for each image -> gc.withRefsLock:
-    //   refs check + mtime check + os.Rename to trash + delete(refs, baseKey)
-    ...
-}
+func (gc *fileGarbageCollector) CollectUnreferencedImages() ([]string, error) { ... }
 
 // CollectOrphanedOverlays finds VM directories where overlay.qcow2 exists
-// but config.json is missing, moves the overlay to trash/, then removes
-// the now-empty VM directory with os.RemoveAll.
+// but config.json is missing, and permanently deletes the VM directory.
 //
 // Lock: gc.lock (L1) only.
-func (gc *fileGarbageCollector) CollectOrphanedOverlays() ([]string, error) {
-    // For each orphaned overlay:
-    //   1. Move overlay to trash/{unixNano}_{vmID}-orphan-overlay.qcow2
-    //   2. os.RemoveAll(vmDir) -- clean up the empty VM directory
-    ...
-}
+func (gc *fileGarbageCollector) CollectOrphanedOverlays() ([]string, error) { ... }
 
 // CollectOrphanedOCILayouts removes OCI layout directories in
 // cache/oci/layouts/ not referenced by any tag in oci-build-tags.json.
-// Lock: gc.lock (L1) only.
+// Lock: gc.lock (L1) -> oci-build-tags.lock.
 func (gc *fileGarbageCollector) CollectOrphanedOCILayouts() ([]string, error) { ... }
+
+// CollectStaleOCITags removes tags whose layout path no longer exists.
+// Cascades cleanup to orphaned manifest refs and zero-ref blobs.
+// Lock: gc.lock (L1) -> oci-build-txn.lock -> tags.lock + layer-refs.lock.
+func (gc *fileGarbageCollector) CollectStaleOCITags() ([]string, error) { ... }
+
+// CollectOrphanedOCIManifestRefs removes manifest refs not associated
+// with any live tag. Zero-ref blobs are deleted (5-min grace for builds).
+// Lock: gc.lock (L1) -> oci-build-txn.lock -> tags.lock + layer-refs.lock.
+func (gc *fileGarbageCollector) CollectOrphanedOCIManifestRefs() ([]string, error) { ... }
 
 // CollectUnreferencedOCIBlobs removes blobs from cache/oci/blobs/sha256/
 // with zero manifest references in oci-layer-refs.json.
@@ -752,29 +738,22 @@ func (gc *fileGarbageCollector) CollectOrphanedOCILayouts() ([]string, error) { 
 func (gc *fileGarbageCollector) CollectUnreferencedOCIBlobs() ([]string, error) { ... }
 
 // CollectTempFiles removes files in temp/ older than maxAge.
-// Files are permanently deleted (not moved to trash).
 // Lock: gc.lock (L1) only.
 func (gc *fileGarbageCollector) CollectTempFiles(maxAge time.Duration) ([]string, error) { ... }
 
-// EmptyTrash permanently deletes items in trash/ older than maxAge.
-// Lock: gc.lock (L1) only.
-func (gc *fileGarbageCollector) EmptyTrash(maxAge time.Duration) error { ... }
-
-// FullGC runs a complete garbage collection cycle using grace periods
-// from CocoonConfig (GCGracePeriodHours, GCTrashRetentDays).
+// FullGC runs a complete garbage collection cycle.
 // Each phase acquires gc.lock independently -- NOT atomic across the full
 // cycle, but safe because each phase performs its own reference check.
 func (gc *fileGarbageCollector) FullGC() error {
-    gracePeriod := time.Duration(gc.cfg.GCGracePeriodHours) * time.Hour
-    trashRetention := time.Duration(gc.cfg.GCTrashRetentDays) * 24 * time.Hour
     tempMaxAge := 1 * time.Hour
 
-    gc.CollectUnreferencedImages(gracePeriod)
+    gc.CollectUnreferencedImages()
     gc.CollectOrphanedOverlays()
     gc.CollectOrphanedOCILayouts()
+    gc.CollectStaleOCITags()
+    gc.CollectOrphanedOCIManifestRefs()
     gc.CollectUnreferencedOCIBlobs()
     gc.CollectTempFiles(tempMaxAge)
-    gc.EmptyTrash(trashRetention)
     return nil
 }
 ```
@@ -789,7 +768,7 @@ GC operations must coordinate with concurrent VM create/delete operations. See [
 - Lock ordering to prevent deadlocks with VM operations
 - Crash recovery and lock auto-release
 
-**OCI lock note**: `oci-layer-refs.lock` is a Level 2 lock, at the same level as `references.lock`. These two locks protect different files and are never held simultaneously. During `CollectUnreferencedOCIBlobs()`, the lock acquisition order is: `gc.lock` (L1) -> `oci-layer-refs.lock` (L2), which respects the hierarchy.
+**OCI lock note**: `oci-layer-refs.lock` is a Level 2 lock, at the same level as `references.lock`. These two locks protect different files and are never held simultaneously. During OCI GC phases, the lock acquisition order is: `gc.lock` (L1) -> `oci-build-txn.lock` -> `oci-build-tags.lock` / `oci-layer-refs.lock` (L2), which respects the hierarchy.
 
 **Key guarantee**: GC cannot delete a base image while any VM references it, even under high concurrency or process crashes.
 
@@ -797,11 +776,9 @@ GC operations must coordinate with concurrent VM create/delete operations. See [
 
 #### 1. Unreferenced Base Images
 
-Base images with zero VM references are candidates for collection after a grace period (default: configurable via `gc_grace_period_hours`, default 24).
+Base images with zero VM references are collected immediately.
 
-**Why grace period?** A newly downloaded base image might not have references yet if VMs are still being provisioned. The grace period prevents premature deletion.
-
-**Action:** For each candidate, atomically under references.lock: move image file to trash/, then delete the entry from `references.json` (removes stale zero-ref entries).
+**Action:** For each candidate, atomically under references.lock: permanently delete the image file, then delete the entry from `references.json`.
 
 **Locking**: GC acquires both GC lock (L1) and reference lock (L2) to perform atomic check-and-delete.
 
@@ -811,68 +788,76 @@ Overlay images whose parent VM configuration has been deleted or corrupted. Thes
 
 **Detection:** `overlay.qcow2` exists but `config.json` is missing in the same VM directory.
 
-**Action:** Move the overlay to trash/, then remove the now-empty VM directory with `os.RemoveAll`.
+**Action:** Permanently delete the entire VM directory with `os.RemoveAll`.
 
 **Locking**: GC lock (L1) only, as this operates on already-deleted VMs.
 
-#### 3. Temporary Files
-
-Files in the `/var/lib/cocoon/temp/` directory older than a threshold (default: 1 hour).
-
-**Source:** Failed image conversions, interrupted downloads, or crashed operations.
-
-**Action:** Permanently delete expired temp files directly (not moved to trash).
-
-**Locking**: GC lock (L1) only, as temp files are not referenced.
-
-#### 4. Orphaned OCI Layouts
+#### 3. Orphaned OCI Layouts
 
 OCI layout directories in `cache/oci/layouts/` that are not referenced by any tag in `oci-build-tags.json`. These indicate layouts from deleted or re-tagged builds.
 
 **Detection:** Directory exists in `cache/oci/layouts/` but its path does not appear in any tag entry in the tag index.
 
-**Action:** Remove the orphaned layout directory permanently with `os.RemoveAll` (not soft-deleted to trash, since layouts contain only hardlinks to shared blobs — no primary data is lost). Blob hardlinks in the layout are deleted, but the underlying shared blobs in `cache/oci/blobs/sha256/` are preserved (their hardlink count decreases but they remain accessible via other layouts or the shared store itself).
+**Action:** Remove the orphaned layout directory permanently with `os.RemoveAll`. Blob hardlinks in the layout are deleted, but the underlying shared blobs in `cache/oci/blobs/sha256/` are preserved.
 
-**Locking**: GC lock (L1) followed by `oci-build-tags.lock` for an atomic tag index read. The tag lock is held for the entire orphan collection loop (read + iterate + delete) to prevent a concurrent `SaveTag` from adding a tag to a layout that is about to be deleted. Layouts younger than 5 minutes are skipped as defense-in-depth against races with concurrent builds. Implemented in `storage/local/gc_oci.go` as `CollectOrphanedOCILayouts()`.
+**Locking**: GC lock (L1) followed by `oci-build-tags.lock` for an atomic tag index read. Layouts younger than 5 minutes are skipped as defense-in-depth against races with concurrent builds.
 
-#### 5. Unreferenced OCI Blobs
+#### 4. Stale OCI Tags
 
-Blobs in `cache/oci/blobs/sha256/` with zero manifest references in `oci-layer-refs.json`. These are blobs from builds whose tags have been deleted and whose layouts have been GC'd.
+Tags in `oci-build-tags.json` whose `layout_path` no longer exists on disk. These indicate tags left behind after their layouts were deleted or GC'd.
+
+**Detection:** Tag entry's `layout_path` does not exist on the filesystem.
+
+**Action:** Remove stale tags from the tag index. For each stale tag, if its `manifest_digest` becomes orphaned (no other live tag shares it), cascade cleanup: remove the manifest digest from all blob entries in `oci-layer-refs.json` and delete zero-ref blobs.
+
+**Locking**: GC lock (L1) -> `oci-build-txn.lock` -> `oci-build-tags.lock` + `oci-layer-refs.lock`.
+
+#### 5. Orphaned OCI Manifest Refs
+
+Manifest digests in `oci-layer-refs.json` blob entries that are not associated with any live tag in the tag index.
+
+**Detection:** Manifest digest appears in a blob's `manifest_digests` array but no live tag references that manifest.
+
+**Action:** Filter orphaned manifest digests from blob entries. Delete blobs that become zero-ref (with 5-minute grace period for in-progress builds).
+
+**Locking**: GC lock (L1) -> `oci-build-txn.lock` -> `oci-build-tags.lock` + `oci-layer-refs.lock`.
+
+#### 6. Unreferenced OCI Blobs
+
+Blobs in `cache/oci/blobs/sha256/` with zero manifest references in `oci-layer-refs.json`.
 
 **Detection:** Blob file exists on disk and either has no entry in `oci-layer-refs.json` or has an entry with an empty `manifest_digests` array.
 
-**Action:** Remove the blob file permanently from the shared store (not soft-deleted to trash, since blobs are content-addressed and can be re-fetched from the registry). Clean up the corresponding entry from `oci-layer-refs.json`.
+**Action:** Remove the blob file permanently from the shared store. Clean up the corresponding entry from `oci-layer-refs.json`.
 
-**Locking**: GC lock (L1) followed by `oci-layer-refs.lock` for atomic check-and-delete. The two locks are held simultaneously (L1 -> oci-layer-refs.lock), respecting the lock hierarchy. Implemented in `storage/local/gc_oci.go` as `CollectUnreferencedOCIBlobs()`.
+**Locking**: GC lock (L1) followed by `oci-layer-refs.lock` for atomic check-and-delete.
 
-#### 6. Trash Cleanup
+#### 7. Temporary Files
 
-Permanently delete soft-deleted items from trash after a recovery period (default: 7 days).
+Files in the `/var/lib/cocoon/temp/` directory older than a threshold (default: 1 hour).
 
-**Purpose:** Allows recovery from accidental deletions while eventually reclaiming disk space.
+**Source:** Failed image conversions, interrupted downloads, or crashed operations.
 
-**Locking**: GC lock (L1) only, as trash items are already soft-deleted.
+**Action:** Permanently delete expired temp files.
 
-### Grace Periods
+**Locking**: GC lock (L1) only, as temp files are not referenced.
 
-Different resource types use different grace periods:
+### Defense-in-Depth Grace Periods
 
-| Resource Type | Default Grace Period | Config Field | Rationale |
-|--------------|---------------------|--------------|-----------|
-| Unreferenced images | 24 hours | `gc_grace_period_hours` | Allow for batch VM creation |
-| Temporary files | 1 hour | (hardcoded) | Short-lived by nature |
-| Trash items | 7 days | `gc_trash_retention_days` | Recovery window |
+OCI resources use a 5-minute defense-in-depth grace period to prevent races with concurrent builds. Resources younger than 5 minutes are skipped even if they appear unreferenced. This applies to:
 
-The image grace period and trash retention are configurable via `CocoonConfig`
-(`gc_grace_period_hours` and `gc_trash_retention_days` fields). The temp file
-max age (1 hour) is currently hardcoded in `FullGC()`.
+- OCI layouts (Phase 3)
+- OCI blobs (Phase 5, 6)
+
+Temp files use a 1-hour max age (hardcoded in `FullGC()`).
 
 ### Garbage Collection Invocation
 
 **Current implementation**: GC is triggered manually via the CLI:
 
 ```bash
-cocoon gc          # Runs FullGC() with configured grace periods
+cocoon gc            # Runs FullGC() — permanently deletes all unreferenced resources
+cocoon gc --dry-run  # Preview what would be collected without deleting
 ```
 
 There is no background scheduler or daemon loop. Operators should run `cocoon gc`
@@ -926,17 +911,15 @@ Track storage usage metrics:
 - Total overlay size per VM
 - Reference count per base image
 - GC collection rates
-- Trash directory size
 
 ## Summary
 
 The storage management system provides:
 
-1. **Efficient Layout**: Organized directories separating base images, overlays, temp, and trash
+1. **Efficient Layout**: Organized directories separating base images, overlays, and temp files
 2. **Space Optimization**: COW overlays allow 100 VMs to use ~5GB instead of 500GB
 3. **Safety**: Reference counting prevents premature deletion of in-use base images
-4. **Automation**: Garbage collection with grace periods cleans up unused resources
-5. **Recoverability**: Soft-delete of base images/overlays to trash allows recovery from accidental deletes
-6. **Scalability**: Supports high-concurrency VM creation through shared base images
+4. **Automation**: Garbage collection permanently cleans up unreferenced resources
+5. **Scalability**: Supports high-concurrency VM creation through shared base images
 
 The combination of qcow2 backing files, checksum-based caching, and intelligent reference counting delivers an optimal storage solution for high-concurrency VM operations.

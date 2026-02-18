@@ -227,7 +227,6 @@ func TestEnsureDirs(t *testing.T) {
 		cfg.OCILayoutDir(),
 		cfg.VMDir(),
 		cfg.TempDir(),
-		cfg.TrashDir(),
 		cfg.FirmwareDir(),
 		cfg.BuildahRoot,
 		filepath.Join(cfg.RuntimeDir, "vms"),
