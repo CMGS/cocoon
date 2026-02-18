@@ -228,6 +228,7 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 	vmID := "vm-" + ulid.MustNew(ulid.Now(), rand.Reader).String()
 
 	now := time.Now().UTC().Format(time.RFC3339)
+	cachedBaseKeysBefore := m.snapshotCachedBaseKeys(ctx)
 
 	// Step 1: Prepare image (pull + convert + cache).
 	identity, baseImagePath, err := m.imgMgr.Prepare(ctx, opts.Image)
@@ -245,7 +246,14 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 	}
 
 	// Step 1c: Verify bootability (unless skipped).
-	if !opts.SkipVerify {
+	skipVerifyForCacheHit := false
+	if !opts.SkipVerify && cachedBaseKeysBefore != nil {
+		if _, ok := cachedBaseKeysBefore[baseKey]; ok {
+			skipVerifyForCacheHit = true
+			log.Printf("image %s (%s): cache hit, skipping bootability verification", opts.Image, baseKey)
+		}
+	}
+	if !opts.SkipVerify && !skipVerifyForCacheHit {
 		result, verifyErr := m.imgMgr.VerifyBootability(ctx, baseImagePath)
 		if verifyErr != nil {
 			_ = m.refCounter.RemoveReference(baseKey, vmID)
@@ -357,6 +365,22 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 	}
 
 	return vmCfg, nil
+}
+
+func (m *manager) snapshotCachedBaseKeys(ctx context.Context) map[string]struct{} {
+	images, err := m.imgMgr.ListCached(ctx)
+	if err != nil {
+		log.Printf("warning: list cached images before prepare: %v", err)
+		return nil
+	}
+	keys := make(map[string]struct{}, len(images))
+	for _, img := range images {
+		if img == nil || img.BaseKey == "" {
+			continue
+		}
+		keys[img.BaseKey] = struct{}{}
+	}
+	return keys
 }
 
 // bootResult holds the outcome of a successful boot attempt.

@@ -231,6 +231,77 @@ func TestCreate_SkipVerify(t *testing.T) {
 	}
 }
 
+func TestCreate_DefaultSkipVerifyOnCacheHit(t *testing.T) {
+	t.Parallel()
+	td := setupTestManager(t)
+
+	identity := defaultMockIdentity()
+	basePath := filepath.Join(td.cfg.ImageCacheDir(), identity.BaseKey()+".qcow2")
+	td.imgMgr.ListCachedFunc = func(_ context.Context) ([]*image.CachedImage, error) {
+		return []*image.CachedImage{
+			{BaseKey: identity.BaseKey(), Path: basePath},
+		}, nil
+	}
+	td.imgMgr.PrepareFunc = func(_ context.Context, _ string) (*image.ImageIdentity, string, error) {
+		return identity, basePath, nil
+	}
+	verifyCallCount := 0
+	td.imgMgr.VerifyBootabilityFunc = func(_ context.Context, _ string) (*image.BootCheckResult, error) {
+		verifyCallCount++
+		return &image.BootCheckResult{Bootable: true}, nil
+	}
+	td.cowMgr.CreateOverlayFunc = func(baseKey, vmID, diskSize string) (string, error) {
+		return filepath.Join(td.cfg.RootDir, "vms", vmID, "overlay.qcow2"), nil
+	}
+
+	vmCfg, err := td.mgr.Create(t.Context(), &vm.CreateOptions{
+		Image: "docker.io/library/ubuntu:22.04",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if vmCfg == nil {
+		t.Fatal("expected non-nil VMConfig")
+	}
+	if verifyCallCount != 0 {
+		t.Errorf("VerifyBootability called %d times, want 0", verifyCallCount)
+	}
+}
+
+func TestCreate_DefaultVerifyOnCacheMiss(t *testing.T) {
+	t.Parallel()
+	td := setupTestManager(t)
+
+	identity := defaultMockIdentity()
+	td.imgMgr.ListCachedFunc = func(_ context.Context) ([]*image.CachedImage, error) {
+		return nil, nil
+	}
+	td.imgMgr.PrepareFunc = func(_ context.Context, _ string) (*image.ImageIdentity, string, error) {
+		return identity, filepath.Join(td.cfg.ImageCacheDir(), identity.BaseKey()+".qcow2"), nil
+	}
+	verifyCallCount := 0
+	td.imgMgr.VerifyBootabilityFunc = func(_ context.Context, _ string) (*image.BootCheckResult, error) {
+		verifyCallCount++
+		return &image.BootCheckResult{Bootable: true}, nil
+	}
+	td.cowMgr.CreateOverlayFunc = func(baseKey, vmID, diskSize string) (string, error) {
+		return filepath.Join(td.cfg.RootDir, "vms", vmID, "overlay.qcow2"), nil
+	}
+
+	vmCfg, err := td.mgr.Create(t.Context(), &vm.CreateOptions{
+		Image: "docker.io/library/ubuntu:22.04",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if vmCfg == nil {
+		t.Fatal("expected non-nil VMConfig")
+	}
+	if verifyCallCount != 1 {
+		t.Errorf("VerifyBootability called %d times, want 1", verifyCallCount)
+	}
+}
+
 func TestCreate_InvalidBootStrategy(t *testing.T) {
 	t.Parallel()
 	td := setupTestManager(t)
