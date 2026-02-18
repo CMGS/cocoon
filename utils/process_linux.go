@@ -18,5 +18,5 @@ func validateProcessImpl(pid int, expectedName string) bool {
 		return false
 	}
 	actual := strings.TrimSpace(string(data))
-	return strings.Contains(actual, expectedName) || strings.HasPrefix(expectedName, actual)
+	return processNameMatches(actual, expectedName)
 }

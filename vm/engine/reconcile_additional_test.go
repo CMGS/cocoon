@@ -263,3 +263,29 @@ func TestReconcile_NameIndexDryRunDoesNotMutate(t *testing.T) {
 		t.Fatalf("expected name-index rebuilt with %q -> %q", "name-index-target", vmID)
 	}
 }
+
+func TestBuildOrphanScanProcessNames(t *testing.T) {
+	t.Parallel()
+
+	got := buildOrphanScanProcessNames([]string{
+		" cloud-hypervisor ",
+		"",
+		"my-hypervisor",
+		"cloud-hypervisor",
+		"swtpm",
+	})
+
+	seen := make(map[string]struct{}, len(got))
+	for _, name := range got {
+		seen[name] = struct{}{}
+	}
+
+	for _, want := range []string{"cloud-hypervisor", "my-hypervisor", "swtpm"} {
+		if _, ok := seen[want]; !ok {
+			t.Fatalf("process name %q missing from %v", want, got)
+		}
+	}
+	if len(seen) != 3 {
+		t.Fatalf("expected unique process names, got %v", got)
+	}
+}

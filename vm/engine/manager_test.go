@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/CMGS/cocoon/config"
+	"github.com/CMGS/cocoon/hypervisor"
 	hypermocks "github.com/CMGS/cocoon/hypervisor/mocks"
 	"github.com/CMGS/cocoon/image"
 	imgmocks "github.com/CMGS/cocoon/image/mocks"
@@ -1023,6 +1024,51 @@ func TestStart_InvalidBootStrategyInConfig(t *testing.T) {
 	}
 	if meta.State != string(types.VMStateError) {
 		t.Fatalf("metadata state = %q, want %q", meta.State, types.VMStateError)
+	}
+}
+
+func TestStart_RefreshesHypervisorBinaryInMetadata(t *testing.T) {
+	t.Parallel()
+	td := setupTestManager(t)
+
+	td.cfg.BootTimeoutSeconds = 0
+	td.cfg.CHBinary = "/opt/bin/new-hypervisor"
+
+	v := createTestVM(t, td, &vm.CreateOptions{
+		Image: "docker.io/library/ubuntu:22.04",
+		Name:  "start-refresh-hypervisor-binary",
+	})
+
+	// Simulate metadata from an older run/config.
+	if err := td.mgr.UpdateMetadata(v.VMID, func(md *types.VMMetadataFile) {
+		md.HypervisorBinary = "old-hypervisor"
+	}); err != nil {
+		t.Fatalf("UpdateMetadata before start: %v", err)
+	}
+
+	td.hyper.LaunchFunc = func(_ context.Context, _ string, _ *types.VMConfig) (int, error) {
+		return 4242, nil
+	}
+	td.hyper.CreateVMFunc = func(_ context.Context, _ string, _ *hypervisor.CHVMConfig) error {
+		return nil
+	}
+	td.hyper.BootVMFunc = func(_ context.Context, _ string) error {
+		return nil
+	}
+
+	if err := td.mgr.Start(t.Context(), v.VMID); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	meta, err := td.mgr.LoadMetadata(v.VMID)
+	if err != nil {
+		t.Fatalf("LoadMetadata: %v", err)
+	}
+	if meta.State != string(types.VMStateRunning) {
+		t.Fatalf("metadata state=%q, want %q", meta.State, types.VMStateRunning)
+	}
+	if meta.HypervisorBinary != "new-hypervisor" {
+		t.Fatalf("hypervisor_binary=%q, want %q", meta.HypervisorBinary, "new-hypervisor")
 	}
 }
 
