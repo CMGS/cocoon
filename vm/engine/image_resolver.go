@@ -78,11 +78,6 @@ func resolveRuntimeImageRef(ctx context.Context, cfg *config.CocoonConfig, ref s
 	if isExplicitLocalPath(ref) {
 		return resolveLocalPathRef(ref)
 	}
-	if localPath, ok, err := resolveExistingLocalPathRef(ref); err != nil {
-		return nil, err
-	} else if ok {
-		return localPath, nil
-	}
 
 	store := oci.NewStore(cfg)
 	resolvedOCITag, ociExists, err := resolveLocalOCITagRef(store, ref)
@@ -136,19 +131,15 @@ func resolveRuntimeImageRef(ctx context.Context, cfg *config.CocoonConfig, ref s
 			VMImageType: types.VMImageTypeQCOW2,
 		}, nil
 	}
-	if vmType, probeErr := detectRegistryVMImageType(ctx, ref); probeErr == nil {
-		return &resolvedRuntimeImage{
-			OriginalRef: ref,
-			PrepareRef:  ref,
-			Source:      runtimeImageSourceRegistry,
-			VMImageType: vmType,
-		}, nil
+	vmType, probeErr := detectRegistryVMImageType(ctx, ref)
+	if probeErr != nil {
+		return nil, fmt.Errorf("probe registry image type for %q: %w", ref, probeErr)
 	}
 	return &resolvedRuntimeImage{
 		OriginalRef: ref,
 		PrepareRef:  ref,
 		Source:      runtimeImageSourceRegistry,
-		VMImageType: types.VMImageTypeQCOW2,
+		VMImageType: vmType,
 	}, nil
 }
 
@@ -238,25 +229,6 @@ func resolveLocalPathRef(ref string) (*resolvedRuntimeImage, error) {
 		Source:      runtimeImageSourceLocalPath,
 		VMImageType: types.VMImageTypeQCOW2,
 	}, nil
-}
-
-func resolveExistingLocalPathRef(ref string) (*resolvedRuntimeImage, bool, error) {
-	absPath, err := filepath.Abs(ref)
-	if err != nil {
-		return nil, false, fmt.Errorf("resolve local image path %q: %w", ref, err)
-	}
-	if _, statErr := os.Stat(absPath); statErr != nil {
-		if os.IsNotExist(statErr) {
-			return nil, false, nil
-		}
-		return nil, false, fmt.Errorf("stat local image path %q: %w", ref, statErr)
-	}
-	return &resolvedRuntimeImage{
-		OriginalRef: ref,
-		PrepareRef:  absPath,
-		Source:      runtimeImageSourceLocalPath,
-		VMImageType: types.VMImageTypeQCOW2,
-	}, true, nil
 }
 
 func isExplicitLocalPath(ref string) bool {

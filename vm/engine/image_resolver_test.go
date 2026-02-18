@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -207,6 +208,23 @@ func TestResolveRuntimeImageRef_URLAndRegistry(t *testing.T) {
 	}
 }
 
+func TestResolveRuntimeImageRef_RegistryProbeFailureReturnsError(t *testing.T) {
+	cfg := testResolverConfig(t)
+	prev := runSkopeoInspectRaw
+	runSkopeoInspectRaw = func(_ context.Context, _ string, _ string) ([]byte, error) {
+		return nil, errors.New("network timeout")
+	}
+	t.Cleanup(func() { runSkopeoInspectRaw = prev })
+
+	_, err := resolveRuntimeImageRef(t.Context(), cfg, "docker.io/library/ubuntu:24.04")
+	if err == nil {
+		t.Fatal("expected registry probe error, got nil")
+	}
+	if !strings.Contains(err.Error(), "probe registry image type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestResolveRuntimeImageRef_RegistryCocoonVMMediaTypes(t *testing.T) {
 	cfg := testResolverConfig(t)
 	prev := runSkopeoInspectRaw
@@ -224,5 +242,37 @@ func TestResolveRuntimeImageRef_RegistryCocoonVMMediaTypes(t *testing.T) {
 	}
 	if resolved.VMImageType != types.VMImageTypeOCIVM {
 		t.Fatalf("VMImageType = %q, want %q", resolved.VMImageType, types.VMImageTypeOCIVM)
+	}
+}
+
+func TestResolveRuntimeImageRef_NonExplicitLocalFileDoesNotShadowOCITag(t *testing.T) {
+	cfg := testResolverConfig(t)
+	store := oci.NewStore(cfg)
+	if err := store.SaveTag("demo:latest", filepath.Join(t.TempDir(), "layout"), "sha256:1111"); err != nil {
+		t.Fatalf("SaveTag: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if chdirErr := os.Chdir(tmpDir); chdirErr != nil {
+		t.Fatalf("chdir temp dir: %v", chdirErr)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldWD)
+	})
+
+	if err := os.WriteFile(filepath.Join(tmpDir, "demo"), []byte("dummy"), 0o644); err != nil {
+		t.Fatalf("write demo local file: %v", err)
+	}
+
+	resolved, err := resolveRuntimeImageRef(t.Context(), cfg, "demo")
+	if err != nil {
+		t.Fatalf("resolveRuntimeImageRef: %v", err)
+	}
+	if resolved.Source != runtimeImageSourceLocalOCITag {
+		t.Fatalf("Source = %q, want %q", resolved.Source, runtimeImageSourceLocalOCITag)
 	}
 }
