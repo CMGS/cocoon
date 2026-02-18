@@ -15,6 +15,10 @@ type Cocoonfile struct {
 	Steps []Step
 	// Labels are key=value metadata entries.
 	Labels map[string]string
+	// BaseDir is the directory containing the Cocoonfile.
+	// Used to resolve relative COPY source paths. Set by the caller
+	// after parsing (not populated by the parser itself).
+	BaseDir string
 }
 
 // Step represents a single RUN or COPY instruction.

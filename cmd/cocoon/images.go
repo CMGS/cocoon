@@ -565,6 +565,32 @@ func imageBuildCommand() *cli.Command {
 	}
 }
 
+// resolveBuildImagePath determines the base image path for a build, handling
+// both Cocoonfile-based and positional-argument-based invocations.
+func resolveBuildImagePath(c *cli.Context, cocoonfilePath string) (string, error) {
+	if cocoonfilePath == "" {
+		if c.NArg() < 1 {
+			return "", fmt.Errorf("CLOUD_IMAGE argument required (or use --file Cocoonfile)\n\nUsage: cocoon image build [CLOUD_IMAGE] [--tag REF] [--file Cocoonfile]")
+		}
+		return c.Args().Get(0), nil
+	}
+
+	// Positional arg overrides FROM if provided.
+	if c.NArg() > 0 {
+		return c.Args().Get(0), nil
+	}
+
+	cf, err := oci.ParseCocoonfile(cocoonfilePath)
+	if err != nil {
+		return "", fmt.Errorf("parse Cocoonfile: %w", err)
+	}
+	imagePath := cf.From
+	if !filepath.IsAbs(imagePath) {
+		imagePath = filepath.Join(filepath.Dir(cocoonfilePath), imagePath)
+	}
+	return imagePath, nil
+}
+
 func imageBuildAction(c *cli.Context) error {
 	app, err := initApp(c)
 	if err != nil {
@@ -574,35 +600,9 @@ func imageBuildAction(c *cli.Context) error {
 	cocoonfilePath := c.String("file")
 	tag := c.String("tag")
 
-	var imagePath string
-
-	if cocoonfilePath != "" {
-		// Parse the Cocoonfile to determine the FROM base image.
-		// NOTE: The builder adapter will re-parse the Cocoonfile from the same
-		// path. This double-parse is acceptable because the Cocoonfile is a
-		// local file under the user's control (no TOCTOU risk in practice).
-		cf, parseErr := oci.ParseCocoonfile(cocoonfilePath)
-		if parseErr != nil {
-			return fmt.Errorf("parse Cocoonfile: %w", parseErr)
-		}
-
-		// FROM in Cocoonfile determines the base image.
-		// Resolve relative FROM paths relative to the Cocoonfile's directory.
-		imagePath = cf.From
-		if !filepath.IsAbs(imagePath) && cocoonfilePath != "" {
-			imagePath = filepath.Join(filepath.Dir(cocoonfilePath), imagePath)
-		}
-
-		// Positional arg overrides FROM if provided.
-		if c.NArg() > 0 {
-			imagePath = c.Args().Get(0)
-		}
-	} else {
-		// No Cocoonfile: positional arg is required.
-		if c.NArg() < 1 {
-			return fmt.Errorf("CLOUD_IMAGE argument required (or use --file Cocoonfile)\n\nUsage: cocoon image build [CLOUD_IMAGE] [--tag REF] [--file Cocoonfile]")
-		}
-		imagePath = c.Args().Get(0)
+	imagePath, err := resolveBuildImagePath(c, cocoonfilePath)
+	if err != nil {
+		return err
 	}
 
 	// Default tag: filename without extension.

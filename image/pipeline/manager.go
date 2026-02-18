@@ -221,36 +221,46 @@ func (m *manager) convertOCIImage(ctx context.Context, identity *image.ImageIden
 // For OCI images, the expensive pull+mount (buildah) steps are performed inside
 // the per-image conversion lock so that concurrent creates for the same image
 // result in only one pull. See docs/06-concurrency.md Section 1 for details.
+// tryRefcacheHit checks the refcache for a cached base image. Returns the
+// identity and path on hit; returns ok=false on miss or error (logged).
+func (m *manager) tryRefcacheHit(ref string) (*image.ImageIdentity, string, bool) {
+	baseKey, found, resolveErr := refcache.ResolveBaseKey(m.cfg, ref)
+	if resolveErr != nil {
+		if errors.Is(resolveErr, refcache.ErrAmbiguousImageRef) {
+			log.Printf("image %q: ambiguous ref in cache (%v), treating as cache miss", ref, resolveErr)
+		} else {
+			log.Printf("image %q: refcache resolve error (%v), treating as cache miss", ref, resolveErr)
+		}
+		return nil, "", false
+	}
+	if !found {
+		return nil, "", false
+	}
+	basePath := m.cfg.BaseImagePath(baseKey)
+	if _, statErr := os.Stat(basePath); statErr != nil {
+		return nil, "", false
+	}
+	log.Printf("image %s: cache hit for %q, skipping pull", baseKey, ref)
+	checksum, arch := parseBaseKey(baseKey)
+	var fullDigest string
+	if _, digest, err := refcache.RefsForBaseKey(m.cfg, baseKey); err == nil {
+		fullDigest = digest
+	}
+	return &image.ImageIdentity{
+		Checksum:   checksum,
+		Arch:       arch,
+		FullDigest: fullDigest,
+		SourceRef:  ref,
+		ImageType:  classifyRef(ref),
+	}, basePath, true
+}
+
 func (m *manager) Prepare(ctx context.Context, ref string) (*image.ImageIdentity, string, error) {
 	// Fast path: check refcache first for any ref format (handles short names, aliases, etc.).
 	// This prevents short names like "ubuntu-22.04-cloudimg" from being misclassified as OCI
 	// refs and sent into the buildah/skopeo pipeline when they already exist in the cache.
-	if baseKey, found, resolveErr := refcache.ResolveBaseKey(m.cfg, ref); resolveErr != nil {
-		// If the ref is ambiguous (maps to multiple base keys), log a warning
-		// and fall through to the normal pull/identify path (treat as cache miss).
-		if errors.Is(resolveErr, refcache.ErrAmbiguousImageRef) {
-			log.Printf("image %q: ambiguous ref in cache (%v), treating as cache miss", ref, resolveErr)
-		} else {
-			return nil, "", fmt.Errorf("resolve cached ref %q: %w", ref, resolveErr)
-		}
-	} else if found {
-		basePath := m.cfg.BaseImagePath(baseKey)
-		if _, statErr := os.Stat(basePath); statErr == nil {
-			log.Printf("image %s: cache hit for %q, skipping pull", baseKey, ref)
-			checksum, arch := parseBaseKey(baseKey)
-			// Retrieve FullDigest from refcache entry via RefsForBaseKey.
-			var fullDigest string
-			if _, digest, err := refcache.RefsForBaseKey(m.cfg, baseKey); err == nil {
-				fullDigest = digest
-			}
-			return &image.ImageIdentity{
-				Checksum:   checksum,
-				Arch:       arch,
-				FullDigest: fullDigest,
-				SourceRef:  ref,
-				ImageType:  classifyRef(ref),
-			}, basePath, nil
-		}
+	if identity, basePath, ok := m.tryRefcacheHit(ref); ok {
+		return identity, basePath, nil
 	}
 
 	imgType := classifyRef(ref)
@@ -453,7 +463,7 @@ func (m *manager) VerifyBootability(ctx context.Context, imagePath string) (*ima
 	// If deep verification populated specific fields, use those to check.
 	// If deep verification was skipped (darwin or no guestfish), keep
 	// optimistic result and add a warning.
-	deepDone := result.KernelFound || result.InitrdFound || result.SystemdFound || result.BootloaderFound
+	deepDone := result.KernelChecked || result.InitrdChecked || result.SystemdChecked || result.BootloaderChecked
 	if !deepDone {
 		// Deep verification did not run; keep optimistic result.
 		result.Warnings = append(result.Warnings, "deep boot contract verification requires guestfish (not available)")
@@ -469,20 +479,33 @@ func (m *manager) VerifyBootability(ctx context.Context, imagePath string) (*ima
 
 // evaluateDeepVerification checks deep verification results and populates
 // errors, warnings, and boot modes accordingly.
+//
+// It distinguishes between "checked and not found" (error) and "check failed
+// to execute" (warning). Only report a definitive "not found" error when the
+// Checked flag is true but Found is false; otherwise add a warning noting the
+// indeterminate result.
 func evaluateDeepVerification(result *image.BootCheckResult) {
 	// Deep verification ran, evaluate results strictly.
 	result.Errors = nil // reset basic-level errors
-	if !result.KernelFound {
+	if result.KernelChecked && !result.KernelFound {
 		result.Errors = append(result.Errors, "kernel not found: no /boot/vmlinuz* detected")
+	} else if !result.KernelChecked {
+		result.Warnings = append(result.Warnings, "kernel check failed to execute; result is indeterminate")
 	}
-	if !result.InitrdFound {
+	if result.InitrdChecked && !result.InitrdFound {
 		result.Errors = append(result.Errors, "initrd/initramfs not found: no /boot/initrd* or /boot/initramfs* detected")
+	} else if !result.InitrdChecked {
+		result.Warnings = append(result.Warnings, "initrd check failed to execute; result is indeterminate")
 	}
-	if !result.SystemdFound {
+	if result.SystemdChecked && !result.SystemdFound {
 		result.Errors = append(result.Errors, "systemd not found: /sbin/init must be systemd")
+	} else if !result.SystemdChecked {
+		result.Warnings = append(result.Warnings, "systemd check failed to execute; result is indeterminate")
 	}
-	if !result.BootloaderFound {
+	if result.BootloaderChecked && !result.BootloaderFound {
 		result.Errors = append(result.Errors, "UEFI bootloader not found in ESP")
+	} else if !result.BootloaderChecked {
+		result.Warnings = append(result.Warnings, "bootloader check failed to execute; result is indeterminate")
 	}
 	// Determine boot modes from deep findings.
 	result.BootModes = nil

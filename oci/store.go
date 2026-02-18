@@ -59,12 +59,24 @@ func (s *Store) SaveTag(tag, layoutPath, manifestDigest string) error {
 	if err != nil {
 		return err
 	}
-	// Clean up old manifest's blob refs outside the tag lock.
-	// Log on failure instead of returning an error, since the tag index has
-	// already been updated; GC will eventually reclaim orphaned blob refs.
+	// Clean up old manifest's blob refs outside the tag lock, but only if
+	// no other tag still references the old manifest. Otherwise, removing
+	// refs would make shared blobs eligible for GC prematurely.
 	if oldManifestDigest != "" {
-		if _, refErr := RemoveBlobRefs(s.cfg, oldManifestDigest); refErr != nil {
-			log.Printf("warning: failed to clean old manifest %s blob refs (will be reclaimed by GC): %v", oldManifestDigest, refErr)
+		otherUsesOld := false
+		_ = s.withLock(func(idx *TagIndex) error {
+			for _, entry := range idx.Tags {
+				if entry.ManifestDigest == oldManifestDigest {
+					otherUsesOld = true
+					break
+				}
+			}
+			return nil // read-only
+		})
+		if !otherUsesOld {
+			if _, refErr := RemoveBlobRefs(s.cfg, oldManifestDigest); refErr != nil {
+				log.Printf("warning: failed to clean old manifest %s blob refs (will be reclaimed by GC): %v", oldManifestDigest, refErr)
+			}
 		}
 	}
 	return nil
@@ -112,9 +124,13 @@ func (s *Store) ListTags() ([]TagEntry, error) {
 // RemoveTag removes a tag from the index, its layout directory, and
 // cleans up blob references. Returns the manifest digest and any blob
 // digests that are now unreferenced (zero refs remaining).
+//
+// Blob references are only removed when no other tag shares the same
+// manifest digest, preventing premature GC of blobs still in use.
 func (s *Store) RemoveTag(tag string) (string, []string, error) {
 	var manifestDigest string
 	var layoutPath string
+	var otherTagUsesManifest bool
 	err := s.withLock(func(idx *TagIndex) error {
 		entry, ok := idx.Tags[tag]
 		if !ok {
@@ -123,6 +139,13 @@ func (s *Store) RemoveTag(tag string) (string, []string, error) {
 		manifestDigest = entry.ManifestDigest
 		layoutPath = entry.LayoutPath
 		delete(idx.Tags, tag)
+		// Check if any remaining tag references the same manifest.
+		for _, other := range idx.Tags {
+			if other.ManifestDigest == manifestDigest {
+				otherTagUsesManifest = true
+				break
+			}
+		}
 		return s.save(idx)
 	})
 	if err != nil {
@@ -134,9 +157,11 @@ func (s *Store) RemoveTag(tag string) (string, []string, error) {
 		_ = os.RemoveAll(layoutPath)
 	}
 
-	// Clean up blob references for this manifest.
+	// Only remove blob references if no other tag shares this manifest.
+	// Otherwise, removing refs would make shared blobs eligible for GC
+	// while they are still needed by the remaining tag(s).
 	var zeroRefBlobs []string
-	if manifestDigest != "" {
+	if manifestDigest != "" && !otherTagUsesManifest {
 		var refErr error
 		zeroRefBlobs, refErr = RemoveBlobRefs(s.cfg, manifestDigest)
 		if refErr != nil {

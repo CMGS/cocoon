@@ -91,12 +91,12 @@ func identifyOCIPlatform(ctx context.Context, ref string) (*image.ImageIdentity,
 
 	// 8. Return identity without TempPath or ContainerID (layers not pulled yet).
 	return &image.ImageIdentity{
-		Checksum:        checksum,
-		Arch:            arch,
-		FullDigest:      fullDigest,
-		ManifestDigest:  manifestDigest,
-		SourceRef:       ref,
-		ImageType:       image.ImageTypeOCI,
+		Checksum:       checksum,
+		Arch:           arch,
+		FullDigest:     fullDigest,
+		ManifestDigest: manifestDigest,
+		SourceRef:      ref,
+		ImageType:      image.ImageTypeOCI,
 	}, nil
 }
 
@@ -131,8 +131,10 @@ func pullAndMountOCIPlatform(ctx context.Context, cfg *config.CocoonConfig, iden
 		}
 	}
 
-	// 3. Create working container (use original ref for container name).
-	containerOut, err := runCmd(ctx, "buildah", "--root", root, "from", ref)
+	// 3. Create working container from the pulled image, pinned to the same
+	// digest used for pull to prevent TOCTOU if the tag is mutated between
+	// pull and from.
+	containerOut, err := runCmd(ctx, "buildah", "--root", root, "from", pullRef)
 	if err != nil {
 		return classifyBuildahError(fmt.Errorf("buildah from %s: %w", ref, err))
 	}

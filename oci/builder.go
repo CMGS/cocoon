@@ -3,6 +3,7 @@ package oci
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 
 	"github.com/CMGS/cocoon/config"
 	"github.com/CMGS/cocoon/image"
@@ -29,6 +30,9 @@ func (b *builder) Build(ctx context.Context, imagePath, tag string, cocoonfile s
 		if err != nil {
 			return nil, err
 		}
+		// Set BaseDir so COPY source paths resolve relative to the
+		// Cocoonfile's directory, not the caller's working directory.
+		parsed.BaseDir = filepath.Dir(cocoonfile)
 		cf = parsed
 	}
 

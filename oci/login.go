@@ -128,7 +128,9 @@ func pingRegistry(ctx context.Context, registry, username, password string) erro
 		return fmt.Errorf("registry %s returned server error (HTTP %d)", registry, resp.StatusCode)
 	}
 
-	return nil
+	// Any other unexpected status code (3xx, other 4xx) should not be treated
+	// as a login success. Report the status to avoid false positives.
+	return fmt.Errorf("registry %s returned unexpected status (HTTP %d)", registry, resp.StatusCode)
 }
 
 // verifyBearerCredentials parses a Bearer Www-Authenticate challenge header and
@@ -138,8 +140,7 @@ func verifyBearerCredentials(ctx context.Context, wwwAuth, username, password st
 	realm := extractBearerParam(wwwAuth, "realm")
 	if realm == "" {
 		// No realm found — cannot verify credentials via token exchange.
-		// Fall back to accepting (warn-only behavior for unusual registries).
-		return nil
+		return fmt.Errorf("bearer challenge has no realm; cannot verify credentials")
 	}
 
 	service := extractBearerParam(wwwAuth, "service")
@@ -173,8 +174,8 @@ func verifyBearerCredentials(ctx context.Context, wwwAuth, username, password st
 		return fmt.Errorf("invalid credentials: token exchange returned HTTP %d", tokenResp.StatusCode)
 	}
 
-	// Unexpected status — log but don't fail (registry quirks).
-	return nil
+	// Unexpected status — cannot confirm credentials are valid.
+	return fmt.Errorf("token exchange returned unexpected status HTTP %d", tokenResp.StatusCode)
 }
 
 // extractBearerParam extracts a parameter value from a Bearer Www-Authenticate header.
