@@ -292,3 +292,57 @@ func TestGC_AddReferenceDuringGC(t *testing.T) {
 	// If gcCollected contains baseKey, the image was deleted before
 	// AddReference ran. That's also a valid outcome.
 }
+
+func TestGC_CollectOrphanedOverlays(t *testing.T) {
+	cfg := newTestConfig(t)
+	gc := NewGarbageCollector(cfg)
+
+	vmID := "vm-test-orphan"
+	vmDir := filepath.Join(cfg.VMDir(), vmID)
+	if err := os.MkdirAll(vmDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll vm dir: %v", err)
+	}
+	overlayPath := filepath.Join(vmDir, "overlay.qcow2")
+	if err := os.WriteFile(overlayPath, []byte("overlay"), 0o644); err != nil {
+		t.Fatalf("WriteFile overlay: %v", err)
+	}
+
+	collected, err := gc.CollectOrphanedOverlays()
+	if err != nil {
+		t.Fatalf("CollectOrphanedOverlays: %v", err)
+	}
+	if len(collected) != 1 || collected[0] != vmID {
+		t.Fatalf("collected=%v, want [%s]", collected, vmID)
+	}
+	if _, err := os.Stat(vmDir); !os.IsNotExist(err) {
+		t.Fatalf("orphaned VM dir still exists after collection, stat err=%v", err)
+	}
+}
+
+func TestGC_CollectTempFiles_RemovesOldDirectories(t *testing.T) {
+	cfg := newTestConfig(t)
+	gc := NewGarbageCollector(cfg)
+
+	oldDir := filepath.Join(cfg.TempDir(), "old-dir")
+	if err := os.MkdirAll(oldDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll old-dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(oldDir, "marker.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile marker: %v", err)
+	}
+	oldTime := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(oldDir, oldTime, oldTime); err != nil {
+		t.Fatalf("Chtimes old-dir: %v", err)
+	}
+
+	collected, err := gc.CollectTempFiles(1 * time.Hour)
+	if err != nil {
+		t.Fatalf("CollectTempFiles: %v", err)
+	}
+	if len(collected) != 1 || collected[0] != "old-dir" {
+		t.Fatalf("collected=%v, want [old-dir]", collected)
+	}
+	if _, err := os.Stat(oldDir); !os.IsNotExist(err) {
+		t.Fatalf("old temp directory still exists after collection, stat err=%v", err)
+	}
+}

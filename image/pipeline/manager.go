@@ -221,24 +221,28 @@ func cleanupBuildahContainerFromIdentity(identity *image.ImageIdentity, cfg *con
 // For OCI images, the expensive pull+mount (buildah) steps are performed inside
 // the per-image conversion lock so that concurrent creates for the same image
 // result in only one pull. See docs/06-concurrency.md Section 1 for details.
-// tryRefcacheHit checks the refcache for a cached base image. Returns the
-// identity and path on hit; returns ok=false on miss or error (logged).
-func (m *manager) tryRefcacheHit(ref string) (*image.ImageIdentity, string, bool) {
+// tryRefcacheHit checks the refcache for a cached base image.
+// Returns identity+path on hit, ok=false on miss, and an error for
+// ambiguous local refs that require user disambiguation.
+func (m *manager) tryRefcacheHit(ref string) (*image.ImageIdentity, string, bool, error) {
 	baseKey, found, resolveErr := refcache.ResolveBaseKey(m.cfg, ref)
 	if resolveErr != nil {
 		if errors.Is(resolveErr, refcache.ErrAmbiguousImageRef) {
-			log.Printf("image %q: ambiguous ref in cache (%v), treating as cache miss", ref, resolveErr)
+			return nil, "", false, types.NewPermanentError(fmt.Errorf(
+				"image %q is ambiguous in local cache: %w",
+				ref, resolveErr,
+			))
 		} else {
 			log.Printf("image %q: refcache resolve error (%v), treating as cache miss", ref, resolveErr)
 		}
-		return nil, "", false
+		return nil, "", false, nil
 	}
 	if !found {
-		return nil, "", false
+		return nil, "", false, nil
 	}
 	basePath := m.cfg.BaseImagePath(baseKey)
 	if _, statErr := os.Stat(basePath); statErr != nil {
-		return nil, "", false
+		return nil, "", false, nil
 	}
 	log.Printf("image %s: cache hit for %q, skipping pull", baseKey, ref)
 	checksum, arch := parseBaseKey(baseKey)
@@ -252,14 +256,16 @@ func (m *manager) tryRefcacheHit(ref string) (*image.ImageIdentity, string, bool
 		FullDigest: fullDigest,
 		SourceRef:  ref,
 		ImageType:  classifyRef(ref),
-	}, basePath, true
+	}, basePath, true, nil
 }
 
 func (m *manager) Prepare(ctx context.Context, ref string) (*image.ImageIdentity, string, error) {
 	// Fast path: check refcache first for any ref format (handles short names, aliases, etc.).
 	// This prevents short names like "ubuntu-22.04-cloudimg" from being misclassified as OCI
 	// refs and sent into the buildah/skopeo pipeline when they already exist in the cache.
-	if identity, basePath, ok := m.tryRefcacheHit(ref); ok {
+	if identity, basePath, ok, err := m.tryRefcacheHit(ref); err != nil {
+		return nil, "", err
+	} else if ok {
 		return identity, basePath, nil
 	}
 

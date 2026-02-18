@@ -24,6 +24,8 @@ import (
 
 var errImageNotFoundInLocalCache = errors.New("image not found in local cache")
 
+const defaultDerivedBuildTag = "image"
+
 func shouldFallbackToPrepare(resolveErr error) bool {
 	return errors.Is(resolveErr, errImageNotFoundInLocalCache)
 }
@@ -787,29 +789,33 @@ func imageBuildCommand() *cli.Command {
 
 // resolveBuildImagePath determines the base image path for a build, handling
 // both Cocoonfile-based and positional-argument-based invocations.
-func resolveBuildImagePath(c *cli.Context, app *appContext, cocoonfilePath string) (string, func(), error) {
+// It also returns a source string used for default tag derivation when --tag
+// is omitted.
+func resolveBuildImagePath(c *cli.Context, app *appContext, cocoonfilePath string) (string, string, func(), error) {
 	if cocoonfilePath == "" {
 		if c.NArg() < 1 {
-			return "", nil, fmt.Errorf("CLOUD_IMAGE argument required (or use --file Cocoonfile)\n\nUsage: cocoon image build [CLOUD_IMAGE] [--tag REF] [--file Cocoonfile]")
+			return "", "", nil, fmt.Errorf("CLOUD_IMAGE argument required (or use --file Cocoonfile)\n\nUsage: cocoon image build [CLOUD_IMAGE] [--tag REF] [--file Cocoonfile]")
 		}
-		return c.Args().Get(0), nil, nil
+		source := c.Args().Get(0)
+		return source, source, nil, nil
 	}
 
 	// Positional arg overrides FROM if provided.
 	if c.NArg() > 0 {
-		return c.Args().Get(0), nil, nil
+		source := c.Args().Get(0)
+		return source, source, nil, nil
 	}
 
 	cf, err := oci.ParseCocoonfile(cocoonfilePath)
 	if err != nil {
-		return "", nil, fmt.Errorf("parse Cocoonfile: %w", err)
+		return "", "", nil, fmt.Errorf("parse Cocoonfile: %w", err)
 	}
 
 	imagePath, cleanup, err := resolveCocoonfileFrom(c, app, cocoonfilePath, cf.From)
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
-	return imagePath, cleanup, nil
+	return imagePath, strings.TrimSpace(cf.From), cleanup, nil
 }
 
 func resolveCocoonfileFrom(c *cli.Context, app *appContext, cocoonfilePath, from string) (string, func(), error) {
@@ -1076,6 +1082,15 @@ func buildQcow2FromRootfs(ctx context.Context, rootfsPath, outputPath string) er
 	}
 	defer os.Remove(rootfsTarPath) //nolint:errcheck,gosec // best-effort cleanup of temporary file
 
+	outputArg, err := quoteGuestfishPathArg(outputPath)
+	if err != nil {
+		return fmt.Errorf("quote output path for guestfish: %w", err)
+	}
+	rootfsTarArg, err := quoteGuestfishPathArg(rootfsTarPath)
+	if err != nil {
+		return fmt.Errorf("quote rootfs tar path for guestfish: %w", err)
+	}
+
 	script := fmt.Sprintf(`add %s
 run
 part-init /dev/sda gpt
@@ -1091,7 +1106,7 @@ mount /dev/sda1 /boot/efi
 tar-in %s /
 sync
 umount-all
-`, outputPath, rootfsTarPath)
+`, outputArg, rootfsTarArg)
 
 	gfCmd := exec.CommandContext(ctx, "guestfish") //nolint:gosec // guestfish script references validated local paths
 	gfCmd.Stdin = strings.NewReader(script)
@@ -1102,15 +1117,59 @@ umount-all
 }
 
 func validateSafeBuildPath(path string) error {
-	for _, c := range path {
-		isAlpha := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-		isDigit := c >= '0' && c <= '9'
-		isSafe := c == '/' || c == '-' || c == '_' || c == '.'
-		if !isAlpha && !isDigit && !isSafe {
-			return fmt.Errorf("unsafe character %q in path %q", string(c), path)
-		}
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("path cannot be empty")
+	}
+	if strings.ContainsRune(path, '\x00') {
+		return fmt.Errorf("path contains NUL byte")
+	}
+	if strings.ContainsAny(path, "\r\n") {
+		return fmt.Errorf("path contains newline characters")
 	}
 	return nil
+}
+
+// quoteGuestfishPathArg returns a single-quoted guestfish script argument.
+// We reject control characters and single quotes to keep script embedding safe.
+func quoteGuestfishPathArg(path string) (string, error) {
+	if err := validateSafeBuildPath(path); err != nil {
+		return "", err
+	}
+	if strings.ContainsRune(path, '\'') {
+		return "", fmt.Errorf("path contains unsupported single quote character")
+	}
+	return "'" + path + "'", nil
+}
+
+func defaultBuildTagSource(source string) string {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return defaultDerivedBuildTag
+	}
+	source = strings.TrimSuffix(source, "/")
+	if source == "" {
+		return defaultDerivedBuildTag
+	}
+	last := source
+	if idx := strings.LastIndex(source, "/"); idx >= 0 && idx+1 < len(source) {
+		last = source[idx+1:]
+	}
+	if at := strings.Index(last, "@"); at >= 0 {
+		last = last[:at]
+	}
+	if last == "" {
+		last = defaultDerivedBuildTag
+	}
+	// For local files, strip extension before appending :latest.
+	if !strings.Contains(last, ":") {
+		if ext := filepath.Ext(last); ext != "" {
+			last = strings.TrimSuffix(last, ext)
+		}
+		if last == "" {
+			last = defaultDerivedBuildTag
+		}
+	}
+	return last
 }
 
 func ensureLatestTag(tag string) string {
@@ -1140,7 +1199,7 @@ func imageBuildAction(c *cli.Context) error {
 	cocoonfilePath := c.String("file")
 	tag := c.String("tag")
 
-	imagePath, cleanup, err := resolveBuildImagePath(c, app, cocoonfilePath)
+	imagePath, tagSource, cleanup, err := resolveBuildImagePath(c, app, cocoonfilePath)
 	if err != nil {
 		return err
 	}
@@ -1150,12 +1209,7 @@ func imageBuildAction(c *cli.Context) error {
 
 	// Default tag: filename without extension.
 	if tag == "" {
-		base := filepath.Base(imagePath)
-		ext := filepath.Ext(base)
-		tag = strings.TrimSuffix(base, ext)
-		if tag == "" {
-			tag = base
-		}
+		tag = defaultBuildTagSource(tagSource)
 	}
 	tag = ensureLatestTag(tag)
 

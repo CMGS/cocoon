@@ -30,7 +30,7 @@ GC manages 7 categories of resources:
 | 4 | Stale OCI tags | Tag in `oci-build-tags.json` whose `layout_path` does not exist | Remove from index; cascade to orphaned manifests/blobs |
 | 5 | Orphaned OCI manifest refs | Manifest digest in `oci-layer-refs.json` not associated with any live tag | Remove from blob entries; delete zero-ref blobs |
 | 6 | Unreferenced OCI blobs | `cache/oci/blobs/sha256/` file with zero manifest refs | `os.Remove` |
-| 7 | Temp files | Files in `temp/` older than 1 hour | `os.Remove` |
+| 7 | Temp entries | Files/directories in `temp/` older than 1 hour | `os.RemoveAll` |
 
 ## Phase Execution Order
 
@@ -41,7 +41,7 @@ Phase 3: Orphaned OCI layouts          → permanent delete
 Phase 4: Stale OCI tags                → remove from tag index, cascade cleanup
 Phase 5: Orphaned OCI manifest refs    → remove from layer-refs, delete zero-ref blobs
 Phase 6: Unreferenced OCI blobs        → permanent delete
-Phase 7: Temp files                    → permanent delete
+Phase 7: Temp entries                  → permanent delete
 ```
 
 Phases 3-6 form a cascade:
@@ -59,8 +59,9 @@ Lock acquisition order (see [06-concurrency.md](./06-concurrency.md)):
 ```
 gc.lock (Level 1)
   ├── references.lock (Level 2) — for Phase 1 (per-image atomic check-and-delete)
-  ├── oci-build-tags.lock       — for Phase 3 (held for entire orphan scan)
-  ├── oci-build-txn.lock        — for Phase 4, 5 (serialize with concurrent builds)
+  ├── oci-build-txn.lock        — for Phase 3 (serialize with finalize/save-tag)
+  │   └── oci-build-tags.lock   — for Phase 3 (held for entire orphan scan)
+  ├── oci-build-txn.lock        — for Phase 4, 5 (serialize cross-index updates)
   │   ├── oci-build-tags.lock   — for Phase 4, 5 (read tag index)
   │   └── oci-layer-refs.lock   — for Phase 4, 5 (modify blob refs)
   └── oci-layer-refs.lock       — for Phase 6 (atomic check-and-delete)

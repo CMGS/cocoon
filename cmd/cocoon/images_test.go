@@ -142,6 +142,50 @@ func TestEnsureLatestTag(t *testing.T) {
 	}
 }
 
+func TestDefaultBuildTagSource(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "empty", in: "", want: "image"},
+		{name: "local-file", in: "/tmp/noble-server-cloudimg-amd64.img", want: "noble-server-cloudimg-amd64"},
+		{name: "bare-from", in: "noble-server-cloudimg-amd64", want: "noble-server-cloudimg-amd64"},
+		{name: "oci-ref", in: "cmgs/noble-server-cloudimg-amd64:stable", want: "noble-server-cloudimg-amd64:stable"},
+		{name: "digest-ref", in: "cmgs/noble-server-cloudimg-amd64@sha256:deadbeef", want: "noble-server-cloudimg-amd64"},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := defaultBuildTagSource(tt.in); got != tt.want {
+				t.Fatalf("defaultBuildTagSource(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestQuoteGuestfishPathArg(t *testing.T) {
+	t.Parallel()
+
+	quoted, err := quoteGuestfishPathArg("/tmp/oci build/base image.qcow2")
+	if err != nil {
+		t.Fatalf("quoteGuestfishPathArg valid path: %v", err)
+	}
+	if quoted != "'/tmp/oci build/base image.qcow2'" {
+		t.Fatalf("quoted path = %q", quoted)
+	}
+
+	if _, err := quoteGuestfishPathArg("/tmp/has'quote"); err == nil {
+		t.Fatal("expected single-quote path to be rejected")
+	}
+	if _, err := quoteGuestfishPathArg("/tmp/has\nnewline"); err == nil {
+		t.Fatal("expected newline path to be rejected")
+	}
+}
+
 func TestResolveCocoonfileLocalPath(t *testing.T) {
 	t.Parallel()
 

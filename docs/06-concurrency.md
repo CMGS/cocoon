@@ -559,7 +559,7 @@ $ du -sh /var/lib/cocoon/vms/vm-*/overlay.qcow2
 **Command**:
 ```bash
 # Terminal 1: Run GC
-$ cocoon gc --aggressive
+$ cocoon gc
 
 # Terminal 2: Delete VM (during GC)
 $ cocoon delete vm-042
@@ -586,8 +586,7 @@ $ cocoon delete vm-042
    - Acquires reference lock
    - Reads references: no entry for abc123def456a7b8_amd64
    - Sees no references
-   - Checks grace period (24 hours default)
-   - If elapsed, moves image to trash
+   - Permanently deletes the unreferenced image immediately
 
 **Race Condition Prevention**:
 
@@ -611,10 +610,9 @@ func (gc *GarbageCollector) CollectImage(imageKey string) error {
             return nil // Image in use, skip
         }
 
-        // No references, safe to delete
+        // No references, safe to delete permanently
         imagePath := filepath.Join(gc.storageDir, "cache", "images", imageKey+".qcow2")
-        trashPath := filepath.Join(gc.trashDir, imageKey+".qcow2")
-        return os.Rename(imagePath, trashPath)
+        return os.Remove(imagePath)
     })
 }
 ```
@@ -803,9 +801,7 @@ func (r *Reconciler) Reconcile(orphans []Orphan) error {
         switch orphan.Type {
         case "overlay":
             // Overlay exists but no config -> incomplete creation
-            // Safe to delete (VM was never fully created)
-            trashPath := filepath.Join(r.vmDir, "..", "trash", orphan.VMID+"-orphan.qcow2")
-            os.Rename(orphan.Path, trashPath)
+            // Safe to permanently delete (VM was never fully created)
             os.RemoveAll(filepath.Dir(orphan.Path)) // Remove VM dir
 
         case "reference":
@@ -844,8 +840,8 @@ No orphans found. System is consistent.
 
 1. **Atomicity of reference updates**: Using file lock + atomic write ensures references are never corrupted
 2. **Idempotent operations**: Running reconcile multiple times produces same result
-3. **Safe defaults**: Preserve persistent VM/image artifacts (move to trash instead of hard delete when possible)
-4. **Manual override**: Admin can inspect trash before permanent deletion
+3. **Safe defaults**: Only collect resources proven unreferenced by lock-protected checks
+4. **Manual override**: Operators can dry-run (`cocoon gc --dry-run`) before deletion
 
 ## 5. VM Metadata Locking
 
@@ -1121,7 +1117,6 @@ import (
 
 type GarbageCollector struct {
     storageDir string
-    trashDir   string
     gcLockFile string
     refs       *ReferenceCounter
 }
@@ -1129,7 +1124,6 @@ type GarbageCollector struct {
 func NewGarbageCollector(storageDir string, refs *ReferenceCounter) *GarbageCollector {
     return &GarbageCollector{
         storageDir: storageDir,
-        trashDir:   filepath.Join(storageDir, "trash"),
         gcLockFile: filepath.Join(storageDir, "db", "gc.lock"),
         refs:       refs,
     }
@@ -1181,21 +1175,9 @@ func (gc *GarbageCollector) DeleteUnreferencedImage(imageKey string) error {
             return nil // Image in use, skip
         }
 
-        // No references, check grace period
+        // No references, delete immediately
         imagePath := filepath.Join(gc.storageDir, "cache", "images", imageKey+".qcow2")
-        info, err := os.Stat(imagePath)
-        if err != nil {
-            return err
-        }
-
-        cutoffTime := time.Now().Add(-24 * time.Hour)
-        if info.ModTime().After(cutoffTime) {
-            return nil // Too recent, skip
-        }
-
-        // Safe to delete - move to trash (soft delete)
-        trashPath := filepath.Join(gc.trashDir, imageKey+".qcow2")
-        return os.Rename(imagePath, trashPath)
+        return os.Remove(imagePath)
     })
 }
 ```
@@ -1407,7 +1389,7 @@ cocoon create myorg/ubuntu-bootable:22.04 --name vm-test2
 cocoon create myorg/ubuntu-bootable:22.04 --name vm-race &
 sleep 2
 cocoon delete vm-race &
-cocoon gc --aggressive &
+cocoon gc &
 wait
 
 # Verify no corruption

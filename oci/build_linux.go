@@ -378,13 +378,8 @@ func extractGuestFile(ctx context.Context, imagePath, guestPath, localPath strin
 // and synthesizes a PARTUUID in Linux's native MBR format: {8-hex-sig}-{2-digit-partnum}.
 func readPartUUID(ctx context.Context, imagePath, tmpDir string) (string, error) {
 	// Use guestfish inspect to find the root partition dynamically.
-	// inspect-get-mountpoints returns mountpoints mapped to devices.
-	script := fmt.Sprintf(`add %s
-run
-inspect-os
-`, imagePath)
-	cmd := exec.CommandContext(ctx, "guestfish") //nolint:gosec
-	cmd.Stdin = strings.NewReader(script)
+	// inspect-os returns filesystem devices for detected roots.
+	cmd := exec.CommandContext(ctx, "guestfish", "--ro", "-a", imagePath, "-i", "inspect-os") //nolint:gosec
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("guestfish inspect-os: %w", err)
@@ -412,12 +407,7 @@ inspect-os
 	}
 
 	// Try GPT PARTUUID first.
-	script2 := fmt.Sprintf(`add %s
-run
-part-get-gpt-guid %s %d
-`, imagePath, disk, partNum)
-	cmd2 := exec.CommandContext(ctx, "guestfish") //nolint:gosec
-	cmd2.Stdin = strings.NewReader(script2)
+	cmd2 := exec.CommandContext(ctx, "guestfish", "--ro", "-a", imagePath, "-i", "part-get-gpt-guid", disk, strconv.Itoa(partNum)) //nolint:gosec
 	out2, err := cmd2.Output()
 	if err == nil {
 		uuid := strings.TrimSpace(string(out2))
@@ -492,10 +482,7 @@ func extractRootfsTar(ctx context.Context, imagePath, tarPath string) error {
 	}
 
 	// Use guestfish -i (inspect mode) which auto-detects and mounts the root filesystem.
-	script := fmt.Sprintf(`tar-out / %s
-`, tarPath)
-	cmd := exec.CommandContext(ctx, "guestfish", "--ro", "-a", imagePath, "-i") //nolint:gosec
-	cmd.Stdin = strings.NewReader(script)
+	cmd := exec.CommandContext(ctx, "guestfish", "--ro", "-a", imagePath, "-i", "tar-out", "/", tarPath) //nolint:gosec
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("guestfish tar-out: %s: %w", strings.TrimSpace(string(out)), err)
 	}
@@ -605,21 +592,17 @@ func assembleOCILayout(
 	}, nil
 }
 
-// validateSafePath checks that a path contains only safe characters for embedding
-// in guestfish scripts. This prevents shell injection via paths passed to guestfish
-// commands like 'add', 'tar-out', and 'part-get-gpt-guid'.
-// Used for both user-provided image paths and internal temp paths.
+// validateSafePath rejects control characters that can break command invocation.
+// Spaces and other normal filesystem characters are allowed.
 func validateSafePath(path string) error {
-	if strings.Contains(path, "..") {
-		return fmt.Errorf("path traversal not allowed in %q", path)
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("path cannot be empty")
 	}
-	for _, c := range path {
-		isAlpha := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-		isDigit := c >= '0' && c <= '9'
-		isSafe := c == '/' || c == '-' || c == '_' || c == '.' || c == '+' || c == '~' || c == '@' || c == ':' || c == '%' || c == ','
-		if !isAlpha && !isDigit && !isSafe {
-			return fmt.Errorf("unsafe character %q in path %q", string(c), path)
-		}
+	if strings.ContainsRune(path, '\x00') {
+		return fmt.Errorf("path contains NUL byte")
+	}
+	if strings.ContainsAny(path, "\r\n") {
+		return fmt.Errorf("path contains newline characters")
 	}
 	return nil
 }
