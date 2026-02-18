@@ -3,6 +3,7 @@
 package pipeline
 
 import (
+	"context"
 	"log"
 	"os/exec"
 	"strings"
@@ -22,7 +23,7 @@ const guestfishTrue = "true"
 //
 // If guestfish is not installed, this is non-fatal: a warning is logged and
 // the function returns nil.
-func deepVerifyBoot(imagePath string, result *image.BootCheckResult) error {
+func deepVerifyBoot(ctx context.Context, imagePath string, result *image.BootCheckResult) error {
 	// Check if guestfish is available.
 	gfPath, err := exec.LookPath("guestfish")
 	if err != nil {
@@ -33,19 +34,22 @@ func deepVerifyBoot(imagePath string, result *image.BootCheckResult) error {
 	log.Printf("image verify: using guestfish at %s for deep verification", gfPath)
 
 	// Check for kernel in /boot/.
-	kernelOut, err := exec.Command("guestfish", "--ro", "-a", imagePath, "-i", "glob-expand", "/boot/vmlinuz*").Output()
+	// On failure, log a warning and continue checking other components
+	// rather than returning early (which would skip all remaining checks
+	// and leave the caller with an incomplete but optimistic result).
+	kernelOut, err := exec.CommandContext(ctx, "guestfish", "--ro", "-a", imagePath, "-i", "glob-expand", "/boot/vmlinuz*").Output() //nolint:gosec
 	if err != nil {
 		log.Printf("image verify: guestfish kernel check failed: %v (non-fatal)", err)
 		result.Warnings = append(result.Warnings, "guestfish kernel check failed; results may be incomplete")
-		return nil
-	}
-	kernelFiles := strings.TrimSpace(string(kernelOut))
-	if kernelFiles != "" {
-		result.KernelFound = true
+	} else {
+		kernelFiles := strings.TrimSpace(string(kernelOut))
+		if kernelFiles != "" {
+			result.KernelFound = true
+		}
 	}
 
 	// Check for initrd/initramfs in /boot/.
-	initrdOut, err := exec.Command("guestfish", "--ro", "-a", imagePath, "-i", "glob-expand", "/boot/initr*").Output()
+	initrdOut, err := exec.CommandContext(ctx, "guestfish", "--ro", "-a", imagePath, "-i", "glob-expand", "/boot/initr*").Output() //nolint:gosec
 	if err == nil {
 		initrdFiles := strings.TrimSpace(string(initrdOut))
 		if initrdFiles != "" {
@@ -53,7 +57,7 @@ func deepVerifyBoot(imagePath string, result *image.BootCheckResult) error {
 		}
 	}
 	if !result.InitrdFound {
-		initramfsOut, errInitramfs := exec.Command("guestfish", "--ro", "-a", imagePath, "-i", "glob-expand", "/boot/initramfs*").Output()
+		initramfsOut, errInitramfs := exec.CommandContext(ctx, "guestfish", "--ro", "-a", imagePath, "-i", "glob-expand", "/boot/initramfs*").Output() //nolint:gosec
 		if errInitramfs == nil {
 			initramfsFiles := strings.TrimSpace(string(initramfsOut))
 			if initramfsFiles != "" {
@@ -63,7 +67,7 @@ func deepVerifyBoot(imagePath string, result *image.BootCheckResult) error {
 	}
 
 	// Check for systemd init.
-	initOut, err := exec.Command("guestfish", "--ro", "-a", imagePath, "-i", "readlink", "/sbin/init").Output()
+	initOut, err := exec.CommandContext(ctx, "guestfish", "--ro", "-a", imagePath, "-i", "readlink", "/sbin/init").Output() //nolint:gosec
 	if err == nil {
 		initTarget := strings.TrimSpace(string(initOut))
 		if strings.Contains(initTarget, "systemd") {
@@ -72,7 +76,7 @@ func deepVerifyBoot(imagePath string, result *image.BootCheckResult) error {
 	}
 	// Also check if /sbin/init is systemd itself (some distros).
 	if !result.SystemdFound {
-		isFileOut, errSystemd := exec.Command("guestfish", "--ro", "-a", imagePath, "-i", "is-file", "/lib/systemd/systemd").Output()
+		isFileOut, errSystemd := exec.CommandContext(ctx, "guestfish", "--ro", "-a", imagePath, "-i", "is-file", "/lib/systemd/systemd").Output() //nolint:gosec
 		if errSystemd == nil && strings.TrimSpace(string(isFileOut)) == guestfishTrue {
 			result.SystemdFound = true
 		}
@@ -90,7 +94,7 @@ func deepVerifyBoot(imagePath string, result *image.BootCheckResult) error {
 		"/boot/efi/EFI/BOOT/shimaa64.efi",
 	}
 	for _, uefiPath := range uefiPaths {
-		isFileOut, errUEFI := exec.Command("guestfish", "--ro", "-a", imagePath, "-i", "is-file", uefiPath).Output() //nolint:gosec // uefiPath is from a hardcoded list, not user input
+		isFileOut, errUEFI := exec.CommandContext(ctx, "guestfish", "--ro", "-a", imagePath, "-i", "is-file", uefiPath).Output() //nolint:gosec // uefiPath is from a hardcoded list, not user input
 		if errUEFI == nil && strings.TrimSpace(string(isFileOut)) == guestfishTrue {
 			result.BootloaderFound = true
 			break

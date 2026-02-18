@@ -35,8 +35,19 @@ func DetectKernel(bootFiles []string) (*KernelInfo, error) {
 		candidates = append(candidates, kernelCandidate{path: f, version: ver})
 	}
 
+	// Fallback: bare /boot/vmlinuz (Alpine, minimal distros) and /boot/Image (ARM64).
 	if len(candidates) == 0 {
-		return nil, fmt.Errorf("no vmlinuz-* kernel found in /boot")
+		for _, f := range bootFiles {
+			base := filepath.Base(f)
+			if base == "vmlinuz" || base == "Image" {
+				candidates = append(candidates, kernelCandidate{path: f, version: "unknown"})
+				break
+			}
+		}
+	}
+
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no kernel found in /boot (checked vmlinuz-*, vmlinuz, Image)")
 	}
 
 	// Sort by version descending (highest first).
@@ -53,9 +64,19 @@ func DetectKernel(bootFiles []string) (*KernelInfo, error) {
 	}
 
 	// Try Debian-style first, then RHEL-style.
-	initrdCandidates := []string{
-		"initrd.img-" + best.version,
-		"initramfs-" + best.version + ".img",
+	// For bare vmlinuz/Image (version="unknown"), also try versionless names.
+	var initrdCandidates []string
+	if best.version == "unknown" {
+		initrdCandidates = []string{
+			"initrd.img",
+			"initramfs.img",
+			"initrd",
+		}
+	} else {
+		initrdCandidates = []string{
+			"initrd.img-" + best.version,
+			"initramfs-" + best.version + ".img",
+		}
 	}
 
 	var initrdPath string

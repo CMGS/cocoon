@@ -174,7 +174,7 @@ func buildKernelLayerTar(kernelPath, initrdPath, outPath string) (string, int64,
 		hdr := &tar.Header{
 			Name:    f.tarName,
 			Size:    stat.Size(),
-			Mode:    0o644,
+			Mode:    int64(stat.Mode().Perm()),
 			ModTime: time.Unix(0, 0),
 			Format:  tar.FormatPAX,
 		}

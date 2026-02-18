@@ -84,13 +84,19 @@ func identifyOCIPlatform(ctx context.Context, ref string) (*image.ImageIdentity,
 	// 6. Compute content-addressed identity.
 	fullDigest, checksum := computeOCIChecksum(configDigest, layerDigests, arch)
 
-	// 7. Return identity without TempPath or ContainerID (layers not pulled yet).
+	// 7. Compute manifest digest to pin the pull to this exact manifest,
+	// preventing TOCTOU races where a tag is updated between identify and pull.
+	manifestHash := sha256.Sum256(rawManifest)
+	manifestDigest := hex.EncodeToString(manifestHash[:])
+
+	// 8. Return identity without TempPath or ContainerID (layers not pulled yet).
 	return &image.ImageIdentity{
-		Checksum:   checksum,
-		Arch:       arch,
-		FullDigest: fullDigest,
-		SourceRef:  ref,
-		ImageType:  image.ImageTypeOCI,
+		Checksum:        checksum,
+		Arch:            arch,
+		FullDigest:      fullDigest,
+		ManifestDigest:  manifestDigest,
+		SourceRef:       ref,
+		ImageType:       image.ImageTypeOCI,
 	}, nil
 }
 
@@ -107,12 +113,25 @@ func pullAndMountOCIPlatform(ctx context.Context, cfg *config.CocoonConfig, iden
 	ref := identity.SourceRef
 	root := cfg.BuildahRoot
 
-	// 2. Pull image with buildah.
-	if _, err := runCmd(ctx, "buildah", "--root", root, "pull", ref); err != nil {
-		return classifyBuildahError(fmt.Errorf("buildah pull %s: %w", ref, err))
+	// 2. Pull image with buildah, pinned to manifest digest when available
+	// to prevent TOCTOU races (tag updated between identify and pull).
+	pullRef := ref
+	if identity.ManifestDigest != "" {
+		pullRef = ref + "@sha256:" + identity.ManifestDigest
+	}
+	if _, err := runCmd(ctx, "buildah", "--root", root, "pull", pullRef); err != nil {
+		if identity.ManifestDigest != "" {
+			// Fall back to tag-based pull if digest-pinned pull fails
+			// (e.g., registry doesn't support digest references).
+			if _, fallbackErr := runCmd(ctx, "buildah", "--root", root, "pull", ref); fallbackErr != nil {
+				return classifyBuildahError(fmt.Errorf("buildah pull %s: %w", ref, fallbackErr))
+			}
+		} else {
+			return classifyBuildahError(fmt.Errorf("buildah pull %s: %w", ref, err))
+		}
 	}
 
-	// 3. Create working container.
+	// 3. Create working container (use original ref for container name).
 	containerOut, err := runCmd(ctx, "buildah", "--root", root, "from", ref)
 	if err != nil {
 		return classifyBuildahError(fmt.Errorf("buildah from %s: %w", ref, err))

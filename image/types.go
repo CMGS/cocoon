@@ -47,6 +47,12 @@ type ImageIdentity struct {
 	// Stored in references.json for collision verification.
 	FullDigest string `json:"full_digest"`
 
+	// ManifestDigest is the sha256 of the raw OCI manifest JSON.
+	// Used to pin buildah pull to the exact manifest identified by skopeo,
+	// preventing TOCTOU races when a tag is updated between identify and pull.
+	// Only set for OCI images.
+	ManifestDigest string `json:"manifest_digest,omitempty"`
+
 	// SourceRef is the original image reference as provided by the user
 	// (e.g., "docker.io/library/ubuntu:22.04" or a file path).
 	SourceRef string `json:"source_ref"`

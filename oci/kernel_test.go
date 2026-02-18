@@ -72,7 +72,7 @@ func TestDetectKernel(t *testing.T) {
 			wantErr:   true,
 		},
 		{
-			name: "vmlinuz without version suffix is ignored",
+			name: "vmlinuz without version suffix is ignored when versioned exists",
 			bootFiles: []string{
 				"/boot/vmlinuz",
 				"/boot/vmlinuz-5.15.0-100-generic",
@@ -81,6 +81,47 @@ func TestDetectKernel(t *testing.T) {
 			wantVersion: "5.15.0-100-generic",
 			wantKernel:  "/boot/vmlinuz-5.15.0-100-generic",
 			wantInitrd:  "/boot/initrd.img-5.15.0-100-generic",
+		},
+		{
+			name: "bare vmlinuz fallback (Alpine-style)",
+			bootFiles: []string{
+				"/boot/vmlinuz",
+				"/boot/initrd.img",
+				"/boot/grub",
+			},
+			wantVersion: "unknown",
+			wantKernel:  "/boot/vmlinuz",
+			wantInitrd:  "/boot/initrd.img",
+		},
+		{
+			name: "bare vmlinuz with initramfs.img",
+			bootFiles: []string{
+				"/boot/vmlinuz",
+				"/boot/initramfs.img",
+			},
+			wantVersion: "unknown",
+			wantKernel:  "/boot/vmlinuz",
+			wantInitrd:  "/boot/initramfs.img",
+		},
+		{
+			name: "ARM64 Image kernel fallback",
+			bootFiles: []string{
+				"/boot/Image",
+				"/boot/initrd.img",
+			},
+			wantVersion: "unknown",
+			wantKernel:  "/boot/Image",
+			wantInitrd:  "/boot/initrd.img",
+		},
+		{
+			name: "bare vmlinuz with plain initrd",
+			bootFiles: []string{
+				"/boot/vmlinuz",
+				"/boot/initrd",
+			},
+			wantVersion: "unknown",
+			wantKernel:  "/boot/vmlinuz",
+			wantInitrd:  "/boot/initrd",
 		},
 	}
 
