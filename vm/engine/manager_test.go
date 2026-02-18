@@ -393,7 +393,7 @@ func TestCreate_RejectsLocalOCITagUntilRuntimeEnabled(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected local OCI runtime error, got nil")
 	}
-	if !strings.Contains(err.Error(), "local OCI VM tag") {
+	if !strings.Contains(err.Error(), "OCI VM image path") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if prepareCalled {

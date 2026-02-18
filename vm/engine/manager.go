@@ -208,7 +208,7 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 		diskSize = m.cfg.DefaultDiskSize
 	}
 
-	resolvedImage, err := resolveRuntimeImageRef(m.cfg, opts.Image)
+	resolvedImage, err := resolveRuntimeImageRef(ctx, m.cfg, opts.Image)
 	if err != nil {
 		return nil, fmt.Errorf("resolve image reference %q: %w", opts.Image, err)
 	}
@@ -218,10 +218,10 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 		bootStrategy = types.DefaultBootStrategy
 	}
 
-	if resolvedImage.Source == runtimeImageSourceLocalOCITag {
+	if resolvedImage.VMImageType == types.VMImageTypeOCIVM {
 		return nil, fmt.Errorf(
-			"image %q resolves to local OCI VM tag %q, but OCI VM runtime boot path is not enabled yet (issue #7)",
-			opts.Image, resolvedImage.LocalOCITag,
+			"image %q resolves to OCI VM image path (source=%s), but OCI VM runtime boot path is not enabled yet (issue #7)",
+			opts.Image, resolvedImage.Source,
 		)
 	}
 
