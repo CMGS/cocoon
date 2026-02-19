@@ -118,6 +118,9 @@ func (c *CocoonConfig) Validate() error {
 	if c.BootTimeoutSeconds < 0 {
 		return fmt.Errorf("config: BootTimeoutSeconds must be >= 0, got %d", c.BootTimeoutSeconds)
 	}
+	// VirtiofsdBinary is optional and only required for OCI runtime path.
+	// Keep validation permissive by normalizing empty/whitespace values to
+	// the default binary name instead of failing config load.
 	if strings.TrimSpace(c.VirtiofsdBinary) == "" {
 		c.VirtiofsdBinary = "virtiofsd"
 	}
