@@ -348,7 +348,7 @@ func (m *manager) determineActualState(meta *types.VMMetadataFile, vmCfg *types.
 
 	case types.VMStateStarting:
 		if processValid {
-			if isStuckInState(meta.UpdatedAt, 5*time.Minute) {
+			if isStuckInState(meta.UpdatedAt, m.startingStateTimeout()) {
 				return types.VMStateError
 			}
 			return types.VMStateStarting // still booting
@@ -358,7 +358,7 @@ func (m *manager) determineActualState(meta *types.VMMetadataFile, vmCfg *types.
 
 	case types.VMStateStopping:
 		if processValid {
-			if isStuckInState(meta.UpdatedAt, 2*time.Minute) {
+			if isStuckInState(meta.UpdatedAt, m.stoppingStateTimeout()) {
 				return types.VMStateError
 			}
 			return types.VMStateStopping // still shutting down
@@ -627,6 +627,20 @@ func isStuckInState(updatedAt string, timeout time.Duration) bool {
 		return false
 	}
 	return time.Since(t) > timeout
+}
+
+func (m *manager) startingStateTimeout() time.Duration {
+	if m != nil && m.cfg != nil && m.cfg.BootTimeoutSeconds > 0 {
+		return time.Duration(m.cfg.BootTimeoutSeconds) * time.Second
+	}
+	return 5 * time.Minute
+}
+
+func (m *manager) stoppingStateTimeout() time.Duration {
+	if m != nil && m.cfg != nil && m.cfg.StopTimeoutSeconds > 0 {
+		return time.Duration(m.cfg.StopTimeoutSeconds) * time.Second
+	}
+	return 2 * time.Minute
 }
 
 func buildOrphanScanProcessNames(expectedHypervisors []string) []string {

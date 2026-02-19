@@ -71,6 +71,7 @@ func DetectKernel(bootFiles []string) (*KernelInfo, error) {
 			"initrd.img",
 			"initramfs.img",
 			"initrd",
+			"initramfs",
 		}
 	} else {
 		initrdCandidates = []string{

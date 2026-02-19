@@ -1,6 +1,7 @@
 package oci
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -299,5 +300,32 @@ func TestStoreRemoveTagSharedLayoutKeepsLayoutUntilLastTag(t *testing.T) {
 	}
 	if _, err := os.Stat(layoutDir); !os.IsNotExist(err) {
 		t.Fatalf("layout should be removed after last tag is deleted, stat err=%v", err)
+	}
+}
+
+func TestStoreSaveTag_CleanupFailureCounter(t *testing.T) {
+	cfg := testConfig(t)
+	store := NewStore(cfg)
+
+	layoutDir := store.LayoutDir("cleanup-counter")
+	if err := os.MkdirAll(layoutDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll layout: %v", err)
+	}
+
+	store.removeBlobRefsFn = func(*config.CocoonConfig, string) ([]string, error) {
+		return nil, errors.New("boom")
+	}
+
+	if err := store.SaveTag("cleanup-counter", layoutDir, "digest-v1"); err != nil {
+		t.Fatalf("SaveTag digest-v1: %v", err)
+	}
+
+	before := BlobRefCleanupFailureCount()
+	if err := store.SaveTag("cleanup-counter", layoutDir, "digest-v2"); err != nil {
+		t.Fatalf("SaveTag digest-v2: %v", err)
+	}
+	after := BlobRefCleanupFailureCount()
+	if after != before+1 {
+		t.Fatalf("BlobRefCleanupFailureCount delta=%d, want 1", after-before)
 	}
 }
