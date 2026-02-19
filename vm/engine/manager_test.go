@@ -409,6 +409,40 @@ func TestCreate_LocalOCITagRequiresMaterializedLayout(t *testing.T) {
 	}
 }
 
+func TestResolveOCIRuntimeLocalTag_RegistryPullNormalizesLatest(t *testing.T) {
+	t.Parallel()
+	td := setupTestManager(t)
+
+	mgrImpl, ok := td.mgr.(*manager)
+	if !ok {
+		t.Fatalf("unexpected manager type %T", td.mgr)
+	}
+
+	var pulledRef string
+	mgrImpl.ociPullFn = func(_ context.Context, _ *config.CocoonConfig, ref string) (*oci.PullResult, error) {
+		pulledRef = ref
+		return &oci.PullResult{
+			Ref:            oci.EnsureLatestTag(ref),
+			ManifestDigest: "sha256:deadbeef",
+		}, nil
+	}
+
+	localTag, err := mgrImpl.resolveOCIRuntimeLocalTag(t.Context(), &resolvedRuntimeImage{
+		PrepareRef:  "example.com/repo",
+		Source:      runtimeImageSourceRegistry,
+		VMImageType: types.VMImageTypeOCIVM,
+	})
+	if err != nil {
+		t.Fatalf("resolveOCIRuntimeLocalTag: %v", err)
+	}
+	if pulledRef != "example.com/repo" {
+		t.Fatalf("pull ref = %q, want %q", pulledRef, "example.com/repo")
+	}
+	if localTag != "example.com/repo:latest" {
+		t.Fatalf("local tag = %q, want %q", localTag, "example.com/repo:latest")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: Delete happy path
 // ---------------------------------------------------------------------------

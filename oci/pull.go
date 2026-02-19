@@ -143,12 +143,7 @@ func Pull(ctx context.Context, cfg *config.CocoonConfig, ref string) (*PullResul
 	if layoutErr != nil {
 		return nil, layoutErr
 	}
-	cleanupWorkDir := true
-	defer func() {
-		if cleanupWorkDir {
-			_ = os.RemoveAll(layoutWorkDir)
-		}
-	}()
+	defer os.RemoveAll(layoutWorkDir) //nolint:errcheck // best-effort cleanup if finalization fails or races
 
 	// Write oci-layout file.
 	ociLayoutContent := []byte(`{"imageLayoutVersion":"1.0.0"}`)
@@ -193,7 +188,6 @@ func Pull(ctx context.Context, cfg *config.CocoonConfig, ref string) (*PullResul
 	if err != nil {
 		return nil, fmt.Errorf("register pull result: %w", err)
 	}
-	cleanupWorkDir = false // layoutWorkDir was renamed by finalizeLayoutDir
 
 	fmt.Fprintf(os.Stderr, "Pulled: %s (digest: sha256:%s)\n", ref, manifestDigest.Hex)
 
@@ -234,30 +228,43 @@ func validateCocoonVMManifest(rawManifest []byte) error {
 		return fmt.Errorf("parse manifest: %w", err)
 	}
 
-	// Check Cocoon VM identification: artifactType, config mediaType, or layer types.
-	hasArtifactType := manifest.ArtifactType == ArtifactTypeVMImage
-	hasConfigType := manifest.Config.MediaType == MediaTypeVMConfig
-	hasKernel := false
-	hasRootfs := false
-	for _, layer := range manifest.Layers {
-		switch layer.MediaType {
-		case MediaTypeKernelLayer:
-			hasKernel = true
-		case MediaTypeRootfsLayer:
-			hasRootfs = true
-		}
+	// Validate image identity and runtime contract fields.
+	if manifest.Config.MediaType != MediaTypeVMConfig {
+		return fmt.Errorf("invalid config mediaType %q: expected %q", manifest.Config.MediaType, MediaTypeVMConfig)
 	}
-	hasLayerTypes := hasKernel && hasRootfs
-
-	if !hasArtifactType && !hasConfigType && !hasLayerTypes {
-		return fmt.Errorf("not a Cocoon VM image: missing artifactType %q, config mediaType %q, and kernel+rootfs layer types",
-			ArtifactTypeVMImage, MediaTypeVMConfig)
+	if manifest.ArtifactType != "" && manifest.ArtifactType != ArtifactTypeVMImage {
+		return fmt.Errorf("invalid artifactType %q: expected %q or empty", manifest.ArtifactType, ArtifactTypeVMImage)
 	}
 
 	// Validate layer count.
 	if len(manifest.Layers) > maxPullLayers {
 		return fmt.Errorf("too many layers (%d): Cocoon VM images support at most %d layers (1 kernel + 1 rootfs + %d customization)",
 			len(manifest.Layers), maxPullLayers, maxPullLayers-2)
+	}
+	if len(manifest.Layers) == 0 {
+		return fmt.Errorf("missing layers: expected 1 kernel + at least 1 rootfs layer")
+	}
+
+	kernelCount := 0
+	rootfsCount := 0
+	for idx, layer := range manifest.Layers {
+		switch layer.MediaType {
+		case MediaTypeKernelLayer:
+			kernelCount++
+			if idx != 0 {
+				return fmt.Errorf("invalid layer[%d] mediaType %q: kernel layer must be first", idx, layer.MediaType)
+			}
+		case MediaTypeRootfsLayer:
+			rootfsCount++
+		default:
+			return fmt.Errorf("unsupported layer mediaType %q at index %d", layer.MediaType, idx)
+		}
+	}
+	if kernelCount != 1 {
+		return fmt.Errorf("invalid kernel layer count %d: expected exactly 1", kernelCount)
+	}
+	if rootfsCount < 1 {
+		return fmt.Errorf("missing rootfs layer: expected at least one %q layer", MediaTypeRootfsLayer)
 	}
 
 	return nil

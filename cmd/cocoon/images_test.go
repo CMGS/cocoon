@@ -370,6 +370,26 @@ func TestResolveLocalOCITagRef_DefaultLatest(t *testing.T) {
 	}
 }
 
+func TestIsOCIVMRegistryRef_LocalOCITagReturnsTrue(t *testing.T) {
+	t.Parallel()
+
+	cfg := testCLIConfig(t)
+	store := oci.NewStore(cfg)
+	layoutPath := filepath.Join(t.TempDir(), "layout")
+	if err := os.MkdirAll(layoutPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll layout: %v", err)
+	}
+	if err := store.SaveTag("demo:latest", layoutPath, "sha256:1111"); err != nil {
+		t.Fatalf("SaveTag: %v", err)
+	}
+
+	c := testImageCLIContext(t)
+	app := &appContext{cfg: cfg}
+	if !isOCIVMRegistryRef(c, app, "demo") {
+		t.Fatal("isOCIVMRegistryRef should return true for local OCI tags to preserve repull/update semantics")
+	}
+}
+
 func TestTagCloudImageAlias_RejectsImplicitLatestOCICollision(t *testing.T) {
 	t.Parallel()
 

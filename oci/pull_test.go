@@ -64,20 +64,7 @@ func (l *staticLayer) MediaType() (typesreg.MediaType, error) {
 func pushTestCocoonVMImage(t *testing.T, registryAddr, repo, tag string) (string, v1.Hash) {
 	t.Helper()
 
-	vmConfig := VMImageConfig{
-		Arch:            "amd64",
-		DefaultCPUs:     2,
-		DefaultMemoryMB: 1024,
-		KernelCmdline:   "console=hvc0 root=PARTUUID=test ro quiet",
-		KernelPath:      "/vmlinuz",
-		InitrdPath:      "/initrd.img",
-		VirtiofsTag:     "cocoon-rootfs",
-	}
-	configJSON, err := json.Marshal(vmConfig)
-	if err != nil {
-		t.Fatalf("marshal config: %v", err)
-	}
-
+	var err error
 	kernelLayer, err := partial.CompressedToLayer(&staticLayer{
 		content:   []byte("fake-kernel-content"),
 		mediaType: typesreg.MediaType(MediaTypeKernelLayer),
@@ -98,23 +85,11 @@ func pushTestCocoonVMImage(t *testing.T, registryAddr, repo, tag string) (string
 	img := mutate.MediaType(empty.Image, typesreg.OCIManifestSchema1)
 	img = mutate.ConfigMediaType(img, typesreg.MediaType(MediaTypeVMConfig))
 
-	// Set raw config file content.
-	cfgFile, err := img.ConfigFile()
-	if err != nil {
-		t.Fatalf("config file: %v", err)
-	}
-	_ = cfgFile // we don't need to modify it further
-
 	// Override raw config.
 	img, err = mutate.AppendLayers(img, kernelLayer, rootfsLayer)
 	if err != nil {
 		t.Fatalf("append layers: %v", err)
 	}
-
-	// Now we need to set the raw config bytes. Use mutate.ConfigFile approach.
-	// Actually, go-containerregistry's mutate doesn't directly support
-	// setting raw config bytes while keeping custom mediaType. Let's use
-	// the approach of building a custom image wrapper.
 
 	// For a simpler approach, push the image as-is — the config blob will be
 	// the default empty config, but the config.MediaType in the manifest will
@@ -134,8 +109,6 @@ func pushTestCocoonVMImage(t *testing.T, registryAddr, repo, tag string) (string
 	if err != nil {
 		t.Fatalf("get image digest: %v", err)
 	}
-
-	_ = configJSON // config JSON would be used in a more detailed test
 
 	return ref, digest
 }
@@ -328,7 +301,7 @@ func TestValidateCocoonVMManifest_ValidArtifactType(t *testing.T) {
 		SchemaVersion: 2,
 		ArtifactType:  ArtifactTypeVMImage,
 		Config: ociDescriptor{
-			MediaType: "application/vnd.oci.empty.v1+json",
+			MediaType: MediaTypeVMConfig,
 			Digest:    "sha256:0000000000000000000000000000000000000000000000000000000000000000",
 			Size:      2,
 		},
@@ -359,6 +332,44 @@ func TestValidateCocoonVMManifest_InvalidManifest(t *testing.T) {
 	data, _ := json.Marshal(manifest)
 	if err := validateCocoonVMManifest(data); err == nil {
 		t.Fatal("expected error for non-VM manifest, got nil")
+	}
+}
+
+func TestValidateCocoonVMManifest_RejectsMarkerOnlyManifest(t *testing.T) {
+	t.Parallel()
+	manifest := ociManifest{
+		SchemaVersion: 2,
+		ArtifactType:  ArtifactTypeVMImage,
+		Config: ociDescriptor{
+			MediaType: MediaTypeVMConfig,
+			Digest:    "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+			Size:      100,
+		},
+		Layers: nil,
+	}
+	data, _ := json.Marshal(manifest)
+	if err := validateCocoonVMManifest(data); err == nil {
+		t.Fatal("expected error for marker-only manifest without runtime layers, got nil")
+	}
+}
+
+func TestValidateCocoonVMManifest_RejectsUnknownLayerTypes(t *testing.T) {
+	t.Parallel()
+	manifest := ociManifest{
+		SchemaVersion: 2,
+		Config: ociDescriptor{
+			MediaType: MediaTypeVMConfig,
+			Digest:    "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+			Size:      100,
+		},
+		Layers: []ociDescriptor{
+			{MediaType: MediaTypeKernelLayer, Digest: "sha256:0000000000000000000000000000000000000000000000000000000000000001", Size: 100},
+			{MediaType: "application/vnd.oci.image.layer.v1.tar+gzip", Digest: "sha256:0000000000000000000000000000000000000000000000000000000000000002", Size: 100},
+		},
+	}
+	data, _ := json.Marshal(manifest)
+	if err := validateCocoonVMManifest(data); err == nil {
+		t.Fatal("expected error for unsupported layer media type, got nil")
 	}
 }
 

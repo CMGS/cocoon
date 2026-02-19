@@ -51,6 +51,7 @@ type manager struct {
 	overlayMgr         *overlayRuntimeManager
 	virtiofsMgr        *virtiofsdRuntimeManager
 	registryProbeRawFn registryProbeRawFunc
+	ociPullFn          func(context.Context, *config.CocoonConfig, string) (*oci.PullResult, error)
 }
 
 // New creates a new VM manager backed by the given configuration and dependencies.
@@ -70,6 +71,7 @@ func New(
 		overlayMgr:         newOverlayRuntimeManager(cfg),
 		virtiofsMgr:        newVirtiofsdRuntimeManager(cfg),
 		registryProbeRawFn: defaultRunSkopeoInspectRaw,
+		ociPullFn:          oci.Pull,
 	}
 }
 
@@ -392,28 +394,9 @@ func (m *manager) createOCIVM(
 		return nil, fmt.Errorf("OCI runtime preflight: %w", err)
 	}
 
-	localTag := strings.TrimSpace(resolvedImage.LocalOCITag)
-	if localTag == "" {
-		if resolvedImage.Source == runtimeImageSourceLocalOCITag {
-			localTag = strings.TrimSpace(resolvedImage.PrepareRef)
-		}
-	}
-	if localTag == "" {
-		// Auto-pull from registry if the source is a registry OCI VM ref.
-		if resolvedImage.Source == runtimeImageSourceRegistry && resolvedImage.VMImageType == types.VMImageTypeOCIVM {
-			pullResult, pullErr := oci.Pull(ctx, m.cfg, resolvedImage.PrepareRef)
-			if pullErr != nil {
-				return nil, fmt.Errorf("pull OCI VM image %q: %w", resolvedImage.PrepareRef, pullErr)
-			}
-			localTag = resolvedImage.PrepareRef
-			log.Printf("auto-pulled OCI VM image %q (digest: %s)", localTag, pullResult.ManifestDigest)
-		}
-	}
-	if localTag == "" {
-		return nil, fmt.Errorf(
-			"OCI VM runtime currently requires a local OCI tag; source %q is not materialized locally yet",
-			resolvedImage.Source,
-		)
+	localTag, err := m.resolveOCIRuntimeLocalTag(ctx, resolvedImage)
+	if err != nil {
+		return nil, err
 	}
 
 	runtimeSpec, err := prepareLocalOCIRuntime(ctx, m.cfg, localTag)
@@ -525,6 +508,43 @@ func (m *manager) createOCIVM(
 
 	createSucceeded = true
 	return vmCfg, nil
+}
+
+func (m *manager) resolveOCIRuntimeLocalTag(ctx context.Context, resolvedImage *resolvedRuntimeImage) (string, error) {
+	if resolvedImage == nil {
+		return "", fmt.Errorf("resolved OCI image metadata is nil")
+	}
+
+	localTag := strings.TrimSpace(resolvedImage.LocalOCITag)
+	if localTag == "" && resolvedImage.Source == runtimeImageSourceLocalOCITag {
+		localTag = strings.TrimSpace(resolvedImage.PrepareRef)
+	}
+	if localTag != "" {
+		return localTag, nil
+	}
+
+	// Auto-pull from registry if the source is a registry OCI VM ref.
+	if resolvedImage.Source == runtimeImageSourceRegistry && resolvedImage.VMImageType == types.VMImageTypeOCIVM {
+		pullFn := m.ociPullFn
+		if pullFn == nil {
+			pullFn = oci.Pull
+		}
+		pullResult, pullErr := pullFn(ctx, m.cfg, resolvedImage.PrepareRef)
+		if pullErr != nil {
+			return "", fmt.Errorf("pull OCI VM image %q: %w", resolvedImage.PrepareRef, pullErr)
+		}
+		localTag = strings.TrimSpace(pullResult.Ref)
+		if localTag == "" {
+			localTag = oci.EnsureLatestTag(resolvedImage.PrepareRef)
+		}
+		log.Printf("auto-pulled OCI VM image %q (digest: %s)", localTag, pullResult.ManifestDigest)
+		return localTag, nil
+	}
+
+	return "", fmt.Errorf(
+		"OCI VM runtime currently requires a local OCI tag; source %q is not materialized locally yet",
+		resolvedImage.Source,
+	)
 }
 
 func (m *manager) snapshotCachedBaseKeys(ctx context.Context) map[string]struct{} {
