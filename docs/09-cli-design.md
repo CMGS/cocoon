@@ -1585,11 +1585,12 @@ func doctorAction(c *cli.Context) error {
     issues, reconcileErr := app.vmMgr.Reconcile(c.Context, fix, force)
 
     // Print results in table or JSON format.
-    // --fix attempts VM state repairs (not dependency installation).
+    // --fix attempts VM state repairs and limited dependency remediation
+    // (currently virtiofsd install/update/path fix on apt/dnf Linux hosts).
 }
 ```
 
-**Dependency Checks** (informational, --fix does not install missing tools):
+**Dependency Checks** (always executed; `--fix` can remediate `virtiofsd` on apt/dnf hosts):
 - cloud-hypervisor binary (minimum `38.0.0`)
 - ch-remote binary (minimum `38.0.0`)
 - UEFI firmware file (CLOUDHV.fd)
@@ -1604,6 +1605,10 @@ func doctorAction(c *cli.Context) error {
 - /dev/kvm device
 - Directory structure (root, runtime, log, db, vm, cache, buildah, firmware)
 - OCI blob-ref cleanup diagnostic counter (`oci/blob-ref-cleanup`)
+
+`cocoon doctor --fix` dependency remediation scope:
+- `virtiofsd`: if missing/outdated/path-mismatched, doctor attempts package remediation (`apt-get install` / `dnf install`) and links a stable command name when distro installs only to non-PATH fallback locations.
+- Other dependencies remain check-only (manual install/upgrade required).
 
 **VM Reconciliation types** (`vm.InconsistencyType`, `--fix` repairs when supported):
 - `state_mismatch` (metadata state does not match probed runtime state)

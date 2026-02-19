@@ -91,7 +91,7 @@ update_system_packages() {
     case "$PKG_MANAGER" in
         apt)
             apt-get update -qq
-            local packages=(qemu-utils buildah skopeo libguestfs-tools)
+            local packages=(qemu-utils buildah skopeo libguestfs-tools swtpm swtpm-tools virtiofsd)
             for pkg in "${packages[@]}"; do
                 if dpkg -l "$pkg" 2>/dev/null | grep -q "^ii"; then
                     info "Upgrading $pkg..."
@@ -111,17 +111,30 @@ update_system_packages() {
             done
             ;;
         dnf)
-            local packages=(qemu-img buildah skopeo libguestfs-tools)
+            local packages=(qemu-img buildah skopeo libguestfs-tools swtpm swtpm-tools virtiofsd)
             for pkg in "${packages[@]}"; do
-                info "Upgrading $pkg..."
-                if dnf upgrade -y -q "$pkg" 2>/dev/null; then
-                    ok "$pkg up to date"
+                if rpm -q "$pkg" &>/dev/null; then
+                    info "Upgrading $pkg..."
+                    if dnf upgrade -y -q "$pkg" 2>/dev/null; then
+                        ok "$pkg up to date"
+                    else
+                        warn "Failed to upgrade $pkg"
+                    fi
                 else
-                    warn "Failed to upgrade $pkg"
+                    info "Installing $pkg (not previously installed)..."
+                    if dnf install -y -q "$pkg" 2>/dev/null; then
+                        ok "$pkg installed"
+                    else
+                        warn "Failed to install $pkg"
+                    fi
                 fi
             done
             ;;
     esac
+
+    # Ensure virtiofsd command is runnable when distro packages install it
+    # to a non-PATH location (for example /usr/libexec/virtiofsd).
+    ensure_virtiofsd_command || true
 }
 
 # ----- Check-only mode -----
