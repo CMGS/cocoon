@@ -1,15 +1,18 @@
 package cloudhypervisor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,6 +62,46 @@ func TestIsVMAlreadyCreatedError(t *testing.T) {
 	}
 	if !isVMAlreadyCreatedError(err) {
 		t.Fatal("expected vm.create 'already created' error to be detected")
+	}
+}
+
+func TestLogVMCreatePayload(t *testing.T) {
+	var buf bytes.Buffer
+	origOutput := log.Writer()
+	origFlags := log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(origOutput)
+		log.SetFlags(origFlags)
+	}()
+
+	vmCfg := &hypervisor.CHVMConfig{
+		CPUs: hypervisor.CHCPUConfig{
+			BootVCPUs: 2,
+			MaxVCPUs:  2,
+		},
+		Memory: hypervisor.CHMemoryConfig{
+			Size:   2 * 1024 * 1024 * 1024,
+			Shared: true,
+		},
+		Fs: []hypervisor.CHFsConfig{
+			{Tag: "/dev/root", Socket: "/run/cocoon/vms/vm-1/virtiofsd.sock"},
+		},
+	}
+
+	body, err := json.Marshal(vmCfg)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	logVMCreatePayload("/run/cocoon/vms/vm-1/api.sock", vmCfg, body)
+
+	got := buf.String()
+	if !strings.Contains(got, "CH RPC vm.create request: socket=/run/cocoon/vms/vm-1/api.sock") {
+		t.Fatalf("expected socket path in log, got: %q", got)
+	}
+	if !strings.Contains(got, `"fs": [`) || !strings.Contains(got, `"tag": "/dev/root"`) {
+		t.Fatalf("expected fs payload in log, got: %q", got)
 	}
 }
 

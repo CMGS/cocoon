@@ -437,6 +437,7 @@ func (c *client) CreateVM(ctx context.Context, socketPath string, vmCfg *hypervi
 	if err != nil {
 		return fmt.Errorf("marshal vm config: %w", err)
 	}
+	logVMCreatePayload(socketPath, vmCfg, body)
 	return c.doWithRetry(ctx, func() error {
 		err := c.doPUT(ctx, socketPath, "/api/v1/vm.create", body)
 		if isVMAlreadyCreatedError(err) {
@@ -445,6 +446,14 @@ func (c *client) CreateVM(ctx context.Context, socketPath string, vmCfg *hypervi
 		}
 		return err
 	})
+}
+
+func logVMCreatePayload(socketPath string, vmCfg *hypervisor.CHVMConfig, fallbackBody []byte) {
+	prettyBody, err := json.MarshalIndent(vmCfg, "", "  ")
+	if err != nil {
+		prettyBody = fallbackBody
+	}
+	log.Printf("CH RPC vm.create request: socket=%s payload=%s", socketPath, string(prettyBody))
 }
 
 // BootVM sends PUT /api/v1/vm.boot.
