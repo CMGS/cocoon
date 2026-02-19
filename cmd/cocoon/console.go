@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 	"syscall"
 
 	cli "github.com/urfave/cli/v2"
@@ -74,6 +75,10 @@ func consoleAction(c *cli.Context) error {
 	}
 	vmInfo, err := app.hyper.GetVMInfo(c.Context, cfg.SocketPath)
 	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "no such file or directory") &&
+			strings.Contains(cfg.SocketPath, "api.sock") {
+			return fmt.Errorf("get VM info for %s: %w; runtime socket is missing while metadata is RUNNING, run 'cocoon doctor --fix' then start the VM again", vmID, err)
+		}
 		return fmt.Errorf("get VM info for %s: %w", vmID, err)
 	}
 

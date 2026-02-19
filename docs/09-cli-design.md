@@ -1604,6 +1604,7 @@ func doctorAction(c *cli.Context) error {
 - OCI blob-ref cleanup diagnostic counter (`oci/blob-ref-cleanup`)
 
 `cocoon doctor --fix` dependency remediation scope:
+- `buildah` / `skopeo`: if missing or below minimum version, doctor attempts package remediation (`apt-get install` / `dnf install`) and re-checks versions.
 - `virtiofsd`: if missing/outdated/path-mismatched, doctor attempts package remediation (`apt-get install` / `dnf install`) and links a stable command name when distro installs only to non-PATH fallback locations.
 - Other dependencies remain check-only (manual install/upgrade required).
 

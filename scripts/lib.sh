@@ -106,7 +106,19 @@ ensure_virtiofsd_command() {
     # Fallback path exists but not in PATH — expose a stable command in INSTALL_DIR.
     local link_path="${INSTALL_DIR}/${VIRTIOFSD_BINARY}"
     mkdir -p "${INSTALL_DIR}"
-    ln -sf "${resolved}" "${link_path}"
+    if [[ -e "${link_path}" && ! -L "${link_path}" ]]; then
+        warn "refusing to replace existing non-symlink ${link_path}; set VIRTIOFSD_BINARY to an explicit path or remove it manually"
+        return 1
+    fi
+    if [[ -L "${link_path}" ]]; then
+        local current_target
+        current_target="$(readlink "${link_path}" 2>/dev/null || true)"
+        if [[ "${current_target}" == "${resolved}" ]]; then
+            ok "virtiofsd command link already points to ${resolved}"
+            return 0
+        fi
+    fi
+    ln -sfn "${resolved}" "${link_path}"
     chmod +x "${link_path}" 2>/dev/null || true
     ok "linked ${link_path} -> ${resolved}"
     return 0
