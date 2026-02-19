@@ -7,32 +7,10 @@ import (
 	"time"
 
 	"github.com/CMGS/cocoon/lock/flock"
+	"github.com/CMGS/cocoon/oci"
 	"github.com/CMGS/cocoon/storage"
 	"github.com/CMGS/cocoon/utils"
 )
-
-// --- Local struct definitions for reading OCI JSON files ---
-// These duplicate minimal fields from oci.TagIndex and oci.LayerRefsIndex
-// to avoid importing the oci package (prevents circular dependency).
-
-type ociTagIndex struct {
-	Tags map[string]ociTagEntry `json:"tags"`
-}
-
-type ociTagEntry struct {
-	LayoutPath     string `json:"layout_path"`
-	ManifestDigest string `json:"manifest_digest"`
-}
-
-type ociLayerRefsIndex struct {
-	Blobs map[string]ociBlobRefEntry `json:"blobs"`
-}
-
-type ociBlobRefEntry struct {
-	ManifestDigests []string  `json:"manifest_digests"`
-	Size            int64     `json:"size"`
-	CreatedAt       time.Time `json:"created_at"`
-}
 
 // ociGCGracePeriod is an alias for the canonical constant in the storage package.
 const ociGCGracePeriod = storage.OCIGCGracePeriod
@@ -65,7 +43,7 @@ func (gc *fileGarbageCollector) CollectOrphanedOCILayouts() ([]string, error) {
 		// orphan collection loop. This prevents a concurrent SaveTag from
 		// adding a tag to a layout we are about to delete.
 		knownLayouts := make(map[string]bool)
-		tagIdx := &ociTagIndex{Tags: make(map[string]ociTagEntry)}
+		tagIdx := &oci.TagIndex{Tags: make(map[string]oci.TagEntry)}
 		tagLock := flock.New(gc.cfg.OCIBuildTagLock())
 		if err := tagLock.Lock(); err != nil {
 			return fmt.Errorf("acquire OCI build tag lock: %w", err)
@@ -139,7 +117,7 @@ func (gc *fileGarbageCollector) CollectStaleOCITags() ([]string, error) {
 		}
 		defer tagLock.Unlock() //nolint:errcheck
 
-		tagIdx := &ociTagIndex{Tags: make(map[string]ociTagEntry)}
+		tagIdx := &oci.TagIndex{Tags: make(map[string]oci.TagEntry)}
 		tagIdxPath := gc.cfg.OCIBuildTagIndex()
 		if _, statErr := os.Stat(tagIdxPath); statErr == nil {
 			if readErr := utils.ReadJSON(tagIdxPath, tagIdx); readErr != nil {
@@ -200,7 +178,7 @@ func (gc *fileGarbageCollector) CollectStaleOCITags() ([]string, error) {
 		}
 		defer refsLock.Unlock() //nolint:errcheck
 
-		layerRefs := &ociLayerRefsIndex{Blobs: make(map[string]ociBlobRefEntry)}
+		layerRefs := &oci.LayerRefsIndex{Blobs: make(map[string]oci.BlobRefEntry)}
 		refsPath := gc.cfg.OCILayerRefsFile()
 		if _, statErr := os.Stat(refsPath); statErr == nil {
 			if readErr := utils.ReadJSON(refsPath, layerRefs); readErr != nil {
@@ -269,7 +247,7 @@ func (gc *fileGarbageCollector) CollectOrphanedOCIManifestRefs() ([]string, erro
 		}
 		defer tagLock.Unlock() //nolint:errcheck
 
-		tagIdx := &ociTagIndex{Tags: make(map[string]ociTagEntry)}
+		tagIdx := &oci.TagIndex{Tags: make(map[string]oci.TagEntry)}
 		tagIdxPath := gc.cfg.OCIBuildTagIndex()
 		if _, statErr := os.Stat(tagIdxPath); statErr == nil {
 			if readErr := utils.ReadJSON(tagIdxPath, tagIdx); readErr != nil {
@@ -289,7 +267,7 @@ func (gc *fileGarbageCollector) CollectOrphanedOCIManifestRefs() ([]string, erro
 		}
 		defer refsLock.Unlock() //nolint:errcheck
 
-		layerRefs := &ociLayerRefsIndex{Blobs: make(map[string]ociBlobRefEntry)}
+		layerRefs := &oci.LayerRefsIndex{Blobs: make(map[string]oci.BlobRefEntry)}
 		refsPath := gc.cfg.OCILayerRefsFile()
 		if _, statErr := os.Stat(refsPath); statErr == nil {
 			if readErr := utils.ReadJSON(refsPath, layerRefs); readErr != nil {
@@ -373,7 +351,7 @@ func (gc *fileGarbageCollector) CollectUnreferencedOCIBlobs() ([]string, error) 
 		}
 		defer fl.Unlock() //nolint:errcheck
 
-		layerRefs := &ociLayerRefsIndex{Blobs: make(map[string]ociBlobRefEntry)}
+		layerRefs := &oci.LayerRefsIndex{Blobs: make(map[string]oci.BlobRefEntry)}
 		refsPath := gc.cfg.OCILayerRefsFile()
 		if _, statErr := os.Stat(refsPath); statErr == nil {
 			if readErr := utils.ReadJSON(refsPath, layerRefs); readErr != nil {
