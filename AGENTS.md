@@ -192,6 +192,61 @@ gh api repos/CMGS/cocoon/pulls/<PR_NUMBER>/comments \
 Each inline conversation should remain self-contained: the original finding and
 all follow-up discussion stay in one thread, matching the GitHub UI behavior.
 
+## Issue Management
+
+### Rule
+
+Every issue that tracks implementation work must contain an **actionable
+checklist in the issue description** (not in comments). The checklist is the
+single source of truth for what remains to be done.
+
+### Workflow
+
+1. **Create**: Write the issue body with a `## Checklist` section listing all
+   known work items as `- [ ] ...` tasks.
+2. **Discuss**: Use comments for design discussion, questions, and proposals.
+   Comments may contain temporary task lists for brainstorming, but these are
+   NOT the source of truth.
+3. **Update description**: Once a decision is reached in comments (regardless
+   of how many comments it took), update the **issue description checklist** to
+   reflect the consensus. Do not leave agreed-upon work items only in comments.
+4. **Check off**: Mark items `- [x]` as they are completed (via PR or direct
+   commit). Reference the commit/PR in the checkbox line.
+5. **Close**: Close the issue when all checklist items are checked or explicitly
+   dropped with a rationale.
+
+### Format
+
+```markdown
+## Summary
+<one paragraph describing the goal>
+
+## Checklist
+- [ ] Item 1: description (file/package scope)
+- [ ] Item 2: description (file/package scope)
+- [ ] Item 3: description (file/package scope)
+```
+
+### Steps (gh CLI)
+
+```bash
+# Create issue with checklist in body
+gh issue create --title "fix: address codebase review findings" \
+  --body-file /tmp/issue-body.md
+
+# Update issue description after consensus
+gh issue edit <NUMBER> --body-file /tmp/issue-body-updated.md
+
+# Check off item (edit body, toggle checkbox)
+gh issue edit <NUMBER> --body-file /tmp/issue-body-checked.md
+```
+
+### Do not
+
+- Put the authoritative checklist in a comment. Comments are for discussion.
+- Create multiple competing checklists across different comments.
+- Leave agreed-upon items only in comments without updating the description.
+
 ## Planning Records
 
 ### Rule
