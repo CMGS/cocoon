@@ -326,11 +326,9 @@ func normalizeVirtiofsKernelCmdline(raw, virtiofsTag string) string {
 }
 
 func normalizeOCIRuntimeVirtioFSTag(tag string) string {
-	normalized := strings.TrimSpace(tag)
-	if normalized == "" {
-		return defaultOCIRuntimeVirtioFSTag
-	}
-	return normalized
+	_ = strings.TrimSpace(tag) // retained for future compatibility branching
+	// Keep runtime rootfs tag canonical for Cloud Hypervisor virtio-fs root boot.
+	return defaultOCIRuntimeVirtioFSTag
 }
 
 func ociRuntimeKeyFromDigest(digest string) (string, error) {

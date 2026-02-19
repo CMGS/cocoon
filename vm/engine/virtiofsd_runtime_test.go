@@ -5,6 +5,8 @@ package engine
 import (
 	"context"
 	"errors"
+	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -48,11 +50,18 @@ func TestVirtiofsdRuntimeStartSuccess(t *testing.T) {
 		if binary != "/usr/libexec/virtiofsd" {
 			t.Fatalf("binary = %q, want /usr/libexec/virtiofsd", binary)
 		}
-		if !strings.Contains(strings.Join(args, " "), "--shared-dir "+sharedDir) {
+		joined := strings.Join(args, " ")
+		if !strings.Contains(joined, "--shared-dir "+sharedDir) {
 			t.Fatalf("args missing shared-dir: %v", args)
 		}
-		if !strings.Contains(strings.Join(args, " "), "--socket-path "+socketPath) {
+		if !strings.Contains(joined, "--socket-path "+socketPath) {
 			t.Fatalf("args missing socket-path: %v", args)
+		}
+		if !strings.Contains(joined, "--cache=never") {
+			t.Fatalf("args missing cache=never: %v", args)
+		}
+		if !strings.Contains(joined, "--sandbox chroot") {
+			t.Fatalf("args missing sandbox=chroot: %v", args)
 		}
 		if !strings.HasSuffix(logPath, vmID+"-virtiofsd.log") {
 			t.Fatalf("log path = %q, want suffix %q", logPath, vmID+"-virtiofsd.log")
@@ -167,5 +176,35 @@ func TestVirtiofsdRuntimeStop(t *testing.T) {
 	}
 	if removedSocket != socketPath {
 		t.Fatalf("remove socket path = %q, want %q", removedSocket, socketPath)
+	}
+}
+
+func TestWaitForVirtiofsdSocket_DoesNotProbeConnect(t *testing.T) {
+	t.Parallel()
+
+	socketPath := filepath.Join(t.TempDir(), "virtiofsd.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix socket: %v", err)
+	}
+	defer listener.Close()
+
+	accepted := make(chan struct{}, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			accepted <- struct{}{}
+			_ = conn.Close()
+		}
+	}()
+
+	if err := waitForVirtiofsdSocket(t.Context(), socketPath, os.Getpid(), 500*time.Millisecond); err != nil {
+		t.Fatalf("waitForVirtiofsdSocket: %v", err)
+	}
+
+	select {
+	case <-accepted:
+		t.Fatal("waitForVirtiofsdSocket should not actively connect to the socket")
+	case <-time.After(150 * time.Millisecond):
 	}
 }

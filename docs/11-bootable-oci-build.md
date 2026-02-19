@@ -138,7 +138,7 @@ FROM base AS configured
 
 # Configure /etc/fstab for standard VM disk layout
 # Phase 1 (qcow2): root is a block device, ESP at /boot/efi
-# Phase 2 (virtiofs): root is cocoon-rootfs, no fstab needed (kernel cmdline handles it)
+# Phase 2 (virtiofs): root is /dev/root, no fstab needed (kernel cmdline handles it)
 RUN echo '# Cocoon VM fstab' > /etc/fstab && \
     echo '# Phase 1: Root filesystem (overridden by kernel cmdline in Phase 2)' >> /etc/fstab && \
     echo 'LABEL=cloudimg-rootfs  /        ext4  defaults,discard  0 1' >> /etc/fstab && \

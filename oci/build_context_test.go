@@ -23,7 +23,7 @@ func TestBuildContextReadWrite(t *testing.T) {
 			KernelPath:     "/vmlinuz",
 			InitrdPath:     "/initrd.img",
 			KernelCmdline:  "console=hvc0",
-			VirtiofsTag:    "cocoon-rootfs",
+			VirtiofsTag:    "/dev/root",
 			RootfsPartUUID: "18E34A04-F507-4BCB-B834-2C1BF1FD48F2",
 		},
 		KernelLayer:   LayerInfo{MediaType: MediaTypeKernelLayer, Digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Size: 11},

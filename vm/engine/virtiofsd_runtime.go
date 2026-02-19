@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -132,9 +131,11 @@ func (m *virtiofsdRuntimeManager) Stop(vmID string, pid int, expectedProc, socke
 func buildVirtiofsdArgs(sharedDir, socketPath string) []string {
 	// Security baseline (docs/04.1 §6.6): keep the rootfs-serving virtiofsd
 	// sandboxed via chroot and avoid weakening this default implicitly.
+	// Explicitly keep cache=never for CH virtio-fs rootfs path.
 	return []string{
 		"--shared-dir", sharedDir,
 		"--socket-path", socketPath,
+		"--cache=never",
 		"--sandbox", "chroot",
 	}
 }
@@ -168,19 +169,24 @@ func launchVirtiofsdProcess(ctx context.Context, binary string, args []string, l
 	return pid, nil
 }
 
-// waitForVirtiofsdSocket polls the virtiofsd Unix socket using dial-only
-// (no stat-then-dial) to avoid a TOCTOU race where the socket file appears
-// in the filesystem before virtiofsd is ready to accept connections.
+// waitForVirtiofsdSocket waits until the virtiofsd Unix socket node exists.
+// Do not actively dial this socket as a readiness probe: some virtiofsd builds
+// can exit after a connect/disconnect probe in single-client mode.
 func waitForVirtiofsdSocket(ctx context.Context, socketPath string, pid int, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
 	for time.Now().Before(deadline) {
-		conn, dialErr := net.DialTimeout("unix", socketPath, 100*time.Millisecond)
-		if dialErr == nil {
-			_ = conn.Close()
-			return nil
+		info, statErr := os.Stat(socketPath)
+		if statErr == nil {
+			if info.Mode()&os.ModeSocket != 0 {
+				return nil
+			}
+			return fmt.Errorf("virtiofsd socket path %s exists but is not a socket", socketPath)
+		}
+		if !os.IsNotExist(statErr) {
+			return fmt.Errorf("stat virtiofsd socket %s: %w", socketPath, statErr)
 		}
 
 		if pid > 0 && !utils.IsProcessAlive(pid) {

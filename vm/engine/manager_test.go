@@ -1288,7 +1288,7 @@ func TestStart_OCIRuntimeMetadataWiring(t *testing.T) {
 	})
 
 	v.ImageType = types.VMImageTypeOCIVM
-	v.VirtioFSTag = "cocoon-rootfs"
+	v.VirtioFSTag = "/dev/root"
 	v.VirtioFSSock = td.cfg.VMOCIRootfsVirtioFSSocketPath(v.VMID)
 	if err := utils.AtomicWriteJSON(td.cfg.VMConfigPath(v.VMID), v); err != nil {
 		t.Fatalf("write config.json: %v", err)
@@ -1366,7 +1366,7 @@ func TestStart_OCIRuntimeCleanupOnBootFailure(t *testing.T) {
 	})
 
 	v.ImageType = types.VMImageTypeOCIVM
-	v.VirtioFSTag = "cocoon-rootfs"
+	v.VirtioFSTag = "/dev/root"
 	v.VirtioFSSock = td.cfg.VMOCIRootfsVirtioFSSocketPath(v.VMID)
 	if err := utils.AtomicWriteJSON(td.cfg.VMConfigPath(v.VMID), v); err != nil {
 		t.Fatalf("write config.json: %v", err)
@@ -1433,7 +1433,7 @@ func TestStop_CleansOCIRuntimeMetadata(t *testing.T) {
 	})
 
 	v.ImageType = types.VMImageTypeOCIVM
-	v.VirtioFSTag = "cocoon-rootfs"
+	v.VirtioFSTag = "/dev/root"
 	v.VirtioFSSock = td.cfg.VMOCIRootfsVirtioFSSocketPath(v.VMID)
 	if err := utils.AtomicWriteJSON(td.cfg.VMConfigPath(v.VMID), v); err != nil {
 		t.Fatalf("write config.json: %v", err)
@@ -1507,7 +1507,7 @@ func TestStop_StoppingStateCleansOCIRuntimeMetadata(t *testing.T) {
 	})
 
 	v.ImageType = types.VMImageTypeOCIVM
-	v.VirtioFSTag = "cocoon-rootfs"
+	v.VirtioFSTag = "/dev/root"
 	v.VirtioFSSock = td.cfg.VMOCIRootfsVirtioFSSocketPath(v.VMID)
 	if err := utils.AtomicWriteJSON(td.cfg.VMConfigPath(v.VMID), v); err != nil {
 		t.Fatalf("write config.json: %v", err)
@@ -1677,8 +1677,8 @@ func TestBuildCHVMConfig_DirectKernelBootWithVirtioFS(t *testing.T) {
 		BootStrategy:  types.BootStrategyDirect,
 		KernelPath:    "/boot/vmlinuz",
 		InitramfsPath: "/boot/initrd.img",
-		Cmdline:       "root=cocoon-rootfs rootfstype=virtiofs rw",
-		VirtioFSTag:   "cocoon-rootfs",
+		Cmdline:       "root=/dev/root rootfstype=virtiofs rw",
+		VirtioFSTag:   "/dev/root",
 		VirtioFSSock:  "/var/lib/cocoon/vms/vm-test/virtiofsd.sock",
 	}
 

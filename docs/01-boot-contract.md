@@ -45,7 +45,7 @@ This document defines the **Boot Contract** - the core specification for how Coc
 {
   "payload": {"firmware": "/var/lib/cocoon/firmware/CLOUDHV.fd"},
   "cpus": {"boot_vcpus": 2, "max_vcpus": 2},
-  "memory": {"size": 2147483648},
+  "memory": {"size": 2147483648, "shared": true},
   "disks": [{"path": "/var/lib/cocoon/vms/vm-123/overlay.qcow2"}],
   "serial": {"mode": "File", "file": "/var/log/cocoon/vm-123-serial.log"},
   "console": {"mode": "Pty"}
@@ -80,9 +80,9 @@ This document defines the **Boot Contract** - the core specification for how Coc
   "payload": {
     "kernel": "/var/lib/cocoon/cache/oci/runtime/{runtime-key}/kernel/vmlinuz",
     "initramfs": "/var/lib/cocoon/cache/oci/runtime/{runtime-key}/kernel/initrd.img",
-    "cmdline": "console=hvc0 root=cocoon-rootfs rootfstype=virtiofs rw"
+    "cmdline": "console=hvc0 root=/dev/root rootfstype=virtiofs rw"
   },
-  "fs": [{"tag": "cocoon-rootfs", "socket": "/run/cocoon/vms/vm-123/virtiofsd.sock"}],
+  "fs": [{"tag": "/dev/root", "socket": "/run/cocoon/vms/vm-123/virtiofsd.sock"}],
   "cpus": {"boot_vcpus": 2, "max_vcpus": 2},
   "memory": {"size": 2147483648},
   "serial": {"mode": "File", "file": "/var/log/cocoon/vm-123-serial.log"},
@@ -92,7 +92,7 @@ This document defines the **Boot Contract** - the core specification for how Coc
 
 **Kernel cmdline format**:
 ```
-root=<virtiofs_tag> rootfstype=virtiofs rw [console=...]
+root=/dev/root rootfstype=virtiofs rw [console=...]
 ```
 
 **Boot detection**: The same serial log pattern matching is used for both UEFI and Direct kernel boot (systemd target patterns, login prompt fallback patterns).
@@ -541,7 +541,7 @@ type VMConfig struct {
     KernelPath    string       `json:"kernel_path,omitempty"`     // Extracted vmlinuz (OCI direct boot)
     InitramfsPath string       `json:"initramfs_path,omitempty"`  // Extracted initrd (OCI direct boot)
     Cmdline       string       `json:"cmdline,omitempty"`         // Kernel command line (OCI direct boot)
-    VirtioFSTag   string       `json:"virtiofs_tag,omitempty"`    // virtiofs tag for rootfs (OCI VM)
+    VirtioFSTag   string       `json:"virtiofs_tag,omitempty"`    // virtiofs rootfs tag (canonical: /dev/root)
     VirtioFSSock  string       `json:"virtiofs_sock,omitempty"`   // virtiofsd socket path (OCI VM)
     TPMSocketPath string       `json:"tpm_socket_path,omitempty"` // swtpm socket (if TPM enabled)
 
@@ -701,7 +701,7 @@ func ValidateBootability(rootfs string) error {
 - [x] **Direct Kernel Boot** (OCI VM images) — implemented (resolver auto-detect + registry auto-pull runtime path):
   - [x] Extract kernel and initramfs from OCI VM images
   - [x] Launch CH with `payload.kernel` + `payload.initramfs` + `payload.cmdline`
-  - [x] Build kernel cmdline with `root=<virtiofs_tag> rootfstype=virtiofs rw` (+ console entries)
+  - [x] Build kernel cmdline with `root=/dev/root rootfstype=virtiofs rw` (+ console entries)
 
 - [x] **Image Conversion** (`image/pipeline/manager.go`, `image/pipeline/convert_linux.go`):
   - [x] Regenerate GRUB config (if needed for console settings)
