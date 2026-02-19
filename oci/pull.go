@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -205,6 +206,7 @@ func ProbeRegistryVMImage(ctx context.Context, cfg *config.CocoonConfig, ref str
 	ref = EnsureLatestTag(ref)
 	tag, err := name.NewTag(ref)
 	if err != nil {
+		log.Printf("warning: probe registry VM image %q: invalid tag: %v", ref, err)
 		return false
 	}
 
@@ -215,10 +217,15 @@ func ProbeRegistryVMImage(ctx context.Context, cfg *config.CocoonConfig, ref str
 		remote.WithPlatform(hostPlatform()),
 	)
 	if err != nil {
+		log.Printf("warning: probe registry VM image %q: remote.Get failed: %v", ref, err)
 		return false
 	}
 
-	return validateCocoonVMManifest(desc.Manifest) == nil
+	if validateErr := validateCocoonVMManifest(desc.Manifest); validateErr != nil {
+		log.Printf("warning: probe registry VM image %q: manifest validation failed: %v", ref, validateErr)
+		return false
+	}
+	return true
 }
 
 // validateCocoonVMManifest checks that rawManifest describes a valid Cocoon VM image.
