@@ -12,6 +12,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -26,6 +29,8 @@ import (
 // maxPullLayers is the maximum number of layers allowed in a pulled Cocoon VM
 // manifest: 1 kernel + 1 rootfs + up to 32 customization layers.
 const maxPullLayers = 34
+
+const pullProgressRefreshInterval = 250 * time.Millisecond
 
 // Pull downloads a Cocoon OCI VM image from a container registry into the
 // local OCI store. It validates that the remote manifest uses Cocoon VM media
@@ -120,13 +125,14 @@ func Pull(ctx context.Context, cfg *config.CocoonConfig, ref string) (*PullResul
 		}
 		layerHex := layerDigest.Hex
 
-		fmt.Fprintf(os.Stderr, "  Layer %d/%d: sha256:%s (%s)\n",
-			i+1, len(layers), layerHex[:12], utils.HumanBytes(layerSize))
-
 		if !blobStore.BlobExists(layerHex) {
-			if pullErr := pullLayerToStore(blobStore, layer, layerHex); pullErr != nil {
+			progress := newPullLayerProgress(os.Stderr, i+1, len(layers), layerHex, layerSize)
+			if pullErr := pullLayerToStore(blobStore, layer, layerHex, progress); pullErr != nil {
 				return nil, fmt.Errorf("store layer %d (sha256:%s): %w", i+1, layerHex[:12], pullErr)
 			}
+		} else {
+			fmt.Fprintf(os.Stderr, "  Layer %d/%d: sha256:%s (%s) [cached]\n",
+				i+1, len(layers), layerHex[:12], utils.HumanBytes(layerSize))
 		}
 		blobDigests = append(blobDigests, layerHex)
 		blobSizes = append(blobSizes, layerSize)
@@ -337,7 +343,7 @@ func checkIdempotent(store *Store, ref, manifestHex string) (bool, string) {
 }
 
 // pullLayerToStore downloads a layer to a temp file and stores it in the blob store.
-func pullLayerToStore(blobStore *BlobStore, layer v1.Layer, digestHexStr string) error {
+func pullLayerToStore(blobStore *BlobStore, layer v1.Layer, digestHexStr string, progress *pullLayerProgress) error {
 	rc, err := layer.Compressed()
 	if err != nil {
 		return classifyPullError(err)
@@ -356,8 +362,17 @@ func pullLayerToStore(blobStore *BlobStore, layer v1.Layer, digestHexStr string)
 	tmpPath := tmpFile.Name()
 	defer os.Remove(tmpPath) //nolint:errcheck
 
+	if progress != nil {
+		progress.start()
+		defer progress.finish()
+	}
+
 	h := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(tmpFile, h), rc); err != nil {
+	writers := []io.Writer{tmpFile, h}
+	if progress != nil {
+		writers = append(writers, &pullProgressCounter{progress: progress})
+	}
+	if _, err := io.Copy(io.MultiWriter(writers...), rc); err != nil {
 		_ = tmpFile.Close()
 		return classifyPullError(err)
 	}
@@ -378,6 +393,117 @@ func pullLayerToStore(blobStore *BlobStore, layer v1.Layer, digestHexStr string)
 		return fmt.Errorf("store blob: %w", err)
 	}
 	return nil
+}
+
+type pullLayerProgress struct {
+	writer      io.Writer
+	layerIndex  int
+	layerCount  int
+	digestShort string
+	totalBytes  int64
+
+	completed atomic.Int64
+	done      chan struct{}
+	once      sync.Once
+	wg        sync.WaitGroup
+}
+
+type pullProgressCounter struct {
+	progress *pullLayerProgress
+}
+
+func (c *pullProgressCounter) Write(p []byte) (int, error) {
+	if c.progress != nil {
+		c.progress.completed.Add(int64(len(p)))
+	}
+	return len(p), nil
+}
+
+func newPullLayerProgress(writer io.Writer, layerIndex, layerCount int, digestHex string, totalBytes int64) *pullLayerProgress {
+	digestShort := digestHex
+	if len(digestShort) > 12 {
+		digestShort = digestShort[:12]
+	}
+	return &pullLayerProgress{
+		writer:      writer,
+		layerIndex:  layerIndex,
+		layerCount:  layerCount,
+		digestShort: digestShort,
+		totalBytes:  totalBytes,
+	}
+}
+
+func (p *pullLayerProgress) start() {
+	if p == nil || p.writer == nil {
+		return
+	}
+	p.done = make(chan struct{})
+	p.wg.Go(func() {
+		ticker := time.NewTicker(pullProgressRefreshInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				_, _ = fmt.Fprintf(p.writer, "\r%s", formatPullLayerProgressLine(
+					p.layerIndex,
+					p.layerCount,
+					p.digestShort,
+					p.completed.Load(),
+					p.totalBytes,
+				))
+			case <-p.done:
+				_, _ = fmt.Fprintf(p.writer, "\r%s\n", formatPullLayerProgressLine(
+					p.layerIndex,
+					p.layerCount,
+					p.digestShort,
+					p.completed.Load(),
+					p.totalBytes,
+				))
+				return
+			}
+		}
+	})
+}
+
+func (p *pullLayerProgress) finish() {
+	if p == nil {
+		return
+	}
+	p.once.Do(func() {
+		if p.done != nil {
+			close(p.done)
+		}
+		p.wg.Wait()
+	})
+}
+
+func formatPullLayerProgressLine(layerIndex, layerCount int, digestShort string, complete, total int64) string {
+	if total > 0 {
+		percent := int64(0)
+		if complete > 0 {
+			percent = (complete * 100) / total
+		}
+		if percent > 100 {
+			percent = 100
+		}
+		return fmt.Sprintf(
+			"  Layer %d/%d: sha256:%s %3d%% (%s / %s)",
+			layerIndex,
+			layerCount,
+			digestShort,
+			percent,
+			utils.HumanBytes(complete),
+			utils.HumanBytes(total),
+		)
+	}
+	return fmt.Sprintf(
+		"  Layer %d/%d: sha256:%s %s",
+		layerIndex,
+		layerCount,
+		digestShort,
+		utils.HumanBytes(complete),
+	)
 }
 
 // hostPlatform returns the OCI platform for the current host.
