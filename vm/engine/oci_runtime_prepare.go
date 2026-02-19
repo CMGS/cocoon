@@ -35,6 +35,9 @@ func prepareLocalOCIRuntime(ctx context.Context, cfg *config.CocoonConfig, local
 		return nil, fmt.Errorf("OCI runtime requires a local OCI tag")
 	}
 
+	// Keep the txn lock for the full prepare+materialize window so the layout
+	// cannot be concurrently removed/repointed by tag mutations while we read
+	// rootfs/kernel blobs. Per-runtime lock below serializes same-manifest work.
 	txnLock := flock.New(cfg.OCIBuildTxnLock())
 	if err := txnLock.Lock(); err != nil {
 		return nil, fmt.Errorf("acquire OCI build txn lock: %w", err)
@@ -156,6 +159,9 @@ func materializeOCIRuntimeCache(ctx context.Context, cfg *config.CocoonConfig, r
 
 	finalDir := cfg.OCIRuntimeEntryDir(runtimeKey)
 	_ = os.RemoveAll(finalDir)
+	// Atomic promotion assumes TempDir and OCIRuntimeCacheDir share a filesystem.
+	// Current defaults are both under RootDir. If callers customize these to
+	// different mount points, rename will fail with EXDEV and return an error.
 	if err := os.Rename(workDir, finalDir); err != nil {
 		return fmt.Errorf("promote OCI runtime cache %s: %w", runtimeKey, err)
 	}
@@ -248,6 +254,8 @@ func normalizeVirtiofsKernelCmdline(raw, virtiofsTag string) string {
 	if !hasConsole {
 		out = append(out, "console=hvc0")
 	}
+	// The runtime overlay upperdir is writable, so force rw semantics even if
+	// source cmdline requested ro to avoid guest booting with a read-only root.
 	out = append(out, "root="+virtiofsTag, "rootfstype=virtiofs", "rw")
 	return strings.Join(out, " ")
 }
