@@ -1,6 +1,7 @@
 package oci
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -94,5 +95,17 @@ func TestGetAllTrackedBlobs(t *testing.T) {
 	}
 	if len(tracked) != 2 {
 		t.Fatalf("expected 2 tracked blobs, got %d", len(tracked))
+	}
+}
+
+func TestAddBlobRefsRejectsNonSHA256HexDigest(t *testing.T) {
+	cfg := testConfig(t)
+
+	err := AddBlobRefs(cfg, "m1", []string{"a"}, []int64{100})
+	if err == nil {
+		t.Fatal("expected AddBlobRefs to reject short digest, got nil")
+	}
+	if !strings.Contains(err.Error(), "expected 64 hex characters") {
+		t.Fatalf("expected length validation error, got: %v", err)
 	}
 }

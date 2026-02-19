@@ -31,6 +31,9 @@ func AddBlobRefs(cfg *config.CocoonConfig, manifestDigest string, blobDigests []
 			if err := validateHexDigest(digest); err != nil {
 				return fmt.Errorf("invalid blob digest at index %d (%q): %w", i, digest, err)
 			}
+			if len(digest) != 64 {
+				return fmt.Errorf("invalid blob digest at index %d (%q): expected 64 hex characters", i, digest)
+			}
 			entry, ok := idx.Blobs[digest]
 			if !ok {
 				var size int64
