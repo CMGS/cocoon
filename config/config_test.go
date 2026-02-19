@@ -43,6 +43,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.BuildahRoot != "/var/lib/cocoon/buildah" {
 		t.Errorf("BuildahRoot = %q, want /var/lib/cocoon/buildah", cfg.BuildahRoot)
 	}
+	if cfg.VirtiofsdBinary != "virtiofsd" {
+		t.Errorf("VirtiofsdBinary = %q, want virtiofsd", cfg.VirtiofsdBinary)
+	}
 }
 
 func TestLoadConfig_EmptyPath(t *testing.T) {
@@ -99,6 +102,30 @@ func TestLoadConfig_ValidJSON(t *testing.T) {
 	}
 	if cfg.BootTimeoutSeconds != 60 {
 		t.Errorf("BootTimeoutSeconds = %d, want 60 (default)", cfg.BootTimeoutSeconds)
+	}
+}
+
+func TestLoadConfig_EmptyVirtiofsdBinaryFallsBackToDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	partial := map[string]any{
+		"virtiofsd_binary": "   ",
+	}
+	data, err := json.Marshal(partial)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig error: %v", err)
+	}
+	if cfg.VirtiofsdBinary != "virtiofsd" {
+		t.Fatalf("VirtiofsdBinary = %q, want virtiofsd", cfg.VirtiofsdBinary)
 	}
 }
 

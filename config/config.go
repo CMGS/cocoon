@@ -27,6 +27,8 @@ type CocoonConfig struct {
 
 	// Cloud Hypervisor binary path.
 	CHBinary string `json:"ch_binary"`
+	// virtiofsd binary path (Phase 2 OCI runtime).
+	VirtiofsdBinary string `json:"virtiofsd_binary"`
 
 	// Firmware paths.
 	UEFIFirmwarePath string `json:"uefi_firmware_path"`
@@ -60,6 +62,7 @@ func DefaultConfig() *CocoonConfig {
 		LogDir:     "/var/log/cocoon",
 
 		CHBinary:         "cloud-hypervisor",
+		VirtiofsdBinary:  "virtiofsd",
 		UEFIFirmwarePath: "/var/lib/cocoon/firmware/CLOUDHV.fd",
 		BuildahRoot:      "/var/lib/cocoon/buildah",
 
@@ -114,6 +117,9 @@ func (c *CocoonConfig) Validate() error {
 	}
 	if c.BootTimeoutSeconds < 0 {
 		return fmt.Errorf("config: BootTimeoutSeconds must be >= 0, got %d", c.BootTimeoutSeconds)
+	}
+	if strings.TrimSpace(c.VirtiofsdBinary) == "" {
+		c.VirtiofsdBinary = "virtiofsd"
 	}
 	return nil
 }

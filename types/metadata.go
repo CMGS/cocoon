@@ -13,11 +13,15 @@ type VMMetadataFile struct {
 	PreviousState string `json:"previous_state"`
 
 	// Runtime (changes with each start/stop cycle)
-	ProcessPID       int    `json:"process_pid,omitempty"`
-	HypervisorBinary string `json:"hypervisor_binary,omitempty"`
-	BootTime         string `json:"boot_time,omitempty"`
-	LastBootMode     string `json:"last_boot_mode,omitempty"`
-	LastFirmwarePath string `json:"last_firmware_path,omitempty"`
+	ProcessPID        int    `json:"process_pid,omitempty"`
+	HypervisorBinary  string `json:"hypervisor_binary,omitempty"`
+	VirtiofsdPID      int    `json:"virtiofsd_pid,omitempty"`
+	VirtiofsdSocket   string `json:"virtiofsd_socket,omitempty"`
+	VirtiofsdBinary   string `json:"virtiofsd_binary,omitempty"`
+	OCIOverlayMounted bool   `json:"oci_overlay_mounted,omitempty"`
+	BootTime          string `json:"boot_time,omitempty"`
+	LastBootMode      string `json:"last_boot_mode,omitempty"`
+	LastFirmwarePath  string `json:"last_firmware_path,omitempty"`
 
 	// Error tracking
 	LastError     string `json:"last_error,omitempty"`
@@ -45,6 +49,10 @@ const CurrentMetadataSchemaVersion = 1
 // VMs created before the field was introduced).
 const DefaultHypervisorProcess = "cloud-hypervisor"
 
+// DefaultVirtiofsdProcess is the fallback process name used when
+// VMMetadataFile.VirtiofsdBinary is empty.
+const DefaultVirtiofsdProcess = "virtiofsd"
+
 // HypervisorProcessName returns the expected process name for this VM.
 // It uses HypervisorBinary from metadata if set, otherwise falls back to
 // the basename of the configured binary path. If both are empty, returns
@@ -58,4 +66,18 @@ func (m *VMMetadataFile) HypervisorProcessName(configBinary string) string {
 		return name
 	}
 	return DefaultHypervisorProcess
+}
+
+// VirtiofsdProcessName returns the expected rootfs virtiofsd process name.
+// It uses VirtiofsdBinary from metadata if set, otherwise falls back to
+// the basename of the configured binary path. If both are empty, returns
+// the default.
+func (m *VMMetadataFile) VirtiofsdProcessName(configBinary string) string {
+	if m != nil && m.VirtiofsdBinary != "" {
+		return m.VirtiofsdBinary
+	}
+	if name := filepath.Base(strings.TrimSpace(configBinary)); name != "" && name != "." {
+		return name
+	}
+	return DefaultVirtiofsdProcess
 }
