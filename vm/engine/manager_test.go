@@ -1629,6 +1629,9 @@ func TestBuildCHVMConfig_DirectKernelBoot(t *testing.T) {
 	if len(chCfg.Fs) != 0 {
 		t.Fatalf("fs should be empty for config without virtiofs, got %+v", chCfg.Fs)
 	}
+	if chCfg.Memory.Shared {
+		t.Fatal("memory.shared should be false when virtiofs is not configured")
+	}
 }
 
 func TestBuildCHVMConfig_DirectKernelBootWithVirtioFS(t *testing.T) {
@@ -1656,6 +1659,9 @@ func TestBuildCHVMConfig_DirectKernelBootWithVirtioFS(t *testing.T) {
 	}
 	if chCfg.Fs[0].Socket != "/var/lib/cocoon/vms/vm-test/virtiofsd.sock" {
 		t.Fatalf("fs[0].socket = %q, want /var/lib/cocoon/vms/vm-test/virtiofsd.sock", chCfg.Fs[0].Socket)
+	}
+	if !chCfg.Memory.Shared {
+		t.Fatal("memory.shared should be true when virtiofs is configured")
 	}
 }
 

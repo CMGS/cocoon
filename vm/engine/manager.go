@@ -1517,6 +1517,9 @@ func buildCHVMConfig(vmCfg *types.VMConfig) *hypervisor.CHVMConfig {
 			Tag:    vmCfg.VirtioFSTag,
 			Socket: vmCfg.VirtioFSSock,
 		})
+		// Cloud Hypervisor requires shared memory (or huge pages) for vhost-user.
+		// virtio-fs is a vhost-user device, so ensure memory.shared is enabled.
+		cfg.Memory.Shared = true
 	}
 
 	// TPM socket is passed via REST payload, not CLI flags.

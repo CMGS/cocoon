@@ -40,6 +40,9 @@ type CHCPUConfig struct {
 type CHMemoryConfig struct {
 	// Size is the memory allocation in bytes.
 	Size int64 `json:"size"`
+	// Shared enables shared guest memory required by vhost-user devices
+	// such as virtio-fs.
+	Shared bool `json:"shared,omitempty"`
 }
 
 // CHDiskConfig describes a single block device attached to the VM.
