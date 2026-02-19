@@ -242,13 +242,13 @@ Dockerfile
 2. docker push myregistry.io/myvm:v1
     |
     v
-3. cocoon image pull myregistry.io/myvm:v1  (qcow2 conversion path; OCI direct runtime currently requires local OCI tag materialization)
+3. cocoon image pull myregistry.io/myvm:v1  (auto-detects image type: OCI VM refs route to oci.Pull(), others to cloud image pipeline)
     |
     v
 4. cocoon image verify myregistry.io/myvm:v1
     |
     v
-5. cocoon create myregistry.io/myvm:v1 --name myvm  (Phase 1: OCI->qcow2->UEFI; Phase 2: resolver selects direct boot for OCI VM refs)
+5. cocoon create myregistry.io/myvm:v1 --name myvm  (resolver auto-detects OCI VM refs and auto-pulls from registry if needed)
 ```
 
 ### 4.1 Step Details
@@ -550,6 +550,16 @@ wget https://download.fedoraproject.org/pub/fedora/linux/releases/39/Cloud/x86_6
 
 # Use with Cocoon -- IMAGE is positional, not a flag
 cocoon create Fedora-Cloud-Base-39-1.5.x86_64.qcow2 --name fedora-vm
+```
+
+**OCI VM Images from Registry (auto-pull + direct boot)**:
+```bash
+# Build and push an OCI VM image (from a Cocoonfile)
+cocoon image build --tag registry.example.com/my-vm:latest --file Cocoonfile
+cocoon image push registry.example.com/my-vm:latest
+
+# Create a VM directly from registry (auto-detects OCI VM, auto-pulls, direct boot)
+cocoon create registry.example.com/my-vm:latest --name myvm --cpus 2 --memory 2G
 ```
 
 **Why Cloud Images Work**:
