@@ -8,7 +8,11 @@ func TestAddAndRemoveBlobRefs(t *testing.T) {
 	cfg := testConfig(t)
 
 	manifest1 := "aaaa"
-	blobs := []string{"blob1", "blob2", "blob3"}
+	blob1 := testHexDigest(1)
+	blob2 := testHexDigest(2)
+	blob3 := testHexDigest(3)
+	blob4 := testHexDigest(4)
+	blobs := []string{blob1, blob2, blob3}
 	sizes := []int64{100, 200, 300}
 
 	// Add blob refs for manifest1.
@@ -27,7 +31,7 @@ func TestAddAndRemoveBlobRefs(t *testing.T) {
 
 	// Add another manifest referencing some of the same blobs.
 	manifest2 := "bbbb"
-	if err := AddBlobRefs(cfg, manifest2, []string{"blob1", "blob4"}, []int64{100, 400}); err != nil {
+	if err := AddBlobRefs(cfg, manifest2, []string{blob1, blob4}, []int64{100, 400}); err != nil {
 		t.Fatalf("AddBlobRefs (manifest2): %v", err)
 	}
 
@@ -42,25 +46,26 @@ func TestAddAndRemoveBlobRefs(t *testing.T) {
 		zeroRefSet[d] = true
 	}
 
-	if !zeroRefSet["blob2"] {
-		t.Error("blob2 should be zero-ref after removing manifest1")
+	if !zeroRefSet[blob2] {
+		t.Errorf("%s should be zero-ref after removing manifest1", blob2)
 	}
-	if !zeroRefSet["blob3"] {
-		t.Error("blob3 should be zero-ref after removing manifest1")
+	if !zeroRefSet[blob3] {
+		t.Errorf("%s should be zero-ref after removing manifest1", blob3)
 	}
-	if zeroRefSet["blob1"] {
-		t.Error("blob1 should NOT be zero-ref (still ref'd by manifest2)")
+	if zeroRefSet[blob1] {
+		t.Errorf("%s should NOT be zero-ref (still ref'd by manifest2)", blob1)
 	}
 }
 
 func TestAddBlobRefsDuplicateManifest(t *testing.T) {
 	cfg := testConfig(t)
+	blob := testHexDigest(11)
 
 	// Adding same manifest twice should not duplicate.
-	if err := AddBlobRefs(cfg, "m1", []string{"b1"}, []int64{100}); err != nil {
+	if err := AddBlobRefs(cfg, "m1", []string{blob}, []int64{100}); err != nil {
 		t.Fatalf("first AddBlobRefs: %v", err)
 	}
-	if err := AddBlobRefs(cfg, "m1", []string{"b1"}, []int64{100}); err != nil {
+	if err := AddBlobRefs(cfg, "m1", []string{blob}, []int64{100}); err != nil {
 		t.Fatalf("second AddBlobRefs: %v", err)
 	}
 
@@ -69,15 +74,17 @@ func TestAddBlobRefsDuplicateManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RemoveBlobRefs: %v", err)
 	}
-	if len(zeroRef) != 1 || zeroRef[0] != "b1" {
-		t.Fatalf("expected [b1], got %v", zeroRef)
+	if len(zeroRef) != 1 || zeroRef[0] != blob {
+		t.Fatalf("expected [%s], got %v", blob, zeroRef)
 	}
 }
 
 func TestGetAllTrackedBlobs(t *testing.T) {
 	cfg := testConfig(t)
+	blob1 := testHexDigest(21)
+	blob2 := testHexDigest(22)
 
-	if err := AddBlobRefs(cfg, "m1", []string{"b1", "b2"}, []int64{100, 200}); err != nil {
+	if err := AddBlobRefs(cfg, "m1", []string{blob1, blob2}, []int64{100, 200}); err != nil {
 		t.Fatalf("AddBlobRefs: %v", err)
 	}
 

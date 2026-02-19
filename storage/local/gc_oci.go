@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/CMGS/cocoon/lock/flock"
@@ -328,6 +329,7 @@ func (gc *fileGarbageCollector) CollectOrphanedOCIManifestRefs() ([]string, erro
 		for md := range orphanedSet {
 			collected = append(collected, md)
 		}
+		sort.Strings(collected)
 
 		return nil
 	})

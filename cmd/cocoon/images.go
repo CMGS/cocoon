@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -269,7 +270,7 @@ func isOCIVMRegistryRef(c *cli.Context, app *appContext, ref string) bool {
 	if strings.HasPrefix(ref, "/") || strings.HasPrefix(ref, "./") || strings.HasPrefix(ref, "../") {
 		return false
 	}
-	if _, err := os.Stat(ref); err == nil {
+	if fi, err := os.Stat(ref); err == nil && fi.Mode().IsRegular() {
 		return false
 	}
 
@@ -620,7 +621,9 @@ func imageRemoveAction(c *cli.Context) error {
 		// Remove zero-referenced blobs from shared store.
 		blobStore := oci.NewBlobStore(app.cfg)
 		for _, digest := range zeroRefBlobs {
-			_ = blobStore.RemoveBlob(digest) // best-effort
+			if blobErr := blobStore.RemoveBlob(digest); blobErr != nil { // best-effort
+				log.Printf("warning: remove unreferenced blob %s after tag removal: %v", digest, blobErr)
+			}
 		}
 		fmt.Printf("Removed OCI image: %s\n", ociRef)
 		if manifestDigest != "" {

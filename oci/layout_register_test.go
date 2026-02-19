@@ -13,7 +13,7 @@ func TestCleanupManifestRefsIfUnreferenced(t *testing.T) {
 	store := NewStore(cfg)
 
 	manifest := "manifest-cleanup"
-	blob := "blob-cleanup"
+	blob := testHexDigest(401)
 	if err := AddBlobRefs(cfg, manifest, []string{blob}, []int64{10}); err != nil {
 		t.Fatalf("AddBlobRefs: %v", err)
 	}

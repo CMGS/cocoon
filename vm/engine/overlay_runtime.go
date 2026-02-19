@@ -2,9 +2,11 @@ package engine
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/CMGS/cocoon/config"
 )
@@ -20,6 +22,8 @@ type overlayRuntimeManager struct {
 	mountFn         overlayMountFunc
 	unmountFn       overlayUnmountFunc
 	readMountInfoFn overlayMountInfoReader
+	unmountTimeout  time.Duration
+	unmountInterval time.Duration
 }
 
 func newOverlayRuntimeManager(cfg *config.CocoonConfig) *overlayRuntimeManager {
@@ -28,6 +32,8 @@ func newOverlayRuntimeManager(cfg *config.CocoonConfig) *overlayRuntimeManager {
 		mountFn:         overlayMount,
 		unmountFn:       overlayUnmount,
 		readMountInfoFn: overlayReadMountInfo,
+		unmountTimeout:  2 * time.Second,
+		unmountInterval: 100 * time.Millisecond,
 	}
 }
 
@@ -89,6 +95,9 @@ func (m *overlayRuntimeManager) UnmountVM(vmID string) error {
 	if err := m.unmountFn(m.cfg.VMOCIMergedDir(vmID), overlayUnmountFlags()); err != nil {
 		return fmt.Errorf("unmount overlay for %s: %w", vmID, err)
 	}
+	if err := m.waitForUnmount(m.cfg.VMOCIMergedDir(vmID)); err != nil {
+		log.Printf("warning: overlay mount for %s still present after lazy unmount: %v", vmID, err)
+	}
 	return nil
 }
 
@@ -120,6 +129,36 @@ func (m *overlayRuntimeManager) isMountPoint(path string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+func (m *overlayRuntimeManager) waitForUnmount(path string) error {
+	timeout := m.unmountTimeout
+	if timeout <= 0 {
+		return nil
+	}
+	interval := m.unmountInterval
+	if interval <= 0 {
+		interval = 20 * time.Millisecond
+	}
+
+	deadline := time.Now().Add(timeout)
+	for {
+		mounted, err := m.isMountPoint(path)
+		if err != nil {
+			return err
+		}
+		if !mounted {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("mount point %s still mounted after %s", path, timeout)
+		}
+
+		remaining := time.Until(deadline)
+		sleepFor := interval
+		sleepFor = min(remaining, sleepFor)
+		time.Sleep(sleepFor)
+	}
 }
 
 func buildOverlayMountData(lowerDirs []string, upperDir, workDir string) (string, error) {

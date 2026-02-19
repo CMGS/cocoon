@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/CMGS/cocoon/config"
 )
@@ -154,9 +155,12 @@ func TestOverlayRuntimeUnmountVM(t *testing.T) {
 	merged := cfg.VMOCIMergedDir(vmID)
 
 	unmountCalled := false
+	readCalls := 0
 	om := &overlayRuntimeManager{
-		cfg:     cfg,
-		mountFn: overlayMount,
+		cfg:             cfg,
+		mountFn:         overlayMount,
+		unmountTimeout:  100 * time.Millisecond,
+		unmountInterval: time.Millisecond,
 		unmountFn: func(target string, flags int) error {
 			unmountCalled = true
 			if target != merged {
@@ -165,6 +169,10 @@ func TestOverlayRuntimeUnmountVM(t *testing.T) {
 			return nil
 		},
 		readMountInfoFn: func() ([]byte, error) {
+			readCalls++
+			if unmountCalled {
+				return []byte(""), nil
+			}
 			line := "24 21 0:22 / " + merged + " rw,relatime - overlay overlay rw"
 			return []byte(line + "\n"), nil
 		},
@@ -175,6 +183,9 @@ func TestOverlayRuntimeUnmountVM(t *testing.T) {
 	}
 	if !unmountCalled {
 		t.Fatal("expected unmount to be invoked")
+	}
+	if readCalls < 2 {
+		t.Fatalf("expected mountinfo to be re-checked after unmount, readCalls=%d", readCalls)
 	}
 }
 
@@ -199,6 +210,31 @@ func TestOverlayRuntimeUnmountVMNoopWhenNotMounted(t *testing.T) {
 
 	if err := om.UnmountVM(vmID); err != nil {
 		t.Fatalf("UnmountVM: %v", err)
+	}
+}
+
+func TestOverlayRuntimeWaitForUnmountTimeout(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.DefaultConfig()
+	cfg.RebaseRootDir(t.TempDir())
+	vmID := "vm-test-overlay-wait-timeout"
+	merged := cfg.VMOCIMergedDir(vmID)
+
+	om := &overlayRuntimeManager{
+		cfg:             cfg,
+		mountFn:         overlayMount,
+		unmountFn:       overlayUnmount,
+		unmountTimeout:  15 * time.Millisecond,
+		unmountInterval: time.Millisecond,
+		readMountInfoFn: func() ([]byte, error) {
+			line := "24 21 0:22 / " + merged + " rw,relatime - overlay overlay rw"
+			return []byte(line + "\n"), nil
+		},
+	}
+
+	if err := om.waitForUnmount(merged); err == nil {
+		t.Fatal("expected waitForUnmount timeout error, got nil")
 	}
 }
 

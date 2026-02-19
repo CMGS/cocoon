@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -349,16 +350,21 @@ func CocoonKeychain() authn.Keychain {
 func (k *cocoonKeychain) Resolve(target authn.Resource) (authn.Authenticator, error) {
 	configPath, err := cocoonConfigPath()
 	if err != nil {
+		log.Printf("warning: resolve cocoon auth config path: %v", err)
 		return authn.Anonymous, nil
 	}
 
 	data, err := os.ReadFile(configPath) //nolint:gosec // G304: path is derived from user home dir
 	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("warning: read cocoon auth config %s: %v", configPath, err)
+		}
 		return authn.Anonymous, nil
 	}
 
 	var cfg dockerAuthConfig
 	if err = json.Unmarshal(data, &cfg); err != nil {
+		log.Printf("warning: parse cocoon auth config %s: %v", configPath, err)
 		return authn.Anonymous, nil
 	}
 
@@ -369,11 +375,13 @@ func (k *cocoonKeychain) Resolve(target authn.Resource) (authn.Authenticator, er
 
 	decoded, err := base64.StdEncoding.DecodeString(entry.Auth)
 	if err != nil {
+		log.Printf("warning: decode cocoon registry auth for %s: %v", target.RegistryStr(), err)
 		return authn.Anonymous, nil
 	}
 
 	user, pass, ok := strings.Cut(string(decoded), ":")
 	if !ok {
+		log.Printf("warning: invalid cocoon registry auth format for %s: missing username:password separator", target.RegistryStr())
 		return authn.Anonymous, nil
 	}
 

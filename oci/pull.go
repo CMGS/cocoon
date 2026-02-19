@@ -345,7 +345,11 @@ func pullLayerToStore(blobStore *BlobStore, layer v1.Layer, digestHexStr string)
 	defer rc.Close() //nolint:errcheck
 
 	// Write to temp file, verify digest, then store.
-	tmpFile, err := os.CreateTemp("", "cocoon-pull-layer-*")
+	tempRoot := blobStore.cfg.TempDir()
+	if mkErr := os.MkdirAll(tempRoot, 0o750); mkErr != nil {
+		return fmt.Errorf("create pull temp dir: %w", mkErr)
+	}
+	tmpFile, err := os.CreateTemp(tempRoot, "cocoon-pull-layer-*")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
 	}

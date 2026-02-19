@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -16,6 +17,11 @@ import (
 )
 
 const defaultOCIRuntimeVirtioFSTag = "cocoon-rootfs"
+
+const (
+	minOCIRuntimeKernelBytes = 1024
+	minOCIRuntimeInitrdBytes = 1
+)
 
 type ociRuntimeSpec struct {
 	LocalTag       string
@@ -189,7 +195,9 @@ func promoteOCIRuntimeCacheDir(workDir, finalDir string) error {
 	if err := os.Rename(newDir, finalDir); err != nil {
 		// Best-effort rollback to keep the previous runtime cache available.
 		if hadOld {
-			_ = os.Rename(oldDir, finalDir)
+			if rollbackErr := os.Rename(oldDir, finalDir); rollbackErr != nil {
+				log.Printf("warning: rollback OCI runtime cache promotion failed (%s -> %s): %v", oldDir, finalDir, rollbackErr)
+			}
 		}
 		return fmt.Errorf("activate new OCI runtime cache: %w", err)
 	}
@@ -206,10 +214,15 @@ func locateOCIRuntimeLayers(info *oci.LayoutInfo) (oci.LayerInfo, []oci.LayerInf
 		return oci.LayerInfo{}, nil, fmt.Errorf("OCI layout metadata is empty")
 	}
 	var kernelLayer oci.LayerInfo
+	kernelCount := 0
 	rootfsLayers := make([]oci.LayerInfo, 0, len(info.Layers))
-	for _, layer := range info.Layers {
+	for idx, layer := range info.Layers {
 		switch layer.MediaType {
 		case oci.MediaTypeKernelLayer:
+			if idx != 0 {
+				return oci.LayerInfo{}, nil, fmt.Errorf("OCI runtime kernel layer must be first (index 0), got index %d", idx)
+			}
+			kernelCount++
 			if kernelLayer.Digest == "" {
 				kernelLayer = layer
 			}
@@ -217,8 +230,11 @@ func locateOCIRuntimeLayers(info *oci.LayoutInfo) (oci.LayerInfo, []oci.LayerInf
 			rootfsLayers = append(rootfsLayers, layer)
 		}
 	}
-	if kernelLayer.Digest == "" {
+	if kernelCount == 0 {
 		return oci.LayerInfo{}, nil, fmt.Errorf("OCI runtime kernel layer not found")
+	}
+	if kernelCount > 1 {
+		return oci.LayerInfo{}, nil, fmt.Errorf("OCI runtime has %d kernel layers; expected exactly 1", kernelCount)
 	}
 	if len(rootfsLayers) == 0 {
 		return oci.LayerInfo{}, nil, fmt.Errorf("OCI runtime rootfs layer not found")
@@ -242,9 +258,15 @@ func installOCIRuntimeKernelArtifacts(kernelDir string, cfg *oci.VMImageConfig) 
 	if err != nil {
 		return fmt.Errorf("locate OCI runtime kernel in layer: %w", err)
 	}
+	if sizeErr := ensureRuntimeArtifactMinSize(kernelSrc, minOCIRuntimeKernelBytes, "kernel"); sizeErr != nil {
+		return sizeErr
+	}
 	initrdSrc, err := firstExistingPath(kernelDir, initrdCandidates)
 	if err != nil {
 		return fmt.Errorf("locate OCI runtime initrd in layer: %w", err)
+	}
+	if sizeErr := ensureRuntimeArtifactMinSize(initrdSrc, minOCIRuntimeInitrdBytes, "initrd"); sizeErr != nil {
+		return sizeErr
 	}
 
 	kernelDst := filepath.Join(kernelDir, "vmlinuz")
@@ -259,6 +281,17 @@ func installOCIRuntimeKernelArtifacts(kernelDir string, cfg *oci.VMImageConfig) 
 		if err := copyRuntimeFile(initrdSrc, initrdDst, 0o644); err != nil { //nolint:gosec // cocoon-managed cache file
 			return fmt.Errorf("write OCI runtime initrd artifact: %w", err)
 		}
+	}
+	return nil
+}
+
+func ensureRuntimeArtifactMinSize(path string, minBytes int64, kind string) error {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat OCI runtime %s artifact %s: %w", kind, path, err)
+	}
+	if fi.Size() < minBytes {
+		return fmt.Errorf("OCI runtime %s artifact %s is too small (%d bytes, minimum %d)", kind, path, fi.Size(), minBytes)
 	}
 	return nil
 }

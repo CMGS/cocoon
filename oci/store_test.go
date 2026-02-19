@@ -224,7 +224,7 @@ func TestStoreRemoveTagSharedManifestRefs(t *testing.T) {
 	store := NewStore(cfg)
 
 	manifest := "manifest-shared"
-	blob := "blob-shared"
+	blob := testHexDigest(301)
 	if err := AddBlobRefs(cfg, manifest, []string{blob}, []int64{123}); err != nil {
 		t.Fatalf("AddBlobRefs: %v", err)
 	}

@@ -3,13 +3,13 @@
 **Version**: 2.0
 **Status**: Implemented
 **Phase**: Phase 1
-**Last Updated**: 2026-02-14
+**Last Updated**: 2026-02-19
 
 ## Executive Summary
 
 This document defines the **Boot Contract** - the core specification for how Cocoon boots virtual machines using Cloud Hypervisor. The contract establishes:
 
-1. **Boot mode strategy**: UEFI (default for cloud images) + Direct kernel boot (for OCI VM images; implemented for local OCI-tag runtime path)
+1. **Boot mode strategy**: UEFI (default for cloud images) + Direct kernel boot (for OCI VM images; resolver auto-detect with registry auto-pull runtime path implemented)
 2. **Guest initialization**: systemd (guest image setup is user responsibility)
 3. **I/O mechanisms**: Serial console, future vsock/virtiofs
 4. **Lifecycle semantics**: Start, stop, delete, crash recovery
@@ -60,7 +60,7 @@ This document defines the **Boot Contract** - the core specification for how Coc
 
 ### 1.2 Alternative Boot Mode: Direct Kernel Boot (OCI VM Images)
 
-> **Implementation status**: Direct kernel boot is implemented for OCI VM refs that resolve to local OCI tags. Registry OCI refs can be classified, but runtime start still requires local materialization.
+> **Implementation status**: Direct kernel boot is implemented for resolver-classified OCI VM refs. Registry OCI VM refs are auto-pulled before runtime materialization when needed.
 
 **Direct kernel boot** will be used automatically when the runtime resolver classifies an image as OCI VM. Instead of loading a UEFI firmware binary, Cocoon will pass the kernel, initramfs, and cmdline directly to Cloud Hypervisor.
 
@@ -108,7 +108,7 @@ root=<virtiofs_tag> rootfstype=virtiofs rw [console=...]
 | Arch | Firmware | Status |
 |------|----------|--------|
 | x86_64 | CLOUDHV.fd (UEFI) | Phase 1 |
-| x86_64 | Direct kernel boot (OCI) | Implemented (local OCI-tag runtime path) |
+| x86_64 | Direct kernel boot (OCI) | Implemented |
 | aarch64 | CLOUDHV.fd (UEFI) | Phase 2 |
 
 ---
@@ -118,7 +118,7 @@ root=<virtiofs_tag> rootfstype=virtiofs rw [console=...]
 Cocoon selects the boot mode automatically based on the image type:
 
 - **Non-OCI images** (cloud images, local qcow2 files, URLs): **UEFI boot** with CLOUDHV.fd firmware via `payload.firmware` **(Phase 1 — Implemented)**
-- **OCI VM images** (resolver-classified): **Direct kernel boot** via `payload.kernel` + `payload.initramfs` + `payload.cmdline` (implemented for local OCI-tag runtime path)
+- **OCI VM images** (resolver-classified): **Direct kernel boot** via `payload.kernel` + `payload.initramfs` + `payload.cmdline` (implemented; registry refs auto-pulled before runtime materialization)
 
 The boot strategy is determined at VM creation time and stored immutably in `config.json`.
 
@@ -145,7 +145,7 @@ const DefaultBootStrategy = BootStrategyUEFI
 | Image Type | Boot Strategy | Payload Fields | Firmware | Status |
 |------------|---------------|----------------|----------|--------|
 | Cloud images (qcow2, URL) | UEFI | `payload.firmware` | CLOUDHV.fd | Phase 1 (Implemented) |
-| OCI VM images (auto-detected) | Direct | `payload.kernel` + `payload.initramfs` + `payload.cmdline` | None | Implemented (local OCI-tag runtime path) |
+| OCI VM images (auto-detected) | Direct | `payload.kernel` + `payload.initramfs` + `payload.cmdline` | None | Implemented |
 
 **No automatic fallback**: Cocoon boots using the strategy determined by the image type. If the boot fails (e.g., firmware missing, kernel not found), the boot fails with an error.
 
@@ -660,7 +660,7 @@ func ValidateBootability(rootfs string) error {
 
 **Firmware**:
 - UEFI: CLOUDHV.fd from `/var/lib/cocoon/firmware/CLOUDHV.fd` (deprecated fallback: `/usr/share/OVMF/OVMF_CODE.fd`) — Phase 1 (Implemented)
-- Direct kernel boot: No firmware needed (kernel + initramfs passed directly) — Implemented for local OCI-tag runtime path
+- Direct kernel boot: No firmware needed (kernel + initramfs passed directly) — Implemented
 
 **Bootloader**:
 - ESP location: `/boot/efi/EFI/BOOT/BOOTX64.EFI`
@@ -698,7 +698,7 @@ func ValidateBootability(rootfs string) error {
   - [x] Locate UEFI firmware: primary `/var/lib/cocoon/firmware/CLOUDHV.fd`, deprecated fallback `/usr/share/OVMF/OVMF_CODE.fd`
   - [x] Launch CH with UEFI firmware via REST `payload.firmware` (default boot strategy for non-OCI images)
 
-- [x] **Direct Kernel Boot** (OCI VM images) — implemented for local OCI-tag runtime path:
+- [x] **Direct Kernel Boot** (OCI VM images) — implemented (resolver auto-detect + registry auto-pull runtime path):
   - [x] Extract kernel and initramfs from OCI VM images
   - [x] Launch CH with `payload.kernel` + `payload.initramfs` + `payload.cmdline`
   - [x] Build kernel cmdline with `root=<virtiofs_tag> rootfstype=virtiofs rw` (+ console entries)
@@ -737,11 +737,11 @@ func ValidateBootability(rootfs string) error {
 
 **Boot Contract v2.0** establishes:
 
-1. **Boot strategy**: UEFI (cloud images, Phase 1) + Direct kernel boot (OCI VM images, implemented for local OCI-tag runtime path)
+1. **Boot strategy**: UEFI (cloud images, Phase 1) + Direct kernel boot (OCI VM images, implemented)
 2. **Guest initialization**: User responsibility (Cocoon does not perform guest init)
 3. **Image requirements**: kernel + bootloader + systemd
 4. **Graceful lifecycle**: ACPI shutdown with timeout
-5. **Production ready**: Works with standard cloud images (Phase 1) and OCI VM direct boot for local OCI-tag runtime path; registry OCI runtime materialization remains Phase 2 follow-up
+5. **Production ready**: Works with standard cloud images (Phase 1) and OCI VM direct boot, including registry refs via auto-pull + local runtime materialization
 
 **Next Steps**:
 - Read `docs/03-hypervisor-integration.md` for CH API details
