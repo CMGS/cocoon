@@ -350,6 +350,10 @@ func (gc *fileGarbageCollector) FullGC() error {
 		return fmt.Errorf("collect unreferenced OCI blobs: %w", err)
 	}
 
+	if _, err := gc.CollectUnreferencedOCIRuntimeCaches(); err != nil {
+		return fmt.Errorf("collect unreferenced OCI runtime caches: %w", err)
+	}
+
 	if _, err := gc.CollectStaleConversionLocks(lockMaxAge); err != nil {
 		return fmt.Errorf("collect stale conversion locks: %w", err)
 	}

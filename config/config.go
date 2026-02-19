@@ -382,6 +382,14 @@ func (c *CocoonConfig) OCIBuildTxnLock() string {
 	return filepath.Join(c.RootDir, "db", "oci-build-txn.lock")
 }
 
+func (c *CocoonConfig) OCIRuntimeRefsFile() string {
+	return filepath.Join(c.RootDir, "db", "oci-runtime-refs.json")
+}
+
+func (c *CocoonConfig) OCIRuntimeRefsLock() string {
+	return filepath.Join(c.RootDir, "db", "oci-runtime-refs.lock")
+}
+
 // EnsureDirs creates all required directories.
 func (c *CocoonConfig) EnsureDirs() error {
 	dirs := []string{

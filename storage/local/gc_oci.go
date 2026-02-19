@@ -410,6 +410,93 @@ func (gc *fileGarbageCollector) CollectUnreferencedOCIBlobs() ([]string, error) 
 	return collected, err
 }
 
+// CollectUnreferencedOCIRuntimeCaches removes OCI runtime cache directories
+// under cache/oci/runtime/ that have no active pins in oci-runtime-refs.json.
+//
+// Lock: gc.lock (L1) -> oci-runtime-refs.lock.
+func (gc *fileGarbageCollector) CollectUnreferencedOCIRuntimeCaches() ([]string, error) {
+	var collected []string
+
+	err := gc.withGCLock(func() error {
+		cacheDir := gc.cfg.OCIRuntimeCacheDir()
+		entries, err := os.ReadDir(cacheDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("read OCI runtime cache dir: %w", err)
+		}
+
+		refsLock := flock.New(gc.cfg.OCIRuntimeRefsLock())
+		if err := refsLock.Lock(); err != nil {
+			return fmt.Errorf("acquire OCI runtime refs lock: %w", err)
+		}
+		defer refsLock.Unlock() //nolint:errcheck
+
+		refsIdx := &oci.RuntimeRefsIndex{Runtimes: make(map[string]oci.RuntimeRefEntry)}
+		refsPath := gc.cfg.OCIRuntimeRefsFile()
+		if _, statErr := os.Stat(refsPath); statErr == nil {
+			if readErr := utils.ReadJSON(refsPath, refsIdx); readErr != nil {
+				return fmt.Errorf("read OCI runtime refs: %w", readErr)
+			}
+		}
+
+		changed := false
+		cutoff := time.Now().Add(-ociGCGracePeriod)
+
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			runtimeKey := entry.Name()
+			refEntry, exists := refsIdx.Runtimes[runtimeKey]
+			if exists && len(refEntry.Refs) > 0 {
+				continue
+			}
+
+			// Defense-in-depth: skip recently-created runtime dirs that may be
+			// in the window between materialization and pin recording.
+			if info, statErr := entry.Info(); statErr == nil && info.ModTime().After(cutoff) {
+				continue
+			}
+
+			if err := os.RemoveAll(gc.cfg.OCIRuntimeEntryDir(runtimeKey)); err != nil {
+				continue // non-fatal
+			}
+			collected = append(collected, runtimeKey)
+
+			if exists {
+				delete(refsIdx.Runtimes, runtimeKey)
+				changed = true
+			}
+		}
+
+		// Cleanup stale zero-ref entries even when their dirs were already gone.
+		for runtimeKey, entry := range refsIdx.Runtimes {
+			if len(entry.Refs) > 0 {
+				continue
+			}
+			if _, statErr := os.Stat(gc.cfg.OCIRuntimeEntryDir(runtimeKey)); os.IsNotExist(statErr) {
+				delete(refsIdx.Runtimes, runtimeKey)
+				changed = true
+			}
+		}
+
+		if changed {
+			if err := utils.AtomicWriteJSON(refsPath, refsIdx); err != nil {
+				return fmt.Errorf("save OCI runtime refs: %w", err)
+			}
+		}
+
+		return nil
+	})
+
+	if collected == nil {
+		collected = []string{}
+	}
+	return collected, err
+}
+
 // filterManifestDigests returns a new slice with entries not in the remove set.
 func filterManifestDigests(digests []string, removeSet map[string]bool) []string {
 	result := make([]string, 0, len(digests))
