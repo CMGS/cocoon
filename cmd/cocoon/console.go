@@ -55,29 +55,26 @@ func consoleAction(c *cli.Context) error {
 		return fmt.Errorf("resolve VM ref %q: %w", ref, err)
 	}
 
-	// Verify VM is running.
+	// Verify VM is running based on reconciled inspect state rather than raw
+	// metadata to avoid stale RUNNING state after crashes/reboots.
 	// TODO: also allow VMStatePaused when pause/resume is implemented (docs/13-pause-resume.md).
-	meta, err := app.vmMgr.LoadMetadata(vmID)
+	inspect, err := app.vmMgr.Inspect(c.Context, vmID)
 	if err != nil {
 		return err
 	}
-	state := types.VMState(meta.State)
-	if state != types.VMStateRunning {
-		return fmt.Errorf("VM %s is not running (state: %s)", ref, meta.State)
+	if inspect.State != types.VMStateRunning {
+		return fmt.Errorf("VM %s is not running (state: %s)", ref, inspect.State)
 	}
 
 	// Get PTY path from CH REST API. We call GetVMInfo directly (rather
 	// than GetConsolePTYPath) because we need Console.Mode for targeted
 	// error messages when the console is not available.
-	cfg, err := app.vmMgr.LoadConfig(vmID)
-	if err != nil {
-		return err
-	}
-	vmInfo, err := app.hyper.GetVMInfo(c.Context, cfg.SocketPath)
+	socketPath := inspect.Hypervisor.CHSocket
+	vmInfo, err := app.hyper.GetVMInfo(c.Context, socketPath)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "no such file or directory") &&
-			strings.Contains(cfg.SocketPath, "api.sock") {
-			return fmt.Errorf("get VM info for %s: %w; runtime socket is missing while metadata is RUNNING, run 'cocoon doctor --fix' then start the VM again", vmID, err)
+			strings.Contains(socketPath, "api.sock") {
+			return fmt.Errorf("get VM info for %s: %w; runtime socket disappeared after state check, run 'cocoon doctor --fix' then start the VM again", vmID, err)
 		}
 		return fmt.Errorf("get VM info for %s: %w", vmID, err)
 	}
