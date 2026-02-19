@@ -238,6 +238,66 @@ func TestExtractTarToDir_SkipsSpecialTarEntries(t *testing.T) {
 	}
 }
 
+func TestExtractOCILayerTarToDir_ResolvesForwardHardlink(t *testing.T) {
+	t.Parallel()
+
+	tarPath := filepath.Join(t.TempDir(), "forward-hardlink.tar")
+	f, err := os.Create(tarPath) //nolint:gosec // test temp file
+	if err != nil {
+		t.Fatalf("create tar: %v", err)
+	}
+	tw := tar.NewWriter(f)
+
+	// Emit hardlink before its target to reproduce forward-link ordering.
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     "usr/bin/perl",
+		Mode:     0o755,
+		Typeflag: tar.TypeLink,
+		Linkname: "usr/bin/perl5.34.0",
+	}); err != nil {
+		t.Fatalf("write hardlink header: %v", err)
+	}
+
+	payload := []byte("perl-binary")
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     "usr/bin/perl5.34.0",
+		Mode:     0o755,
+		Size:     int64(len(payload)),
+		Typeflag: tar.TypeReg,
+	}); err != nil {
+		t.Fatalf("write target header: %v", err)
+	}
+	if _, err := tw.Write(payload); err != nil {
+		t.Fatalf("write target payload: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar writer: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close tar file: %v", err)
+	}
+
+	dstDir := t.TempDir()
+	if err := ExtractOCILayerTarToDir(t.Context(), tarPath, dstDir); err != nil {
+		t.Fatalf("extract layer: %v", err)
+	}
+
+	targetPath := filepath.Join(dstDir, "usr", "bin", "perl5.34.0")
+	linkPath := filepath.Join(dstDir, "usr", "bin", "perl")
+
+	targetInfo, err := os.Stat(targetPath)
+	if err != nil {
+		t.Fatalf("stat hardlink target: %v", err)
+	}
+	linkInfo, err := os.Stat(linkPath)
+	if err != nil {
+		t.Fatalf("stat hardlink path: %v", err)
+	}
+	if !os.SameFile(targetInfo, linkInfo) {
+		t.Fatalf("%s and %s should reference the same inode", linkPath, targetPath)
+	}
+}
+
 func TestTarEntryModeOrDefault_PreservesModeBits(t *testing.T) {
 	t.Parallel()
 

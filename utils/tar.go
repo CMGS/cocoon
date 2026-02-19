@@ -144,24 +144,7 @@ func ExtractTarToDir(ctx context.Context, tarPath, targetDir string) error {
 	}
 	defer f.Close() //nolint:errcheck,gosec // best-effort close on read-only file
 
-	tr := tar.NewReader(f)
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("read tar entry from %q: %w", tarPath, err)
-		}
-
-		if err := extractTarEntry(tr, hdr, targetDir); err != nil {
-			return err
-		}
-	}
+	return extractTarStream(ctx, tarPath, targetDir, tar.NewReader(f), false)
 }
 
 // ExtractOCILayerTarToDir extracts an OCI diff layer into targetDir while
@@ -185,7 +168,11 @@ func ExtractOCILayerTarToDir(ctx context.Context, tarPath, targetDir string) err
 	}
 	defer f.Close() //nolint:errcheck,gosec // best-effort close on read-only file
 
-	tr := tar.NewReader(f)
+	return extractTarStream(ctx, tarPath, targetDir, tar.NewReader(f), true)
+}
+
+func extractTarStream(ctx context.Context, tarPath, targetDir string, tr *tar.Reader, applyWhiteouts bool) error {
+	pendingHardlinks := make([]tar.Header, 0, 8)
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -193,23 +180,73 @@ func ExtractOCILayerTarToDir(ctx context.Context, tarPath, targetDir string) err
 
 		hdr, err := tr.Next()
 		if err == io.EOF {
-			return nil
+			break
 		}
 		if err != nil {
 			return fmt.Errorf("read tar entry from %q: %w", tarPath, err)
 		}
 
-		handledWhiteout, err := applyOCIWhiteout(targetDir, hdr.Name)
-		if err != nil {
-			return err
+		if applyWhiteouts {
+			handledWhiteout, whiteoutErr := applyOCIWhiteout(targetDir, hdr.Name)
+			if whiteoutErr != nil {
+				return whiteoutErr
+			}
+			if handledWhiteout {
+				continue
+			}
 		}
-		if handledWhiteout {
-			continue
+
+		deferred, entryErr := extractTarEntry(tr, hdr, targetDir)
+		if entryErr != nil {
+			return entryErr
 		}
-		if err := extractTarEntry(tr, hdr, targetDir); err != nil {
-			return err
+		if deferred {
+			pendingHardlinks = append(pendingHardlinks, *hdr)
 		}
 	}
+
+	if err := resolveDeferredHardlinks(ctx, targetDir, pendingHardlinks); err != nil {
+		return fmt.Errorf("resolve deferred hardlinks in %q: %w", tarPath, err)
+	}
+	return nil
+}
+
+var errHardlinkTargetMissing = errors.New("tar hardlink target missing")
+
+func resolveDeferredHardlinks(ctx context.Context, targetDir string, pending []tar.Header) error {
+	for len(pending) > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		next := make([]tar.Header, 0, len(pending))
+		progress := false
+		for _, hdr := range pending {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			deferred, err := extractHardlinkEntry(&hdr, targetDir, false)
+			if err != nil {
+				if errors.Is(err, errHardlinkTargetMissing) {
+					next = append(next, hdr)
+					continue
+				}
+				return err
+			}
+			if deferred {
+				next = append(next, hdr)
+				continue
+			}
+			progress = true
+		}
+
+		if !progress {
+			stuck := next[0]
+			return fmt.Errorf("hardlink target unresolved for %q -> %q", stuck.Name, stuck.Linkname)
+		}
+		pending = next
+	}
+	return nil
 }
 
 func applyOCIWhiteout(targetDir, entryName string) (bool, error) {
@@ -254,89 +291,108 @@ func applyOCIWhiteout(targetDir, entryName string) (bool, error) {
 	return true, nil
 }
 
-func extractTarEntry(tr *tar.Reader, hdr *tar.Header, targetDir string) error {
+func extractTarEntry(tr *tar.Reader, hdr *tar.Header, targetDir string) (bool, error) {
 	targetPath, err := resolveTarEntryPath(targetDir, hdr.Name)
 	if err != nil {
-		return fmt.Errorf("invalid tar entry %q: %w", hdr.Name, err)
+		return false, fmt.Errorf("invalid tar entry %q: %w", hdr.Name, err)
 	}
 
 	switch hdr.Typeflag {
 	case tar.TypeDir:
 		mode := tarEntryModeOrDefault(hdr, 0o755)
 		if err := os.MkdirAll(targetPath, mode); err != nil { //nolint:gosec // extracted path is validated to stay under targetDir
-			return fmt.Errorf("create directory %q: %w", targetPath, err)
+			return false, fmt.Errorf("create directory %q: %w", targetPath, err)
 		}
 		if err := os.Chmod(targetPath, mode); err != nil {
-			return fmt.Errorf("set directory mode for %q: %w", targetPath, err)
+			return false, fmt.Errorf("set directory mode for %q: %w", targetPath, err)
 		}
 		if err := applyTarOwnership(targetPath, hdr, false); err != nil {
-			return fmt.Errorf("set directory ownership for %q: %w", targetPath, err)
+			return false, fmt.Errorf("set directory ownership for %q: %w", targetPath, err)
 		}
 	case tar.TypeReg, 0:
 		if hdr.Size < 0 {
-			return fmt.Errorf("invalid negative file size for %q: %d", hdr.Name, hdr.Size)
+			return false, fmt.Errorf("invalid negative file size for %q: %d", hdr.Name, hdr.Size)
 		}
 		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil { //nolint:gosec // parent path is validated to stay under targetDir
-			return fmt.Errorf("create parent directory for %q: %w", targetPath, err)
+			return false, fmt.Errorf("create parent directory for %q: %w", targetPath, err)
 		}
 		mode := tarEntryModeOrDefault(hdr, 0o644)
 		out, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode) //nolint:gosec // extracted path is validated to stay under targetDir
 		if err != nil {
-			return fmt.Errorf("create file %q: %w", targetPath, err)
+			return false, fmt.Errorf("create file %q: %w", targetPath, err)
 		}
 		if _, err := io.CopyN(out, tr, hdr.Size); err != nil {
 			_ = out.Close()
-			return fmt.Errorf("write file %q: %w", targetPath, err)
+			return false, fmt.Errorf("write file %q: %w", targetPath, err)
 		}
 		if err := out.Close(); err != nil {
-			return fmt.Errorf("close file %q: %w", targetPath, err)
+			return false, fmt.Errorf("close file %q: %w", targetPath, err)
 		}
 		if err := os.Chmod(targetPath, mode); err != nil {
-			return fmt.Errorf("set file mode for %q: %w", targetPath, err)
+			return false, fmt.Errorf("set file mode for %q: %w", targetPath, err)
 		}
 		if err := applyTarOwnership(targetPath, hdr, false); err != nil {
-			return fmt.Errorf("set file ownership for %q: %w", targetPath, err)
+			return false, fmt.Errorf("set file ownership for %q: %w", targetPath, err)
 		}
 	case tar.TypeSymlink:
 		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil { //nolint:gosec // parent path is validated to stay under targetDir
-			return fmt.Errorf("create parent directory for symlink %q: %w", targetPath, err)
+			return false, fmt.Errorf("create parent directory for symlink %q: %w", targetPath, err)
 		}
 		if err := os.RemoveAll(targetPath); err != nil {
-			return fmt.Errorf("remove existing path %q before symlink extraction: %w", targetPath, err)
+			return false, fmt.Errorf("remove existing path %q before symlink extraction: %w", targetPath, err)
 		}
 		if err := os.Symlink(hdr.Linkname, targetPath); err != nil {
-			return fmt.Errorf("create symlink %q -> %q: %w", targetPath, hdr.Linkname, err)
+			return false, fmt.Errorf("create symlink %q -> %q: %w", targetPath, hdr.Linkname, err)
 		}
 		if err := applyTarOwnership(targetPath, hdr, true); err != nil {
-			return fmt.Errorf("set symlink ownership for %q: %w", targetPath, err)
+			return false, fmt.Errorf("set symlink ownership for %q: %w", targetPath, err)
 		}
 	case tar.TypeLink:
-		linkTarget, err := resolveTarEntryPath(targetDir, hdr.Linkname)
+		deferred, err := extractHardlinkEntry(hdr, targetDir, true)
 		if err != nil {
-			return fmt.Errorf("invalid hardlink target %q for %q: %w", hdr.Linkname, hdr.Name, err)
+			return false, err
 		}
-		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil { //nolint:gosec // parent path is validated to stay under targetDir
-			return fmt.Errorf("create parent directory for hardlink %q: %w", targetPath, err)
-		}
-		if err := os.RemoveAll(targetPath); err != nil {
-			return fmt.Errorf("remove existing path %q before hardlink extraction: %w", targetPath, err)
-		}
-		if err := os.Link(linkTarget, targetPath); err != nil {
-			return fmt.Errorf("create hardlink %q -> %q: %w", targetPath, linkTarget, err)
-		}
-		if err := applyTarOwnership(targetPath, hdr, false); err != nil {
-			return fmt.Errorf("set hardlink ownership for %q: %w", targetPath, err)
-		}
+		return deferred, nil
 	case tar.TypeXHeader, tar.TypeXGlobalHeader:
 		// Metadata entries are handled by archive/tar and have no filesystem effect here.
-		return nil
+		return false, nil
 	case tar.TypeChar, tar.TypeBlock, tar.TypeFifo:
 		// Device/FIFO nodes are skipped in non-privileged extraction contexts.
-		return nil
+		return false, nil
 	default:
-		return fmt.Errorf("unsupported tar entry type %d for %q", hdr.Typeflag, hdr.Name)
+		return false, fmt.Errorf("unsupported tar entry type %d for %q", hdr.Typeflag, hdr.Name)
 	}
-	return nil
+	return false, nil
+}
+
+func extractHardlinkEntry(hdr *tar.Header, targetDir string, allowDefer bool) (bool, error) {
+	linkTarget, err := resolveTarEntryPath(targetDir, hdr.Linkname)
+	if err != nil {
+		return false, fmt.Errorf("invalid hardlink target %q for %q: %w", hdr.Linkname, hdr.Name, err)
+	}
+	targetPath, err := resolveTarEntryPath(targetDir, hdr.Name)
+	if err != nil {
+		return false, fmt.Errorf("invalid tar entry %q: %w", hdr.Name, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil { //nolint:gosec // parent path is validated to stay under targetDir
+		return false, fmt.Errorf("create parent directory for hardlink %q: %w", targetPath, err)
+	}
+	if err := os.RemoveAll(targetPath); err != nil {
+		return false, fmt.Errorf("remove existing path %q before hardlink extraction: %w", targetPath, err)
+	}
+	if err := os.Link(linkTarget, targetPath); err != nil {
+		if os.IsNotExist(err) && allowDefer {
+			return true, nil
+		}
+		if os.IsNotExist(err) {
+			return false, fmt.Errorf("%w: create hardlink %q -> %q: %v", errHardlinkTargetMissing, targetPath, linkTarget, err)
+		}
+		return false, fmt.Errorf("create hardlink %q -> %q: %w", targetPath, linkTarget, err)
+	}
+	if err := applyTarOwnership(targetPath, hdr, false); err != nil {
+		return false, fmt.Errorf("set hardlink ownership for %q: %w", targetPath, err)
+	}
+	return false, nil
 }
 
 func resolveTarEntryPath(baseDir, entryName string) (string, error) {
