@@ -233,6 +233,10 @@ func imagePullAction(c *cli.Context) error {
 	// Use the Prepare pipeline to pull + convert + cache the image.
 	identity, basePath, err := app.imgMgr.Prepare(c.Context, ref)
 	if err != nil {
+		if shouldFallbackToOCIVMPull(err) {
+			log.Printf("warning: cloud-image pull path rejected OCI artifact for %q; retrying with OCI VM pull pipeline", ref)
+			return pullOCIVMImage(c, app, ref)
+		}
 		return fmt.Errorf("pull image %q: %w", ref, err)
 	}
 
@@ -300,6 +304,15 @@ func pullOCIVMImage(c *cli.Context, app *appContext, ref string) error {
 	fmt.Printf("Manifest digest: %s\n", result.ManifestDigest)
 	fmt.Printf("Layout: %s\n", result.LayoutPath)
 	return nil
+}
+
+func shouldFallbackToOCIVMPull(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unsupported image-specific operation on artifact with type") &&
+		strings.Contains(msg, strings.ToLower(oci.ArtifactTypeVMImage))
 }
 
 func shouldVerifyPulledImage(app *appContext, baseKey string, cachedBefore bool, skipVerify bool) bool {
