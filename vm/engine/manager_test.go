@@ -1198,6 +1198,37 @@ func TestBuildCHVMConfig_DirectKernelBoot(t *testing.T) {
 	if chCfg.Payload.Firmware != "" {
 		t.Fatalf("payload.firmware should be empty for direct kernel boot, got %q", chCfg.Payload.Firmware)
 	}
+	if len(chCfg.Fs) != 0 {
+		t.Fatalf("fs should be empty for config without virtiofs, got %+v", chCfg.Fs)
+	}
+}
+
+func TestBuildCHVMConfig_DirectKernelBootWithVirtioFS(t *testing.T) {
+	t.Parallel()
+
+	vmCfg := &types.VMConfig{
+		CPUs:          2,
+		MemoryMB:      1024,
+		OverlayPath:   "/tmp/overlay.qcow2",
+		SerialLog:     "/tmp/serial.log",
+		BootStrategy:  types.BootStrategyDirect,
+		KernelPath:    "/boot/vmlinuz",
+		InitramfsPath: "/boot/initrd.img",
+		Cmdline:       "root=cocoon-rootfs rootfstype=virtiofs rw",
+		VirtioFSTag:   "cocoon-rootfs",
+		VirtioFSSock:  "/var/lib/cocoon/vms/vm-test/virtiofsd.sock",
+	}
+
+	chCfg := buildCHVMConfig(vmCfg)
+	if len(chCfg.Fs) != 1 {
+		t.Fatalf("fs entries = %d, want 1", len(chCfg.Fs))
+	}
+	if chCfg.Fs[0].Tag != "cocoon-rootfs" {
+		t.Fatalf("fs[0].tag = %q, want cocoon-rootfs", chCfg.Fs[0].Tag)
+	}
+	if chCfg.Fs[0].Socket != "/var/lib/cocoon/vms/vm-test/virtiofsd.sock" {
+		t.Fatalf("fs[0].socket = %q, want /var/lib/cocoon/vms/vm-test/virtiofsd.sock", chCfg.Fs[0].Socket)
+	}
 }
 
 func TestBuildCHVMConfig_UEFIFirmwareInPayload(t *testing.T) {

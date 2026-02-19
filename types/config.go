@@ -20,6 +20,8 @@ type VMConfig struct {
 	KernelPath    string       `json:"kernel_path,omitempty"`
 	InitramfsPath string       `json:"initramfs_path,omitempty"`
 	Cmdline       string       `json:"cmdline,omitempty"`
+	VirtioFSTag   string       `json:"virtiofs_tag,omitempty"`
+	VirtioFSSock  string       `json:"virtiofs_sock,omitempty"`
 	TPMSocketPath string       `json:"tpm_socket_path,omitempty"`
 
 	// Resources

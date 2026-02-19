@@ -1095,6 +1095,14 @@ func buildCHVMConfig(vmCfg *types.VMConfig) *hypervisor.CHVMConfig {
 		}
 	}
 
+	// Phase 2 virtiofs rootfs path uses CH fs[].
+	if vmCfg.VirtioFSTag != "" && vmCfg.VirtioFSSock != "" {
+		cfg.Fs = append(cfg.Fs, hypervisor.CHFsConfig{
+			Tag:    vmCfg.VirtioFSTag,
+			Socket: vmCfg.VirtioFSSock,
+		})
+	}
+
 	// TPM socket is passed via REST payload, not CLI flags.
 	if vmCfg.TPMSocketPath != "" {
 		cfg.TPM = &hypervisor.CHTPMConfig{

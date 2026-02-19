@@ -7,6 +7,7 @@ type CHVMConfig struct {
 	CPUs    CHCPUConfig      `json:"cpus"`
 	Memory  CHMemoryConfig   `json:"memory"`
 	Disks   []CHDiskConfig   `json:"disks,omitempty"`
+	Fs      []CHFsConfig     `json:"fs,omitempty"`
 	Serial  CHSerialConfig   `json:"serial"`
 	Console CHConsoleConfig  `json:"console"`
 	TPM     *CHTPMConfig     `json:"tpm,omitempty"`
@@ -45,6 +46,14 @@ type CHMemoryConfig struct {
 type CHDiskConfig struct {
 	Path     string `json:"path"`
 	ReadOnly bool   `json:"readonly,omitempty"`
+}
+
+// CHFsConfig describes a single virtio-fs shared filesystem.
+type CHFsConfig struct {
+	Tag       string `json:"tag"`
+	Socket    string `json:"socket"`
+	NumQueues int    `json:"num_queues,omitempty"`
+	QueueSize int    `json:"queue_size,omitempty"`
 }
 
 // CHSerialConfig controls the serial console output.
