@@ -679,15 +679,15 @@ func imageRemoveCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "remove",
 		Aliases:   []string{"rm"},
-		Usage:     "Remove a cached image (only if unreferenced)",
-		ArgsUsage: "IMAGE_REF",
+		Usage:     "Remove one or more cached images (only if unreferenced)",
+		ArgsUsage: "IMAGE_REF [IMAGE_REF...]",
 		Action:    imageRemoveAction,
 	}
 }
 
 func imageRemoveAction(c *cli.Context) error {
 	if c.NArg() < 1 {
-		return fmt.Errorf("IMAGE_REF argument required\n\nUsage: cocoon image remove IMAGE_REF")
+		return fmt.Errorf("IMAGE_REF argument required\n\nUsage: cocoon image remove IMAGE_REF [IMAGE_REF...]")
 	}
 
 	app, err := initApp(c)
@@ -695,8 +695,24 @@ func imageRemoveAction(c *cli.Context) error {
 		return err
 	}
 
-	ref := c.Args().Get(0)
+	var errs []string
+	removed := 0
+	for i := 0; i < c.NArg(); i++ {
+		ref := c.Args().Get(i)
+		if rmErr := removeOneImage(c, app, ref); rmErr != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", ref, rmErr))
+			continue
+		}
+		removed++
+	}
 
+	if len(errs) > 0 {
+		return fmt.Errorf("removed %d of %d image(s); %d failed:\n  %s", removed, c.NArg(), len(errs), strings.Join(errs, "\n  "))
+	}
+	return nil
+}
+
+func removeOneImage(c *cli.Context, app *appContext, ref string) error {
 	// Try OCI image removal first.
 	// Use tag-index existence instead of ResolveTag so we can clean stale tags
 	// even when the layout directory has already been deleted.
