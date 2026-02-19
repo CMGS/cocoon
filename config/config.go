@@ -338,6 +338,30 @@ func (c *CocoonConfig) OCILayoutDir() string {
 	return filepath.Join(c.RootDir, "cache", "oci", "layouts")
 }
 
+func (c *CocoonConfig) OCIRuntimeCacheDir() string {
+	return filepath.Join(c.RootDir, "cache", "oci", "runtime")
+}
+
+func (c *CocoonConfig) OCIRuntimeEntryDir(runtimeKey string) string {
+	return filepath.Join(c.OCIRuntimeCacheDir(), runtimeKey)
+}
+
+func (c *CocoonConfig) OCIRuntimeRootfsDir(runtimeKey string) string {
+	return filepath.Join(c.OCIRuntimeEntryDir(runtimeKey), "rootfs")
+}
+
+func (c *CocoonConfig) OCIRuntimeKernelDir(runtimeKey string) string {
+	return filepath.Join(c.OCIRuntimeEntryDir(runtimeKey), "kernel")
+}
+
+func (c *CocoonConfig) OCIRuntimeKernelPath(runtimeKey string) string {
+	return filepath.Join(c.OCIRuntimeKernelDir(runtimeKey), "vmlinuz")
+}
+
+func (c *CocoonConfig) OCIRuntimeInitrdPath(runtimeKey string) string {
+	return filepath.Join(c.OCIRuntimeKernelDir(runtimeKey), "initrd.img")
+}
+
 func (c *CocoonConfig) OCILayerRefsFile() string {
 	return filepath.Join(c.RootDir, "db", "oci-layer-refs.json")
 }
@@ -367,6 +391,7 @@ func (c *CocoonConfig) EnsureDirs() error {
 		c.ConversionLockDir(),
 		c.OCIBlobDir(),
 		c.OCILayoutDir(),
+		c.OCIRuntimeCacheDir(),
 		c.VMDir(),
 		c.TempDir(),
 		c.FirmwareDir(),
