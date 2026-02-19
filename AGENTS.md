@@ -192,6 +192,27 @@ gh api repos/CMGS/cocoon/pulls/<PR_NUMBER>/comments \
 Each inline conversation should remain self-contained: the original finding and
 all follow-up discussion stay in one thread, matching the GitHub UI behavior.
 
+### Resolving Inline Conversations
+
+An inline conversation is **resolved** only when both parties reach consensus:
+
+- **Fixed**: The author pushed a fix and the reviewer confirmed it. Conversation
+  can be resolved.
+- **Accepted as-is**: The reviewer explicitly agrees the current code is correct
+  after the author's explanation. Conversation can be resolved.
+- **Deferred**: Both parties agree to track the item in a separate issue/PR.
+  Conversation can be resolved with a link to the tracking issue.
+
+**Do not** resolve a conversation if:
+- The reviewer has not yet replied to the author's response.
+- The reviewer disagrees with the author's rationale and discussion is ongoing.
+- The item is dismissed without explanation (e.g., silently resolving without
+  a reply).
+
+In practice: leave conversations open until a confirming reply is posted
+(e.g., "Confirmed", "Accepted", "Tracked in #N"). The person who raised the
+finding is the one who should resolve it, not the author.
+
 ## Issue Management
 
 ### Rule
