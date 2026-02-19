@@ -16,7 +16,9 @@ import (
 	"github.com/CMGS/cocoon/utils"
 )
 
-const defaultOCIRuntimeVirtioFSTag = "cocoon-rootfs"
+const (
+	defaultOCIRuntimeVirtioFSTag = "/dev/root"
+)
 
 const (
 	minOCIRuntimeKernelBytes = 1024
@@ -79,9 +81,9 @@ func prepareLocalOCIRuntime(ctx context.Context, cfg *config.CocoonConfig, local
 		return nil, err
 	}
 
-	virtiofsTag := defaultOCIRuntimeVirtioFSTag
+	virtiofsTag := normalizeOCIRuntimeVirtioFSTag("")
 	if layoutInfo.Config != nil && strings.TrimSpace(layoutInfo.Config.VirtiofsTag) != "" {
-		virtiofsTag = strings.TrimSpace(layoutInfo.Config.VirtiofsTag)
+		virtiofsTag = normalizeOCIRuntimeVirtioFSTag(layoutInfo.Config.VirtiofsTag)
 	}
 	cmdline := normalizeVirtiofsKernelCmdline("", virtiofsTag)
 	arch := runtime.GOARCH
@@ -297,10 +299,7 @@ func ensureRuntimeArtifactMinSize(path string, minBytes int64, kind string) erro
 }
 
 func normalizeVirtiofsKernelCmdline(raw, virtiofsTag string) string {
-	virtiofsTag = strings.TrimSpace(virtiofsTag)
-	if virtiofsTag == "" {
-		virtiofsTag = defaultOCIRuntimeVirtioFSTag
-	}
+	virtiofsTag = normalizeOCIRuntimeVirtioFSTag(virtiofsTag)
 
 	fields := strings.Fields(strings.TrimSpace(raw))
 	out := make([]string, 0, len(fields)+4)
@@ -324,6 +323,14 @@ func normalizeVirtiofsKernelCmdline(raw, virtiofsTag string) string {
 	// source cmdline requested ro to avoid guest booting with a read-only root.
 	out = append(out, "root="+virtiofsTag, "rootfstype=virtiofs", "rw")
 	return strings.Join(out, " ")
+}
+
+func normalizeOCIRuntimeVirtioFSTag(tag string) string {
+	normalized := strings.TrimSpace(tag)
+	if normalized == "" {
+		return defaultOCIRuntimeVirtioFSTag
+	}
+	return normalized
 }
 
 func ociRuntimeKeyFromDigest(digest string) (string, error) {

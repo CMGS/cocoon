@@ -1473,6 +1473,14 @@ func (m *manager) updateMetadata(vmID string, mutate func(*types.VMMetadataFile)
 // buildCHVMConfig converts a types.VMConfig to the Cloud Hypervisor REST API
 // request body (hypervisor.CHVMConfig) for PUT /api/v1/vm.create.
 func buildCHVMConfig(vmCfg *types.VMConfig) *hypervisor.CHVMConfig {
+	virtiofsEnabled := strings.TrimSpace(vmCfg.VirtioFSTag) != "" && strings.TrimSpace(vmCfg.VirtioFSSock) != ""
+	cmdline := vmCfg.Cmdline
+	virtiofsTag := ""
+	if virtiofsEnabled {
+		virtiofsTag = normalizeOCIRuntimeVirtioFSTag(vmCfg.VirtioFSTag)
+		cmdline = normalizeVirtiofsKernelCmdline(cmdline, virtiofsTag)
+	}
+
 	cfg := &hypervisor.CHVMConfig{
 		CPUs: hypervisor.CHCPUConfig{
 			BootVCPUs: vmCfg.CPUs,
@@ -1504,7 +1512,7 @@ func buildCHVMConfig(vmCfg *types.VMConfig) *hypervisor.CHVMConfig {
 		cfg.Payload = &hypervisor.CHPayloadConfig{
 			Kernel:    vmCfg.KernelPath,
 			Initramfs: vmCfg.InitramfsPath,
-			Cmdline:   vmCfg.Cmdline,
+			Cmdline:   cmdline,
 		}
 	} else if vmCfg.FirmwarePath != "" {
 		cfg.Payload = &hypervisor.CHPayloadConfig{
@@ -1513,9 +1521,9 @@ func buildCHVMConfig(vmCfg *types.VMConfig) *hypervisor.CHVMConfig {
 	}
 
 	// Phase 2 virtiofs rootfs path uses CH fs[].
-	if vmCfg.VirtioFSTag != "" && vmCfg.VirtioFSSock != "" {
+	if virtiofsEnabled {
 		cfg.Fs = append(cfg.Fs, hypervisor.CHFsConfig{
-			Tag:    vmCfg.VirtioFSTag,
+			Tag:    virtiofsTag,
 			Socket: vmCfg.VirtioFSSock,
 		})
 		// Cloud Hypervisor requires shared memory (or huge pages) for vhost-user.

@@ -1686,11 +1686,14 @@ func TestBuildCHVMConfig_DirectKernelBootWithVirtioFS(t *testing.T) {
 	if len(chCfg.Fs) != 1 {
 		t.Fatalf("fs entries = %d, want 1", len(chCfg.Fs))
 	}
-	if chCfg.Fs[0].Tag != "cocoon-rootfs" {
-		t.Fatalf("fs[0].tag = %q, want cocoon-rootfs", chCfg.Fs[0].Tag)
+	if chCfg.Fs[0].Tag != "/dev/root" {
+		t.Fatalf("fs[0].tag = %q, want /dev/root", chCfg.Fs[0].Tag)
 	}
 	if chCfg.Fs[0].Socket != "/var/lib/cocoon/vms/vm-test/virtiofsd.sock" {
 		t.Fatalf("fs[0].socket = %q, want /var/lib/cocoon/vms/vm-test/virtiofsd.sock", chCfg.Fs[0].Socket)
+	}
+	if chCfg.Payload.Cmdline != "console=hvc0 root=/dev/root rootfstype=virtiofs rw" {
+		t.Fatalf("payload.cmdline = %q, want console=hvc0 root=/dev/root rootfstype=virtiofs rw", chCfg.Payload.Cmdline)
 	}
 	if !chCfg.Memory.Shared {
 		t.Fatal("memory.shared should be true when virtiofs is configured")
