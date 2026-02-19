@@ -159,6 +159,9 @@ func materializeOCIRuntimeCache(ctx context.Context, cfg *config.CocoonConfig, r
 
 	finalDir := cfg.OCIRuntimeEntryDir(runtimeKey)
 	_ = os.RemoveAll(finalDir)
+	// Callers must go through prepareLocalOCIRuntime(), which holds both the
+	// txn lock and per-runtime lock. That contract prevents concurrent readers
+	// from observing a half-updated runtime entry between RemoveAll and Rename.
 	// Atomic promotion assumes TempDir and OCIRuntimeCacheDir share a filesystem.
 	// Current defaults are both under RootDir. If callers customize these to
 	// different mount points, rename will fail with EXDEV and return an error.
