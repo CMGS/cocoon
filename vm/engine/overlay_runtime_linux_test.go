@@ -71,6 +71,9 @@ func TestBuildOverlayMountDataRejectsInvalidPaths(t *testing.T) {
 	if _, err := buildOverlayMountData([]string{"/cache:bad"}, "/upper", "/work"); err == nil {
 		t.Fatal("expected error for colon in lowerdir path")
 	}
+	if _, err := buildOverlayMountData([]string{"/cache,bad"}, "/upper", "/work"); err == nil {
+		t.Fatal("expected error for comma in lowerdir path")
+	}
 }
 
 func TestOverlayRuntimeMountVMInvokesMount(t *testing.T) {
