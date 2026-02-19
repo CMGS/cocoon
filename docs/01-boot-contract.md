@@ -62,7 +62,7 @@ This document defines the **Boot Contract** - the core specification for how Coc
 
 > **Note**: Direct kernel boot is designed but **not yet implemented**. The specification below describes the planned Phase 2 behavior. Phase 1 only supports UEFI boot.
 
-**Direct kernel boot** will be used automatically when booting OCI VM images (via `--oci` flag). Instead of loading a UEFI firmware binary, Cocoon will pass the kernel, initramfs, and cmdline directly to Cloud Hypervisor.
+**Direct kernel boot** will be used automatically when the runtime resolver classifies an image as OCI VM. Instead of loading a UEFI firmware binary, Cocoon will pass the kernel, initramfs, and cmdline directly to Cloud Hypervisor.
 
 **When Direct kernel boot will be used** (Phase 2):
 - OCI VM images where the kernel and initramfs are extracted from the image
@@ -118,7 +118,7 @@ root=PARTUUID=<uuid> rw console=ttyS0,115200n8 console=hvc0
 Cocoon selects the boot mode automatically based on the image type:
 
 - **Non-OCI images** (cloud images, local qcow2 files, URLs): **UEFI boot** with CLOUDHV.fd firmware via `payload.firmware` **(Phase 1 — Implemented)**
-- **OCI VM images** (created with `--oci` flag): **Direct kernel boot** via `payload.kernel` + `payload.initramfs` + `payload.cmdline` **(Phase 2 — Not Yet Implemented)**
+- **OCI VM images** (resolver-classified): **Direct kernel boot** via `payload.kernel` + `payload.initramfs` + `payload.cmdline` **(Phase 2 — Not Yet Implemented)**
 
 The boot strategy is determined at VM creation time and stored immutably in `config.json`.
 
@@ -145,7 +145,7 @@ const DefaultBootStrategy = BootStrategyUEFI
 | Image Type | Boot Strategy | Payload Fields | Firmware | Status |
 |------------|---------------|----------------|----------|--------|
 | Cloud images (qcow2, URL) | UEFI | `payload.firmware` | CLOUDHV.fd | Phase 1 (Implemented) |
-| OCI VM images (`--oci`) | Direct | `payload.kernel` + `payload.initramfs` + `payload.cmdline` | None | Phase 2 (Planned) |
+| OCI VM images (auto-detected) | Direct | `payload.kernel` + `payload.initramfs` + `payload.cmdline` | None | Phase 2 (Planned) |
 
 **No automatic fallback**: Cocoon boots using the strategy determined by the image type. If the boot fails (e.g., firmware missing, kernel not found), the boot fails with an error.
 

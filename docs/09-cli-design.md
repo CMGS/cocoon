@@ -690,8 +690,8 @@ cocoon run ubuntu-22.04-cloudimg --name myvm --cpus 4 --memory 4G
 # Run VM with auto-remove on stop
 cocoon run --rm ubuntu-22.04-cloudimg --name temp-vm
 
-# Run an OCI VM image (Phase 2 -- not yet implemented)
-# cocoon run --oci myorg/ubuntu-vm:22.04
+# Run an OCI VM image (Phase 2 runtime path -- not yet implemented)
+# cocoon run myorg/ubuntu-vm:22.04
 
 # Run with TPM 2.0 emulation enabled
 cocoon run --tpm ubuntu-22.04-cloudimg --name secure-vm
@@ -750,7 +750,7 @@ func createAction(c *cli.Context) error {
 }
 ```
 
-The `createCommand` uses the same `vmCreateFlags()` as `runCommand`, which includes `--name`, `--cpus`, `--memory` (default "2048M"), `--disk`, `--skip-verify`, and `--tpm`. The `--oci` flag is defined but hidden (Phase 2 — not yet implemented). Note: `--boot-timeout` is only available on `run` and `start` commands (not `create`, since `create` does not boot the VM).
+The `createCommand` uses the same `vmCreateFlags()` as `runCommand`, which includes `--name`, `--cpus`, `--memory` (default "2048M"), `--disk`, `--skip-verify`, and `--tpm`. Runtime image-type selection is resolver-driven (user does not need a mode flag). The hidden `--oci` flag remains an internal debug override while Phase 2 runtime wiring is unfinished. Note: `--boot-timeout` is only available on `run` and `start` commands (not `create`, since `create` does not boot the VM).
 
 **Example Usage**:
 
@@ -2153,7 +2153,7 @@ This CLI design implements the Boot Contract specification:
 
 | Boot Contract Section      | CLI Implementation                                                                                                                        |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| §1 Boot Path Decision      | UEFI boot (Phase 1); `--oci` flag for direct kernel boot (Phase 2, not yet implemented)                                                   |
+| §1 Boot Path Decision      | UEFI boot (Phase 1); resolver-driven OCI direct-boot auto-routing in Phase 2 (not yet implemented)                                        |
 | §2 Guest Init Model        | Guest initialization is the user's responsibility; DHCP-based network config planned for Phase 2 ([16-networking.md](./16-networking.md)) |
 | §3 I/O Mechanisms          | Serial console via `--serial file=...` (CH flag), `cocoon logs` command                                                                   |
 | §4 Lifecycle Semantics     | `run`, `stop`, `delete`, `kill` commands                                                                                                  |

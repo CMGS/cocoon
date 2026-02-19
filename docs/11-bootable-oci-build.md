@@ -242,15 +242,13 @@ Dockerfile
 2. docker push myregistry.io/myvm:v1
     |
     v
-3. cocoon image pull myregistry.io/myvm:v1        (Phase 1: pull standard OCI container image)
-   cocoon image pull --oci myregistry.io/myvm:v1  (Phase 2: pull OCI VM image)
+3. cocoon image pull myregistry.io/myvm:v1  (Phase 1 and Phase 2: local-first pull/prepare path)
     |
     v
 4. cocoon image verify myregistry.io/myvm:v1
     |
     v
-5. cocoon create myregistry.io/myvm:v1 --name myvm       (Phase 1: OCI->qcow2->UEFI)
-   cocoon create --oci myregistry.io/myvm:v1 --name myvm  (Phase 2: direct kernel boot)
+5. cocoon create myregistry.io/myvm:v1 --name myvm  (Phase 1: OCI->qcow2->UEFI; Phase 2: resolver selects direct boot for OCI VM refs)
 ```
 
 ### 4.1 Step Details
@@ -281,11 +279,11 @@ Pull the image into Cocoon's local image cache:
 # Phase 1: pull standard OCI container image
 cocoon image pull myregistry.io/ubuntu-vm:22.04
 
-# Phase 2: pull OCI VM image (uses --oci flag)
-cocoon image pull --oci myregistry.io/ubuntu-vm:22.04
+# Phase 2: pull OCI VM image (same command; runtime path is resolver-driven)
+cocoon image pull myregistry.io/ubuntu-vm:22.04
 ```
 
-For Phase 1, this downloads the OCI container layers and extracts the rootfs into Cocoon's local storage. For Phase 2, the `--oci` flag signals that the image uses the OCI VM Image format ([docs/04.1](./04.1-oci-vm-images.md)) with separate kernel, rootfs, and customization layers. The `--oci` flag convention is defined in [docs/09-cli-design.md](./09-cli-design.md).
+For Phase 1, this downloads OCI content into the local cache and follows the current qcow2 runtime path. For Phase 2, resolver/classification identifies OCI VM image references ([docs/04.1](./04.1-oci-vm-images.md)) and routes create/run to the direct-boot path without a user-facing mode flag.
 
 **Step 4: `cocoon image verify`**
 
@@ -443,7 +441,7 @@ OCI Image -> cocoon image build -> OCI VM Image (kernel layer + rootfs layer)
 | Kernel upgrades | Guest can upgrade in-place | Rebuild OCI image (kernel pinned) |
 | Build helper | Manual Dockerfile | `cocoon image build-bootable` |
 | Image customization | Rebuild entire image | Cocoonfile (adds overlay layer) |
-| CLI flag | `cocoon create <image>` | `cocoon create --oci <ref>` |
+| Runtime selection | `cocoon create <image>` (UEFI/qcow2 path) | `cocoon create <ref>` (resolver auto-detects OCI VM refs for direct path) |
 
 ### 6.4 Migration Path
 
