@@ -121,7 +121,9 @@ func materializeOCIRuntimeCache(ctx context.Context, cfg *config.CocoonConfig, r
 	if err = os.MkdirAll(cfg.OCIRuntimeCacheDir(), 0o755); err != nil { //nolint:gosec // cocoon-managed cache dir
 		return fmt.Errorf("create OCI runtime cache dir: %w", err)
 	}
-	workDir, err := os.MkdirTemp(cfg.TempDir(), "oci-runtime-"+runtimeKey+"-*")
+	// Build the workspace under OCIRuntimeCacheDir so directory promotions stay
+	// on the same filesystem and os.Rename remains atomic.
+	workDir, err := os.MkdirTemp(cfg.OCIRuntimeCacheDir(), runtimeKey+"-work-*")
 	if err != nil {
 		return fmt.Errorf("create OCI runtime temp dir: %w", err)
 	}
@@ -157,19 +159,44 @@ func materializeOCIRuntimeCache(ctx context.Context, cfg *config.CocoonConfig, r
 		return err
 	}
 
-	finalDir := cfg.OCIRuntimeEntryDir(runtimeKey)
-	_ = os.RemoveAll(finalDir)
-	// Callers must go through prepareLocalOCIRuntime(), which holds both the
-	// txn lock and per-runtime lock. That contract prevents concurrent readers
-	// from observing a half-updated runtime entry between RemoveAll and Rename.
-	// Crash note: RemoveAll + Rename is not a single atomic operation. If the
-	// process crashes in between, the runtime entry can be temporarily missing.
-	// This is tolerated because subsequent starts re-materialize the cache.
-	// Atomic promotion assumes TempDir and OCIRuntimeCacheDir share a filesystem.
-	// Current defaults are both under RootDir. If callers customize these to
-	// different mount points, rename will fail with EXDEV and return an error.
-	if err := os.Rename(workDir, finalDir); err != nil {
+	if err := promoteOCIRuntimeCacheDir(workDir, cfg.OCIRuntimeEntryDir(runtimeKey)); err != nil {
 		return fmt.Errorf("promote OCI runtime cache %s: %w", runtimeKey, err)
+	}
+	return nil
+}
+
+func promoteOCIRuntimeCacheDir(workDir, finalDir string) error {
+	finalDir = filepath.Clean(finalDir)
+	newDir := finalDir + ".new"
+	oldDir := finalDir + ".old"
+
+	// Best-effort cleanup from a prior interrupted promotion.
+	_ = os.RemoveAll(newDir)
+	_ = os.RemoveAll(oldDir)
+
+	if err := os.Rename(workDir, newDir); err != nil {
+		return fmt.Errorf("stage new OCI runtime cache: %w", err)
+	}
+
+	hadOld := false
+	if err := os.Rename(finalDir, oldDir); err == nil {
+		hadOld = true
+	} else if !os.IsNotExist(err) {
+		_ = os.RemoveAll(newDir)
+		return fmt.Errorf("rotate existing OCI runtime cache: %w", err)
+	}
+
+	if err := os.Rename(newDir, finalDir); err != nil {
+		// Best-effort rollback to keep the previous runtime cache available.
+		if hadOld {
+			_ = os.Rename(oldDir, finalDir)
+		}
+		return fmt.Errorf("activate new OCI runtime cache: %w", err)
+	}
+
+	// Best-effort cleanup; stale .old directories are harmless and can be GC'd.
+	if hadOld {
+		_ = os.RemoveAll(oldDir)
 	}
 	return nil
 }

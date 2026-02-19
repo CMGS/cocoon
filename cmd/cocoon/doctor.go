@@ -10,6 +10,7 @@ import (
 	cli "github.com/urfave/cli/v2"
 
 	"github.com/CMGS/cocoon/config"
+	"github.com/CMGS/cocoon/oci"
 	"github.com/CMGS/cocoon/utils"
 )
 
@@ -215,7 +216,25 @@ func runDependencyChecks(app *appContext) []checkResult {
 		}
 	}
 
+	results = append(results, checkOCIBlobRefCleanupHealth())
+
 	return results
+}
+
+func checkOCIBlobRefCleanupHealth() checkResult {
+	failures := oci.BlobRefCleanupFailureCount()
+	if failures == 0 {
+		return checkResult{
+			Name:   "oci/blob-ref-cleanup",
+			Status: "pass",
+			Detail: "no OCI blob-ref cleanup failures observed",
+		}
+	}
+	return checkResult{
+		Name:   "oci/blob-ref-cleanup",
+		Status: "warn",
+		Detail: fmt.Sprintf("%d OCI blob-ref cleanup failure(s) observed; run 'cocoon gc' and inspect logs for warnings", failures),
+	}
 }
 
 // checkSwtpm checks that the swtpm binary is available and reports its version.

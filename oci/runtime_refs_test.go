@@ -86,3 +86,34 @@ func TestRuntimeRefs_InvalidRuntimeKey(t *testing.T) {
 		t.Fatal("expected invalid runtime key error, got nil")
 	}
 }
+
+func TestRuntimeRefs_RuntimeKeyIsTrimmedBeforeIndexing(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(t)
+	key := "0011223344556677"
+	vmID := "vm-01HF00TESTTRIM0000000000"
+
+	if err := AddRuntimeRef(cfg, "  "+key+"  ", vmID); err != nil {
+		t.Fatalf("AddRuntimeRef: %v", err)
+	}
+
+	refs, err := GetRuntimeRefs(cfg, key)
+	if err != nil {
+		t.Fatalf("GetRuntimeRefs: %v", err)
+	}
+	if len(refs) != 1 || refs[0] != vmID {
+		t.Fatalf("refs=%v, want [%s]", refs, vmID)
+	}
+
+	if err := RemoveRuntimeRef(cfg, "\t"+key+"\n", vmID); err != nil {
+		t.Fatalf("RemoveRuntimeRef: %v", err)
+	}
+	refs, err = GetRuntimeRefs(cfg, key)
+	if err != nil {
+		t.Fatalf("GetRuntimeRefs after remove: %v", err)
+	}
+	if len(refs) != 0 {
+		t.Fatalf("refs after remove=%v, want []", refs)
+	}
+}

@@ -1597,16 +1597,31 @@ func doctorAction(c *cli.Context) error {
 - guestfish binary (minimum `1.50.0`)
 - swtpm binary (TPM 2.0 emulator)
 - virt-customize binary (optional; required for Cocoonfile RUN/COPY steps)
+- overlayfs availability check (Linux OCI runtime path prerequisite)
+- virtiofsd binary (minimum `1.7.0`, required for OCI runtime path)
 - /dev/kvm device
 - Directory structure (root, runtime, log, db, vm, cache, buildah, firmware)
+- OCI blob-ref cleanup diagnostic counter (`oci/blob-ref-cleanup`)
 
-**VM Reconciliation** (--fix repairs these):
-- Stale RUNNING state (CH process not found → mark ERROR)
-- Zombie socket / stale PID file → remove
-- Orphaned overlay (overlay exists, config missing) → permanently delete VM dir
-- Missing reference (config exists, references missing vmID) → restore `references.json` entry
-- Dangling reference (references vmID missing/mismatched config) → remove stale vmID from `references.json`
-- Name index inconsistencies → detect in dry-run, rebuild only with `--fix`
+**VM Reconciliation types** (`vm.InconsistencyType`, `--fix` repairs when supported):
+- `state_mismatch` (metadata state does not match probed runtime state)
+- `metadata_corrupted` (metadata.json unreadable or invalid)
+- `stale_pid_file` (PID file points to non-running process)
+- `zombie_socket` (runtime socket exists without a valid process)
+- `zombie_process` (process exists but VM state/files are inconsistent)
+- `missing_overlay` (config exists but overlay.qcow2 missing)
+- `orphaned_overlay` (overlay exists but config missing)
+- `oci_runtime_cache_missing` (OCI runtime cache entry missing for an OCI VM)
+- `oci_runtime_overlay_mismatch` (OCI overlay mount state mismatch)
+- `oci_runtime_virtiofsd_mismatch` (virtiofsd state mismatch for OCI runtime)
+- `missing_oci_runtime_pin` (VM missing runtime pin in `oci-runtime-refs.json`)
+- `dangling_oci_runtime_pin` (runtime pin references non-existent VM)
+- `orphaned_oci_runtime_cache` (runtime cache entry exists but no owning VM)
+- `missing_reference` (config exists but `references.json` missing vmID)
+- `dangling_reference` (reference entry points to missing/mismatched VM)
+- `name_index_stale` (name-index drift vs persisted configs)
+- `duplicate_vm_name` (duplicate VM names detected in persisted configs)
+- `deleted_vm_directory` (name-index entry points to missing VM directory)
 
 **Exit Codes**:
 - `0`: All checks passed (returns nil)
@@ -2190,10 +2205,14 @@ This CLI design implements the Boot Contract specification:
 **Policy**: Regular CLI commands (`start`, `stop`, `delete`, `list`, `inspect`, etc.) do **not** perform automatic reconciliation. They operate on the recorded state in `metadata.json` and trust that state reflects reality.
 
 **`cocoon doctor`** is the sole entry point for reconciliation:
-- Scans all VM directories for stale state (e.g., metadata says RUNNING but CH process is dead)
-- Cleans up orphaned sockets and stale PID files
-- Fixes metadata inconsistencies (transitions stale RUNNING → ERROR)
-- Checks name index drift in dry-run mode; rebuilds name index only with `cocoon doctor --fix`
+- Detects the full inconsistency set defined in `vm/types.go`:
+  - `state_mismatch`, `metadata_corrupted`, `stale_pid_file`, `zombie_socket`, `zombie_process`
+  - `missing_overlay`, `orphaned_overlay`
+  - `oci_runtime_cache_missing`, `oci_runtime_overlay_mismatch`, `oci_runtime_virtiofsd_mismatch`
+  - `missing_oci_runtime_pin`, `dangling_oci_runtime_pin`, `orphaned_oci_runtime_cache`
+  - `missing_reference`, `dangling_reference`
+  - `name_index_stale`, `duplicate_vm_name`, `deleted_vm_directory`
+- Applies supported remediations only when `cocoon doctor --fix` is provided.
 
 **Rationale**: Auto-reconcile on every command adds latency and complexity. Users who suspect state drift run `cocoon doctor` explicitly. This is the same pattern used by containerd and other container runtimes.
 

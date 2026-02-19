@@ -2,9 +2,11 @@ package utils
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // AtomicWriteFile writes data to a file atomically using temp + fsync + rename.
@@ -44,6 +46,9 @@ func AtomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	if err = os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("rename temp to target: %w", err)
 	}
+	if err = syncParentDir(dir); err != nil {
+		return fmt.Errorf("sync parent dir: %w", err)
+	}
 	return nil
 }
 
@@ -64,4 +69,21 @@ func ReadJSON(path string, v any) error {
 		return err
 	}
 	return json.Unmarshal(data, v)
+}
+
+func syncParentDir(dir string) error {
+	parent, err := os.Open(dir) //nolint:gosec // directory is derived from cocoon-managed target path
+	if err != nil {
+		return err
+	}
+	defer parent.Close() //nolint:errcheck
+
+	if err := parent.Sync(); err != nil {
+		// Some filesystems or platforms may not support directory fsync.
+		if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EBADF) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
