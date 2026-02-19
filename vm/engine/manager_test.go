@@ -1176,6 +1176,8 @@ func TestStart_OCIRuntimeMetadataWiring(t *testing.T) {
 	if !ok {
 		t.Fatal("manager implementation type assertion failed")
 	}
+	mgrImpl.overlayMgr.mountFn = func(string, string, string, uintptr, string) error { return nil }
+	mgrImpl.overlayMgr.readMountInfoFn = func() ([]byte, error) { return []byte(""), nil }
 	vfsMgr := newVirtiofsdRuntimeManager(td.cfg)
 	vfsMgr.resolveBinaryFn = func(string) (string, error) { return "/usr/bin/virtiofsd", nil }
 	vfsMgr.launchFn = func(context.Context, string, []string, string) (int, error) { return 7788, nil }
@@ -1244,6 +1246,8 @@ func TestStart_OCIRuntimeCleanupOnBootFailure(t *testing.T) {
 	if !ok {
 		t.Fatal("manager implementation type assertion failed")
 	}
+	mgrImpl.overlayMgr.mountFn = func(string, string, string, uintptr, string) error { return nil }
+	mgrImpl.overlayMgr.readMountInfoFn = func() ([]byte, error) { return []byte(""), nil }
 	stopCalled := false
 	vfsMgr := newVirtiofsdRuntimeManager(td.cfg)
 	vfsMgr.resolveBinaryFn = func(string) (string, error) { return "/usr/bin/virtiofsd", nil }
