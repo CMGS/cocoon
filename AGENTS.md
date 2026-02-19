@@ -164,6 +164,34 @@ gh api repos/CMGS/cocoon/pulls/<PR_NUMBER>/reviews --input /tmp/pr-inline.json
   line numbers.
 - Get the HEAD SHA via: `gh api repos/CMGS/cocoon/pulls/<PR_NUMBER> --jq '.head.sha'`
 
+### Replying to Inline Conversations
+
+When responding to an existing inline conversation (e.g., answering a question,
+acknowledging a fix, or continuing a discussion), **always reply within the same
+conversation thread**. Do not post a new top-level PR comment or create a new
+inline comment on the same line -- reply to the existing one.
+
+Use the Pull Request Review Comments API with `in_reply_to`:
+
+```bash
+# 1. Find the comment ID to reply to
+gh api repos/CMGS/cocoon/pulls/<PR_NUMBER>/comments \
+  --jq '.[] | {id, path, line, body: .body[:80]}'
+
+# 2. Reply within the same conversation thread
+gh api repos/CMGS/cocoon/pulls/<PR_NUMBER>/comments \
+  -f body="Acknowledged. Fixed in the next push." \
+  -F in_reply_to=<COMMENT_ID>
+```
+
+**Do not**:
+- Post a top-level `gh pr comment` to respond to an inline finding.
+- Create a new inline comment on the same file/line instead of replying.
+- Use `gh pr review --comment` for responses to specific conversations.
+
+Each inline conversation should remain self-contained: the original finding and
+all follow-up discussion stay in one thread, matching the GitHub UI behavior.
+
 ## Planning Records
 
 ### Rule
