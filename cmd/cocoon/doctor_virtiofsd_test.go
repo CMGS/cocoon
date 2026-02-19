@@ -164,3 +164,23 @@ func TestTryFixVirtiofsdDependency_LinksFallback(t *testing.T) {
 		t.Fatalf("symlink target = %q, want %q", target, fallback)
 	}
 }
+
+func TestEnsureVirtiofsdCommandLink_RefusesNonSymlinkCollision(t *testing.T) {
+	setupDoctorVirtiofsdTestHooks(t)
+
+	tmpDir := t.TempDir()
+	doctorVirtiofsdLinkDir = tmpDir
+
+	linkPath := filepath.Join(tmpDir, "virtiofsd")
+	if err := os.WriteFile(linkPath, []byte("existing-user-managed-binary"), 0o755); err != nil {
+		t.Fatalf("write pre-existing file: %v", err)
+	}
+
+	err := ensureVirtiofsdCommandLink("virtiofsd", "/usr/libexec/virtiofsd")
+	if err == nil {
+		t.Fatal("ensureVirtiofsdCommandLink error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "refusing to replace existing non-symlink") {
+		t.Fatalf("error = %q, want non-symlink refusal", err)
+	}
+}

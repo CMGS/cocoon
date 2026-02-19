@@ -73,6 +73,9 @@ const (
 	checkStatusPass = "pass"
 	checkStatusFail = "fail"
 	checkStatusWarn = "warn"
+
+	packageManagerAPT = "apt"
+	packageManagerDNF = "dnf"
 )
 
 func checkBinaryWithMinVersion(name, binary string, args []string, min utils.SemVersion, purpose string) checkResult {
@@ -119,6 +122,26 @@ func checkBinaryWithMinVersion(name, binary string, args []string, min utils.Sem
 	}
 }
 
+func checkBuildahBinary() checkResult {
+	return checkBinaryWithMinVersion(
+		"buildah",
+		"buildah",
+		[]string{"version"},
+		utils.SemVersion{Major: 1, Minor: 35, Patch: 0},
+		"required for OCI image operations",
+	)
+}
+
+func checkSkopeoBinary() checkResult {
+	return checkBinaryWithMinVersion(
+		"skopeo",
+		"skopeo",
+		[]string{"--version"},
+		utils.SemVersion{Major: 1, Minor: 14, Patch: 0},
+		"required for OCI manifest inspection",
+	)
+}
+
 // runDependencyChecks verifies system dependencies required by Cocoon.
 func runDependencyChecks(app *appContext) []checkResult {
 	var results []checkResult
@@ -162,22 +185,10 @@ func runDependencyChecks(app *appContext) []checkResult {
 	))
 
 	// 4c. Check buildah binary + minimum version.
-	results = append(results, checkBinaryWithMinVersion(
-		"buildah",
-		"buildah",
-		[]string{"version"},
-		utils.SemVersion{Major: 1, Minor: 35, Patch: 0},
-		"required for OCI image operations",
-	))
+	results = append(results, checkBuildahBinary())
 
 	// 4d. Check skopeo binary + minimum version.
-	results = append(results, checkBinaryWithMinVersion(
-		"skopeo",
-		"skopeo",
-		[]string{"--version"},
-		utils.SemVersion{Major: 1, Minor: 14, Patch: 0},
-		"required for OCI manifest inspection",
-	))
+	results = append(results, checkSkopeoBinary())
 
 	// 4e. Check guestfish binary + minimum version.
 	results = append(results, checkBinaryWithMinVersion(
@@ -433,10 +444,10 @@ func replaceCheckResult(checks []checkResult, replacement checkResult) []checkRe
 
 func detectDoctorPackageManager() (string, error) {
 	if _, err := doctorLookPath("apt-get"); err == nil {
-		return "apt", nil
+		return packageManagerAPT, nil
 	}
 	if _, err := doctorLookPath("dnf"); err == nil {
-		return "dnf", nil
+		return packageManagerDNF, nil
 	}
 	return "", fmt.Errorf("unsupported package manager; install virtiofsd manually or set config virtiofsd_binary to an absolute path")
 }
@@ -451,7 +462,10 @@ func ensureVirtiofsdCommandLink(configuredBinary, target string) error {
 		return fmt.Errorf("create link directory %s: %w", doctorVirtiofsdLinkDir, err)
 	}
 
-	if _, err := doctorLstat(linkPath); err == nil {
+	if info, err := doctorLstat(linkPath); err == nil {
+		if info.Mode()&os.ModeSymlink == 0 {
+			return fmt.Errorf("refusing to replace existing non-symlink at %s; remove it manually or set virtiofsd_binary to an explicit path", linkPath)
+		}
 		current, readErr := doctorReadlink(linkPath)
 		if readErr == nil && current == target {
 			return nil
@@ -466,6 +480,39 @@ func ensureVirtiofsdCommandLink(configuredBinary, target string) error {
 	if err := doctorSymlink(target, linkPath); err != nil {
 		return fmt.Errorf("create symlink %s -> %s: %w", linkPath, target, err)
 	}
+	return nil
+}
+
+func remediatePackageDependencies(ctx context.Context, packages []string) error {
+	if len(packages) == 0 {
+		return nil
+	}
+
+	pkgManager, err := detectDoctorPackageManager()
+	if err != nil {
+		return err
+	}
+
+	switch pkgManager {
+	case packageManagerAPT:
+		if _, err := doctorRunCommand(ctx, "apt-get", "update", "-qq"); err != nil {
+			return fmt.Errorf("apt-get update: %w", err)
+		}
+		args := []string{"install", "-y", "-qq"}
+		args = append(args, packages...)
+		if _, err := doctorRunCommand(ctx, "apt-get", args...); err != nil {
+			return fmt.Errorf("apt-get install %s: %w", strings.Join(packages, " "), err)
+		}
+	case packageManagerDNF:
+		args := []string{"install", "-y", "-q"}
+		args = append(args, packages...)
+		if _, err := doctorRunCommand(ctx, "dnf", args...); err != nil {
+			return fmt.Errorf("dnf install %s: %w", strings.Join(packages, " "), err)
+		}
+	default:
+		return fmt.Errorf("unsupported package manager: %s", pkgManager)
+	}
+
 	return nil
 }
 
@@ -493,14 +540,14 @@ func remediateVirtiofsdDependency(ctx context.Context, configuredBinary string) 
 	}
 
 	switch pkgManager {
-	case "apt":
+	case packageManagerAPT:
 		if _, err := doctorRunCommand(ctx, "apt-get", "update", "-qq"); err != nil {
 			return fmt.Errorf("apt-get update: %w", err)
 		}
 		if _, err := doctorRunCommand(ctx, "apt-get", "install", "-y", "-qq", "virtiofsd"); err != nil {
 			return fmt.Errorf("apt-get install virtiofsd: %w", err)
 		}
-	case "dnf":
+	case packageManagerDNF:
 		if _, err := doctorRunCommand(ctx, "dnf", "install", "-y", "-q", "virtiofsd"); err != nil {
 			return fmt.Errorf("dnf install virtiofsd: %w", err)
 		}
@@ -541,6 +588,46 @@ func tryFixVirtiofsdDependency(ctx context.Context, configuredBinary string, che
 		updated.Detail = fmt.Sprintf("%s; auto-fix applied", updated.Detail)
 	}
 	return replaceCheckResult(checks, updated)
+}
+
+func tryFixBuildToolsDependencies(ctx context.Context, checks []checkResult) []checkResult {
+	packages := make([]string, 0, 2)
+	if hasFailedCheck(checks, "buildah") {
+		packages = append(packages, "buildah")
+	}
+	if hasFailedCheck(checks, "skopeo") {
+		packages = append(packages, "skopeo")
+	}
+	if len(packages) == 0 {
+		return checks
+	}
+
+	fixErr := remediatePackageDependencies(ctx, packages)
+
+	for _, dep := range packages {
+		var updated checkResult
+		switch dep {
+		case "buildah":
+			updated = checkBuildahBinary()
+		case "skopeo":
+			updated = checkSkopeoBinary()
+		default:
+			continue
+		}
+
+		if fixErr != nil {
+			if updated.Status == checkStatusPass {
+				updated.Status = checkStatusWarn
+			}
+			updated.Detail = fmt.Sprintf("%s; auto-fix error: %v", updated.Detail, fixErr)
+		} else if updated.Status == checkStatusPass {
+			updated.Detail = fmt.Sprintf("%s; auto-fix applied", updated.Detail)
+		}
+
+		checks = replaceCheckResult(checks, updated)
+	}
+
+	return checks
 }
 
 // checkOptionalBinary checks if a binary exists and reports its version.
@@ -659,6 +746,7 @@ func doctorAction(c *cli.Context) error {
 	// Phase 1: Dependency checks.
 	checks := runDependencyChecks(app)
 	if fix {
+		checks = tryFixBuildToolsDependencies(c.Context, checks)
 		checks = tryFixVirtiofsdDependency(c.Context, app.cfg.VirtiofsdBinary, checks)
 	}
 

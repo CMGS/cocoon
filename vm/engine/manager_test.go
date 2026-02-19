@@ -680,6 +680,31 @@ func TestInspect_SerialLogExcerpt(t *testing.T) {
 	}
 }
 
+func TestInspect_UsesActualStateWhenMetadataIsStale(t *testing.T) {
+	t.Parallel()
+	td := setupTestManager(t)
+
+	vmCfg := createTestVM(t, td, &vm.CreateOptions{
+		Image: "docker.io/library/ubuntu:22.04",
+		Name:  "inspect-stale-running",
+	})
+
+	if err := td.mgr.TransitionState(vmCfg.VMID, types.VMStateStarting, "test"); err != nil {
+		t.Fatalf("transition to STARTING: %v", err)
+	}
+	if err := td.mgr.TransitionState(vmCfg.VMID, types.VMStateRunning, "test"); err != nil {
+		t.Fatalf("transition to RUNNING: %v", err)
+	}
+
+	inspect, err := td.mgr.Inspect(t.Context(), vmCfg.VMID)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if inspect.State != types.VMStateError {
+		t.Fatalf("Inspect state = %q, want %q for stale RUNNING metadata", inspect.State, types.VMStateError)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: Inspect non-existent VM
 // ---------------------------------------------------------------------------
@@ -1188,6 +1213,31 @@ func TestStart_RefreshesHypervisorBinaryInMetadata(t *testing.T) {
 	}
 	if meta.HypervisorBinary != "new-hypervisor" {
 		t.Fatalf("hypervisor_binary=%q, want %q", meta.HypervisorBinary, "new-hypervisor")
+	}
+}
+
+func TestStart_StaleRunningMetadataReturnsActionableError(t *testing.T) {
+	t.Parallel()
+	td := setupTestManager(t)
+
+	vmCfg := createTestVM(t, td, &vm.CreateOptions{
+		Image: "docker.io/library/ubuntu:22.04",
+		Name:  "start-stale-running",
+	})
+
+	if err := td.mgr.TransitionState(vmCfg.VMID, types.VMStateStarting, "test"); err != nil {
+		t.Fatalf("transition to STARTING: %v", err)
+	}
+	if err := td.mgr.TransitionState(vmCfg.VMID, types.VMStateRunning, "test"); err != nil {
+		t.Fatalf("transition to RUNNING: %v", err)
+	}
+
+	err := td.mgr.Start(t.Context(), vmCfg.VMID)
+	if err == nil {
+		t.Fatal("expected stale running start error, got nil")
+	}
+	if !strings.Contains(err.Error(), "metadata says RUNNING but runtime is not healthy") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

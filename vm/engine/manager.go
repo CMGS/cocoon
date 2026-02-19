@@ -681,9 +681,16 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 
 	state := types.VMState(meta.State)
 
-	// Idempotent: already running -> no-op.
+	// Healthy RUNNING state is idempotent; stale RUNNING should not be a no-op.
 	if state == types.VMStateRunning {
-		return nil
+		vmCfg, cfgErr := m.LoadConfig(vmID)
+		if cfgErr != nil {
+			return fmt.Errorf("load config for %s: %w", vmID, cfgErr)
+		}
+		if actualState := m.determineActualState(meta, vmCfg); actualState == types.VMStateRunning {
+			return nil
+		}
+		return fmt.Errorf("VM %s metadata says RUNNING but runtime is not healthy; run 'cocoon doctor --fix' to reconcile", vmID)
 	}
 
 	// Reject if already starting.
@@ -1276,6 +1283,10 @@ func (m *manager) Inspect(ctx context.Context, vmID string) (*types.VMInspect, e
 	}
 
 	inspect := types.BuildInspect(vmCfg, meta)
+	actualState := m.determineActualState(meta, vmCfg)
+	if actualState != inspect.State {
+		inspect.State = actualState
+	}
 	if excerpt, readErr := readSerialLogExcerpt(vmCfg.SerialLog, 100); readErr == nil {
 		inspect.Hypervisor.SerialLogExcerpt = excerpt
 	}
