@@ -96,6 +96,74 @@ Do not use merge-commit strategy unless explicitly required.
 gh pr merge <PR_NUMBER> --rebase
 ```
 
+## PR Review
+
+### Rule
+
+Every PR review must produce two outcomes via the `gh` CLI:
+
+1. **Overall assessment** -- a general review comment summarizing the verdict
+   (LGTM / request changes), scope check, CI status, and key observations.
+2. **Inline code comments** -- specific findings attached to the exact file and
+   line in the diff, just like clicking "+" on a line in the GitHub UI.
+
+### Steps
+
+```bash
+# 1. Gather context
+gh pr view <PR_NUMBER>
+gh pr diff <PR_NUMBER>
+gh pr checks <PR_NUMBER>
+
+# 2. Post overall assessment as a review comment
+cat > /tmp/pr-review.md <<'EOF'
+LGTM. <one-line summary>
+
+Verified:
+- <bullet list of what was checked>
+EOF
+gh pr review <PR_NUMBER> --comment --body-file /tmp/pr-review.md
+
+# 3. Post inline comments on specific code locations
+#    Use the GitHub Reviews API to attach comments to exact diff lines.
+#    Each comment targets a file path + line number in the PR head commit.
+cat > /tmp/pr-inline.json <<'ENDJSON'
+{
+  "commit_id": "<HEAD_SHA>",
+  "event": "COMMENT",
+  "body": "Inline review comments.",
+  "comments": [
+    {
+      "path": "path/to/file.go",
+      "line": 42,
+      "body": "nit: consider renaming for clarity."
+    },
+    {
+      "path": "path/to/other.go",
+      "line": 100,
+      "body": "suggestion: add nosuid,nodev mount options for security hardening."
+    }
+  ]
+}
+ENDJSON
+gh api repos/CMGS/cocoon/pulls/<PR_NUMBER>/reviews --input /tmp/pr-inline.json
+```
+
+### Comment Guidelines
+
+- **Overall comment**: include verdict, CI status, scope boundaries, and
+  non-line-specific observations.
+- **Inline comments**: use for concrete code findings -- bugs, style issues,
+  security concerns, suggestions. Prefix with severity:
+  - `bug:` for correctness issues
+  - `nit:` for style / cosmetic
+  - `suggestion:` for non-blocking improvements
+  - `question:` for clarification requests
+- The `line` field refers to the line number in the **new version** of the file
+  (the PR head), not the base. Use `gh pr diff` output to identify the correct
+  line numbers.
+- Get the HEAD SHA via: `gh api repos/CMGS/cocoon/pulls/<PR_NUMBER> --jq '.head.sha'`
+
 ## Planning Records
 
 ### Rule
