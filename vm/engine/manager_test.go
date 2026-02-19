@@ -1465,6 +1465,80 @@ func TestStop_CleansOCIRuntimeMetadata(t *testing.T) {
 	}
 }
 
+func TestStop_StoppingStateCleansOCIRuntimeMetadata(t *testing.T) {
+	t.Parallel()
+	td := setupTestManager(t)
+
+	v := createTestVM(t, td, &vm.CreateOptions{
+		Image: "docker.io/library/ubuntu:22.04",
+		Name:  "stop-stopping-cleans-oci-runtime",
+	})
+
+	v.ImageType = types.VMImageTypeOCIVM
+	v.VirtioFSTag = "cocoon-rootfs"
+	v.VirtioFSSock = td.cfg.VMOCIRootfsVirtioFSSocketPath(v.VMID)
+	if err := utils.AtomicWriteJSON(td.cfg.VMConfigPath(v.VMID), v); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+
+	if err := td.mgr.UpdateMetadata(v.VMID, func(md *types.VMMetadataFile) {
+		md.State = string(types.VMStateStopping)
+		md.PreviousState = string(types.VMStateRunning)
+		md.ProcessPID = 100
+		md.VirtiofsdPID = 200
+		md.VirtiofsdSocket = v.VirtioFSSock
+		md.VirtiofsdBinary = "virtiofsd"
+		md.OCIOverlayMounted = true
+	}); err != nil {
+		t.Fatalf("UpdateMetadata: %v", err)
+	}
+
+	mgrImpl, ok := td.mgr.(*manager)
+	if !ok {
+		t.Fatal("manager implementation type assertion failed")
+	}
+	stopCalled := false
+	vfsMgr := newVirtiofsdRuntimeManager(td.cfg)
+	vfsMgr.stopFn = func(pid int, expectedProc string, _ time.Duration) error {
+		stopCalled = true
+		if pid != 200 {
+			t.Fatalf("virtiofs stop pid = %d, want 200", pid)
+		}
+		if expectedProc != "virtiofsd" {
+			t.Fatalf("virtiofs expected proc = %q, want virtiofsd", expectedProc)
+		}
+		return nil
+	}
+	vfsMgr.removeFn = func(string) error { return nil }
+	mgrImpl.virtiofsMgr = vfsMgr
+
+	td.hyper.IsAliveFunc = func(string) bool { return false }
+
+	if err := td.mgr.Stop(t.Context(), v.VMID, 2*time.Second); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if !stopCalled {
+		t.Fatal("expected virtiofs stopFn to be called for STOPPING->STOPPED path")
+	}
+
+	meta, err := td.mgr.LoadMetadata(v.VMID)
+	if err != nil {
+		t.Fatalf("LoadMetadata: %v", err)
+	}
+	if meta.State != string(types.VMStateStopped) {
+		t.Fatalf("state = %q, want %q", meta.State, types.VMStateStopped)
+	}
+	if meta.VirtiofsdPID != 0 {
+		t.Fatalf("virtiofsd_pid = %d, want 0", meta.VirtiofsdPID)
+	}
+	if meta.VirtiofsdSocket != "" {
+		t.Fatalf("virtiofsd_socket = %q, want empty", meta.VirtiofsdSocket)
+	}
+	if meta.OCIOverlayMounted {
+		t.Fatal("oci_overlay_mounted = true, want false")
+	}
+}
+
 func TestDelete_OCIRuntimeUnpinsRuntimeCache(t *testing.T) {
 	t.Parallel()
 	td := setupTestManager(t)

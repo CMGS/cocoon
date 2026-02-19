@@ -2015,6 +2015,12 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
     }
     ```
     Followed by `PUT /api/v1/vm.boot` to start the VM.
+    - For OCI-direct VMs, start ordering is deterministic:
+      1. Mount OCI OverlayFS workspace
+      2. Start rootfs-serving `virtiofsd`
+      3. Record runtime metadata (`virtiofsd_pid/socket/binary`, `oci_overlay_mounted`)
+      4. Launch/configure/boot CH
+      5. If boot fails, rollback OCI runtime (`virtiofsd` stop + overlay unmount + metadata clear)
 13. **Wait for boot** → Poll serial log for boot completion marker (timeout: 60s), transition to RUNNING, write runtime fields (PID, socket path) to `metadata.json`. Note: `config.json` is immutable after step 6 and is never rewritten.
 14. **Auto-remove bookkeeping** → If `--rm`, set `AutoRemove=true` in metadata after Start succeeds; delete is triggered when the VM is later stopped via `cocoon stop` (crash/external-kill: `cocoon doctor --fix` performs state reconciliation; automatic deletion of crashed `auto_remove` VMs is a future enhancement)
 
@@ -2037,7 +2043,8 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
 7. **Force kill on timeout** → `syscall.Kill(chPid, syscall.SIGKILL)`
 8. **Verify shutdown** → Confirm CH process terminated
 9. **Update VM state** → Write `metadata.json` with state=`STOPPED`, `last_boot_mode`, timestamps
-10. **Release metadata.lock**
+10. **Cleanup OCI runtime (if image_type=oci)** → Best-effort `virtiofsd` stop + overlay unmount + clear OCI runtime metadata fields
+11. **Release metadata.lock**
 
 ### 6.3 VM Delete Flow (`cocoon delete`)
 
@@ -2051,12 +2058,13 @@ All fields are optional — `config.DefaultConfig()` provides sensible defaults.
 8. **Acquire name-index.lock** (Level 2 — never held with references.lock)
 9. **Remove name from name-index.json**
 10. **Release name-index.lock**
-11. **Delete resources** (permanent):
+11. **Cleanup OCI runtime** (best-effort; stop `virtiofsd`, unmount overlay, clear runtime metadata)
+12. **Delete resources** (permanent):
     - Delete overlay: `rm overlay.qcow2`
     - Delete serial log: `rm /var/log/cocoon/{vm_id}-serial.log`
     - Delete API socket: `rm /run/cocoon/vms/{vm_id}/api.sock`
     - Delete VM directory: `rm -rf /var/lib/cocoon/vms/{vm_id}/`
-12. **Trigger GC** (optional) → If base image unreferenced, mark for collection
+13. **Trigger GC** (optional) → If base image unreferenced, mark for collection
 
 ---
 

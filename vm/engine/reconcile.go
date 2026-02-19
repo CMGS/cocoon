@@ -899,14 +899,26 @@ func (m *manager) fixStateMismatch(inc *vm.Inconsistency, force bool) error {
 			}
 		}
 		meta.ProcessPID = 0
-		return m.SaveMetadata(meta)
+		if err := m.SaveMetadata(meta); err != nil {
+			return err
+		}
+		if err := m.cleanupOCIRuntimeAfterStateMismatch(inc.VMID); err != nil {
+			return fmt.Errorf("cleanup OCI runtime after state mismatch: %w", err)
+		}
+		return nil
 
 	case types.VMStateStopped:
 		meta.PreviousState = meta.State
 		meta.State = string(types.VMStateStopped)
 		meta.ProcessPID = 0
 		meta.StoppedAt = time.Now().UTC().Format(time.RFC3339)
-		return m.SaveMetadata(meta)
+		if err := m.SaveMetadata(meta); err != nil {
+			return err
+		}
+		if err := m.cleanupOCIRuntimeAfterStateMismatch(inc.VMID); err != nil {
+			return fmt.Errorf("cleanup OCI runtime after state mismatch: %w", err)
+		}
+		return nil
 
 	default:
 		if !force {
@@ -916,6 +928,20 @@ func (m *manager) fixStateMismatch(inc *vm.Inconsistency, force bool) error {
 		meta.State = inc.ActualState
 		return m.SaveMetadata(meta)
 	}
+}
+
+func (m *manager) cleanupOCIRuntimeAfterStateMismatch(vmID string) error {
+	vmCfg, err := m.LoadConfig(vmID)
+	if err != nil {
+		if isNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("load config for OCI runtime cleanup: %w", err)
+	}
+	if vmCfg.ImageType != types.VMImageTypeOCIVM {
+		return nil
+	}
+	return m.cleanupOCIRuntimeByMetadata(vmID)
 }
 
 // ---------------------------------------------------------------------------

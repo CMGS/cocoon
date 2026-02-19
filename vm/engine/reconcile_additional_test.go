@@ -440,6 +440,60 @@ func TestReconcile_FixStoppedOCIRuntimeLeak(t *testing.T) {
 	}
 }
 
+func TestReconcile_FixStateMismatchAlsoCleansOCIRuntimeLeak(t *testing.T) {
+	t.Parallel()
+
+	mgr, cfg := setupReconcileManager(t)
+	vmID := "vm-01HABC9D8E7F6G5H4J3K2M1N0X"
+	writeTestOCIVMArtifacts(t, cfg, vmID, "oci-runtime-state-mismatch", types.VMStateStopping)
+
+	socketPath := cfg.VMOCIRootfsVirtioFSSocketPath(vmID)
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil { //nolint:gosec // test fixture directory
+		t.Fatalf("mkdir runtime dir: %v", err)
+	}
+	if err := os.WriteFile(socketPath, []byte(""), 0o644); err != nil { //nolint:gosec // test fixture file
+		t.Fatalf("write socket fixture: %v", err)
+	}
+
+	if err := mgr.updateMetadata(vmID, func(md *types.VMMetadataFile) {
+		md.ProcessPID = 0
+		md.VirtiofsdPID = 12345
+		md.VirtiofsdBinary = "virtiofsd"
+		md.VirtiofsdSocket = socketPath
+		md.OCIOverlayMounted = true
+	}); err != nil {
+		t.Fatalf("update metadata: %v", err)
+	}
+
+	issues, err := mgr.Reconcile(context.Background(), true, false)
+	if err != nil {
+		t.Fatalf("Reconcile --fix: %v", err)
+	}
+	if !hasIssue(issues, vm.InconsistencyStateMismatch) {
+		t.Fatalf("expected %s issue", vm.InconsistencyStateMismatch)
+	}
+
+	meta, err := mgr.LoadMetadata(vmID)
+	if err != nil {
+		t.Fatalf("LoadMetadata: %v", err)
+	}
+	if meta.State != string(types.VMStateStopped) {
+		t.Fatalf("state=%q, want %q", meta.State, types.VMStateStopped)
+	}
+	if meta.VirtiofsdPID != 0 {
+		t.Fatalf("virtiofsd_pid=%d, want 0", meta.VirtiofsdPID)
+	}
+	if meta.VirtiofsdSocket != "" {
+		t.Fatalf("virtiofsd_socket=%q, want empty", meta.VirtiofsdSocket)
+	}
+	if meta.OCIOverlayMounted {
+		t.Fatal("oci_overlay_mounted=true, want false")
+	}
+	if _, err := os.Stat(socketPath); !os.IsNotExist(err) {
+		t.Fatalf("expected virtiofs socket removed, stat err=%v", err)
+	}
+}
+
 func TestReconcile_FixMissingOCIRuntimePin(t *testing.T) {
 	t.Parallel()
 
