@@ -28,6 +28,9 @@ type BlobRefEntry struct {
 func AddBlobRefs(cfg *config.CocoonConfig, manifestDigest string, blobDigests []string, sizes []int64) error {
 	return withLayerRefsLock(cfg, func(idx *LayerRefsIndex) error {
 		for i, digest := range blobDigests {
+			if err := validateHexDigest(digest); err != nil {
+				return fmt.Errorf("invalid blob digest at index %d (%q): %w", i, digest, err)
+			}
 			entry, ok := idx.Blobs[digest]
 			if !ok {
 				var size int64

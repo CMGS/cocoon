@@ -3,7 +3,7 @@
 **Version**: 1.0
 **Status**: Implemented
 **Phase**: Phase 1
-**Last Updated**: 2026-02-18
+**Last Updated**: 2026-02-19
 
 ## ⚠️ Supported Image Contract
 
@@ -56,7 +56,7 @@ cocoon image build --file cocoonfile.example --tag myorg/ubuntu-bootable:22.04
 
 **Reality Check**: Building bootable OCI images is complex (kernel installation, GRUB setup, ESP partition).
 `cocoon image build` (see [04.1-oci-vm-images.md](./04.1-oci-vm-images.md)) covers the common cloud-image-based workflow.
-For from-scratch distro assembly, see [11-bootable-oci-build.md](./11-bootable-oci-build.md) (still planned).
+For from-scratch distro assembly, see [11-bootable-oci-build.md](./11-bootable-oci-build.md) (complementary guidance).
 
 **CI/Verified Images**: For deterministic testing, Cocoon provides pinned reference images with fixed digests.
 See [04-oci-conversion.md § 10 Verified Images](./04-oci-conversion.md#10-verified-images-ci-reference) for the CI verification matrix.
@@ -72,10 +72,10 @@ See [04-oci-conversion.md § 10 Verified Images](./04-oci-conversion.md#10-verif
   - Fedora: https://fedoraproject.org/cloud/download
   - Debian: https://cloud.debian.org/images/cloud/
 
-**Option 2: Build/Pull Bootable OCI VM Images (Advanced, partially implemented)**:
-- Implemented: `cocoon image build` + `cocoon image push` + `cocoon image login` pipeline for cloud-image-based OCI VM builds (see [04.1-oci-vm-images.md](./04.1-oci-vm-images.md))
+**Option 2: Build/Pull Bootable OCI VM Images (Advanced, implemented baseline)**:
+- Implemented: `cocoon image build/pull/push/login/tag/inspect/verify/list/remove` and runtime `create`/`run` auto-detection with OCI direct boot (registry OCI VM refs auto-pulled before runtime materialization); see [04.1-oci-vm-images.md](./04.1-oci-vm-images.md)
 - Advanced from-scratch image assembly remains user-managed and complex (kernel/initrd/systemd/GRUB/ESP)
-- See [11-bootable-oci-build.md](./11-bootable-oci-build.md) for the planned end-to-end custom build guidance
+- See [11-bootable-oci-build.md](./11-bootable-oci-build.md) for end-to-end custom build guidance
 
 **What DOESN'T Work**:
 - ❌ Regular container images: `ubuntu:latest`, `python:3.11`, `node:20`
@@ -89,13 +89,13 @@ See [04-oci-conversion.md § 10 Verified Images](./04-oci-conversion.md#10-verif
 | Term | Definition |
 |------|-----------|
 | **cloud image** | Pre-built qcow2/img VM disk from a distro vendor (Ubuntu Cloud, Fedora Cloud, Debian Cloud). Ready to boot without conversion. |
-| **bootable OCI image** | Custom-built OCI container image containing kernel, bootloader, systemd. Requires OCI→qcow2 conversion. |
-| **base image** | Cached qcow2 file in `/var/lib/cocoon/cache/images/`. Either a downloaded cloud image or a converted OCI image. Content-addressed by checksum. |
+| **bootable OCI image** | Bootable OCI artifact for VM workflows. Includes both the Phase 1 OCI→qcow2 conversion path and the Phase 2 OCI VM direct-runtime format. |
+| **base image** | Runtime image backing data: cached qcow2 in `/var/lib/cocoon/cache/images/` (cloud/qcow2 path) or materialized OCI runtime cache under `/var/lib/cocoon/cache/oci/runtime/` (OCI VM direct path). |
 | **overlay** | Per-VM copy-on-write disk at `/var/lib/cocoon/vms/{vm-id}/overlay.qcow2`. Backed by a base image. |
 | **vm_id** | Internal primary key (`vm-{ulid}`). Never reused. Used in directory names, logs, locks. |
 | **name** | User-facing VM alias. Globally unique. Optional on create. |
 | **vm-ref** | CLI argument that accepts either vm_id or name. Resolved by the CLI. |
-| **firmware** | Binary loaded by Cloud Hypervisor at boot. UEFI: `CLOUDHV.fd` for cloud images. Phase 2 will add direct kernel boot (`payload.kernel`) for OCI VM images. |
+| **firmware** | Binary loaded by Cloud Hypervisor at boot for the UEFI path (`CLOUDHV.fd`). OCI VM direct-kernel boot uses `payload.kernel`/`payload.initramfs` instead of firmware. |
 
 **Resource Units**:
 - CLI accepts human-readable units: `512M`, `1G`, `2G`, `10G`
@@ -163,13 +163,13 @@ Modern VM workloads and development environments face a challenging trade-off be
 
 ## Key Design Decisions
 
-### 1. Boot Strategy: UEFI for Cloud Images (Phase 1), Direct Kernel Boot for OCI (Phase 2)
+### 1. Boot Strategy: UEFI for Cloud Images, Direct Kernel Boot for OCI VM Images
 
-**Decision**: Phase 1 supports UEFI boot with CLOUDHV.fd for cloud images (qcow2/URL). Direct kernel boot (`payload.kernel` + `payload.initramfs` + `payload.cmdline`) for OCI VM images is designed in [docs/04.1-oci-vm-images.md](./04.1-oci-vm-images.md) and planned for Phase 2.
+**Decision**: Cocoon uses UEFI boot with CLOUDHV.fd for cloud images (qcow2/URL) and direct kernel boot (`payload.kernel` + `payload.initramfs` + `payload.cmdline`) for resolver-classified OCI VM images. Registry OCI VM refs are auto-pulled before runtime materialization.
 
 **Rationale**:
-- **UEFI (Cloud Images — Phase 1)**: Broadest compatibility with cloud images, supports secure boot, CH project recommended firmware
-- **Direct Kernel Boot (OCI — Phase 2)**: Will boot extracted kernel and initramfs directly via Cloud Hypervisor's `payload.kernel`, bypassing the need for a bootloader in the image. This is not yet implemented.
+- **UEFI (Cloud Images)**: Broadest compatibility with cloud images, supports secure boot, CH project recommended firmware
+- **Direct Kernel Boot (OCI VM images)**: Boots extracted kernel and initramfs directly via Cloud Hypervisor `payload.kernel`, bypassing the need for firmware in this path.
 - UEFI default for cloud images eliminates boot failures from images that lack specific kernel layouts
 
 ### 2. Per-VM Cloud Hypervisor Process for Isolation
@@ -227,7 +227,7 @@ Phase 1 delivers a complete, production-ready VM lifecycle management system.
 - ✅ VM lifecycle (create/start/stop/kill/delete) with state machine
 - ✅ Copy-on-write storage with qcow2 backing files
 - ✅ Reference counting and garbage collection
-- ✅ UEFI boot for cloud images (direct kernel boot for OCI VM images is Phase 2)
+- ✅ UEFI boot for cloud images
 - ✅ TPM 2.0 emulation via swtpm (`--tpm` flag)
 - ✅ Reconciliation and crash recovery (`cocoon doctor`)
 - ✅ CLI tool with Docker-like interface (`cocoon run/ps/logs/inspect`)
@@ -239,7 +239,7 @@ Design docs: [00-overview](./00-overview.md) through [10-implementation-roadmap]
 
 Phase 2 adds OCI VM image tooling, interactive access, VM state management, fast provisioning, and networking.
 
-- **OCI VM Image Build/Push/Login/Tag/Inspect** ([docs/04.1](./04.1-oci-vm-images.md)): `cocoon image build` extracts kernel/rootfs from cloud images, packages as OCI with custom media types; Cocoonfile customization (FROM/RUN/COPY/LABEL); `cocoon image push` to registries; `cocoon image login` for credential management; `cocoon image tag` for local image aliasing; `cocoon image inspect` for OCI/cloud image metadata; `cocoon image verify` for OCI layout bootability checks -- **Implemented**
+- **OCI VM Image Build + Runtime** ([docs/04.1](./04.1-oci-vm-images.md)): `cocoon image build/pull/push/login/tag/inspect/verify/list/remove` and runtime `create`/`run` resolver auto-routing are implemented. OCI VM refs use direct kernel boot + OverlayFS/virtiofs; registry OCI VM refs are auto-pulled before runtime materialization.
 - **Console** ([docs/12](./12-console.md)): Interactive bidirectional PTY console via `cocoon console`, dual-port strategy (serial for logs, virtio-console for interactive access), SSH-style escape sequences -- **Implemented**
 - **Pause/Resume** ([docs/13](./13-pause-resume.md)): New PAUSED state in the VM state machine, vCPU freeze/unfreeze via Cloud Hypervisor `vm.pause`/`vm.resume` API, prerequisite for checkpoint/restore
 - **Warm Start** ([docs/15](./15-warm-start.md)): VM checkpoint and restore for sub-second creation (~200ms vs 5-30s cold boot), golden checkpoint workflow, snapshot management with GC integration
@@ -311,7 +311,7 @@ Cocoon is a general-purpose lightweight VM manager. Common use cases include:
 - **Language**: Go 1.25+ (interface-driven, factory pattern)
 - **OCI Tools**: Buildah (daemonless), go-containerregistry (OCI image push/login)
 - **Storage**: qcow2 via qemu-img and libguestfs
-- **Firmware**: OVMF (UEFI via CLOUDHV.fd) for cloud images; direct kernel boot for OCI VM images (Phase 2)
+- **Firmware**: OVMF (UEFI via CLOUDHV.fd) for cloud images; OCI VM path uses direct kernel boot (`payload.kernel` + `payload.initramfs`)
 - **TPM**: swtpm (optional TPM 2.0 emulation)
 - **CLI Framework**: urfave/cli/v2
 - **Configuration**: JSON with sensible defaults
@@ -319,6 +319,7 @@ Cocoon is a general-purpose lightweight VM manager. Common use cases include:
 **Implemented (Phase 2)**:
 - **OCI VM Image Build**: `cocoon image build` (kernel/rootfs extraction, OCI packaging, Cocoonfile)
 - **OCI VM Image Push/Login/Tag/Inspect**: `cocoon image push` + `cocoon image login` + `cocoon image tag` + `cocoon image inspect` + `cocoon image verify` (go-containerregistry)
+- **OCI VM Runtime Auto-Routing**: `cocoon create/run` auto-detect image type and use OCI direct runtime with registry auto-pull when needed
 - **Console**: virtio-console PTY via Cloud Hypervisor `vm.info` API
 
 **Planned (Phase 2)**:
@@ -400,7 +401,7 @@ For quick evaluation:
 | [02-installation.md](./02-installation.md) | Installation | Implemented |
 | [03-hypervisor-integration.md](./03-hypervisor-integration.md) | Cloud Hypervisor Integration | Implemented |
 | [04-oci-conversion.md](./04-oci-conversion.md) | OCI to qcow2 Conversion | Implemented |
-| [04.1-oci-vm-images.md](./04.1-oci-vm-images.md) | OCI VM Image Format (build/push/login/inspect) | Implemented (build/push/login/inspect); direct kernel boot planned |
+| [04.1-oci-vm-images.md](./04.1-oci-vm-images.md) | OCI VM Image Format (build/pull/push/login/tag/inspect/verify/runtime) | Implemented |
 | [05-storage-management.md](./05-storage-management.md) | Storage Management | Implemented |
 | [06-concurrency.md](./06-concurrency.md) | Concurrency Design | Implemented |
 | [07-vm-lifecycle.md](./07-vm-lifecycle.md) | VM Lifecycle Management | Implemented |
