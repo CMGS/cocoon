@@ -714,37 +714,18 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 		return transErr
 	}
 
-	var (
-		ociRuntime        *virtiofsdRuntimeInfo
-		ociOverlayMounted bool
-	)
-
-	ociRuntime, ociOverlayMounted, err = m.setupOCIRuntimeForStart(ctx, vmID, vmCfg)
+	ociRuntime, err := m.setupOCIRuntimeForStart(ctx, vmID, vmCfg)
 	if err != nil {
 		_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("start OCI runtime failed: %v", err))
 		return fmt.Errorf("start OCI runtime for %s: %w", vmID, err)
 	}
 
-	cleanupOCIRuntimeOnFailure := func() {
+	rollbackOCIRuntimeOnFailure := func(trigger string, triggerErr error) {
 		if vmCfg.ImageType != types.VMImageTypeOCIVM {
 			return
 		}
-		if ociRuntime != nil {
-			if stopErr := m.virtiofsMgr.Stop(vmID, ociRuntime.PID, ociRuntime.ProcessName, ociRuntime.SocketPath); stopErr != nil {
-				log.Printf("warning: stop OCI virtiofsd for %s after failed start: %v", vmID, stopErr)
-			}
-		}
-		if ociOverlayMounted {
-			if unmountErr := m.overlayMgr.UnmountVM(vmID); unmountErr != nil {
-				log.Printf("warning: unmount OCI runtime overlay for %s after failed start: %v", vmID, unmountErr)
-			}
-		}
-		if mdErr := m.updateMetadata(vmID, func(md *types.VMMetadataFile) {
-			md.VirtiofsdPID = 0
-			md.VirtiofsdSocket = ""
-			md.OCIOverlayMounted = false
-		}); mdErr != nil && !isNotFound(mdErr) {
-			log.Printf("warning: clear OCI runtime metadata for %s after failed start: %v", vmID, mdErr)
+		if cleanupErr := m.cleanupOCIRuntimeByMetadata(vmID); cleanupErr != nil {
+			log.Printf("warning: rollback OCI runtime for %s after %s (%v): %v", vmID, trigger, triggerErr, cleanupErr)
 		}
 	}
 
@@ -791,7 +772,7 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 	}
 
 	if bootErr != nil {
-		cleanupOCIRuntimeOnFailure()
+		rollbackOCIRuntimeOnFailure("boot failure", bootErr)
 		_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("boot failed: %v", bootErr))
 		return fmt.Errorf("boot VM %s: %w", vmID, bootErr)
 	}
@@ -813,7 +794,7 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 	}); err != nil {
 		// Transition failed but VM is running; force kill and go to ERROR.
 		_ = m.hyper.ForceKill(vmID)
-		cleanupOCIRuntimeOnFailure()
+		rollbackOCIRuntimeOnFailure("run transition failure", err)
 		_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("start transition failed: %v", err))
 		return fmt.Errorf("transition to RUNNING for %s: %w", vmID, err)
 	}
@@ -825,24 +806,22 @@ func (m *manager) setupOCIRuntimeForStart(
 	ctx context.Context,
 	vmID string,
 	vmCfg *types.VMConfig,
-) (*virtiofsdRuntimeInfo, bool, error) {
+) (*virtiofsdRuntimeInfo, error) {
 	if vmCfg.ImageType != types.VMImageTypeOCIVM {
-		return nil, false, nil
+		return nil, nil
 	}
 	if strings.TrimSpace(vmCfg.BaseImagePath) == "" {
-		return nil, false, fmt.Errorf("rootfs lowerdir is empty")
+		return nil, fmt.Errorf("rootfs lowerdir is empty")
 	}
 	// Re-pin on each start as a self-healing guard:
 	// create-time pin is authoritative, but start-time idempotent pin repairs
 	// missing entries caused by manual edits or crash windows in prior cleanup.
 	if err := oci.AddRuntimeRef(m.cfg, vmCfg.BaseKey, vmID); err != nil {
-		return nil, false, fmt.Errorf("pin OCI runtime cache %s for %s: %w", vmCfg.BaseKey, vmID, err)
+		return nil, fmt.Errorf("pin OCI runtime cache %s for %s: %w", vmCfg.BaseKey, vmID, err)
 	}
 	if err := m.overlayMgr.MountVM(vmID, []string{vmCfg.BaseImagePath}); err != nil {
-		return nil, false, fmt.Errorf("mount OCI runtime overlay: %w", err)
+		return nil, fmt.Errorf("mount OCI runtime overlay: %w", err)
 	}
-
-	overlayMounted := true
 	socketPath := vmCfg.VirtioFSSock
 	if strings.TrimSpace(socketPath) == "" {
 		socketPath = m.cfg.VMOCIRootfsVirtioFSSocketPath(vmID)
@@ -850,7 +829,7 @@ func (m *manager) setupOCIRuntimeForStart(
 	runtimeInfo, err := m.virtiofsMgr.Start(ctx, vmID, m.cfg.VMOCIMergedDir(vmID), socketPath)
 	if err != nil {
 		_ = m.overlayMgr.UnmountVM(vmID)
-		return nil, false, err
+		return nil, err
 	}
 
 	vmCfg.VirtioFSSock = runtimeInfo.SocketPath
@@ -869,10 +848,10 @@ func (m *manager) setupOCIRuntimeForStart(
 	}); mdErr != nil {
 		_ = m.virtiofsMgr.Stop(vmID, runtimeInfo.PID, runtimeInfo.ProcessName, runtimeInfo.SocketPath)
 		_ = m.overlayMgr.UnmountVM(vmID)
-		return nil, false, fmt.Errorf("record OCI runtime metadata: %w", mdErr)
+		return nil, fmt.Errorf("record OCI runtime metadata: %w", mdErr)
 	}
 
-	return runtimeInfo, overlayMounted, nil
+	return runtimeInfo, nil
 }
 
 // Stop sends a shutdown signal to the VM and waits for graceful stop.
