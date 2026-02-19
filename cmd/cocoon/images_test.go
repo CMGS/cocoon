@@ -493,11 +493,14 @@ func TestPullDomainRefRouting(t *testing.T) {
 					return nil, nil
 				},
 			},
+			probeRegistryVMImage: func(context.Context, *config.CocoonConfig, string) bool {
+				return false
+			},
 		}
 
-		// pullDomainRefImage: no local OCI tag, ProbeRegistryVMImage will fail
-		// (no real registry), so it falls back to pullCloudPipelineImage which
-		// calls Prepare with the domain-prefixed ref.
+		// pullDomainRefImage: no local OCI tag, probe says non-VM image,
+		// so it falls back to pullCloudPipelineImage which calls Prepare
+		// with the domain-prefixed ref.
 		ref := "registry.example.com/my-cloud-image:v1"
 		err := pullDomainRefImage(c, app, ref)
 		if err != nil {
@@ -510,10 +513,6 @@ func TestPullDomainRefRouting(t *testing.T) {
 
 	// Verify routing: when a local OCI tag exists for the domain ref,
 	// pullDomainRefImage routes to pullOCIVMImage (OCI VM pull path).
-	// We can't easily verify oci.Pull is invoked without a real registry,
-	// so we verify the local tag lookup path by checking the function
-	// returns an error mentioning "pull OCI VM image" (since oci.Pull
-	// will fail without a real registry).
 	t.Run("local-oci-tag-routes-to-oci-pull", func(t *testing.T) {
 		t.Parallel()
 		cfg := testCLIConfig(t)
@@ -525,18 +524,31 @@ func TestPullDomainRefRouting(t *testing.T) {
 			t.Fatalf("SaveTag: %v", err)
 		}
 
-		app := &appContext{cfg: cfg}
+		called := false
+		app := &appContext{
+			cfg: cfg,
+			probeRegistryVMImage: func(context.Context, *config.CocoonConfig, string) bool {
+				t.Fatal("probe should not run when local OCI tag exists")
+				return false
+			},
+			pullOCIImage: func(_ context.Context, _ *config.CocoonConfig, gotRef string) (*oci.PullResult, error) {
+				called = true
+				if gotRef != ref {
+					t.Fatalf("pull ref = %q, want %q", gotRef, ref)
+				}
+				return nil, errors.New("stubbed pull failure")
+			},
+		}
 
-		// pullDomainRefImage finds the local OCI tag, routes to pullOCIVMImage,
-		// which calls oci.Pull. Since there is no real registry, oci.Pull will
-		// fail -- but we verify it attempted the OCI VM path by checking the
-		// error message.
 		err := pullDomainRefImage(c, app, ref)
 		if err == nil {
-			t.Fatal("expected error from oci.Pull (no real registry), got nil")
+			t.Fatal("expected error from pullOCIVMImage path, got nil")
 		}
 		if !strings.Contains(err.Error(), "pull OCI VM image") {
 			t.Fatalf("expected error from pullOCIVMImage path, got: %v", err)
+		}
+		if !called {
+			t.Fatal("expected OCI pull path to be invoked")
 		}
 	})
 }
@@ -569,18 +581,20 @@ func TestPullShortNameRouting(t *testing.T) {
 					return nil, nil
 				},
 			},
+			probeRegistryVMImage: func(context.Context, *config.CocoonConfig, string) bool {
+				return false
+			},
 		}
 
-		// Use a short name that does NOT exist on any registry, so the
-		// probe will fail and the function falls back to the cloud pipeline.
-		// "nonexistent-user-zz99/nonexistent-image-zz99" should never exist.
-		ref := "nonexistent-user-zz99/nonexistent-image-zz99"
+		// Probe is stubbed to non-VM, so short-name routing must normalize
+		// to Docker Hub and fall back to the cloud pipeline.
+		ref := "cmgs/test-u2404"
 		err := pullShortNameImage(c, app, ref)
 		if err != nil {
 			t.Fatalf("pullShortNameImage(%q): %v", ref, err)
 		}
 		// The normalized ref should prepend "docker.io/" and append ":latest".
-		want := "docker.io/nonexistent-user-zz99/nonexistent-image-zz99:latest"
+		want := "docker.io/cmgs/test-u2404:latest"
 		if preparedRef != want {
 			t.Fatalf("Prepare ref = %q, want %q (short name normalized to Docker Hub)", preparedRef, want)
 		}

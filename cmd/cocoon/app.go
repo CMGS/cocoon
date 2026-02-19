@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"runtime"
@@ -21,7 +22,8 @@ import (
 
 // appContext holds initialized managers for CLI commands.
 type appContext struct {
-	cfg      *config.CocoonConfig
+	cfg *config.CocoonConfig
+
 	vmMgr    vm.Manager
 	imgMgr   image.Manager // Cloud image pipeline (pull/convert/cache).
 	imgBuild image.Builder // OCI VM image build/push/login.
@@ -29,6 +31,10 @@ type appContext struct {
 	refCtr   storage.ReferenceCounter
 	cowMgr   storage.COWManager
 	gc       storage.GarbageCollector
+
+	// Injectable OCI pull/probe hooks for deterministic unit tests.
+	probeRegistryVMImage func(context.Context, *config.CocoonConfig, string) bool
+	pullOCIImage         func(context.Context, *config.CocoonConfig, string) (*oci.PullResult, error)
 }
 
 const hostOSLinux = "linux"
@@ -79,5 +85,8 @@ func initApp(_ *cli.Context) (*appContext, error) {
 		refCtr:   refCtr,
 		cowMgr:   cowMgr,
 		gc:       gc,
+
+		probeRegistryVMImage: oci.ProbeRegistryVMImage,
+		pullOCIImage:         oci.Pull,
 	}, nil
 }

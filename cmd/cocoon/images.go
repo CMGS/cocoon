@@ -308,7 +308,7 @@ func pullShortNameImage(c *cli.Context, app *appContext, ref string) error {
 
 	// Probe the remote registry using the go-containerregistry default
 	// resolution (short names auto-resolve to index.docker.io).
-	if oci.ProbeRegistryVMImage(c.Context, app.cfg, ref) {
+	if probeRegistryVMImage(app, c.Context, ref) {
 		return pullOCIVMImage(c, app, ref)
 	}
 
@@ -330,7 +330,7 @@ func pullDomainRefImage(c *cli.Context, app *appContext, ref string) error {
 	}
 
 	// Probe registry for Cocoon VM media types.
-	if oci.ProbeRegistryVMImage(c.Context, app.cfg, ref) {
+	if probeRegistryVMImage(app, c.Context, ref) {
 		return pullOCIVMImage(c, app, ref)
 	}
 
@@ -374,7 +374,7 @@ func pullCloudPipelineImage(c *cli.Context, app *appContext, ref string) error {
 
 // pullOCIVMImage pulls an OCI VM image from a remote registry into the local store.
 func pullOCIVMImage(c *cli.Context, app *appContext, ref string) error {
-	result, err := oci.Pull(c.Context, app.cfg, ref)
+	result, err := pullOCIImage(app, c.Context, ref)
 	if err != nil {
 		return fmt.Errorf("pull OCI VM image %q: %w", ref, err)
 	}
@@ -383,6 +383,26 @@ func pullOCIVMImage(c *cli.Context, app *appContext, ref string) error {
 	fmt.Printf("Manifest digest: %s\n", result.ManifestDigest)
 	fmt.Printf("Layout: %s\n", result.LayoutPath)
 	return nil
+}
+
+func probeRegistryVMImage(app *appContext, ctx context.Context, ref string) bool {
+	if app == nil || app.cfg == nil {
+		return false
+	}
+	if app.probeRegistryVMImage != nil {
+		return app.probeRegistryVMImage(ctx, app.cfg, ref)
+	}
+	return oci.ProbeRegistryVMImage(ctx, app.cfg, ref)
+}
+
+func pullOCIImage(app *appContext, ctx context.Context, ref string) (*oci.PullResult, error) {
+	if app == nil || app.cfg == nil {
+		return nil, fmt.Errorf("application context is not initialized")
+	}
+	if app.pullOCIImage != nil {
+		return app.pullOCIImage(ctx, app.cfg, ref)
+	}
+	return oci.Pull(ctx, app.cfg, ref)
 }
 
 func shouldFallbackToOCIVMPull(err error) bool {
