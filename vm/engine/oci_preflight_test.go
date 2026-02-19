@@ -44,7 +44,10 @@ func TestCheckOCIRuntimePreflight_RequiresOverlayFS(t *testing.T) {
 		readFileFn: func(string) ([]byte, error) {
 			return []byte("nodev\tsquashfs\nnodev\tfuse\n"), nil
 		},
-		lookPathFn: func(string) (string, error) {
+		lookPathFn: func(file string) (string, error) {
+			if file == "modinfo" {
+				return "", os.ErrNotExist
+			}
 			return "/usr/bin/fake", nil
 		},
 		runFn: func(context.Context, string, ...string) ([]byte, error) {

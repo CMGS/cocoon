@@ -117,6 +117,13 @@ func LayoutSize(layoutPath string) (int64, error) {
 
 // readBlob reads a blob from the OCI layout's blobs directory.
 // digest should be in the form "sha256:hexstring".
+//
+// SHA256 assumption: The OCI Image Spec v1.1 requires implementations to
+// support SHA-256 (RFC 6234) and allows SHA-512 as optional. Cocoon
+// currently only supports SHA-256. If the OCI ecosystem adopts additional
+// hash algorithms (e.g., SHA-512), this function and the blob directory
+// structure will need to be extended to handle "sha512:" prefixes and
+// 128-character hex digests.
 func readBlob(layoutPath, digest string) ([]byte, error) {
 	// Parse "sha256:abcdef..." into algorithm and hex.
 	if len(digest) < 8 || digest[:7] != "sha256:" {

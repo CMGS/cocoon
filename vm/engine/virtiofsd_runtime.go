@@ -173,18 +173,19 @@ func launchVirtiofsdProcess(ctx context.Context, binary string, args []string, l
 	return pid, nil
 }
 
+// waitForVirtiofsdSocket polls the virtiofsd Unix socket using dial-only
+// (no stat-then-dial) to avoid a TOCTOU race where the socket file appears
+// in the filesystem before virtiofsd is ready to accept connections.
 func waitForVirtiofsdSocket(ctx context.Context, socketPath string, pid int, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat(socketPath); err == nil {
-			conn, dialErr := net.DialTimeout("unix", socketPath, 100*time.Millisecond)
-			if dialErr == nil {
-				_ = conn.Close()
-				return nil
-			}
+		conn, dialErr := net.DialTimeout("unix", socketPath, 100*time.Millisecond)
+		if dialErr == nil {
+			_ = conn.Close()
+			return nil
 		}
 
 		if pid > 0 && !utils.IsProcessAlive(pid) {

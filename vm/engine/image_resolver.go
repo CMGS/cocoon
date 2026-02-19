@@ -141,6 +141,7 @@ func resolveRuntimeImageRefWithProbe(
 	}
 	vmType, probeErr := detectRegistryVMImageType(ctx, ref, registryProbe)
 	if probeErr != nil {
+		log.Printf("ERROR: registry probe failed for %q — if this is a Cocoon OCI VM image, check network connectivity and registry credentials: %v", ref, probeErr)
 		return nil, fmt.Errorf("probe registry image type for %q: %w", ref, probeErr)
 	}
 	return &resolvedRuntimeImage{

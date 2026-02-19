@@ -1302,25 +1302,22 @@ func imagesCommand() *cli.Command {
 }
 ```
 
-**Image Source Detection** (`imagePullAction` auto-detects source type):
+**Image Pull Ref Classification** (`classifyPullRef` three-way routing):
 
-| Pattern                                | Detected Type | Action                                                          |
-| -------------------------------------- | ------------- | --------------------------------------------------------------- |
-| `/path/to/*.qcow2` or `/path/to/*.img` | `qcow2`       | Validate file, copy/link to cache                               |
-| `https://...` or `http://...`          | `url`         | Download, validate, cache                                       |
-| `registry/repo:tag` or `repo:tag`      | `oci-vm`      | If manifest matches Cocoon OCI VM media types: pull via `oci.Pull()` into local OCI store |
-| `registry/repo:tag` or `repo:tag`      | `oci`         | Otherwise: pull via Buildah, convert to qcow2, validate bootability, cache |
+| Ref Format | Example | Detection Rule | Route |
+| --- | --- | --- | --- |
+| URL | `https://example.com/img.qcow2` | `http://` or `https://` prefix | Cloud pipeline (download, convert, cache) |
+| Local path | `/path/to/img.qcow2`, `./img` | `/`, `./`, `../` prefix or `stat()` succeeds | Cloud pipeline (validate, copy/link to cache) |
+| Short name | `cmgs/test-u2404`, `ubuntu:22.04` | No `/` in ref, or first segment before `/` has no `.` or `:` | OCI pipeline (go-containerregistry auto-resolves to Docker Hub; probes for VM manifest, falls back to cloud pipeline with normalized ref) |
+| Domain ref | `docker.io/cmgs/test`, `registry.example.com/my-vm:v1` | First segment before `/` contains `.` or `:` | Probe OCI VM first, fall back to cloud pipeline |
 
-> **Registry media-type probing**: When the runtime resolver needs to distinguish
-> Cocoon OCI VM images from standard container images at a registry ref, it uses
-> `skopeo inspect --raw <ref>` to fetch the manifest without downloading layer
-> blobs. The manifest's layer media types (e.g.,
-> `application/vnd.cocoon.vm.kernel.v1.tar`) are inspected to classify the image
-> as OCI VM (direct kernel boot) vs. standard OCI (qcow2/UEFI conversion).
+> **Short-name routing**: Short names (e.g., `cmgs/test-u2404`) are routed through go-containerregistry's OCI pipeline, which automatically resolves them to `index.docker.io` without requiring `registries.conf`. This makes `image pull` consistent with `image push` (both use go-containerregistry for Docker Hub resolution). If the image is a Cocoon OCI VM image, it is pulled via `oci.Pull()`; otherwise the ref is normalized to a domain-prefixed form and handed to the cloud image pipeline.
+
+> **Domain-ref probing**: Domain-prefixed refs probe for Cocoon VM media types via `oci.ProbeRegistryVMImage()` (go-containerregistry `remote.Get` + manifest validation). If the manifest matches, it routes to `oci.Pull()`; otherwise it falls back to the cloud image pipeline.
 
 **Cache Resolution Behavior**:
 
-- `image pull` auto-detects image type: if the ref points to a Cocoon OCI VM image on a registry (detected via manifest media-type probe), it routes to `oci.Pull()` which stores the image in the local OCI store; otherwise it routes to the cloud image pipeline and updates the local manifest cache (`cache/manifests/index.json`) to map `IMAGE_REF` aliases to `base_key`.
+- `image pull` uses three-way ref classification: short names route through go-containerregistry (OCI pipeline), domain refs probe then route, URLs/local paths use the cloud pipeline. All paths update the appropriate cache (OCI store for VM images, manifest cache for cloud images).
 - `image inspect`, `image remove`, and `image verify` resolve local OCI tags with an implicit `:latest` fallback when no tag/digest is provided.
 - `image inspect` and `image remove` resolve cloud-image `IMAGE_REF` from local cache only (`base_key` direct hit or manifest-cache alias), without pulling.
 - `image tag SOURCE_REF TARGET_REF` behavior:

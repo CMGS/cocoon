@@ -110,6 +110,9 @@ func imagesAction(c *cli.Context) error {
 	}
 
 	format := c.String("format")
+	if fmtErr := validateOutputFormat(format); fmtErr != nil {
+		return fmtErr
+	}
 	var rows []unifiedImageRow
 
 	// 1. Cloud images.
@@ -206,6 +209,68 @@ func imagePullCommand() *cli.Command {
 	}
 }
 
+// pullRefKind categorizes a pull reference for three-way routing.
+type pullRefKind int
+
+const (
+	// pullRefCloudPipeline routes through the existing cloud image pipeline
+	// (Buildah/skopeo for OCI container images, or direct download for URLs
+	// and local paths).
+	pullRefCloudPipeline pullRefKind = iota
+	// pullRefShortName is a Docker-style short name (e.g., "cmgs/test-u2404",
+	// "ubuntu:22.04") where the first path segment has no dot. These are
+	// routed through the OCI pipeline (go-containerregistry) which auto-
+	// resolves short names to Docker Hub without requiring registries.conf.
+	pullRefShortName
+	// pullRefDomainRef is a domain-prefixed registry reference (e.g.,
+	// "docker.io/cmgs/test", "registry.example.com/my-vm:v1") where the
+	// first path segment contains a dot or colon. These are probed first
+	// for Cocoon VM media types, then fall back to the cloud pipeline.
+	pullRefDomainRef
+)
+
+// classifyPullRef determines the routing category for a pull reference.
+//
+// Classification rules follow the Docker reference specification:
+//   - URL (http:// or https:// prefix) -> cloud pipeline
+//   - Local path (/, ./, ../ prefix, or stat() succeeds) -> cloud pipeline
+//   - Short name (no "/" or first segment before "/" has no "." or ":") -> OCI pipeline
+//   - Domain ref (first segment before "/" contains "." or ":") -> probe then route
+func classifyPullRef(ref string) pullRefKind {
+	// URLs always go to the cloud pipeline.
+	if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
+		return pullRefCloudPipeline
+	}
+	// Explicit local path prefixes.
+	if strings.HasPrefix(ref, "/") || strings.HasPrefix(ref, "./") || strings.HasPrefix(ref, "../") {
+		return pullRefCloudPipeline
+	}
+	// Bare filename that exists on disk.
+	if fi, err := os.Stat(ref); err == nil && fi.Mode().IsRegular() {
+		return pullRefCloudPipeline
+	}
+
+	// A ref with no "/" is always a short name — the ":" and "." characters
+	// are part of the tag (e.g., "ubuntu:22.04"), not a domain or port.
+	// Domain detection only applies when there is a "/" separating a
+	// potential hostname from the repository path.
+	firstSeg, _, hasSlash := strings.Cut(ref, "/")
+	if !hasSlash {
+		return pullRefShortName
+	}
+
+	// With a slash present, inspect the first segment. If it contains "."
+	// (e.g., "docker.io", "registry.example.com") or ":" (e.g.,
+	// "localhost:5000") it is a domain-prefixed ref.
+	if strings.Contains(firstSeg, ".") || strings.Contains(firstSeg, ":") {
+		return pullRefDomainRef
+	}
+
+	// A slash-containing ref whose first segment has no "." or ":"
+	// is a Docker Hub short name (e.g., "cmgs/test-u2404").
+	return pullRefShortName
+}
+
 func imagePullAction(c *cli.Context) error {
 	if c.NArg() < 1 {
 		return fmt.Errorf("IMAGE_REF argument required\n\nUsage: cocoon image pull IMAGE_REF")
@@ -218,14 +283,64 @@ func imagePullAction(c *cli.Context) error {
 
 	ref := c.Args().Get(0)
 
-	// Detect if this ref should use the OCI VM pull pipeline.
-	// This includes local OCI tags (for repull/update) and remote refs that
-	// probe as Cocoon VM manifests.
-	if isOCIVMRegistryRef(c, app, ref) {
+	switch classifyPullRef(ref) {
+	case pullRefShortName:
+		return pullShortNameImage(c, app, ref)
+	case pullRefDomainRef:
+		return pullDomainRefImage(c, app, ref)
+	default:
+		return pullCloudPipelineImage(c, app, ref)
+	}
+}
+
+// pullShortNameImage handles short-name refs (no domain in first segment).
+// Short names are routed through the OCI pipeline (go-containerregistry)
+// which auto-resolves them to Docker Hub. If the image is a Cocoon VM
+// image, it is stored in the OCI store. If it is a standard OCI image,
+// it falls back to the cloud image pipeline with a normalized domain ref.
+func pullShortNameImage(c *cli.Context, app *appContext, ref string) error {
+	// Check for a local OCI tag first — supports repull/update semantics.
+	store := oci.NewStore(app.cfg)
+	_, exists, tagErr := resolveLocalOCITagRef(store, ref)
+	if tagErr == nil && exists {
 		return pullOCIVMImage(c, app, ref)
 	}
 
-	// Existing cloud image pipeline.
+	// Probe the remote registry using the go-containerregistry default
+	// resolution (short names auto-resolve to index.docker.io).
+	if oci.ProbeRegistryVMImage(c.Context, app.cfg, ref) {
+		return pullOCIVMImage(c, app, ref)
+	}
+
+	// Not a Cocoon VM image — fall back to cloud pipeline with a
+	// Docker-normalized domain ref so buildah/skopeo can resolve it.
+	normalizedRef := normalizeDockerLikeOCIRef(ref)
+	return pullCloudPipelineImage(c, app, normalizedRef)
+}
+
+// pullDomainRefImage handles domain-prefixed refs. It probes for a Cocoon
+// VM image first (local OCI tag or remote manifest), then falls back to
+// the cloud pipeline.
+func pullDomainRefImage(c *cli.Context, app *appContext, ref string) error {
+	// Check for a local OCI tag first.
+	store := oci.NewStore(app.cfg)
+	_, exists, tagErr := resolveLocalOCITagRef(store, ref)
+	if tagErr == nil && exists {
+		return pullOCIVMImage(c, app, ref)
+	}
+
+	// Probe registry for Cocoon VM media types.
+	if oci.ProbeRegistryVMImage(c.Context, app.cfg, ref) {
+		return pullOCIVMImage(c, app, ref)
+	}
+
+	// Not a Cocoon VM image — use the cloud image pipeline.
+	return pullCloudPipelineImage(c, app, ref)
+}
+
+// pullCloudPipelineImage runs the existing cloud image pipeline (Prepare)
+// with bootability verification and cache bookkeeping.
+func pullCloudPipelineImage(c *cli.Context, app *appContext, ref string) error {
 	// Check if the image is already cached before pulling.
 	_, cacheLookupErr := resolveBaseKeyFromCache(c, app, ref)
 	cachedBefore := cacheLookupErr == nil
@@ -241,10 +356,6 @@ func imagePullAction(c *cli.Context) error {
 	}
 
 	// Post-pull bootability verification.
-	// Skip for already-cached images (verified on first pull).
-	// VerifyBootability requires guestfish for deep checks (Linux-only).
-	// On Darwin or when guestfish is unavailable, it falls back to basic
-	// qcow2 validation with an optimistic result.
 	if shouldVerifyPulledImage(app, identity.BaseKey(), cachedBefore, c.Bool("skip-verify")) {
 		if err := verifyPulledImage(c.Context, app, ref, basePath, identity.BaseKey()); err != nil {
 			return err
@@ -259,38 +370,6 @@ func imagePullAction(c *cli.Context) error {
 	fmt.Printf("Cached at: %s\n", basePath)
 
 	return nil
-}
-
-// isOCIVMRegistryRef checks whether ref should use the OCI VM pull path.
-// Returns false for URLs/local paths. Returns true for refs already present as
-// local OCI tags (to support repull/update semantics) or refs that probe as
-// Cocoon VM images on a remote registry.
-func isOCIVMRegistryRef(c *cli.Context, app *appContext, ref string) bool {
-	// Skip URLs.
-	if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
-		return false
-	}
-	// Skip local file paths.
-	if strings.HasPrefix(ref, "/") || strings.HasPrefix(ref, "./") || strings.HasPrefix(ref, "../") {
-		return false
-	}
-	if fi, err := os.Stat(ref); err == nil && fi.Mode().IsRegular() {
-		return false
-	}
-
-	// Local OCI tags should still route through oci.Pull so `image pull` can
-	// refresh/update the tag from registry instead of falling back to cloud path.
-	store := oci.NewStore(app.cfg)
-	_, exists, err := resolveLocalOCITagRef(store, ref)
-	if err != nil {
-		return false
-	}
-	if exists {
-		return true
-	}
-
-	// Probe the registry for Cocoon VM media types.
-	return oci.ProbeRegistryVMImage(c.Context, app.cfg, ref)
 }
 
 // pullOCIVMImage pulls an OCI VM image from a remote registry into the local store.
@@ -721,6 +800,9 @@ func imageVerifyAction(c *cli.Context) error {
 
 	arg := c.Args().Get(0)
 	format := c.String("format")
+	if fmtErr := validateOutputFormat(format); fmtErr != nil {
+		return fmtErr
+	}
 
 	result, err := resolveVerifyResult(c, app, arg)
 	if err != nil {

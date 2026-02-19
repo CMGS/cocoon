@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // UEFIFallbackPaths lists system OVMF firmware paths to probe when the
@@ -45,6 +46,10 @@ type CocoonConfig struct {
 	BootTimeoutSeconds int `json:"boot_timeout_seconds"`
 	// Stop timeout in seconds.
 	StopTimeoutSeconds int `json:"stop_timeout_seconds"`
+
+	// RegistryHTTPTimeoutSeconds is the timeout for registry HTTP requests
+	// (login ping, token exchange). Zero or negative uses the default (30s).
+	RegistryHTTPTimeoutSeconds int `json:"registry_http_timeout_seconds,omitempty"`
 
 	// BootSuccessPatterns are regex patterns indicating successful boot.
 	// If empty, defaults are used.
@@ -170,6 +175,15 @@ func (c *CocoonConfig) BootFailurePatternsOrDefault() []string {
 		`No working init found`,
 		`Failed to execute /init`,
 	}
+}
+
+// RegistryHTTPTimeout returns the configured registry HTTP timeout, or 30s
+// if not set.
+func (c *CocoonConfig) RegistryHTTPTimeout() time.Duration {
+	if c.RegistryHTTPTimeoutSeconds > 0 {
+		return time.Duration(c.RegistryHTTPTimeoutSeconds) * time.Second
+	}
+	return 30 * time.Second
 }
 
 // Derived path helpers.
