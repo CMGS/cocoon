@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -43,6 +45,35 @@ type checkResult struct {
 	Status string `json:"status"` // "pass", "fail", or "warn"
 	Detail string `json:"detail"`
 }
+
+var (
+	doctorLookPath   = exec.LookPath
+	doctorRunCommand = func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+		cmd := exec.CommandContext(ctx, binary, args...) //nolint:gosec // binary path is resolved from PATH or fixed command; args are fixed literals
+		return cmd.CombinedOutput()
+	}
+	doctorStat     = os.Stat
+	doctorLstat    = os.Lstat
+	doctorReadlink = os.Readlink
+	doctorRemove   = os.Remove
+	doctorSymlink  = os.Symlink
+	doctorMkdirAll = os.MkdirAll
+)
+
+var doctorVirtiofsdFallbackPaths = []string{
+	"/usr/libexec/virtiofsd",
+	"/usr/lib/qemu/virtiofsd",
+	"/usr/lib/virtiofsd",
+	"/usr/lib64/virtiofsd",
+}
+
+var doctorVirtiofsdLinkDir = "/usr/local/bin"
+
+const (
+	checkStatusPass = "pass"
+	checkStatusFail = "fail"
+	checkStatusWarn = "warn"
+)
 
 func checkBinaryWithMinVersion(name, binary string, args []string, min utils.SemVersion, purpose string) checkResult {
 	path, err := exec.LookPath(binary)
@@ -271,64 +302,245 @@ func checkSwtpm() checkResult {
 	}
 }
 
-func checkVirtiofsdBinary(configuredBinary string) checkResult {
+func normalizeVirtiofsdBinary(configuredBinary string) string {
 	binary := strings.TrimSpace(configuredBinary)
 	if binary == "" {
-		binary = "virtiofsd"
+		return "virtiofsd"
+	}
+	return binary
+}
+
+func findVirtiofsdFallbackBinary() (string, bool) {
+	for _, candidate := range doctorVirtiofsdFallbackPaths {
+		info, err := doctorStat(candidate)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		if info.Mode()&0o111 == 0 {
+			continue
+		}
+		return candidate, true
+	}
+	return "", false
+}
+
+func resolveVirtiofsdBinary(configuredBinary string) (string, bool, error) {
+	binary := normalizeVirtiofsdBinary(configuredBinary)
+	path, err := doctorLookPath(binary)
+	if err == nil {
+		return path, false, nil
 	}
 
-	path, err := exec.LookPath(binary)
+	fallback, ok := findVirtiofsdFallbackBinary()
+	if ok {
+		return fallback, true, nil
+	}
+
+	return "", false, fmt.Errorf("binary not found in PATH (required for OCI VM direct-boot runtime): %s", binary)
+}
+
+func queryVirtiofsdVersion(path string) (utils.SemVersion, error) {
+	queries := [][]string{{"--version"}, {"-V"}}
+
+	var (
+		lastOutput string
+		lastErr    error
+	)
+	for _, args := range queries {
+		out, err := doctorRunCommand(context.TODO(), path, args...)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to query version: %w", err)
+			continue
+		}
+
+		lastOutput = strings.TrimSpace(string(out))
+		ver, parseErr := utils.ParseSemVersion(lastOutput)
+		if parseErr != nil {
+			lastErr = fmt.Errorf("failed to parse version from output: %s", lastOutput)
+			continue
+		}
+		return ver, nil
+	}
+
+	if lastErr != nil {
+		return utils.SemVersion{}, lastErr
+	}
+	return utils.SemVersion{}, fmt.Errorf("failed to query version: no output")
+}
+
+func checkVirtiofsdBinary(configuredBinary string) checkResult {
+	binary := normalizeVirtiofsdBinary(configuredBinary)
+	path, fallbackUsed, err := resolveVirtiofsdBinary(binary)
 	if err != nil {
 		return checkResult{
 			Name:   "virtiofsd",
 			Status: "fail",
-			Detail: fmt.Sprintf("binary not found in PATH (required for OCI VM direct-boot runtime): %s", binary),
+			Detail: err.Error(),
+		}
+	}
+
+	if fallbackUsed {
+		return checkResult{
+			Name:   "virtiofsd",
+			Status: "fail",
+			Detail: fmt.Sprintf("configured command %q not found in PATH; discovered fallback at %s; run 'cocoon doctor --fix' to remediate", binary, path),
+		}
+	}
+
+	ver, verErr := queryVirtiofsdVersion(path)
+	if verErr != nil {
+		return checkResult{
+			Name:   "virtiofsd",
+			Status: "fail",
+			Detail: verErr.Error(),
 		}
 	}
 
 	min := utils.SemVersion{Major: 1, Minor: 7, Patch: 0}
-	queries := [][]string{{"--version"}, {"-V"}}
-
-	var (
-		out  []byte
-		qErr error
-	)
-	for _, args := range queries {
-		cmd := exec.Command(path, args...) //nolint:gosec // binary path is resolved from PATH; args are fixed literals
-		out, qErr = cmd.CombinedOutput()
-		if qErr == nil {
-			ver, parseErr := utils.ParseSemVersion(string(out))
-			if parseErr != nil {
-				continue
-			}
-			if utils.CompareSemVersion(ver, min) < 0 {
-				return checkResult{
-					Name:   "virtiofsd",
-					Status: "fail",
-					Detail: fmt.Sprintf("detected %s, minimum required %s", ver.String(), min.String()),
-				}
-			}
-			return checkResult{
-				Name:   "virtiofsd",
-				Status: "pass",
-				Detail: fmt.Sprintf("%s (version %s)", path, ver.String()),
-			}
-		}
-	}
-
-	if qErr != nil {
+	if utils.CompareSemVersion(ver, min) < 0 {
 		return checkResult{
 			Name:   "virtiofsd",
 			Status: "fail",
-			Detail: fmt.Sprintf("failed to query version: %v", qErr),
+			Detail: fmt.Sprintf("detected %s, minimum required %s", ver.String(), min.String()),
 		}
 	}
 
 	return checkResult{
 		Name:   "virtiofsd",
-		Status: "fail",
-		Detail: fmt.Sprintf("failed to parse version from output: %s", strings.TrimSpace(string(out))),
+		Status: "pass",
+		Detail: fmt.Sprintf("%s (version %s)", path, ver.String()),
 	}
+}
+
+func hasFailedCheck(checks []checkResult, name string) bool {
+	for _, chk := range checks {
+		if chk.Name == name && chk.Status == checkStatusFail {
+			return true
+		}
+	}
+	return false
+}
+
+func replaceCheckResult(checks []checkResult, replacement checkResult) []checkResult {
+	for i, chk := range checks {
+		if chk.Name == replacement.Name {
+			checks[i] = replacement
+			return checks
+		}
+	}
+	return append(checks, replacement)
+}
+
+func detectDoctorPackageManager() (string, error) {
+	if _, err := doctorLookPath("apt-get"); err == nil {
+		return "apt", nil
+	}
+	if _, err := doctorLookPath("dnf"); err == nil {
+		return "dnf", nil
+	}
+	return "", fmt.Errorf("unsupported package manager; install virtiofsd manually or set config virtiofsd_binary to an absolute path")
+}
+
+func ensureVirtiofsdCommandLink(configuredBinary, target string) error {
+	if strings.ContainsRune(configuredBinary, os.PathSeparator) {
+		return fmt.Errorf("configured virtiofsd binary %q is path-like; cannot auto-link to %s (set virtiofsd_binary explicitly)", configuredBinary, target)
+	}
+
+	linkPath := filepath.Join(doctorVirtiofsdLinkDir, configuredBinary)
+	if err := doctorMkdirAll(doctorVirtiofsdLinkDir, 0o755); err != nil {
+		return fmt.Errorf("create link directory %s: %w", doctorVirtiofsdLinkDir, err)
+	}
+
+	if _, err := doctorLstat(linkPath); err == nil {
+		current, readErr := doctorReadlink(linkPath)
+		if readErr == nil && current == target {
+			return nil
+		}
+		if rmErr := doctorRemove(linkPath); rmErr != nil {
+			return fmt.Errorf("remove existing %s: %w", linkPath, rmErr)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect existing %s: %w", linkPath, err)
+	}
+
+	if err := doctorSymlink(target, linkPath); err != nil {
+		return fmt.Errorf("create symlink %s -> %s: %w", linkPath, target, err)
+	}
+	return nil
+}
+
+func tryLinkVirtiofsdFallback(configuredBinary string) {
+	fallback, ok := findVirtiofsdFallbackBinary()
+	if !ok {
+		return
+	}
+	_ = ensureVirtiofsdCommandLink(configuredBinary, fallback)
+}
+
+func remediateVirtiofsdDependency(ctx context.Context, configuredBinary string) error {
+	binary := normalizeVirtiofsdBinary(configuredBinary)
+
+	if _, err := doctorLookPath(binary); err != nil {
+		tryLinkVirtiofsdFallback(binary)
+		if _, checkErr := doctorLookPath(binary); checkErr == nil {
+			return nil
+		}
+	}
+
+	pkgManager, err := detectDoctorPackageManager()
+	if err != nil {
+		return err
+	}
+
+	switch pkgManager {
+	case "apt":
+		if _, err := doctorRunCommand(ctx, "apt-get", "update", "-qq"); err != nil {
+			return fmt.Errorf("apt-get update: %w", err)
+		}
+		if _, err := doctorRunCommand(ctx, "apt-get", "install", "-y", "-qq", "virtiofsd"); err != nil {
+			return fmt.Errorf("apt-get install virtiofsd: %w", err)
+		}
+	case "dnf":
+		if _, err := doctorRunCommand(ctx, "dnf", "install", "-y", "-q", "virtiofsd"); err != nil {
+			return fmt.Errorf("dnf install virtiofsd: %w", err)
+		}
+	default:
+		return fmt.Errorf("unsupported package manager: %s", pkgManager)
+	}
+
+	if _, err := doctorLookPath(binary); err == nil {
+		return nil
+	}
+
+	if fallback, ok := findVirtiofsdFallbackBinary(); ok {
+		if linkErr := ensureVirtiofsdCommandLink(binary, fallback); linkErr != nil {
+			return fmt.Errorf("link fallback virtiofsd: %w", linkErr)
+		}
+		if _, err := doctorLookPath(binary); err == nil {
+			return nil
+		}
+		return fmt.Errorf("configured command %q is not in PATH after remediation; fallback exists at %s", binary, fallback)
+	}
+
+	return fmt.Errorf("configured command %q still not found after remediation", binary)
+}
+
+func tryFixVirtiofsdDependency(ctx context.Context, configuredBinary string, checks []checkResult) []checkResult {
+	if !hasFailedCheck(checks, "virtiofsd") {
+		return checks
+	}
+
+	fixErr := remediateVirtiofsdDependency(ctx, configuredBinary)
+	updated := checkVirtiofsdBinary(configuredBinary)
+	if fixErr != nil {
+		if updated.Status == checkStatusPass {
+			updated.Status = checkStatusWarn
+		}
+		updated.Detail = fmt.Sprintf("%s; auto-fix error: %v", updated.Detail, fixErr)
+	} else if updated.Status == checkStatusPass {
+		updated.Detail = fmt.Sprintf("%s; auto-fix applied", updated.Detail)
+	}
+	return replaceCheckResult(checks, updated)
 }
 
 // checkOptionalBinary checks if a binary exists and reports its version.
@@ -446,6 +658,9 @@ func doctorAction(c *cli.Context) error {
 
 	// Phase 1: Dependency checks.
 	checks := runDependencyChecks(app)
+	if fix {
+		checks = tryFixVirtiofsdDependency(c.Context, app.cfg.VirtiofsdBinary, checks)
+	}
 
 	if format == formatJSON {
 		// In JSON mode, collect everything and print at the end.
@@ -468,7 +683,7 @@ func doctorAction(c *cli.Context) error {
 
 		failCount := 0
 		for _, chk := range checks {
-			if chk.Status == "fail" {
+			if chk.Status == checkStatusFail {
 				failCount++
 			}
 		}
@@ -485,7 +700,7 @@ func doctorAction(c *cli.Context) error {
 	failCount := 0
 	for _, chk := range checks {
 		status := chk.Status
-		if chk.Status == "fail" {
+		if chk.Status == checkStatusFail {
 			failCount++
 		}
 		depRows = append(depRows, []string{chk.Name, status, chk.Detail})

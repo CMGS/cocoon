@@ -22,6 +22,7 @@ COCOON_ROOT="${COCOON_ROOT:-/var/lib/cocoon}"
 COCOON_RUN="${COCOON_RUN:-/run/cocoon}"
 COCOON_LOG="${COCOON_LOG:-/var/log/cocoon}"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+VIRTIOFSD_BINARY="${VIRTIOFSD_BINARY:-virtiofsd}"
 
 # ----- Colors -----
 RED='\033[0;31m'
@@ -63,6 +64,71 @@ check_tool() {
     else
         check_result "$name" "false" "(not found${note:+ - $note})"
     fi
+}
+
+find_virtiofsd_binary() {
+    # 1) Respect configured binary if it is executable and discoverable.
+    if command -v "${VIRTIOFSD_BINARY}" &>/dev/null; then
+        command -v "${VIRTIOFSD_BINARY}"
+        return 0
+    fi
+
+    # 2) Probe known distro fallback paths.
+    local fallback_paths=(
+        "/usr/libexec/virtiofsd"
+        "/usr/lib/qemu/virtiofsd"
+        "/usr/lib/virtiofsd"
+        "/usr/lib64/virtiofsd"
+    )
+    local path
+    for path in "${fallback_paths[@]}"; do
+        if [[ -x "$path" ]]; then
+            echo "$path"
+            return 0
+        fi
+    done
+    return 1
+}
+
+ensure_virtiofsd_command() {
+    local resolved
+    if ! resolved="$(find_virtiofsd_binary)"; then
+        warn "virtiofsd binary not found; OCI VM direct runtime will fail."
+        return 1
+    fi
+
+    # If configured command is already executable from PATH, nothing to do.
+    if command -v "${VIRTIOFSD_BINARY}" &>/dev/null; then
+        ok "virtiofsd command available: $(command -v "${VIRTIOFSD_BINARY}")"
+        return 0
+    fi
+
+    # Fallback path exists but not in PATH — expose a stable command in INSTALL_DIR.
+    local link_path="${INSTALL_DIR}/${VIRTIOFSD_BINARY}"
+    mkdir -p "${INSTALL_DIR}"
+    ln -sf "${resolved}" "${link_path}"
+    chmod +x "${link_path}" 2>/dev/null || true
+    ok "linked ${link_path} -> ${resolved}"
+    return 0
+}
+
+check_virtiofsd_tool() {
+    local configured="${VIRTIOFSD_BINARY}"
+    if command -v "${configured}" &>/dev/null; then
+        local path ver
+        path="$(command -v "${configured}")"
+        ver="$("${path}" --version 2>/dev/null | head -1 || echo "installed")"
+        check_result "virtiofsd" "true" "(${path}; ${ver})"
+        return
+    fi
+
+    local fallback
+    if fallback="$(find_virtiofsd_binary 2>/dev/null)"; then
+        check_result "virtiofsd" "false" "(configured command '${configured}' not in PATH; found fallback at ${fallback}; run setup/update or 'cocoon doctor --fix')"
+        return
+    fi
+
+    check_result "virtiofsd" "false" "(not found; required for OCI VM direct runtime)"
 }
 
 check_file_exists() {
@@ -310,7 +376,7 @@ install_system_packages() {
     case "$PKG_MANAGER" in
         apt)
             apt-get update -qq
-            local packages=(qemu-utils buildah skopeo libguestfs-tools swtpm swtpm-tools)
+            local packages=(qemu-utils buildah skopeo libguestfs-tools swtpm swtpm-tools virtiofsd)
             for pkg in "${packages[@]}"; do
                 if dpkg -l "$pkg" 2>/dev/null | grep -q "^ii"; then
                     ok "$pkg already installed"
@@ -325,7 +391,7 @@ install_system_packages() {
             done
             ;;
         dnf)
-            local packages=(qemu-img buildah skopeo libguestfs-tools swtpm swtpm-tools)
+            local packages=(qemu-img buildah skopeo libguestfs-tools swtpm swtpm-tools virtiofsd)
             for pkg in "${packages[@]}"; do
                 if rpm -q "$pkg" &>/dev/null; then
                     ok "$pkg already installed"
@@ -345,6 +411,10 @@ install_system_packages() {
     # under /run/cocoon/. Without this, swtpm fails with "Permission denied"
     # when Cocoon starts a TPM emulator for a VM.
     configure_swtpm_apparmor
+
+    # Ensure virtiofsd command is runnable even when distro installs it in
+    # non-PATH locations (for example /usr/libexec/virtiofsd).
+    ensure_virtiofsd_command || true
 }
 
 # ----- Configure swtpm AppArmor -----
@@ -399,6 +469,7 @@ check_ch_runtime() {
     check_tool "buildah" "buildah" "OCI image pull"
     check_tool "skopeo" "skopeo" "OCI image inspection"
     check_tool "guestfish" "guestfish" "OCI conversion and boot verification"
+    check_virtiofsd_tool
     check_tool "swtpm" "swtpm" "TPM 2.0 emulator for VM TPM support"
     # Check swtpm AppArmor is not blocking socket creation.
     if [[ -f /etc/apparmor.d/usr.bin.swtpm ]]; then
