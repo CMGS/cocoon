@@ -794,6 +794,9 @@ func (m *manager) setupOCIRuntimeForStart(
 	if strings.TrimSpace(vmCfg.BaseImagePath) == "" {
 		return nil, false, fmt.Errorf("rootfs lowerdir is empty")
 	}
+	// Re-pin on each start as a self-healing guard:
+	// create-time pin is authoritative, but start-time idempotent pin repairs
+	// missing entries caused by manual edits or crash windows in prior cleanup.
 	if err := oci.AddRuntimeRef(m.cfg, vmCfg.BaseKey, vmID); err != nil {
 		return nil, false, fmt.Errorf("pin OCI runtime cache %s for %s: %w", vmCfg.BaseKey, vmID, err)
 	}

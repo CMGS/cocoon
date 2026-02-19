@@ -174,6 +174,9 @@ func validateRuntimeKey(runtimeKey string) error {
 	if runtimeKey == "" {
 		return fmt.Errorf("runtime key is empty")
 	}
+	// Runtime keys are currently sha256-prefix hex strings, but we intentionally
+	// validate only path-safety invariants here. This keeps the index format
+	// forward-compatible if runtime key derivation changes in later phases.
 	// Defense-in-depth against traversal/injection in path helpers.
 	if strings.Contains(runtimeKey, "..") || strings.ContainsAny(runtimeKey, `/\`) {
 		return fmt.Errorf("invalid runtime key %q", runtimeKey)
