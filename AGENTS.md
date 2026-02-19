@@ -82,6 +82,20 @@ git push
 If either command fails, fix the issues before committing. Do not use
 `--no-verify` or skip checks.
 
+## Git Workflow
+
+### Rule
+
+When merging pull requests, use **rebase merge** by default to keep history linear.
+Do not use merge-commit strategy unless explicitly required.
+
+### Steps
+
+```bash
+# Preferred merge strategy
+gh pr merge <PR_NUMBER> --rebase
+```
+
 ## Planning Records
 
 ### Rule
