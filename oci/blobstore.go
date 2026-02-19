@@ -36,8 +36,8 @@ func validateHexDigest(digest string) error {
 	return nil
 }
 
-// BlobPath returns the shared blob path for a hex digest (without "sha256:" prefix).
-func (bs *BlobStore) BlobPath(digest string) string {
+// blobPath returns the shared blob path for a hex digest (without "sha256:" prefix).
+func (bs *BlobStore) blobPath(digest string) string {
 	return filepath.Join(bs.cfg.OCIBlobDir(), digest)
 }
 
@@ -46,7 +46,7 @@ func (bs *BlobStore) BlobExists(digest string) bool {
 	if validateHexDigest(digest) != nil {
 		return false
 	}
-	_, err := os.Stat(bs.BlobPath(digest))
+	_, err := os.Stat(bs.blobPath(digest))
 	return err == nil
 }
 
@@ -57,7 +57,7 @@ func (bs *BlobStore) StoreBlob(srcPath, digest string) (string, error) {
 	if err := validateHexDigest(digest); err != nil {
 		return "", err
 	}
-	blobPath := bs.BlobPath(digest)
+	blobPath := bs.blobPath(digest)
 	if bs.BlobExists(digest) {
 		return blobPath, nil
 	}
@@ -121,7 +121,7 @@ func (bs *BlobStore) StoreBlobFromBytes(data []byte, digest string) (string, err
 	if err := validateHexDigest(digest); err != nil {
 		return "", err
 	}
-	blobPath := bs.BlobPath(digest)
+	blobPath := bs.blobPath(digest)
 	if bs.BlobExists(digest) {
 		return blobPath, nil
 	}
@@ -173,7 +173,7 @@ func (bs *BlobStore) LinkBlobToLayout(digest, layoutDir string) error {
 	if err := validateHexDigest(digest); err != nil {
 		return err
 	}
-	src := bs.BlobPath(digest)
+	src := bs.blobPath(digest)
 	dstDir := filepath.Join(layoutDir, "blobs", "sha256")
 	if err := os.MkdirAll(dstDir, 0o750); err != nil {
 		return fmt.Errorf("create layout blobs dir: %w", err)
@@ -194,7 +194,7 @@ func (bs *BlobStore) RemoveBlob(digest string) error {
 	if err := validateHexDigest(digest); err != nil {
 		return err
 	}
-	return os.Remove(bs.BlobPath(digest))
+	return os.Remove(bs.blobPath(digest))
 }
 
 // copyFileSync copies src to dst with fsync for durability.

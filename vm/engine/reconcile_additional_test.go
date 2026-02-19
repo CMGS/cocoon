@@ -289,3 +289,18 @@ func TestBuildOrphanScanProcessNames(t *testing.T) {
 		t.Fatalf("expected unique process names, got %v", got)
 	}
 }
+
+func TestReconcileStateTimeouts_FromConfig(t *testing.T) {
+	t.Parallel()
+
+	mgr, _ := setupReconcileManager(t)
+	mgr.cfg.BootTimeoutSeconds = 77
+	mgr.cfg.StopTimeoutSeconds = 23
+
+	if got := mgr.startingStateTimeout(); got != 77*time.Second {
+		t.Fatalf("startingStateTimeout=%s, want %s", got, 77*time.Second)
+	}
+	if got := mgr.stoppingStateTimeout(); got != 23*time.Second {
+		t.Fatalf("stoppingStateTimeout=%s, want %s", got, 23*time.Second)
+	}
+}

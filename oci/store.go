@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/CMGS/cocoon/config"
@@ -17,12 +18,24 @@ import (
 // Store manages local OCI VM image builds and their tag index.
 // Follows the flock + JSON pattern from image/refcache/index.go.
 type Store struct {
-	cfg *config.CocoonConfig
+	cfg              *config.CocoonConfig
+	removeBlobRefsFn func(cfg *config.CocoonConfig, manifestDigest string) ([]string, error)
 }
+
+var blobRefCleanupFailures atomic.Uint64
 
 // NewStore creates a Store for the given config.
 func NewStore(cfg *config.CocoonConfig) *Store {
-	return &Store{cfg: cfg}
+	return &Store{
+		cfg:              cfg,
+		removeBlobRefsFn: RemoveBlobRefs,
+	}
+}
+
+// BlobRefCleanupFailureCount returns the number of best-effort cleanup failures
+// observed while rewriting tags. This is a diagnostic counter for leak risk.
+func BlobRefCleanupFailureCount() uint64 {
+	return blobRefCleanupFailures.Load()
 }
 
 // LayoutDir returns the directory path for an OCI layout keyed by layoutKey.
@@ -84,8 +97,9 @@ func (s *Store) saveTagTxnLocked(tag, layoutPath, manifestDigest string) error {
 	// can run while we modify blob refs. Keeping the tag lock and layer-refs
 	// lock disjoint (never held simultaneously) avoids lock-ordering deadlocks.
 	if oldManifestDigest != "" && !oldManifestStillUsed {
-		if _, refErr := RemoveBlobRefs(s.cfg, oldManifestDigest); refErr != nil {
-			log.Printf("warning: failed to clean old manifest %s blob refs (will be reclaimed by GC): %v", oldManifestDigest, refErr)
+		if _, refErr := s.removeBlobRefsFn(s.cfg, oldManifestDigest); refErr != nil {
+			failures := blobRefCleanupFailures.Add(1)
+			log.Printf("warning: failed to clean old manifest %s blob refs (will be reclaimed by GC): %v (cleanup_failures=%d)", oldManifestDigest, refErr, failures)
 		}
 	}
 	return nil
@@ -206,7 +220,7 @@ func (s *Store) RemoveTag(tag string) (string, []string, error) {
 		// never held simultaneously).
 		if manifestDigest != "" && !manifestStillUsed {
 			var refErr error
-			zeroRefBlobs, refErr = RemoveBlobRefs(s.cfg, manifestDigest)
+			zeroRefBlobs, refErr = s.removeBlobRefsFn(s.cfg, manifestDigest)
 			if refErr != nil {
 				return fmt.Errorf("remove blob refs for %s: %w", manifestDigest, refErr)
 			}

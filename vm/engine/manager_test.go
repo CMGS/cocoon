@@ -66,9 +66,15 @@ func setupTestManager(t *testing.T) *testDeps {
 	imgMgr := &imgmocks.MockManager{}
 
 	mgr := New(cfg, hyper, refCounter, cowMgr, imgMgr)
+	concreteMgr, ok := mgr.(*manager)
+	if !ok {
+		t.Fatalf("unexpected manager type %T", mgr)
+	}
+	// Keep manager tests hermetic: never depend on host skopeo/network.
+	concreteMgr.registryProbeRawFn = resolverProbeStub
 
 	return &testDeps{
-		mgr:        mgr,
+		mgr:        concreteMgr,
 		cfg:        cfg,
 		hyper:      hyper,
 		refCounter: refCounter,

@@ -144,6 +144,8 @@ func splitDirective(line string) (string, string) {
 }
 
 // parseLabels parses one or more key=value or key="value" pairs from a LABEL line.
+// Limitation: escaped quotes inside quoted values (e.g. key="a \"quoted\" value")
+// are not supported in the current parser and will be interpreted as parse errors.
 func parseLabels(cf *Cocoonfile, args string) error {
 	// Simple parser: split on spaces, each token is key=value or key="value with spaces".
 	remaining := args

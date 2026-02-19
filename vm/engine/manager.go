@@ -1,12 +1,13 @@
 package engine
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strings"
@@ -41,13 +42,14 @@ var _ vm.Manager = (*manager)(nil)
 
 // manager is the concrete implementation of the Manager interface.
 type manager struct {
-	cfg         *config.CocoonConfig
-	hyper       hypervisor.Client
-	refCounter  storage.ReferenceCounter
-	cowMgr      storage.COWManager
-	imgMgr      image.Manager
-	overlayMgr  *overlayRuntimeManager
-	virtiofsMgr *virtiofsdRuntimeManager
+	cfg                *config.CocoonConfig
+	hyper              hypervisor.Client
+	refCounter         storage.ReferenceCounter
+	cowMgr             storage.COWManager
+	imgMgr             image.Manager
+	overlayMgr         *overlayRuntimeManager
+	virtiofsMgr        *virtiofsdRuntimeManager
+	registryProbeRawFn registryProbeRawFunc
 }
 
 // New creates a new VM manager backed by the given configuration and dependencies.
@@ -59,13 +61,14 @@ func New(
 	imgMgr image.Manager,
 ) vm.Manager {
 	return &manager{
-		cfg:         cfg,
-		hyper:       hyper,
-		refCounter:  refCounter,
-		cowMgr:      cowMgr,
-		imgMgr:      imgMgr,
-		overlayMgr:  newOverlayRuntimeManager(cfg),
-		virtiofsMgr: newVirtiofsdRuntimeManager(cfg),
+		cfg:                cfg,
+		hyper:              hyper,
+		refCounter:         refCounter,
+		cowMgr:             cowMgr,
+		imgMgr:             imgMgr,
+		overlayMgr:         newOverlayRuntimeManager(cfg),
+		virtiofsMgr:        newVirtiofsdRuntimeManager(cfg),
+		registryProbeRawFn: defaultRunSkopeoInspectRaw,
 	}
 }
 
@@ -212,7 +215,7 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 		diskSize = m.cfg.DefaultDiskSize
 	}
 
-	resolvedImage, err := resolveRuntimeImageRef(ctx, m.cfg, opts.Image)
+	resolvedImage, err := m.resolveRuntimeImageRef(ctx, opts.Image)
 	if err != nil {
 		return nil, fmt.Errorf("resolve image reference %q: %w", opts.Image, err)
 	}
@@ -506,6 +509,14 @@ func (m *manager) snapshotCachedBaseKeys(ctx context.Context) map[string]struct{
 		keys[img.BaseKey] = struct{}{}
 	}
 	return keys
+}
+
+func (m *manager) resolveRuntimeImageRef(ctx context.Context, ref string) (*resolvedRuntimeImage, error) {
+	probe := m.registryProbeRawFn
+	if probe == nil {
+		probe = defaultRunSkopeoInspectRaw
+	}
+	return resolveRuntimeImageRefWithProbe(ctx, m.cfg, ref, probe)
 }
 
 func (m *manager) shouldSkipVerifyForCacheHit(skipVerify bool, cachedBaseKeysBefore map[string]struct{}, baseKey, imageRef string) bool {
@@ -1246,23 +1257,63 @@ func readSerialLogExcerpt(path string, maxLines int) ([]string, error) {
 	}
 	defer f.Close() //nolint:errcheck
 
-	scanner := bufio.NewScanner(f)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
-
-	// Collect all lines, then return the tail. This avoids the O(n) per-line
-	// shifting cost of maintaining a sliding window during the scan.
-	var all []string
-	for scanner.Scan() {
-		all = append(all, scanner.Text())
-	}
-	if err := scanner.Err(); err != nil {
+	info, err := f.Stat()
+	if err != nil {
 		return nil, err
 	}
-	if len(all) > maxLines {
-		all = all[len(all)-maxLines:]
+	if info.Size() == 0 {
+		return nil, nil
 	}
-	return all, nil
+
+	const (
+		readChunkSize = int64(64 * 1024)
+		maxTailBytes  = int64(8 * 1024 * 1024)
+	)
+
+	var (
+		offset       = info.Size()
+		totalRead    int64
+		newlineCount int
+		chunks       [][]byte
+	)
+
+	for offset > 0 && newlineCount <= maxLines && totalRead < maxTailBytes {
+		n := readChunkSize
+		n = min(n, offset)
+		offset -= n
+
+		buf := make([]byte, n)
+		readN, readErr := f.ReadAt(buf, offset)
+		if readErr != nil && readErr != io.EOF {
+			return nil, readErr
+		}
+		buf = buf[:readN]
+		chunks = append(chunks, buf)
+		totalRead += int64(readN)
+		newlineCount += bytes.Count(buf, []byte{'\n'})
+	}
+
+	var tail bytes.Buffer
+	tail.Grow(int(totalRead))
+	for i := len(chunks) - 1; i >= 0; i-- {
+		if _, writeErr := tail.Write(chunks[i]); writeErr != nil {
+			return nil, writeErr
+		}
+	}
+
+	content := strings.TrimRight(tail.String(), "\n")
+	if content == "" {
+		return nil, nil
+	}
+
+	lines := strings.Split(content, "\n")
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	if offset > 0 && len(lines) > 0 {
+		lines[0] = "..." + lines[0]
+	}
+	return lines, nil
 }
 
 // ---------------------------------------------------------------------------

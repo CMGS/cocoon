@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +14,20 @@ import (
 	"github.com/CMGS/cocoon/oci"
 	"github.com/CMGS/cocoon/types"
 )
+
+func resolverProbeStub(_ context.Context, ref string, _ string) ([]byte, error) {
+	switch {
+	case strings.Contains(ref, "probe-error"):
+		return nil, errors.New("network timeout")
+	case strings.Contains(ref, "cocoon-vm"):
+		return []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","artifactType":"application/vnd.cocoon.vm.image.v1","config":{"mediaType":"application/vnd.cocoon.vm.config.v1+json"},"layers":[{"mediaType":"application/vnd.cocoon.vm.kernel.v1.tar"},{"mediaType":"application/vnd.cocoon.vm.rootfs.v1.tar"}]}`), nil
+	}
+	return []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json"},"layers":[]}`), nil
+}
+
+func resolveRuntimeImageRefForTest(ctx context.Context, cfg *config.CocoonConfig, ref string) (*resolvedRuntimeImage, error) {
+	return resolveRuntimeImageRefWithProbe(ctx, cfg, ref, resolverProbeStub)
+}
 
 func writeRefcacheIndex(t *testing.T, cfg *config.CocoonConfig, entries map[string]map[string]any) {
 	t.Helper()
@@ -46,7 +62,7 @@ func TestResolveRuntimeImageRef_LocalPath(t *testing.T) {
 		t.Fatalf("write local image: %v", err)
 	}
 
-	got, err := resolveRuntimeImageRef(t.Context(), cfg, imagePath)
+	got, err := resolveRuntimeImageRefForTest(t.Context(), cfg, imagePath)
 	if err != nil {
 		t.Fatalf("resolveRuntimeImageRef: %v", err)
 	}
@@ -65,7 +81,7 @@ func TestResolveRuntimeImageRef_MissingExplicitLocalPath(t *testing.T) {
 	t.Parallel()
 	cfg := testResolverConfig(t)
 
-	_, err := resolveRuntimeImageRef(t.Context(), cfg, "./missing.img")
+	_, err := resolveRuntimeImageRefForTest(t.Context(), cfg, "./missing.img")
 	if err == nil {
 		t.Fatal("expected error for missing explicit local path, got nil")
 	}
@@ -83,7 +99,7 @@ func TestResolveRuntimeImageRef_LocalOCITagImplicitLatest(t *testing.T) {
 		t.Fatalf("SaveTag: %v", err)
 	}
 
-	got, err := resolveRuntimeImageRef(t.Context(), cfg, "demo")
+	got, err := resolveRuntimeImageRefForTest(t.Context(), cfg, "demo")
 	if err != nil {
 		t.Fatalf("resolveRuntimeImageRef: %v", err)
 	}
@@ -119,7 +135,7 @@ func TestResolveRuntimeImageRef_AmbiguousOCITagAndCacheAlias(t *testing.T) {
 		},
 	})
 
-	_, err := resolveRuntimeImageRef(t.Context(), cfg, "demo")
+	_, err := resolveRuntimeImageRefForTest(t.Context(), cfg, "demo")
 	if err == nil {
 		t.Fatal("expected ambiguity error, got nil")
 	}
@@ -149,7 +165,7 @@ func TestResolveRuntimeImageRef_PrefersLocalOCITagWhenIdentitySame(t *testing.T)
 		},
 	})
 
-	got, err := resolveRuntimeImageRef(t.Context(), cfg, "demo")
+	got, err := resolveRuntimeImageRefForTest(t.Context(), cfg, "demo")
 	if err != nil {
 		t.Fatalf("resolveRuntimeImageRef: %v", err)
 	}
@@ -166,7 +182,7 @@ func TestResolveRuntimeImageRef_LocalCacheAlias(t *testing.T) {
 		t.Fatalf("refcache.Upsert: %v", err)
 	}
 
-	got, err := resolveRuntimeImageRef(t.Context(), cfg, "ubuntu-24.04")
+	got, err := resolveRuntimeImageRefForTest(t.Context(), cfg, "ubuntu-24.04")
 	if err != nil {
 		t.Fatalf("resolveRuntimeImageRef: %v", err)
 	}
@@ -181,7 +197,7 @@ func TestResolveRuntimeImageRef_LocalCacheAlias(t *testing.T) {
 func TestResolveRuntimeImageRef_URLAndRegistry(t *testing.T) {
 	cfg := testResolverConfig(t)
 
-	urlResolved, err := resolveRuntimeImageRef(t.Context(), cfg, "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img")
+	urlResolved, err := resolveRuntimeImageRefForTest(t.Context(), cfg, "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img")
 	if err != nil {
 		t.Fatalf("resolveRuntimeImageRef(url): %v", err)
 	}
@@ -189,7 +205,7 @@ func TestResolveRuntimeImageRef_URLAndRegistry(t *testing.T) {
 		t.Fatalf("URL source = %q, want %q", urlResolved.Source, runtimeImageSourceURL)
 	}
 
-	regResolved, err := resolveRuntimeImageRef(t.Context(), cfg, "docker.io/library/ubuntu:24.04")
+	regResolved, err := resolveRuntimeImageRefWithProbe(t.Context(), cfg, "docker.io/library/ubuntu:24.04", resolverProbeStub)
 	if err != nil {
 		t.Fatalf("resolveRuntimeImageRef(registry): %v", err)
 	}
@@ -204,7 +220,7 @@ func TestResolveRuntimeImageRef_URLAndRegistry(t *testing.T) {
 func TestResolveRuntimeImageRef_RegistryProbeFailureReturnsError(t *testing.T) {
 	cfg := testResolverConfig(t)
 
-	_, err := resolveRuntimeImageRef(t.Context(), cfg, "registry.example.com/ns/probe-error:latest")
+	_, err := resolveRuntimeImageRefWithProbe(t.Context(), cfg, "registry.example.com/ns/probe-error:latest", resolverProbeStub)
 	if err == nil {
 		t.Fatal("expected registry probe error, got nil")
 	}
@@ -216,7 +232,7 @@ func TestResolveRuntimeImageRef_RegistryProbeFailureReturnsError(t *testing.T) {
 func TestResolveRuntimeImageRef_RegistryCocoonVMMediaTypes(t *testing.T) {
 	cfg := testResolverConfig(t)
 
-	resolved, err := resolveRuntimeImageRef(t.Context(), cfg, "registry.example.com/ns/cocoon-vm:latest")
+	resolved, err := resolveRuntimeImageRefWithProbe(t.Context(), cfg, "registry.example.com/ns/cocoon-vm:latest", resolverProbeStub)
 	if err != nil {
 		t.Fatalf("resolveRuntimeImageRef: %v", err)
 	}
@@ -251,7 +267,7 @@ func TestResolveRuntimeImageRef_NonExplicitLocalFileDoesNotShadowOCITag(t *testi
 		t.Fatalf("write demo local file: %v", err)
 	}
 
-	resolved, err := resolveRuntimeImageRef(t.Context(), cfg, "demo")
+	resolved, err := resolveRuntimeImageRefForTest(t.Context(), cfg, "demo")
 	if err != nil {
 		t.Fatalf("resolveRuntimeImageRef: %v", err)
 	}

@@ -2,6 +2,7 @@ package oci
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -151,7 +152,8 @@ func classifyPushError(err error) error {
 }
 
 func isNetworkError(err error) bool {
-	if _, ok := err.(*net.OpError); ok { //nolint:errorlint // direct type check is intentional
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
 		return true
 	}
 	if os.IsTimeout(err) {

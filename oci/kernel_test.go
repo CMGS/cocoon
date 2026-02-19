@@ -123,6 +123,16 @@ func TestDetectKernel(t *testing.T) {
 			wantKernel:  "/boot/vmlinuz",
 			wantInitrd:  "/boot/initrd",
 		},
+		{
+			name: "bare vmlinuz with plain initramfs",
+			bootFiles: []string{
+				"/boot/vmlinuz",
+				"/boot/initramfs",
+			},
+			wantVersion: "unknown",
+			wantKernel:  "/boot/vmlinuz",
+			wantInitrd:  "/boot/initramfs",
+		},
 	}
 
 	for _, tt := range tests {

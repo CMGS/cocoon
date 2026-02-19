@@ -53,7 +53,9 @@ type registryProbeIndex struct {
 	MediaType string `json:"mediaType"`
 }
 
-var runSkopeoInspectRaw = func(ctx context.Context, ref, arch string) ([]byte, error) {
+type registryProbeRawFunc func(ctx context.Context, ref, arch string) ([]byte, error)
+
+func defaultRunSkopeoInspectRaw(ctx context.Context, ref, arch string) ([]byte, error) {
 	args := []string{"inspect", "--raw"}
 	if arch != "" {
 		args = append(args, "--override-arch", arch)
@@ -70,7 +72,12 @@ var runSkopeoInspectRaw = func(ctx context.Context, ref, arch string) ([]byte, e
 	return out, nil
 }
 
-func resolveRuntimeImageRef(ctx context.Context, cfg *config.CocoonConfig, ref string) (*resolvedRuntimeImage, error) {
+func resolveRuntimeImageRefWithProbe(
+	ctx context.Context,
+	cfg *config.CocoonConfig,
+	ref string,
+	registryProbe registryProbeRawFunc,
+) (*resolvedRuntimeImage, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return nil, fmt.Errorf("image reference is empty")
@@ -132,7 +139,7 @@ func resolveRuntimeImageRef(ctx context.Context, cfg *config.CocoonConfig, ref s
 			VMImageType: types.VMImageTypeQCOW2,
 		}, nil
 	}
-	vmType, probeErr := detectRegistryVMImageType(ctx, ref)
+	vmType, probeErr := detectRegistryVMImageType(ctx, ref, registryProbe)
 	if probeErr != nil {
 		return nil, fmt.Errorf("probe registry image type for %q: %w", ref, probeErr)
 	}
@@ -162,8 +169,12 @@ func localOCITagAndCacheRefDiffer(cfg *config.CocoonConfig, ociRef, cacheBaseKey
 	return ociBaseKey != cacheBaseKey, nil
 }
 
-func detectRegistryVMImageType(ctx context.Context, ref string) (types.VMImageType, error) {
-	rawManifest, err := runSkopeoInspectRaw(ctx, ref, "")
+func detectRegistryVMImageType(ctx context.Context, ref string, registryProbe registryProbeRawFunc) (types.VMImageType, error) {
+	if registryProbe == nil {
+		registryProbe = defaultRunSkopeoInspectRaw
+	}
+
+	rawManifest, err := registryProbe(ctx, ref, "")
 	if err != nil {
 		return types.VMImageTypeQCOW2, err
 	}
@@ -173,7 +184,7 @@ func detectRegistryVMImageType(ctx context.Context, ref string) (types.VMImageTy
 		return types.VMImageTypeQCOW2, fmt.Errorf("parse registry manifest for %q: %w", ref, unmarshalErr)
 	}
 	if strings.Contains(idx.MediaType, "image.index") || strings.Contains(idx.MediaType, "manifest.list") {
-		rawManifest, err = runSkopeoInspectRaw(ctx, ref, hostOCIArch())
+		rawManifest, err = registryProbe(ctx, ref, hostOCIArch())
 		if err != nil {
 			return types.VMImageTypeQCOW2, err
 		}

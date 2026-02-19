@@ -15,6 +15,15 @@ var (
 	}
 )
 
+func canonicalArch(arch string) string {
+	switch strings.ToLower(strings.TrimSpace(arch)) {
+	case "aarch64":
+		return "arm64"
+	default:
+		return strings.ToLower(strings.TrimSpace(arch))
+	}
+}
+
 // ReferenceEntry tracks a base image and the VMs referencing it.
 type ReferenceEntry struct {
 	Path       string   `json:"path"`
@@ -44,13 +53,14 @@ func ParseBaseKey(baseKey string) (checksum, arch string, err error) {
 	if !hexPattern.MatchString(parts[0]) {
 		return "", "", fmt.Errorf("invalid base_key checksum: must be 16 hex chars, got %q", parts[0])
 	}
-	if !validArchs[parts[1]] {
+	normalizedArch := canonicalArch(parts[1])
+	if !validArchs[normalizedArch] && !validArchs[parts[1]] {
 		return "", "", fmt.Errorf("invalid base_key arch %q: must be one of amd64, arm64, aarch64", parts[1])
 	}
-	return parts[0], parts[1], nil
+	return parts[0], normalizedArch, nil
 }
 
 // FormatBaseKey constructs a base_key from checksum and arch.
 func FormatBaseKey(checksum, arch string) string {
-	return checksum + "_" + arch
+	return checksum + "_" + canonicalArch(arch)
 }
