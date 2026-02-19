@@ -411,3 +411,45 @@ func TestTagCloudImageAlias_RejectsImplicitLatestOCICollision(t *testing.T) {
 		t.Fatalf("expected resolved latest tag in error, got: %v", err)
 	}
 }
+
+func TestShouldFallbackToOCIVMPull(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "artifact operation mismatch for cocoon vm artifact",
+			err:  errors.New(`buildah pull: unsupported image-specific operation on artifact with type "application/vnd.cocoon.vm.image.v1"`),
+			want: true,
+		},
+		{
+			name: "artifact operation mismatch for other artifact",
+			err:  errors.New(`buildah pull: unsupported image-specific operation on artifact with type "application/vnd.example.other.v1"`),
+			want: false,
+		},
+		{
+			name: "unrelated error",
+			err:  errors.New("network timeout"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := shouldFallbackToOCIVMPull(tt.err)
+			if got != tt.want {
+				t.Fatalf("shouldFallbackToOCIVMPull(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
