@@ -298,6 +298,10 @@ func (c *CocoonConfig) VMCHLogPath(vmID string) string {
 	return filepath.Join(c.LogDir, vmID+"-ch.log")
 }
 
+func (c *CocoonConfig) VMVirtiofsdLogPath(vmID string) string {
+	return filepath.Join(c.LogDir, vmID+"-virtiofsd.log")
+}
+
 // VMOCIUpperDir returns the per-VM OverlayFS upper directory path.
 func (c *CocoonConfig) VMOCIUpperDir(vmID string) string {
 	return filepath.Join(c.RootDir, "vms", vmID, "upper")

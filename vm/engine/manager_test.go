@@ -479,6 +479,38 @@ func TestDelete_HappyPath(t *testing.T) {
 	}
 }
 
+func TestDelete_RemovesAllLogFiles(t *testing.T) {
+	t.Parallel()
+	td := setupTestManager(t)
+
+	vmCfg := createTestVM(t, td, &vm.CreateOptions{
+		Image: "docker.io/library/ubuntu:22.04",
+		Name:  "delete-log-cleanup",
+	})
+
+	logPaths := []string{
+		td.cfg.VMSerialLogPath(vmCfg.VMID),
+		td.cfg.VMCHLogPath(vmCfg.VMID),
+		td.cfg.VMSwtpmLogPath(vmCfg.VMID),
+		td.cfg.VMVirtiofsdLogPath(vmCfg.VMID),
+	}
+	for _, path := range logPaths {
+		if err := os.WriteFile(path, []byte("log"), 0o644); err != nil { //nolint:gosec // test fixture
+			t.Fatalf("write log %s: %v", path, err)
+		}
+	}
+
+	if err := td.mgr.Delete(t.Context(), vmCfg.VMID, false); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	for _, path := range logPaths {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("expected log file %s removed, stat err=%v", path, err)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: Delete force on running VM (simulated)
 // ---------------------------------------------------------------------------

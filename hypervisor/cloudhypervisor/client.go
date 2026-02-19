@@ -122,6 +122,7 @@ func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (
 	chLogPath := c.cfg.VMCHLogPath(vmID)
 	chLogFile, chLogErr := os.Create(chLogPath) //nolint:gosec // G304: path derived from trusted config
 	if chLogErr == nil {
+		cmd.Stdout = chLogFile
 		cmd.Stderr = chLogFile
 	}
 
@@ -157,11 +158,14 @@ func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (
 		// Check socket existence then connectivity.
 		if _, statErr := os.Stat(socketPath); statErr == nil {
 			if connErr := c.CheckSocketConnectivity(socketPath); connErr == nil {
-				// Socket ready. Release process handle so CH outlives CLI.
-				_ = cmd.Process.Release()
-				if chLogFile != nil {
-					_ = chLogFile.Close()
-				}
+				// Socket ready. Reap in background to avoid zombie processes if CH
+				// exits while the CLI process is still alive.
+				go func(logFile *os.File) {
+					_ = cmd.Wait()
+					if logFile != nil {
+						_ = logFile.Close()
+					}
+				}(chLogFile)
 				return pid, nil
 			}
 		}
@@ -332,6 +336,7 @@ func (c *client) startSwtpm(vmID string, tpmSocketPath string) error {
 	swtpmLogPath := c.cfg.VMSwtpmLogPath(vmID)
 	logFile, logErr := os.Create(swtpmLogPath) //nolint:gosec // G304: path derived from trusted config
 	if logErr == nil {
+		cmd.Stdout = logFile
 		cmd.Stderr = logFile
 	}
 
@@ -359,11 +364,14 @@ func (c *client) startSwtpm(vmID string, tpmSocketPath string) error {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(tpmSocketPath); err == nil {
-			// Socket ready. Release process handle so swtpm outlives CLI.
-			_ = cmd.Process.Release()
-			if logFile != nil {
-				_ = logFile.Close()
-			}
+			// Socket ready. Reap in background to avoid zombie processes if swtpm
+			// exits while the CLI process is still alive.
+			go func(f *os.File) {
+				_ = cmd.Wait()
+				if f != nil {
+					_ = f.Close()
+				}
+			}(logFile)
 			return nil
 		}
 		// Fast fail: if swtpm already exited, don't wait the full 5s.
@@ -401,7 +409,7 @@ func readProcessLog(path string) string {
 // readSwtpmLog reads the swtpm log file and returns its contents for error messages.
 func readSwtpmLog(path string) string { return readProcessLog(path) }
 
-// readCHLog reads the CH stderr log file and returns its contents for error messages.
+// readCHLog reads the CH stdout/stderr log file and returns its contents for error messages.
 func readCHLog(path string) string { return readProcessLog(path) }
 
 // stopSwtpm terminates the swtpm companion process for a VM.

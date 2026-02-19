@@ -855,6 +855,7 @@ func (m *manager) cleanupDeletedVMArtifacts(vmID string) error {
 	_ = os.Remove(m.cfg.VMSerialLogPath(vmID))
 	_ = os.Remove(m.cfg.VMCHLogPath(vmID))
 	_ = os.Remove(m.cfg.VMSwtpmLogPath(vmID))
+	_ = os.Remove(m.cfg.VMVirtiofsdLogPath(vmID))
 	return nil
 }
 
@@ -870,6 +871,7 @@ func (m *manager) fixOrphanedOverlay(vmID string) error {
 	_ = os.Remove(m.cfg.VMSerialLogPath(vmID))
 	_ = os.Remove(m.cfg.VMCHLogPath(vmID))
 	_ = os.Remove(m.cfg.VMSwtpmLogPath(vmID))
+	_ = os.Remove(m.cfg.VMVirtiofsdLogPath(vmID))
 	return nil
 }
 

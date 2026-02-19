@@ -178,9 +178,10 @@ func TestDerivedPathHelpers(t *testing.T) {
 	}{
 		{"VMConfigPath", cfg.VMConfigPath("vm-123"), "/var/lib/cocoon/vms/vm-123/config.json"},
 		{"VMMetadataPath", cfg.VMMetadataPath("vm-123"), "/var/lib/cocoon/vms/vm-123/metadata.json"},
-		{"VMSocketPath", cfg.VMSocketPath("vm-123"), "/run/cocoon/vms/vm-123/api.sock"},
-		{"VMSerialLogPath", cfg.VMSerialLogPath("vm-123"), "/var/log/cocoon/vm-123-serial.log"},
-		{"VMOCIUpperDir", cfg.VMOCIUpperDir("vm-123"), "/var/lib/cocoon/vms/vm-123/upper"},
+			{"VMSocketPath", cfg.VMSocketPath("vm-123"), "/run/cocoon/vms/vm-123/api.sock"},
+			{"VMSerialLogPath", cfg.VMSerialLogPath("vm-123"), "/var/log/cocoon/vm-123-serial.log"},
+			{"VMVirtiofsdLogPath", cfg.VMVirtiofsdLogPath("vm-123"), "/var/log/cocoon/vm-123-virtiofsd.log"},
+			{"VMOCIUpperDir", cfg.VMOCIUpperDir("vm-123"), "/var/lib/cocoon/vms/vm-123/upper"},
 		{"VMOCIWorkDir", cfg.VMOCIWorkDir("vm-123"), "/var/lib/cocoon/vms/vm-123/work"},
 		{"VMOCIMergedDir", cfg.VMOCIMergedDir("vm-123"), "/var/lib/cocoon/vms/vm-123/merged"},
 		{"VMOCIRootfsVirtioFSSocketPath", cfg.VMOCIRootfsVirtioFSSocketPath("vm-123"), "/run/cocoon/vms/vm-123/virtiofsd.sock"},

@@ -1139,6 +1139,7 @@ func (m *manager) Delete(ctx context.Context, vmID string, force bool) error {
 	_ = os.Remove(m.cfg.VMSerialLogPath(vmID))
 	_ = os.Remove(m.cfg.VMCHLogPath(vmID))
 	_ = os.Remove(m.cfg.VMSwtpmLogPath(vmID))
+	_ = os.Remove(m.cfg.VMVirtiofsdLogPath(vmID))
 
 	if len(warnings) > 0 {
 		log.Printf("delete %s: cleanup warnings: %v", vmID, warnings)

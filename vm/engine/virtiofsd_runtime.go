@@ -89,7 +89,7 @@ func (m *virtiofsdRuntimeManager) Start(ctx context.Context, vmID, sharedDir, so
 	}
 
 	args := buildVirtiofsdArgs(sharedDir, socketPath)
-	logPath := filepath.Join(m.cfg.LogDir, vmID+"-virtiofsd.log")
+	logPath := m.cfg.VMVirtiofsdLogPath(vmID)
 	pid, err := m.launchFn(ctx, resolvedBinary, args, logPath)
 	if err != nil {
 		return nil, fmt.Errorf("launch virtiofsd for %s: %w", vmID, err)
@@ -157,19 +157,14 @@ func launchVirtiofsdProcess(ctx context.Context, binary string, args []string, l
 	}
 
 	pid := cmd.Process.Pid
-	// Detach the process handle intentionally: virtiofsd is lifecycle-managed
-	// through explicit PID-based stop/kill logic and must outlive the caller.
-	// After Release, reaping is delegated to the init/subreaper chain.
-	if relErr := cmd.Process.Release(); relErr != nil {
-		_ = cmd.Process.Kill()
-		if logFile != nil {
-			_ = logFile.Close()
+	// Reap in background to avoid zombie processes if virtiofsd exits while
+	// the CLI/manager process is still alive.
+	go func(f *os.File) {
+		_ = cmd.Wait()
+		if f != nil {
+			_ = f.Close()
 		}
-		return 0, fmt.Errorf("release virtiofsd process handle: %w", relErr)
-	}
-	if logFile != nil {
-		_ = logFile.Close()
-	}
+	}(logFile)
 	return pid, nil
 }
 
