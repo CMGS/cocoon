@@ -96,6 +96,66 @@ Do not use merge-commit strategy unless explicitly required.
 gh pr merge <PR_NUMBER> --rebase
 ```
 
+## PR Lifecycle Management
+
+### Rule
+
+All PR work must follow a standard lifecycle with explicit gates. A PR is not
+"done" at merge time; post-merge issue synchronization is mandatory.
+
+### Standard Lifecycle
+
+1. **Draft**
+2. **Ready**
+3. **In Review**
+4. **Changes Requested / Approved**
+5. **CI Green**
+6. **Rebase Merge**
+7. **Post-Merge Sync**
+
+### PR Ready Gate (before requesting review)
+
+- [ ] PR links one implementation issue (`Closes #N` or explicit `Refs #N`)
+- [ ] PR scope maps to concrete checklist items in the issue description
+- [ ] Local quality gates passed: `make lint` and `make test`
+- [ ] PR description includes summary, scope, validation steps, and risk notes
+
+### Merge Ready Gate (before `gh pr merge --rebase`)
+
+- [ ] CI required checks are green
+- [ ] No unresolved review conversations remain
+- [ ] Review findings are either fixed, explicitly accepted, or deferred with a tracking issue
+- [ ] Branch rebased onto latest `main` when needed
+
+### Post-Merge Synchronization (required)
+
+After merge, do all of the following in the same execution window:
+
+1. Update the issue **description checklist** (authoritative source of truth)
+2. Update the issue's canonical execution/progress comment (if used)
+3. If residual scope remains, open a follow-up issue and link it
+4. Close the implementation issue only when checklist is fully settled
+5. Verify local branch state is clean and on `main`
+
+### Steps (gh CLI)
+
+```bash
+# 1) Merge with rebase
+gh pr merge <PR_NUMBER> --rebase
+
+# 2) Sync issue checklist in description
+gh issue edit <ISSUE_NUMBER> --body-file /tmp/issue-body-updated.md
+
+# 3) (Optional but recommended) update canonical progress comment
+gh api repos/CMGS/cocoon/issues/comments/<COMMENT_ID> \
+  -X PATCH --raw-field body="$(cat /tmp/progress-comment.md)"
+
+# 4) Close or split scope
+gh issue close <ISSUE_NUMBER> --comment "Completed in PR #<PR_NUMBER>"
+# or create follow-up
+gh issue create --title "<follow-up>" --body-file /tmp/follow-up.md
+```
+
 ## PR Review
 
 ### Rule
@@ -221,6 +281,14 @@ Every issue that tracks implementation work must contain an **actionable
 checklist in the issue description** (not in comments). The checklist is the
 single source of truth for what remains to be done.
 
+### Lifecycle States (Standard)
+
+- `Open`: defined and not started
+- `In Progress`: implementation active
+- `Blocked`: cannot proceed due to external dependency/decision
+- `Done`: all checklist items settled, awaiting close
+- `Closed`: completed or explicitly dropped with rationale
+
 ### Workflow
 
 1. **Create**: Write the issue body with a `## Checklist` section listing all
@@ -235,12 +303,25 @@ single source of truth for what remains to be done.
    commit). Reference the commit/PR in the checkbox line.
 5. **Close**: Close the issue when all checklist items are checked or explicitly
    dropped with a rationale.
+6. **Post-merge sync**: Immediately after related PR merge, reflect merged state
+   in both issue description and canonical progress comment (if any).
 
 ### Format
 
 ```markdown
 ## Summary
 <one paragraph describing the goal>
+
+## Scope
+- <in-scope item 1>
+- <in-scope item 2>
+
+## Out of Scope
+- <explicitly excluded item 1>
+
+## Acceptance Criteria
+- [ ] <observable behavior 1>
+- [ ] <observable behavior 2>
 
 ## Checklist
 - [ ] Item 1: description (file/package scope)
@@ -260,13 +341,25 @@ gh issue edit <NUMBER> --body-file /tmp/issue-body-updated.md
 
 # Check off item (edit body, toggle checkbox)
 gh issue edit <NUMBER> --body-file /tmp/issue-body-checked.md
+
+# Close issue after merge + sync
+gh issue close <NUMBER> --comment "Completed in PR #<PR_NUMBER>"
 ```
+
+### Scope Split Rule
+
+If any accepted requirement is not delivered in the current PR series:
+
+- Open a follow-up issue with its own checklist
+- Link it from the original issue body and closing comment
+- Mark the original checklist item as split/deferred with the follow-up issue ID
 
 ### Do not
 
 - Put the authoritative checklist in a comment. Comments are for discussion.
 - Create multiple competing checklists across different comments.
 - Leave agreed-upon items only in comments without updating the description.
+- Close an issue while leaving unchecked items without rationale.
 
 ## Planning Records
 
