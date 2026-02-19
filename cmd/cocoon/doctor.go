@@ -4,14 +4,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
 
 	cli "github.com/urfave/cli/v2"
 
 	"github.com/CMGS/cocoon/config"
+	"github.com/CMGS/cocoon/utils"
 )
 
 func doctorCommand() *cli.Command {
@@ -40,70 +39,11 @@ func doctorCommand() *cli.Command {
 // checkResult holds the outcome of a single dependency check.
 type checkResult struct {
 	Name   string `json:"name"`
-	Status string `json:"status"` // "pass" or "fail"
+	Status string `json:"status"` // "pass", "fail", or "warn"
 	Detail string `json:"detail"`
 }
 
-type semVersion struct {
-	Major int
-	Minor int
-	Patch int
-}
-
-var versionRe = regexp.MustCompile(`(\d+)\.(\d+)(?:\.(\d+))?`)
-
-func parseSemVersion(out string) (semVersion, error) {
-	matches := versionRe.FindStringSubmatch(out)
-	if len(matches) < 3 {
-		return semVersion{}, fmt.Errorf("no semantic version found in output")
-	}
-
-	major, err := strconv.Atoi(matches[1])
-	if err != nil {
-		return semVersion{}, fmt.Errorf("parse major version: %w", err)
-	}
-	minor, err := strconv.Atoi(matches[2])
-	if err != nil {
-		return semVersion{}, fmt.Errorf("parse minor version: %w", err)
-	}
-	patch := 0
-	if len(matches) >= 4 && matches[3] != "" {
-		patch, err = strconv.Atoi(matches[3])
-		if err != nil {
-			return semVersion{}, fmt.Errorf("parse patch version: %w", err)
-		}
-	}
-
-	return semVersion{Major: major, Minor: minor, Patch: patch}, nil
-}
-
-func compareSemVersion(a, b semVersion) int {
-	if a.Major != b.Major {
-		if a.Major < b.Major {
-			return -1
-		}
-		return 1
-	}
-	if a.Minor != b.Minor {
-		if a.Minor < b.Minor {
-			return -1
-		}
-		return 1
-	}
-	if a.Patch != b.Patch {
-		if a.Patch < b.Patch {
-			return -1
-		}
-		return 1
-	}
-	return 0
-}
-
-func (v semVersion) String() string {
-	return fmt.Sprintf("%d.%d.%d", v.Major, v.Minor, v.Patch)
-}
-
-func checkBinaryWithMinVersion(name, binary string, args []string, min semVersion, purpose string) checkResult {
+func checkBinaryWithMinVersion(name, binary string, args []string, min utils.SemVersion, purpose string) checkResult {
 	path, err := exec.LookPath(binary)
 	if err != nil {
 		return checkResult{
@@ -123,7 +63,7 @@ func checkBinaryWithMinVersion(name, binary string, args []string, min semVersio
 		}
 	}
 
-	ver, err := parseSemVersion(string(out))
+	ver, err := utils.ParseSemVersion(string(out))
 	if err != nil {
 		return checkResult{
 			Name:   name,
@@ -132,7 +72,7 @@ func checkBinaryWithMinVersion(name, binary string, args []string, min semVersio
 		}
 	}
 
-	if compareSemVersion(ver, min) < 0 {
+	if utils.CompareSemVersion(ver, min) < 0 {
 		return checkResult{
 			Name:   name,
 			Status: "fail",
@@ -156,7 +96,7 @@ func runDependencyChecks(app *appContext) []checkResult {
 		"cloud-hypervisor",
 		app.cfg.CHBinary,
 		[]string{"--version"},
-		semVersion{Major: 38, Minor: 0, Patch: 0},
+		utils.SemVersion{Major: 38, Minor: 0, Patch: 0},
 		"required hypervisor runtime",
 	))
 
@@ -176,7 +116,7 @@ func runDependencyChecks(app *appContext) []checkResult {
 		"qemu-img",
 		"qemu-img",
 		[]string{"--version"},
-		semVersion{Major: 8, Minor: 0, Patch: 0},
+		utils.SemVersion{Major: 8, Minor: 0, Patch: 0},
 		"required for qcow2 operations",
 	))
 
@@ -185,7 +125,7 @@ func runDependencyChecks(app *appContext) []checkResult {
 		"ch-remote",
 		"ch-remote",
 		[]string{"--version"},
-		semVersion{Major: 38, Minor: 0, Patch: 0},
+		utils.SemVersion{Major: 38, Minor: 0, Patch: 0},
 		"required for Cloud Hypervisor API interactions",
 	))
 
@@ -194,7 +134,7 @@ func runDependencyChecks(app *appContext) []checkResult {
 		"buildah",
 		"buildah",
 		[]string{"version"},
-		semVersion{Major: 1, Minor: 35, Patch: 0},
+		utils.SemVersion{Major: 1, Minor: 35, Patch: 0},
 		"required for OCI image operations",
 	))
 
@@ -203,7 +143,7 @@ func runDependencyChecks(app *appContext) []checkResult {
 		"skopeo",
 		"skopeo",
 		[]string{"--version"},
-		semVersion{Major: 1, Minor: 14, Patch: 0},
+		utils.SemVersion{Major: 1, Minor: 14, Patch: 0},
 		"required for OCI manifest inspection",
 	))
 
@@ -212,7 +152,7 @@ func runDependencyChecks(app *appContext) []checkResult {
 		"guestfish",
 		"guestfish",
 		[]string{"--version"},
-		semVersion{Major: 1, Minor: 50, Patch: 0},
+		utils.SemVersion{Major: 1, Minor: 50, Patch: 0},
 		"required for OCI-to-qcow2 conversion",
 	))
 
@@ -327,7 +267,7 @@ func checkVirtiofsdBinary(configuredBinary string) checkResult {
 		}
 	}
 
-	min := semVersion{Major: 1, Minor: 7, Patch: 0}
+	min := utils.SemVersion{Major: 1, Minor: 7, Patch: 0}
 	queries := [][]string{{"--version"}, {"-V"}}
 
 	var (
@@ -338,11 +278,11 @@ func checkVirtiofsdBinary(configuredBinary string) checkResult {
 		cmd := exec.Command(path, args...) //nolint:gosec // binary path is resolved from PATH; args are fixed literals
 		out, qErr = cmd.CombinedOutput()
 		if qErr == nil {
-			ver, parseErr := parseSemVersion(string(out))
+			ver, parseErr := utils.ParseSemVersion(string(out))
 			if parseErr != nil {
 				continue
 			}
-			if compareSemVersion(ver, min) < 0 {
+			if utils.CompareSemVersion(ver, min) < 0 {
 				return checkResult{
 					Name:   "virtiofsd",
 					Status: "fail",
@@ -394,7 +334,7 @@ func checkOptionalBinary(name, binary string, args []string, purpose string) che
 		}
 	}
 
-	ver, err := parseSemVersion(string(out))
+	ver, err := utils.ParseSemVersion(string(out))
 	if err != nil {
 		return checkResult{
 			Name:   name,
@@ -436,8 +376,8 @@ func checkOverlayFSSupport() checkResult {
 	if runtime.GOOS != hostOSLinux {
 		return checkResult{
 			Name:   "overlayfs",
-			Status: "fail",
-			Detail: fmt.Sprintf("OverlayFS check requires Linux host (detected %s)", runtime.GOOS),
+			Status: "warn",
+			Detail: fmt.Sprintf("OverlayFS is Linux-only (not applicable on %s)", runtime.GOOS),
 		}
 	}
 

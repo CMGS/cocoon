@@ -5,22 +5,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
 
 	"github.com/CMGS/cocoon/config"
 	"github.com/CMGS/cocoon/types"
+	"github.com/CMGS/cocoon/utils"
 )
-
-var ociRuntimeVersionRe = regexp.MustCompile(`(\d+)\.(\d+)(?:\.(\d+))?`)
-
-type preflightSemVersion struct {
-	Major int
-	Minor int
-	Patch int
-}
 
 type ociRuntimePreflightDeps struct {
 	goos       string
@@ -58,12 +49,12 @@ func checkOCIRuntimePreflight(ctx context.Context, cfg *config.CocoonConfig, dep
 		return fmt.Errorf("OCI VM runtime requires OverlayFS support: /proc/filesystems does not list overlay")
 	}
 
-	virtioMin := preflightSemVersion{Major: 1, Minor: 7, Patch: 0}
+	virtioMin := utils.SemVersion{Major: 1, Minor: 7, Patch: 0}
 	if err := ensureBinaryMinVersion(ctx, deps, cfg.VirtiofsdBinary, types.DefaultVirtiofsdProcess, [][]string{{"--version"}, {"-V"}}, virtioMin); err != nil {
 		return fmt.Errorf("OCI VM runtime preflight failed for virtiofsd: %w", err)
 	}
 
-	chMin := preflightSemVersion{Major: 38, Minor: 0, Patch: 0}
+	chMin := utils.SemVersion{Major: 38, Minor: 0, Patch: 0}
 	if err := ensureBinaryMinVersion(ctx, deps, cfg.CHBinary, types.DefaultHypervisorProcess, [][]string{{"--version"}}, chMin); err != nil {
 		return fmt.Errorf("OCI VM runtime preflight failed for cloud-hypervisor: %w", err)
 	}
@@ -90,7 +81,7 @@ func ensureBinaryMinVersion(
 	configuredBinary string,
 	defaultBinary string,
 	argVariants [][]string,
-	min preflightSemVersion,
+	min utils.SemVersion,
 ) error {
 	binary := strings.TrimSpace(configuredBinary)
 	if binary == "" {
@@ -107,12 +98,12 @@ func ensureBinaryMinVersion(
 		return fmt.Errorf("query version for %s: %w", resolved, err)
 	}
 
-	version, err := parsePreflightSemVersion(string(versionOutput))
+	version, err := utils.ParseSemVersion(string(versionOutput))
 	if err != nil {
 		return fmt.Errorf("parse version from %s output %q: %w", resolved, strings.TrimSpace(string(versionOutput)), err)
 	}
 
-	if comparePreflightSemVersion(version, min) < 0 {
+	if utils.CompareSemVersion(version, min) < 0 {
 		return fmt.Errorf("detected %s, minimum required %s", version.String(), min.String())
 	}
 
@@ -125,66 +116,16 @@ func probeBinaryVersion(ctx context.Context, deps ociRuntimePreflightDeps, binar
 	}
 
 	var (
-		lastErr error
-		output  []byte
+		output   []byte
+		attempts = make([]string, 0, len(argVariants))
 	)
 	for _, args := range argVariants {
-		output, lastErr = deps.runFn(ctx, binary, args...)
-		if lastErr == nil {
+		out, err := deps.runFn(ctx, binary, args...)
+		if err == nil {
+			output = out
 			return output, nil
 		}
+		attempts = append(attempts, fmt.Sprintf("%q: %v", strings.Join(args, " "), err))
 	}
-	return nil, lastErr
-}
-
-func parsePreflightSemVersion(out string) (preflightSemVersion, error) {
-	matches := ociRuntimeVersionRe.FindStringSubmatch(out)
-	if len(matches) < 3 {
-		return preflightSemVersion{}, fmt.Errorf("no semantic version found")
-	}
-
-	major, err := strconv.Atoi(matches[1])
-	if err != nil {
-		return preflightSemVersion{}, fmt.Errorf("parse major: %w", err)
-	}
-	minor, err := strconv.Atoi(matches[2])
-	if err != nil {
-		return preflightSemVersion{}, fmt.Errorf("parse minor: %w", err)
-	}
-
-	patch := 0
-	if len(matches) >= 4 && strings.TrimSpace(matches[3]) != "" {
-		patch, err = strconv.Atoi(matches[3])
-		if err != nil {
-			return preflightSemVersion{}, fmt.Errorf("parse patch: %w", err)
-		}
-	}
-
-	return preflightSemVersion{Major: major, Minor: minor, Patch: patch}, nil
-}
-
-func comparePreflightSemVersion(a, b preflightSemVersion) int {
-	switch {
-	case a.Major != b.Major:
-		if a.Major < b.Major {
-			return -1
-		}
-		return 1
-	case a.Minor != b.Minor:
-		if a.Minor < b.Minor {
-			return -1
-		}
-		return 1
-	case a.Patch != b.Patch:
-		if a.Patch < b.Patch {
-			return -1
-		}
-		return 1
-	default:
-		return 0
-	}
-}
-
-func (v preflightSemVersion) String() string {
-	return fmt.Sprintf("%d.%d.%d", v.Major, v.Minor, v.Patch)
+	return nil, fmt.Errorf("all version probes failed for %s (%d attempt(s)): %s", binary, len(argVariants), strings.Join(attempts, "; "))
 }
