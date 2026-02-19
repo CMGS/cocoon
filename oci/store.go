@@ -78,9 +78,11 @@ func (s *Store) saveTagTxnLocked(tag, layoutPath, manifestDigest string) error {
 		return err
 	}
 
-	// Serialize cross-index changes with oci-build-txn.lock while still
-	// keeping same-level locks disjoint (tag lock and layer-refs lock are
-	// never held simultaneously).
+	// RemoveBlobRefs is called outside the tag lock but still inside the txn
+	// lock. This is safe because the txn lock serializes all cross-index
+	// operations (SaveTag, RemoveTag), so no concurrent SaveTag or RemoveTag
+	// can run while we modify blob refs. Keeping the tag lock and layer-refs
+	// lock disjoint (never held simultaneously) avoids lock-ordering deadlocks.
 	if oldManifestDigest != "" && !oldManifestStillUsed {
 		if _, refErr := RemoveBlobRefs(s.cfg, oldManifestDigest); refErr != nil {
 			log.Printf("warning: failed to clean old manifest %s blob refs (will be reclaimed by GC): %v", oldManifestDigest, refErr)

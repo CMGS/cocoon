@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -153,6 +154,9 @@ func localOCITagAndCacheRefDiffer(cfg *config.CocoonConfig, ociRef, cacheBaseKey
 	}
 	if !found {
 		// No canonical OCI->baseKey mapping recorded yet; cannot prove mismatch.
+		// This is inconclusive — both OCI tag and cache alias exist but we
+		// cannot determine whether they point to the same identity.
+		log.Printf("warning: both OCI tag %q and cache alias (base_key=%s) exist but mismatch check is inconclusive; defaulting to OCI tag", ociRef, cacheBaseKey)
 		return false, nil
 	}
 	return ociBaseKey != cacheBaseKey, nil

@@ -361,6 +361,10 @@ func fileSHA256(path string) (string, error) {
 
 func snapshotRootfs(rootDir string) (map[string]fileEntry, error) {
 	entries := make(map[string]fileEntry)
+	// WalkDir intentionally does not follow symlinks to directories, which is
+	// correct for OCI layer delta semantics: symlinks are preserved as-is in
+	// the tar layer (TypeSymlink) rather than being dereferenced. This matches
+	// the OCI image spec requirement that symbolic links are stored verbatim.
 	err := filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr

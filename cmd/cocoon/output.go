@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"text/tabwriter"
+
+	"github.com/CMGS/cocoon/utils"
 )
 
 // formatJSON is the constant for "json" output format, used across CLI commands.
@@ -34,27 +36,9 @@ func printJSON(v any) error {
 	return nil
 }
 
-// humanBytes formats a byte count into a human-readable string.
+// humanBytes delegates to utils.HumanBytes for backward compatibility.
 func humanBytes(b int64) string {
-	const (
-		_        = iota
-		KB int64 = 1 << (10 * iota)
-		MB
-		GB
-		TB
-	)
-	switch {
-	case b >= TB:
-		return fmt.Sprintf("%.1fTB", float64(b)/float64(TB))
-	case b >= GB:
-		return fmt.Sprintf("%.1fGB", float64(b)/float64(GB))
-	case b >= MB:
-		return fmt.Sprintf("%.1fMB", float64(b)/float64(MB))
-	case b >= KB:
-		return fmt.Sprintf("%.1fKB", float64(b)/float64(KB))
-	default:
-		return fmt.Sprintf("%dB", b)
-	}
+	return utils.HumanBytes(b)
 }
 
 // truncateID shortens a VM ID or similar identifier for table display.
