@@ -24,6 +24,10 @@ func overlayReadMountInfo() ([]byte, error) {
 	return os.ReadFile("/proc/self/mountinfo")
 }
 
+func overlayMountFlags() uintptr {
+	return unix.MS_NOSUID | unix.MS_NODEV
+}
+
 func overlayUnmountFlags() int {
 	return unix.MNT_DETACH
 }
