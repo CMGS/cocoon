@@ -4,8 +4,9 @@
 **Status**: Historical
 
 > **Note**: Package paths (`pkg/...`) and code skeletons below reflect the original planning structure, not the current implementation. See actual module layout: `config/`, `image/`, `storage/`, `vm/`, `hypervisor/`, `cmd/cocoon/`, `lock/`, `types/`, `utils/`.
+> **Historical sync note (2026-02-19)**: OCI direct runtime from `create/run` is now implemented for local OCI tags (Issue #7 delivery). Remote OCI runtime materialization from registry refs remains follow-up work.
 **Phase**: Phase 1
-**Last Updated**: 2026-02-17
+**Last Updated**: 2026-02-19
 
 ## Executive Summary
 
@@ -61,7 +62,7 @@ This document provides a concrete implementation roadmap for Cocoon Phase 1, syn
 These must be implemented correctly from the start:
 
 1. **Boot Contract Compliance** (docs/01-boot-contract.md)
-   - UEFI boot for cloud images (Phase 1); direct kernel boot for OCI VM images (Phase 2 planned)
+   - UEFI boot for cloud images (Phase 1); direct kernel boot for OCI VM images (implemented for local OCI-tag runtime path)
    - systemd for VM initialization
    - ACPI shutdown with timeout
 

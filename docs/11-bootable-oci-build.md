@@ -1,9 +1,9 @@
 # Building Bootable OCI Images
 
 **Version**: 1.1
-**Status**: Planned
+**Status**: Phase 2 partial (OCI direct runtime implemented for local OCI tags; build helper and remote OCI runtime materialization remain planned)
 **Phase**: Phase 2
-**Last Updated**: 2026-02-16
+**Last Updated**: 2026-02-19
 
 **Related Documents**: [01-boot-contract.md](./01-boot-contract.md), [04-oci-conversion.md](./04-oci-conversion.md), [04.1-oci-vm-images.md](./04.1-oci-vm-images.md), [09-cli-design.md](./09-cli-design.md)
 
@@ -29,7 +29,7 @@ A **bootable OCI image** in Cocoon's context is an OCI-compliant container image
 - **systemd** as PID 1 (the Boot Contract requires systemd; sysvinit and OpenRC are not supported)
 - A **bootloader** (GRUB2 with EFI support) for the UEFI boot path
 
-The image is published to any OCI-compliant registry (Docker Hub, GHCR, private registries) and consumed by Cocoon via `cocoon image pull`.
+The image is published to any OCI-compliant registry (Docker Hub, GHCR, private registries). Cocoon currently consumes it either via `cocoon image pull` (qcow2 conversion path) or via local OCI tags for the direct OCI runtime path.
 
 ### 1.1 Two Consumption Paths
 
@@ -38,11 +38,11 @@ A bootable OCI image can be consumed in two ways, depending on the Cocoon phase:
 | Path | Phase | Boot Mode | Rootfs Delivery | Requires Bootloader |
 |------|-------|-----------|-----------------|---------------------|
 | OCI-to-qcow2 conversion | Phase 1 | UEFI (`payload.firmware`) | qcow2 block device | Yes (GRUB2 + ESP) |
-| OCI VM image (OverlayFS + virtiofs) | Phase 2 | Direct kernel boot (`payload.kernel`) | virtiofs from OverlayFS-merged layers | No |
+| OCI VM image (OverlayFS + virtiofs) | Phase 2 (implemented scope) | Direct kernel boot (`payload.kernel`) | virtiofs from OverlayFS-merged layers | No |
 
 **Phase 1**: The OCI image is pulled, its rootfs extracted, and converted to a qcow2 disk image with a GPT partition table and ESP. Cloud Hypervisor boots via UEFI firmware (CLOUDHV.fd), which loads GRUB, which loads the kernel from disk. This path requires the image to contain a bootloader.
 
-**Phase 2**: The OCI image is decomposed into discrete layers (kernel, rootfs, customization) as defined in [docs/04.1-oci-vm-images.md](./04.1-oci-vm-images.md). The kernel and initramfs are extracted and passed directly to Cloud Hypervisor via `payload.kernel` and `payload.initramfs`. The rootfs layers are composed via OverlayFS and served to the guest via virtiofs. No bootloader is required on disk. Phase 2 also provides `cocoon image build-bootable`, a helper command that automates the image build process.
+**Phase 2**: The OCI image is decomposed into discrete layers (kernel, rootfs, customization) as defined in [docs/04.1-oci-vm-images.md](./04.1-oci-vm-images.md). The kernel and initramfs are extracted and passed directly to Cloud Hypervisor via `payload.kernel` and `payload.initramfs`. The rootfs layers are composed via OverlayFS and served to the guest via virtiofs. No bootloader is required on disk. Current runtime implementation supports this path for local OCI tags; `cocoon image build-bootable` and remote OCI runtime materialization are follow-up work.
 
 ### 1.2 Relationship to docs/04.1
 
@@ -242,7 +242,7 @@ Dockerfile
 2. docker push myregistry.io/myvm:v1
     |
     v
-3. cocoon image pull myregistry.io/myvm:v1  (Phase 1 and Phase 2: local-first pull/prepare path)
+3. cocoon image pull myregistry.io/myvm:v1  (qcow2 conversion path; OCI direct runtime currently requires local OCI tag materialization)
     |
     v
 4. cocoon image verify myregistry.io/myvm:v1
@@ -283,7 +283,7 @@ cocoon image pull myregistry.io/ubuntu-vm:22.04
 cocoon image pull myregistry.io/ubuntu-vm:22.04
 ```
 
-For Phase 1, this downloads OCI content into the local cache and follows the current qcow2 runtime path. For Phase 2, resolver/classification identifies OCI VM image references ([docs/04.1](./04.1-oci-vm-images.md)) and routes create/run to the direct-boot path without a user-facing mode flag.
+For Phase 1, this downloads OCI content into the local cache and follows the qcow2 runtime path. For Phase 2, resolver/classification identifies OCI VM image references ([docs/04.1](./04.1-oci-vm-images.md)) and routes create/run to the direct-boot path without a user-facing mode flag once the ref is available as a local OCI tag.
 
 **Step 4: `cocoon image verify`**
 
@@ -411,7 +411,7 @@ OCI Image (rootfs) -> Buildah extraction -> guestfish partitioning -> qcow2
 **Rootfs delivery**: qcow2 block device attached to VM
 **Boot chain**: UEFI firmware -> GRUB -> kernel -> systemd
 
-### 6.2 Phase 2: Direct Kernel Boot + OverlayFS + virtiofs
+### 6.2 Phase 2: Direct Kernel Boot + OverlayFS + virtiofs (Implemented Scope)
 
 In Phase 2, bootable OCI images can also be consumed via the [OCI VM Image Format](./04.1-oci-vm-images.md):
 
@@ -439,7 +439,7 @@ OCI Image -> cocoon image build -> OCI VM Image (kernel layer + rootfs layer)
 | Boot speed | Standard (firmware + GRUB chain) | Faster (no firmware init) |
 | Registry deduplication | Per-image (no layer sharing) | Per-layer (kernel/rootfs shared) |
 | Kernel upgrades | Guest can upgrade in-place | Rebuild OCI image (kernel pinned) |
-| Build helper | Manual Dockerfile | `cocoon image build-bootable` |
+| Build helper | Manual Dockerfile | `cocoon image build-bootable` (planned) |
 | Image customization | Rebuild entire image | Cocoonfile (adds overlay layer) |
 | Runtime selection | `cocoon create <image>` (UEFI/qcow2 path) | `cocoon create <ref>` (resolver auto-detects OCI VM refs for direct path) |
 
