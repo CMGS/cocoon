@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/go-containerregistry/pkg/name"
@@ -350,6 +351,39 @@ func TestValidateCocoonVMManifest_RejectsMarkerOnlyManifest(t *testing.T) {
 	data, _ := json.Marshal(manifest)
 	if err := validateCocoonVMManifest(data); err == nil {
 		t.Fatal("expected error for marker-only manifest without runtime layers, got nil")
+	}
+}
+
+func TestFormatPullLayerProgressLine(t *testing.T) {
+	t.Parallel()
+
+	line := formatPullLayerProgressLine(2, 3, "abcdef012345", 512, 1024)
+	if !strings.Contains(line, "Layer 2/3") {
+		t.Fatalf("expected layer position in line, got %q", line)
+	}
+	if !strings.Contains(line, "sha256:abcdef012345") {
+		t.Fatalf("expected digest short in line, got %q", line)
+	}
+	if !strings.Contains(line, "50%") {
+		t.Fatalf("expected percent in line, got %q", line)
+	}
+	if !strings.Contains(line, "512B / 1.0KB") {
+		t.Fatalf("expected byte progress in line, got %q", line)
+	}
+}
+
+func TestFormatPullLayerProgressLine_NoTotal(t *testing.T) {
+	t.Parallel()
+
+	line := formatPullLayerProgressLine(1, 2, "abcdef012345", 2048, 0)
+	if !strings.Contains(line, "Layer 1/2") {
+		t.Fatalf("expected layer position in line, got %q", line)
+	}
+	if strings.Contains(line, "%") {
+		t.Fatalf("expected no percent when total is unknown, got %q", line)
+	}
+	if !strings.Contains(line, "2.0KB") {
+		t.Fatalf("expected byte counter in line, got %q", line)
 	}
 }
 
