@@ -9,6 +9,7 @@ import (
 
 	"github.com/CMGS/cocoon/config"
 	"github.com/CMGS/cocoon/lock/flock"
+	"github.com/CMGS/cocoon/oci"
 )
 
 // --- OCI GC tests ---
@@ -46,9 +47,9 @@ func createFakeBlob(t *testing.T, blobDir, digest string, mtime time.Time) {
 }
 
 // writeTagIndex writes a minimal OCI tag index JSON to the config's tag index path.
-func writeTagIndex(t *testing.T, cfg testableConfig, entries map[string]ociTagEntry) {
+func writeTagIndex(t *testing.T, cfg testableConfig, entries map[string]oci.TagEntry) {
 	t.Helper()
-	idx := ociTagIndex{Tags: make(map[string]ociTagEntry)}
+	idx := oci.TagIndex{Tags: make(map[string]oci.TagEntry)}
 	for tag, entry := range entries {
 		idx.Tags[tag] = entry
 	}
@@ -68,9 +69,9 @@ func writeTagIndex(t *testing.T, cfg testableConfig, entries map[string]ociTagEn
 // writeLayerRefs writes a minimal OCI layer refs index JSON.
 func writeLayerRefs(t *testing.T, cfg testableConfig, blobs map[string][]string) {
 	t.Helper()
-	idx := ociLayerRefsIndex{Blobs: make(map[string]ociBlobRefEntry)}
+	idx := oci.LayerRefsIndex{Blobs: make(map[string]oci.BlobRefEntry)}
 	for digest, manifests := range blobs {
-		idx.Blobs[digest] = ociBlobRefEntry{
+		idx.Blobs[digest] = oci.BlobRefEntry{
 			ManifestDigests: manifests,
 			Size:            100,
 			CreatedAt:       time.Now().Add(-1 * time.Hour),
@@ -121,7 +122,7 @@ func TestOCIGC_CollectOrphanedLayouts_RemovesOrphans(t *testing.T) {
 
 	// Write tag index referencing only the first layout.
 	tc := testableConfig{cfg: cfg}
-	writeTagIndex(t, tc, map[string]ociTagEntry{
+	writeTagIndex(t, tc, map[string]oci.TagEntry{
 		"my-tag": {LayoutPath: referencedDir, ManifestDigest: "sha256:fake"},
 	})
 
@@ -153,7 +154,7 @@ func TestOCIGC_CollectOrphanedLayouts_GracePeriod(t *testing.T) {
 
 	// No tags at all -- the layout is orphaned but recent.
 	tc := testableConfig{cfg: cfg}
-	writeTagIndex(t, tc, map[string]ociTagEntry{})
+	writeTagIndex(t, tc, map[string]oci.TagEntry{})
 
 	collected, err := gc.CollectOrphanedOCILayouts()
 	if err != nil {
@@ -171,7 +172,7 @@ func TestOCIGC_CollectOrphanedLayouts_WaitsForTxnLock(t *testing.T) {
 	layoutsDir := cfg.OCILayoutDir()
 	oldTime := time.Now().Add(-10 * time.Minute)
 	createFakeOCILayout(t, layoutsDir, "txn-blocked-orphan", oldTime)
-	writeTagIndex(t, testableConfig{cfg: cfg}, map[string]ociTagEntry{})
+	writeTagIndex(t, testableConfig{cfg: cfg}, map[string]oci.TagEntry{})
 
 	// Hold txn lock to simulate an in-progress build finalization.
 	txnLock := flock.New(cfg.OCIBuildTxnLock())
@@ -340,7 +341,7 @@ func TestOCIGC_CollectStaleOCITags_RemovesStale(t *testing.T) {
 	missingLayoutPath := filepath.Join(layoutsDir, "missing-layout")
 
 	tc := testableConfig{cfg: cfg}
-	writeTagIndex(t, tc, map[string]ociTagEntry{
+	writeTagIndex(t, tc, map[string]oci.TagEntry{
 		"live-tag":  {LayoutPath: existingLayout, ManifestDigest: "sha256:live"},
 		"stale-tag": {LayoutPath: missingLayoutPath, ManifestDigest: "sha256:stale"},
 	})
@@ -369,7 +370,7 @@ func TestOCIGC_CollectStaleOCITags_SharedManifest(t *testing.T) {
 	missingLayoutPath := filepath.Join(layoutsDir, "missing-layout")
 
 	tc := testableConfig{cfg: cfg}
-	writeTagIndex(t, tc, map[string]ociTagEntry{
+	writeTagIndex(t, tc, map[string]oci.TagEntry{
 		"live-tag":  {LayoutPath: existingLayout, ManifestDigest: "sha256:shared"},
 		"stale-tag": {LayoutPath: missingLayoutPath, ManifestDigest: "sha256:shared"},
 	})
@@ -389,7 +390,7 @@ func TestOCIGC_CollectStaleOCITags_SharedManifest(t *testing.T) {
 
 	// The shared manifest should NOT be cleaned up because live-tag still uses it.
 	// Verify blob still has the manifest reference.
-	var layerRefs ociLayerRefsIndex
+	var layerRefs oci.LayerRefsIndex
 	data, err := os.ReadFile(cfg.OCILayerRefsFile())
 	if err != nil {
 		t.Fatalf("read layer refs: %v", err)
@@ -420,7 +421,7 @@ func TestOCIGC_CollectStaleOCITags_CascadesBlobCleanup(t *testing.T) {
 	missingLayoutPath := filepath.Join(layoutsDir, "missing-layout")
 
 	tc := testableConfig{cfg: cfg}
-	writeTagIndex(t, tc, map[string]ociTagEntry{
+	writeTagIndex(t, tc, map[string]oci.TagEntry{
 		"live-tag":  {LayoutPath: existingLayout, ManifestDigest: "sha256:live-manifest"},
 		"stale-tag": {LayoutPath: missingLayoutPath, ManifestDigest: "sha256:stale-manifest"},
 	})
@@ -464,7 +465,7 @@ func TestOCIGC_CollectStaleOCITags_CascadeRespectsBlobGracePeriod(t *testing.T) 
 	missingLayoutPath := filepath.Join(layoutsDir, "missing-layout")
 
 	tc := testableConfig{cfg: cfg}
-	writeTagIndex(t, tc, map[string]ociTagEntry{
+	writeTagIndex(t, tc, map[string]oci.TagEntry{
 		"live-tag":  {LayoutPath: existingLayout, ManifestDigest: "sha256:live-manifest"},
 		"stale-tag": {LayoutPath: missingLayoutPath, ManifestDigest: "sha256:stale-manifest"},
 	})
@@ -491,7 +492,7 @@ func TestOCIGC_CollectStaleOCITags_CascadeRespectsBlobGracePeriod(t *testing.T) 
 
 	// The layer-refs entry should be kept (zero-ref but file preserved by grace).
 	// Phase 6 will handle final cleanup once the grace period expires.
-	var layerRefs ociLayerRefsIndex
+	var layerRefs oci.LayerRefsIndex
 	data, err := os.ReadFile(cfg.OCILayerRefsFile())
 	if err != nil {
 		t.Fatalf("read layer refs: %v", err)
@@ -535,7 +536,7 @@ func TestOCIGC_CollectOrphanedManifestRefs_CleansOrphans(t *testing.T) {
 	existingLayout := createFakeOCILayout(t, layoutsDir, "existing-layout", oldTime)
 
 	tc := testableConfig{cfg: cfg}
-	writeTagIndex(t, tc, map[string]ociTagEntry{
+	writeTagIndex(t, tc, map[string]oci.TagEntry{
 		"live-tag": {LayoutPath: existingLayout, ManifestDigest: "sha256:live-manifest"},
 	})
 
@@ -559,7 +560,7 @@ func TestOCIGC_CollectOrphanedManifestRefs_CleansOrphans(t *testing.T) {
 	}
 
 	// Verify the orphaned manifest was removed from blob refs.
-	var layerRefs ociLayerRefsIndex
+	var layerRefs oci.LayerRefsIndex
 	data, err := os.ReadFile(cfg.OCILayerRefsFile())
 	if err != nil {
 		t.Fatalf("read layer refs: %v", err)
@@ -585,7 +586,7 @@ func TestOCIGC_CollectOrphanedManifestRefs_GracePeriod(t *testing.T) {
 
 	// No tags at all (all manifests are orphaned).
 	tc := testableConfig{cfg: cfg}
-	writeTagIndex(t, tc, map[string]ociTagEntry{})
+	writeTagIndex(t, tc, map[string]oci.TagEntry{})
 
 	// Create a recent blob referencing an orphaned manifest.
 	createFakeBlob(t, blobDir, "recent-blob", time.Now())
@@ -609,7 +610,7 @@ func TestOCIGC_CollectOrphanedManifestRefs_GracePeriod(t *testing.T) {
 	}
 
 	// The layer-refs entry should be kept (zero-ref but file preserved by grace).
-	var layerRefs ociLayerRefsIndex
+	var layerRefs oci.LayerRefsIndex
 	data, err := os.ReadFile(cfg.OCILayerRefsFile())
 	if err != nil {
 		t.Fatalf("read layer refs: %v", err)
