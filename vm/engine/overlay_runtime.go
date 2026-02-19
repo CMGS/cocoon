@@ -130,8 +130,8 @@ func buildOverlayMountData(lowerDirs []string, upperDir, workDir string) (string
 		if strings.TrimSpace(path) == "" {
 			return "", fmt.Errorf("overlay path must not be empty")
 		}
-		if strings.Contains(path, ":") {
-			return "", fmt.Errorf("overlay path must not contain colon: %s", path)
+		if strings.ContainsAny(path, ":,") {
+			return "", fmt.Errorf("overlay path must not contain colon or comma: %s", path)
 		}
 	}
 

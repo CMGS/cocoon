@@ -291,9 +291,10 @@ func (c *CocoonConfig) VMOCIMergedDir(vmID string) string {
 }
 
 // VMOCIRootfsVirtioFSSocketPath returns the rootfs-serving virtiofsd socket
-// path for OCI runtime VMs.
+// path for OCI runtime VMs. Uses RuntimeDir (ephemeral tmpfs) for consistency
+// with VMSocketPath and other runtime sockets.
 func (c *CocoonConfig) VMOCIRootfsVirtioFSSocketPath(vmID string) string {
-	return filepath.Join(c.RootDir, "vms", vmID, "virtiofsd.sock")
+	return filepath.Join(c.RuntimeDir, "vms", vmID, "virtiofsd.sock")
 }
 
 // BaseImagePath returns the path to a cached base image.

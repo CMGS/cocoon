@@ -529,14 +529,20 @@ type VMConfig struct {
     Name string `json:"name"`
 
     // Image provenance
-    ImageRef       string `json:"image_ref"`
-    BaseKey        string `json:"base_key"`         // {checksum_16}_{arch}
-    BaseDigestFull string `json:"base_digest_full"` // Full SHA-256 (64 hex chars)
-    Arch           string `json:"arch"`
+    ImageRef       string      `json:"image_ref"`
+    BaseKey        string      `json:"base_key"`                  // {checksum_16}_{arch}
+    BaseDigestFull string      `json:"base_digest_full"`          // Full SHA-256 (64 hex chars)
+    Arch           string      `json:"arch"`
+    ImageType      VMImageType `json:"image_type,omitempty"`      // "qcow2" (default) or "oci-vm"
 
     // Boot configuration
-    BootStrategy  BootStrategy `json:"boot_strategy"`            // "uefi" (default), "direct" (OCI)
+    BootStrategy  BootStrategy `json:"boot_strategy"`             // "uefi" (default), "direct" (OCI)
     FirmwarePath  string       `json:"firmware_path"`
+    KernelPath    string       `json:"kernel_path,omitempty"`     // Extracted vmlinuz (OCI direct boot)
+    InitramfsPath string       `json:"initramfs_path,omitempty"`  // Extracted initrd (OCI direct boot)
+    Cmdline       string       `json:"cmdline,omitempty"`         // Kernel command line (OCI direct boot)
+    VirtioFSTag   string       `json:"virtiofs_tag,omitempty"`    // virtiofs tag for rootfs (OCI VM)
+    VirtioFSSock  string       `json:"virtiofs_sock,omitempty"`   // virtiofsd socket path (OCI VM)
     TPMSocketPath string       `json:"tpm_socket_path,omitempty"` // swtpm socket (if TPM enabled)
 
     // Resources

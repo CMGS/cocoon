@@ -122,8 +122,7 @@ Phase 2 Planned Paths:
 │   │   └── vms/{vm-id}/
 │   │       ├── upper/                          # OverlayFS upperdir (per-VM COW writes)
 │   │       ├── work/                           # OverlayFS workdir (kernel internal)
-│   │       ├── merged/                         # OverlayFS mount point (virtiofsd serves this)
-│   │       └── virtiofsd.sock                  # virtiofsd socket for rootfs-serving instance
+│   │       └── merged/                         # OverlayFS mount point (virtiofsd serves this)
 │   │
 │   ├── dnsmasq DHCP State (docs/16-networking.md)
 │   │   └── dnsmasq/{bridge}/                   # Per-bridge state (e.g., dnsmasq/cni0/)
@@ -135,6 +134,10 @@ Phase 2 Planned Paths:
 │       └── shares/                             # Default allowed host path for volume mounts
 │
 ├── Runtime State (/run/cocoon/ — configurable via RuntimeDir)
+│   │
+│   ├── OCI Rootfs Runtime (docs/04.1-oci-vm-images.md)
+│   │   └── vms/{vm-id}/
+│   │       └── virtiofsd.sock              # virtiofsd socket for rootfs-serving instance
 │   │
 │   ├── CNI Networking (docs/16-networking.md)
 │   │   └── vms/{vm-id}/
@@ -175,9 +178,9 @@ Path notes:
 - **dnsmasq state** lives under `/var/lib/cocoon/dnsmasq/` (persistent) rather than
   `/run/cocoon/` because DHCP lease files must survive dnsmasq restarts (SIGHUP
   re-reads hosts file). The PID file is co-located for simplicity.
-- **virtiofsd sockets** for user volumes (`virtiofs-{tag}.sock`) are under `/run/cocoon/`
-  (ephemeral), while the rootfs-serving virtiofsd socket (`virtiofsd.sock`) is under
-  `/var/lib/cocoon/vms/` alongside the OverlayFS mount it serves.
+- **virtiofsd sockets** (both user volume sockets `virtiofs-{tag}.sock` and the
+  rootfs-serving socket `virtiofsd.sock`) are under `/run/cocoon/` (ephemeral),
+  consistent with other runtime sockets (API socket, swtpm socket).
 - **Checkpoint directories** use their own ID namespace (`ckpt-{ulid}`), separate from
   VM IDs (`vm-{ulid}`). The `ch-snapshot/` subdirectory name matches the
   `destination_url` parameter in Cloud Hypervisor's `PUT /api/v1/vm.snapshot` API.
@@ -211,11 +214,14 @@ Other documents MUST reference these definitions rather than re-defining fields.
 | `base_key` | string | `"a1b2c3d4e5f6a7b8_amd64"` | Content-addressed key: `{checksum_16}_{arch}` |
 | `base_digest_full` | string | `"a1b2c3d4e5f6a7b8..."` (64 hex) | Full SHA-256 for collision audit |
 | `arch` | string | `"amd64"` | Architecture |
+| `image_type` | string | `""` | `"qcow2"` (default when omitted) or `"oci-vm"` (OCI VM direct boot) |
 | `boot_strategy` | string | `"uefi"` | `"uefi"` (cloud images) or `"direct"` (OCI VM images) |
 | `firmware_path` | string | `"/var/lib/cocoon/firmware/CLOUDHV.fd"` | Firmware path (CLOUDHV.fd for UEFI; empty for direct kernel boot) |
 | `kernel_path` | string | `""` | Kernel path for direct boot (Phase 2, omitted when empty) |
 | `initramfs_path` | string | `""` | Initramfs path for direct boot (Phase 2, omitted when empty) |
 | `cmdline` | string | `""` | Kernel command line for direct boot (Phase 2, omitted when empty) |
+| `virtiofs_tag` | string | `""` | virtiofs filesystem tag for OCI VM rootfs (e.g., `"cocoon-rootfs"`; Phase 2, omitted when empty) |
+| `virtiofs_sock` | string | `""` | Rootfs-serving virtiofsd socket path for OCI VM (Phase 2, omitted when empty) |
 | `tpm_socket_path` | string | `"/run/cocoon/vms/{vm_id}/swtpm.sock"` | swtpm TPM socket path (omitted if TPM not configured) |
 | `cpus` | int | `2` | vCPU count |
 | `memory_mb` | int64 | `2048` | Memory in MiB |
@@ -415,12 +421,12 @@ func (c *CocoonConfig) OCIBuildTagLock() string                     // RootDir/d
 func (c *CocoonConfig) OCILayerRefsFile() string                    // RootDir/db/oci-layer-refs.json
 func (c *CocoonConfig) OCILayerRefsLock() string                    // RootDir/db/oci-layer-refs.lock
 
-// Phase 2 — OCI VM Boot (docs/04.1-oci-vm-images.md) — Planned
-func (c *CocoonConfig) OCICacheEntry(digest string) string          // RootDir/cache/oci/{digest}
-func (c *CocoonConfig) VMUpperDir(vmID string) string               // RootDir/vms/{vmID}/upper
-func (c *CocoonConfig) VMWorkDir(vmID string) string                // RootDir/vms/{vmID}/work
-func (c *CocoonConfig) VMMergedDir(vmID string) string              // RootDir/vms/{vmID}/merged
-func (c *CocoonConfig) VMRootfsVirtiofsdSock(vmID string) string    // RootDir/vms/{vmID}/virtiofsd.sock
+// OCI VM Boot (docs/04.1-oci-vm-images.md) — Implemented
+func (c *CocoonConfig) OCICacheEntry(digest string) string                // RootDir/cache/oci/{digest}
+func (c *CocoonConfig) VMOCIUpperDir(vmID string) string                  // RootDir/vms/{vmID}/upper
+func (c *CocoonConfig) VMOCIWorkDir(vmID string) string                   // RootDir/vms/{vmID}/work
+func (c *CocoonConfig) VMOCIMergedDir(vmID string) string                 // RootDir/vms/{vmID}/merged
+func (c *CocoonConfig) VMOCIRootfsVirtioFSSocketPath(vmID string) string  // RuntimeDir/vms/{vmID}/virtiofsd.sock
 
 // Phase 2 — Networking (docs/16-networking.md)
 func (c *CocoonConfig) DnsmasqStateDir() string                     // RootDir/dnsmasq

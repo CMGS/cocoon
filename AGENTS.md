@@ -72,7 +72,7 @@ Always run `make lint` and `make test` before every commit and push on both plat
 ### Steps
 
 ```bash
-make lint    # Must report 0 issues, include drawin and linux
+make lint    # Must report 0 issues, include darwin and linux
 make test    # All tests must pass
 git add ...
 git commit ...

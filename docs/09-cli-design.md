@@ -1310,6 +1310,13 @@ func imagesCommand() *cli.Command {
 | `https://...` or `http://...`          | `url`         | Download, validate, cache                                       |
 | `registry/repo:tag` or `repo:tag`      | `oci`         | Pull via Buildah, convert to qcow2, validate bootability, cache |
 
+> **Registry media-type probing**: When the runtime resolver needs to distinguish
+> Cocoon OCI VM images from standard container images at a registry ref, it uses
+> `skopeo inspect --raw <ref>` to fetch the manifest without downloading layer
+> blobs. The manifest's layer media types (e.g.,
+> `application/vnd.cocoon.vm.kernel.v1.tar`) are inspected to classify the image
+> as OCI VM (direct kernel boot) vs. standard OCI (qcow2/UEFI conversion).
+
 **Cache Resolution Behavior**:
 
 - `image pull` updates the local manifest cache (`cache/manifests/index.json`) to map `IMAGE_REF` aliases to `base_key`.

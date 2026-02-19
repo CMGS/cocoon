@@ -156,7 +156,7 @@ func TestDerivedPathHelpers(t *testing.T) {
 		{"VMOCIUpperDir", cfg.VMOCIUpperDir("vm-123"), "/var/lib/cocoon/vms/vm-123/upper"},
 		{"VMOCIWorkDir", cfg.VMOCIWorkDir("vm-123"), "/var/lib/cocoon/vms/vm-123/work"},
 		{"VMOCIMergedDir", cfg.VMOCIMergedDir("vm-123"), "/var/lib/cocoon/vms/vm-123/merged"},
-		{"VMOCIRootfsVirtioFSSocketPath", cfg.VMOCIRootfsVirtioFSSocketPath("vm-123"), "/var/lib/cocoon/vms/vm-123/virtiofsd.sock"},
+		{"VMOCIRootfsVirtioFSSocketPath", cfg.VMOCIRootfsVirtioFSSocketPath("vm-123"), "/run/cocoon/vms/vm-123/virtiofsd.sock"},
 		{"DBDir", cfg.DBDir(), "/var/lib/cocoon/db"},
 		{"ImageCacheDir", cfg.ImageCacheDir(), "/var/lib/cocoon/cache/images"},
 		{"BaseImagePath", cfg.BaseImagePath("abc123_amd64"), "/var/lib/cocoon/cache/images/abc123_amd64.qcow2"},

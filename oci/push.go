@@ -18,6 +18,7 @@ import (
 
 	"github.com/CMGS/cocoon/config"
 	"github.com/CMGS/cocoon/types"
+	"github.com/CMGS/cocoon/utils"
 )
 
 const pushProgressRefreshInterval = 250 * time.Millisecond
@@ -159,6 +160,13 @@ func isNetworkError(err error) bool {
 	return false
 }
 
+// renderPushProgress drains push progress updates and periodically renders
+// them to w. It returns only when the done channel is closed.
+//
+// Contract: the caller MUST close done to signal completion; otherwise this
+// goroutine will block indefinitely. The updates channel may be closed
+// independently (e.g., by the remote.Write call) — renderPushProgress
+// handles that by nil-ing the channel and continuing to wait for done.
 func renderPushProgress(updates <-chan v1.Update, done <-chan struct{}, w io.Writer) {
 	ticker := time.NewTicker(pushProgressRefreshInterval)
 	defer ticker.Stop()
@@ -197,28 +205,7 @@ func formatPushProgressLine(update v1.Update) string {
 		if percent > 100 {
 			percent = 100
 		}
-		return fmt.Sprintf("Pushing image: %3d%% (%s / %s)", percent, humanBytes(update.Complete), humanBytes(update.Total))
+		return fmt.Sprintf("Pushing image: %3d%% (%s / %s)", percent, utils.HumanBytes(update.Complete), utils.HumanBytes(update.Total))
 	}
-	return fmt.Sprintf("Pushing image: %s", humanBytes(update.Complete))
-}
-
-func humanBytes(n int64) string {
-	if n < 0 {
-		return "0B"
-	}
-	const unit = int64(1024)
-	if n < unit {
-		return fmt.Sprintf("%dB", n)
-	}
-	div, exp := unit, 0
-	for value := n / unit; value >= unit; value /= unit {
-		div *= unit
-		exp++
-	}
-	suffixes := []string{"KB", "MB", "GB", "TB", "PB", "EB"}
-	if exp >= len(suffixes) {
-		exp = len(suffixes) - 1
-	}
-	value := float64(n) / float64(div)
-	return fmt.Sprintf("%.1f%s", value, suffixes[exp])
+	return fmt.Sprintf("Pushing image: %s", utils.HumanBytes(update.Complete))
 }

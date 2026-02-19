@@ -8,6 +8,7 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 
 	"github.com/CMGS/cocoon/types"
+	"github.com/CMGS/cocoon/utils"
 )
 
 func TestClassifyPushError(t *testing.T) {
@@ -142,8 +143,8 @@ func TestHumanBytes(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := humanBytes(tt.in); got != tt.want {
-				t.Fatalf("humanBytes(%d) = %q, want %q", tt.in, got, tt.want)
+			if got := utils.HumanBytes(tt.in); got != tt.want {
+				t.Fatalf("HumanBytes(%d) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}
