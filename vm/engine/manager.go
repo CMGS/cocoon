@@ -387,6 +387,10 @@ func (m *manager) createOCIVM(
 	memoryMB int64,
 	diskSize string,
 ) (*types.VMConfig, error) {
+	if err := m.ensureOCIRuntimePreflight(ctx); err != nil {
+		return nil, fmt.Errorf("OCI runtime preflight: %w", err)
+	}
+
 	localTag := strings.TrimSpace(resolvedImage.LocalOCITag)
 	if localTag == "" {
 		if resolvedImage.Source == runtimeImageSourceLocalOCITag {

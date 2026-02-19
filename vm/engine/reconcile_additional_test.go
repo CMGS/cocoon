@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -85,6 +86,59 @@ func writeTestVMArtifacts(t *testing.T, cfg *config.CocoonConfig, vmID, name, ba
 	meta := &types.VMMetadataFile{
 		VMID:          vmID,
 		State:         string(types.VMStateCreated),
+		PreviousState: string(types.VMStateCreating),
+		UpdatedAt:     now,
+		SchemaVersion: types.CurrentMetadataSchemaVersion,
+	}
+	if err := utils.AtomicWriteJSON(cfg.VMMetadataPath(vmID), meta); err != nil {
+		t.Fatalf("write metadata.json: %v", err)
+	}
+}
+
+func writeTestOCIVMArtifacts(t *testing.T, cfg *config.CocoonConfig, vmID, name string, state types.VMState) {
+	t.Helper()
+
+	if err := os.MkdirAll(cfg.VMPersistDir(vmID), 0o755); err != nil { //nolint:gosec // test fixture directory
+		t.Fatalf("mkdir vm dir: %v", err)
+	}
+	if err := os.MkdirAll(cfg.VMRuntimeDir(vmID), 0o755); err != nil { //nolint:gosec // test fixture directory
+		t.Fatalf("mkdir vm runtime dir: %v", err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	baseKey := "oci-runtime-key"
+	rootfsLowerDir := cfg.OCIRuntimeRootfsDir(baseKey)
+	if err := os.MkdirAll(rootfsLowerDir, 0o755); err != nil { //nolint:gosec // test fixture directory
+		t.Fatalf("mkdir runtime rootfs dir: %v", err)
+	}
+
+	vmCfg := &types.VMConfig{
+		VMID:           vmID,
+		Name:           name,
+		ImageRef:       "local-oci:latest",
+		BaseKey:        baseKey,
+		BaseDigestFull: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+		ImageType:      types.VMImageTypeOCIVM,
+		Arch:           "amd64",
+		BootStrategy:   types.BootStrategyDirect,
+		BaseImagePath:  rootfsLowerDir,
+		KernelPath:     cfg.OCIRuntimeKernelPath(baseKey),
+		InitramfsPath:  cfg.OCIRuntimeInitrdPath(baseKey),
+		Cmdline:        "root=cocoon-rootfs rootfstype=virtiofs rw",
+		VirtioFSTag:    "cocoon-rootfs",
+		VirtioFSSock:   cfg.VMOCIRootfsVirtioFSSocketPath(vmID),
+		SocketPath:     cfg.VMSocketPath(vmID),
+		SerialLog:      cfg.VMSerialLogPath(vmID),
+		CreatedAt:      now,
+		SchemaVersion:  types.CurrentConfigSchemaVersion,
+	}
+	if err := utils.AtomicWriteJSON(cfg.VMConfigPath(vmID), vmCfg); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+
+	meta := &types.VMMetadataFile{
+		VMID:          vmID,
+		State:         string(state),
 		PreviousState: string(types.VMStateCreating),
 		UpdatedAt:     now,
 		SchemaVersion: types.CurrentMetadataSchemaVersion,
@@ -302,5 +356,85 @@ func TestReconcileStateTimeouts_FromConfig(t *testing.T) {
 	}
 	if got := mgr.stoppingStateTimeout(); got != 23*time.Second {
 		t.Fatalf("stoppingStateTimeout=%s, want %s", got, 23*time.Second)
+	}
+}
+
+func TestReconcile_DetectsOCIRuntimeMismatch(t *testing.T) {
+	t.Parallel()
+
+	mgr, cfg := setupReconcileManager(t)
+	vmID := "vm-01HABC9D8E7F6G5H4J3K2M1N0T"
+	writeTestOCIVMArtifacts(t, cfg, vmID, "oci-runtime-mismatch", types.VMStateRunning)
+
+	if err := mgr.updateMetadata(vmID, func(md *types.VMMetadataFile) {
+		md.VirtiofsdPID = 0
+		md.OCIOverlayMounted = false
+	}); err != nil {
+		t.Fatalf("update metadata: %v", err)
+	}
+
+	issues, err := mgr.Reconcile(context.Background(), false, false)
+	if err != nil {
+		t.Fatalf("Reconcile dry-run: %v", err)
+	}
+	if !hasIssue(issues, vm.InconsistencyOCIRuntimeOverlay) {
+		t.Fatalf("expected %s issue", vm.InconsistencyOCIRuntimeOverlay)
+	}
+	if !hasIssue(issues, vm.InconsistencyOCIRuntimeVirtio) {
+		t.Fatalf("expected %s issue", vm.InconsistencyOCIRuntimeVirtio)
+	}
+}
+
+func TestReconcile_FixStoppedOCIRuntimeLeak(t *testing.T) {
+	t.Parallel()
+
+	mgr, cfg := setupReconcileManager(t)
+	vmID := "vm-01HABC9D8E7F6G5H4J3K2M1N0U"
+	writeTestOCIVMArtifacts(t, cfg, vmID, "oci-runtime-leak", types.VMStateStopped)
+
+	socketPath := cfg.VMOCIRootfsVirtioFSSocketPath(vmID)
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil { //nolint:gosec // test fixture directory
+		t.Fatalf("mkdir runtime dir: %v", err)
+	}
+	if err := os.WriteFile(socketPath, []byte(""), 0o644); err != nil { //nolint:gosec // test fixture file
+		t.Fatalf("write socket fixture: %v", err)
+	}
+
+	if err := mgr.updateMetadata(vmID, func(md *types.VMMetadataFile) {
+		md.VirtiofsdPID = 12345
+		md.VirtiofsdBinary = "virtiofsd"
+		md.VirtiofsdSocket = socketPath
+		md.OCIOverlayMounted = true
+	}); err != nil {
+		t.Fatalf("update metadata: %v", err)
+	}
+
+	issues, err := mgr.Reconcile(context.Background(), true, false)
+	if err != nil {
+		t.Fatalf("Reconcile --fix: %v", err)
+	}
+	if !hasIssue(issues, vm.InconsistencyOCIRuntimeOverlay) {
+		t.Fatalf("expected %s issue", vm.InconsistencyOCIRuntimeOverlay)
+	}
+	if !hasIssue(issues, vm.InconsistencyOCIRuntimeVirtio) {
+		t.Fatalf("expected %s issue", vm.InconsistencyOCIRuntimeVirtio)
+	}
+
+	meta, err := mgr.LoadMetadata(vmID)
+	if err != nil {
+		t.Fatalf("LoadMetadata: %v", err)
+	}
+	if meta.VirtiofsdPID != 0 {
+		t.Fatalf("virtiofsd_pid=%d, want 0", meta.VirtiofsdPID)
+	}
+	if meta.VirtiofsdSocket != "" {
+		t.Fatalf("virtiofsd_socket=%q, want empty", meta.VirtiofsdSocket)
+	}
+	if meta.OCIOverlayMounted {
+		t.Fatal("oci_overlay_mounted=true, want false")
+	}
+
+	if _, err := os.Stat(socketPath); !os.IsNotExist(err) {
+		t.Fatalf("expected virtiofs socket removed, stat err=%v", err)
 	}
 }

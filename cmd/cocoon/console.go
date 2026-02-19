@@ -35,7 +35,7 @@ func consoleCommand() *cli.Command {
 }
 
 func consoleAction(c *cli.Context) error {
-	if runtime.GOOS != "linux" {
+	if runtime.GOOS != hostOSLinux {
 		return fmt.Errorf("cocoon console requires Linux (Cloud Hypervisor is Linux-only)")
 	}
 
