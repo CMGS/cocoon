@@ -218,7 +218,15 @@ func (c *client) Shutdown(ctx context.Context, vmID string, timeout time.Duratio
 		case <-ctx.Done():
 			return fmt.Errorf("shutdown canceled for %s: %w", vmID, ctx.Err())
 		case <-ticker.C:
-			if !c.IsAlive(vmID) {
+			// Do not rely on IsAlive() here because it validates process name
+			// against current config (c.cfg.CHBinary). If the binary path/name
+			// changes after VM start, IsAlive() can return false even while the
+			// original CH process is still running.
+			stopped, probeErr := c.isVMProcessStopped(vmID)
+			if probeErr != nil {
+				return fmt.Errorf("probe VM %s process state: %w", vmID, probeErr)
+			}
+			if stopped {
 				c.cleanupRuntimeFiles(vmID)
 				return nil
 			}
@@ -228,6 +236,26 @@ func (c *client) Shutdown(ctx context.Context, vmID string, timeout time.Duratio
 			}
 		}
 	}
+}
+
+// isVMProcessStopped reports whether the CH process for vmID has exited.
+// It intentionally checks PID liveness (not process-name identity) so stop
+// polling does not misclassify a live VM as exited when CHBinary config is
+// changed after the VM started.
+func (c *client) isVMProcessStopped(vmID string) (bool, error) {
+	pid, err := utils.ReadPIDFile(c.cfg.VMPIDPath(vmID))
+	if err != nil {
+		if os.IsNotExist(err) {
+			// If PID file is missing but socket is still connectable, treat VM as
+			// running and avoid deleting runtime artifacts prematurely.
+			if connErr := c.CheckSocketConnectivity(c.cfg.VMSocketPath(vmID)); connErr == nil {
+				return false, nil
+			}
+			return true, nil
+		}
+		return false, err
+	}
+	return !utils.IsProcessAlive(pid), nil
 }
 
 // ForceKill sends SIGKILL to the CH process for the given VM.
