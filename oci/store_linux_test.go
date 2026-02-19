@@ -4,6 +4,7 @@ package oci
 
 import (
 	"os"
+	"slices"
 	"testing"
 )
 
@@ -29,7 +30,7 @@ func TestCleanupManifestRefsIfUnreferenced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAllTrackedBlobs after unreferenced cleanup: %v", err)
 	}
-	if containsString(tracked, blob) {
+	if slices.Contains(tracked, blob) {
 		t.Fatalf("expected %q to be removed after unreferenced cleanup, tracked=%v", blob, tracked)
 	}
 
@@ -55,7 +56,7 @@ func TestCleanupManifestRefsIfUnreferenced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAllTrackedBlobs after referenced cleanup: %v", err)
 	}
-	if !containsString(tracked, blob) {
+	if !slices.Contains(tracked, blob) {
 		t.Fatalf("expected %q to remain tracked while manifest is still referenced, tracked=%v", blob, tracked)
 	}
 }

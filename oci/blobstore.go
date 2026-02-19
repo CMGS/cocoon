@@ -43,6 +43,9 @@ func (bs *BlobStore) BlobPath(digest string) string {
 
 // BlobExists checks if a blob exists in the shared store.
 func (bs *BlobStore) BlobExists(digest string) bool {
+	if validateHexDigest(digest) != nil {
+		return false
+	}
 	_, err := os.Stat(bs.BlobPath(digest))
 	return err == nil
 }

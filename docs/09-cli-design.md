@@ -122,7 +122,11 @@ cocoon/
 │   ├── login.go              # Registry login, credential storage (~/.cocoon/config.json)
 │   ├── layout.go             # InspectLayout: parse OCI layout metadata
 │   ├── store.go              # Tag index: local build tag → OCI layout mapping
+│   ├── store_linux.go        # Linux-specific store operations (manifest ref cleanup)
 │   ├── blobstore.go          # Shared content-addressed blob store (cache/oci/blobs/)
+│   ├── layerrefs.go          # Blob-to-manifest reference tracking for GC
+│   ├── build_context.go      # Build context sidecar for FROM resolution and layer reuse
+│   ├── delta_linux.go        # Delta layer generation for Cocoonfile RUN/COPY
 │   ├── progress.go           # Docker-like step progress output to stderr
 │   └── builder.go            # image.Builder adapter (delegates to package functions)
 ├── storage/

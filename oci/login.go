@@ -376,14 +376,14 @@ func (k *cocoonKeychain) Resolve(target authn.Resource) (authn.Authenticator, er
 		return authn.Anonymous, nil
 	}
 
-	parts := splitOnce(string(decoded), ":")
-	if len(parts) != 2 {
+	user, pass, ok := strings.Cut(string(decoded), ":")
+	if !ok {
 		return authn.Anonymous, nil
 	}
 
 	return &authn.Basic{
-		Username: parts[0],
-		Password: parts[1],
+		Username: user,
+		Password: pass,
 	}, nil
 }
 
@@ -418,16 +418,4 @@ func resolveAuthEntry(auths map[string]dockerAuthEntry, registry string) (docker
 		}
 	}
 	return dockerAuthEntry{}, false
-}
-
-// splitOnce splits s on the first occurrence of sep, returning at most 2 parts.
-func splitOnce(s, sep string) []string {
-	i := 0
-	for i < len(s) {
-		if i+len(sep) <= len(s) && s[i:i+len(sep)] == sep {
-			return []string{s[:i], s[i+len(sep):]}
-		}
-		i++
-	}
-	return []string{s}
 }

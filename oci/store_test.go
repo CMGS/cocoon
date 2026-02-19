@@ -3,6 +3,7 @@ package oci
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -253,13 +254,13 @@ func TestStoreRemoveTagSharedManifestRefs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAllTrackedBlobs after first remove: %v", err)
 	}
-	if !containsString(trackedAfterFirstRemove, blob) {
+	if !slices.Contains(trackedAfterFirstRemove, blob) {
 		t.Fatalf("expected %q to remain tracked after removing first shared tag, got %v", blob, trackedAfterFirstRemove)
 	}
 
 	if _, zeroRef, err := store.RemoveTag("tag-shared-2"); err != nil {
 		t.Fatalf("RemoveTag tag-shared-2: %v", err)
-	} else if !containsString(zeroRef, blob) {
+	} else if !slices.Contains(zeroRef, blob) {
 		t.Fatalf("expected %q to become zero-ref after removing last shared tag, got %v", blob, zeroRef)
 	}
 }
@@ -299,13 +300,4 @@ func TestStoreRemoveTagSharedLayoutKeepsLayoutUntilLastTag(t *testing.T) {
 	if _, err := os.Stat(layoutDir); !os.IsNotExist(err) {
 		t.Fatalf("layout should be removed after last tag is deleted, stat err=%v", err)
 	}
-}
-
-func containsString(values []string, target string) bool {
-	for _, v := range values {
-		if v == target {
-			return true
-		}
-	}
-	return false
 }

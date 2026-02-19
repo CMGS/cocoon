@@ -138,7 +138,7 @@ func saveLayerRefs(cfg *config.CocoonConfig, idx *LayerRefsIndex) error {
 }
 
 func withLayerRefsLock(cfg *config.CocoonConfig, fn func(*LayerRefsIndex) error) error {
-	if err := os.MkdirAll(cfg.DBDir(), 0o750); err != nil {
+	if err := os.MkdirAll(cfg.DBDir(), 0o755); err != nil { //nolint:gosec // cocoon db dirs are shared runtime state
 		return fmt.Errorf("create db dir: %w", err)
 	}
 	fl := flock.New(cfg.OCILayerRefsLock())

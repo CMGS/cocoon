@@ -41,7 +41,7 @@ Lock file paths are additionally documented in [06-concurrency.md](./06-concurre
 │   │   └── {checksum_16}_{arch}.lock     # Per-image conversion lock
 │   └── oci/                              # OCI VM image build cache (shared blob store)
 │       ├── blobs/sha256/{hex}            # Shared content-addressed blob store
-│       └── layouts/{hash64}/             # OCI layouts (keyed by full tag+manifest hash, blobs are hardlinks)
+│       └── layouts/{sha256-hex}/             # OCI layouts (keyed by full tag+manifest hash, blobs are hardlinks)
 │           ├── oci-layout
 │           ├── index.json
 │           └── blobs/sha256/{hex}        # Hardlinks to ../../blobs/sha256/{hex}
@@ -99,7 +99,7 @@ Phase 2 Planned Paths:
 │   ├── OCI VM Image Build Cache (docs/04.1-oci-vm-images.md) — Implemented
 │   │   └── cache/oci/
 │   │       ├── blobs/sha256/{hex}              # Shared content-addressed blob store
-│   │       └── layouts/{hash64}/               # OCI layouts (keyed by full tag+manifest hash)
+│   │       └── layouts/{sha256-hex}/               # OCI layouts (keyed by full tag+manifest hash)
 │   │           ├── oci-layout
 │   │           ├── index.json
 │   │           └── blobs/sha256/{hex}          # Hardlinks to shared blob store
@@ -312,7 +312,7 @@ arch     = detect or default to runtime arch
 #### Collision Handling
 
 Although 16 hex characters (64 bits) make accidental collisions extremely
-unlikely (birthday-bound: ~2³² ≈ 4 billion images before 50% collision
+unlikely (birthday-bound: ~2^32 ≈ 4 billion images before 50% collision
 probability), the `digest_full` field in `references.json` provides a safety
 net:
 
@@ -737,6 +737,12 @@ func (gc *fileGarbageCollector) CollectOrphanedOCIManifestRefs() ([]string, erro
 // Lock: gc.lock (L1) -> oci-layer-refs.lock for atomic check-and-delete.
 func (gc *fileGarbageCollector) CollectUnreferencedOCIBlobs() ([]string, error) { ... }
 
+// CollectStaleConversionLocks removes stale conversion lock files from
+// cache/locks/ where the corresponding base image no longer exists and
+// the lock is not currently held.
+// Lock: gc.lock (L1) only.
+func (gc *fileGarbageCollector) CollectStaleConversionLocks(maxAge time.Duration) ([]string, error) { ... }
+
 // CollectTempFiles removes files/directories in temp/ older than maxAge.
 // Lock: gc.lock (L1) only.
 func (gc *fileGarbageCollector) CollectTempFiles(maxAge time.Duration) ([]string, error) { ... }
@@ -746,6 +752,7 @@ func (gc *fileGarbageCollector) CollectTempFiles(maxAge time.Duration) ([]string
 // cycle, but safe because each phase performs its own reference check.
 func (gc *fileGarbageCollector) FullGC() error {
     tempMaxAge := 1 * time.Hour
+    lockMaxAge := storage.OCIGCGracePeriod
 
     gc.CollectUnreferencedImages()
     gc.CollectOrphanedOverlays()
@@ -753,6 +760,7 @@ func (gc *fileGarbageCollector) FullGC() error {
     gc.CollectStaleOCITags()
     gc.CollectOrphanedOCIManifestRefs()
     gc.CollectUnreferencedOCIBlobs()
+    gc.CollectStaleConversionLocks(lockMaxAge)
     gc.CollectTempFiles(tempMaxAge)
     return nil
 }
@@ -832,7 +840,17 @@ Blobs in `cache/oci/blobs/sha256/` with zero manifest references in `oci-layer-r
 
 **Locking**: GC lock (L1) followed by `oci-layer-refs.lock` for atomic check-and-delete.
 
-#### 7. Temporary Entries
+#### 7. Stale Conversion Locks
+
+Lock files in `cache/locks/` left behind after image deletion. These are best-effort hygiene to clean lock files that are no longer needed.
+
+**Detection:** Lock file mtime is older than `maxAge`, the corresponding base image qcow2 does not exist, and the lock is not currently held (TryLock succeeds).
+
+**Action:** Remove the stale lock file while holding the lock, then release.
+
+**Locking**: GC lock (L1) only. Active lock files are preserved.
+
+#### 8. Temporary Entries
 
 Files/directories in the `/var/lib/cocoon/temp/` directory older than a threshold (default: 1 hour).
 
