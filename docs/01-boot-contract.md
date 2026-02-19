@@ -9,7 +9,7 @@
 
 This document defines the **Boot Contract** - the core specification for how Cocoon boots virtual machines using Cloud Hypervisor. The contract establishes:
 
-1. **Boot mode strategy**: UEFI (default for cloud images, Phase 1) + Direct kernel boot (for OCI VM images, Phase 2 — not yet implemented)
+1. **Boot mode strategy**: UEFI (default for cloud images) + Direct kernel boot (for OCI VM images; implemented for local OCI-tag runtime path)
 2. **Guest initialization**: systemd (guest image setup is user responsibility)
 3. **I/O mechanisms**: Serial console, future vsock/virtiofs
 4. **Lifecycle semantics**: Start, stop, delete, crash recovery
@@ -58,33 +58,33 @@ This document defines the **Boot Contract** - the core specification for how Coc
 - Firmware binary: `CLOUDHV.fd` from the [cloud-hypervisor/edk2 releases](https://github.com/cloud-hypervisor/edk2/releases)
 - Installed to: `/var/lib/cocoon/firmware/CLOUDHV.fd`
 
-### 1.2 Alternative Boot Mode: Direct Kernel Boot (OCI VM Images) (Phase 2 — Not Yet Implemented)
+### 1.2 Alternative Boot Mode: Direct Kernel Boot (OCI VM Images)
 
-> **Note**: Direct kernel boot is designed but **not yet implemented**. The specification below describes the planned Phase 2 behavior. Phase 1 only supports UEFI boot.
+> **Implementation status**: Direct kernel boot is implemented for OCI VM refs that resolve to local OCI tags. Registry OCI refs can be classified, but runtime start still requires local materialization.
 
 **Direct kernel boot** will be used automatically when the runtime resolver classifies an image as OCI VM. Instead of loading a UEFI firmware binary, Cocoon will pass the kernel, initramfs, and cmdline directly to Cloud Hypervisor.
 
-**When Direct kernel boot will be used** (Phase 2):
+**When Direct kernel boot is used**:
 - OCI VM images where the kernel and initramfs are extracted from the image
 - Eliminates the need for a firmware binary entirely
 - Provides fast, deterministic boot for purpose-built VM images
 
-**How it will work** (Phase 2):
+**How it works**:
 1. Cocoon extracts the kernel and initramfs from the OCI VM image during conversion
 2. Cloud Hypervisor is configured with `payload.kernel`, `payload.initramfs`, and `payload.cmdline` (no `payload.firmware`)
 3. The kernel boots directly with the provided command line
 
-**Cloud Hypervisor REST payload** (Direct kernel boot — Phase 2):
+**Cloud Hypervisor REST payload** (Direct kernel boot):
 ```json
 {
   "payload": {
-    "kernel": "/var/lib/cocoon/vms/vm-123/vmlinuz",
-    "initramfs": "/var/lib/cocoon/vms/vm-123/initrd.img",
-    "cmdline": "root=PARTUUID=<uuid> rw console=ttyS0,115200n8 console=hvc0"
+    "kernel": "/var/lib/cocoon/cache/oci/runtime/{runtime-key}/kernel/vmlinuz",
+    "initramfs": "/var/lib/cocoon/cache/oci/runtime/{runtime-key}/kernel/initrd.img",
+    "cmdline": "console=hvc0 root=cocoon-rootfs rootfstype=virtiofs rw"
   },
+  "fs": [{"tag": "cocoon-rootfs", "socket": "/run/cocoon/vms/vm-123/virtiofsd.sock"}],
   "cpus": {"boot_vcpus": 2, "max_vcpus": 2},
   "memory": {"size": 2147483648},
-  "disks": [{"path": "/var/lib/cocoon/vms/vm-123/overlay.qcow2"}],
   "serial": {"mode": "File", "file": "/var/log/cocoon/vm-123-serial.log"},
   "console": {"mode": "Pty"}
 }
@@ -92,7 +92,7 @@ This document defines the **Boot Contract** - the core specification for how Coc
 
 **Kernel cmdline format**:
 ```
-root=PARTUUID=<uuid> rw console=ttyS0,115200n8 console=hvc0
+root=<virtiofs_tag> rootfstype=virtiofs rw [console=...]
 ```
 
 **Boot detection**: The same serial log pattern matching is used for both UEFI and Direct kernel boot (systemd target patterns, login prompt fallback patterns).
@@ -108,7 +108,7 @@ root=PARTUUID=<uuid> rw console=ttyS0,115200n8 console=hvc0
 | Arch | Firmware | Status |
 |------|----------|--------|
 | x86_64 | CLOUDHV.fd (UEFI) | Phase 1 |
-| x86_64 | Direct kernel boot (OCI) | Phase 2 |
+| x86_64 | Direct kernel boot (OCI) | Implemented (local OCI-tag runtime path) |
 | aarch64 | CLOUDHV.fd (UEFI) | Phase 2 |
 
 ---
@@ -118,7 +118,7 @@ root=PARTUUID=<uuid> rw console=ttyS0,115200n8 console=hvc0
 Cocoon selects the boot mode automatically based on the image type:
 
 - **Non-OCI images** (cloud images, local qcow2 files, URLs): **UEFI boot** with CLOUDHV.fd firmware via `payload.firmware` **(Phase 1 — Implemented)**
-- **OCI VM images** (resolver-classified): **Direct kernel boot** via `payload.kernel` + `payload.initramfs` + `payload.cmdline` **(Phase 2 — Not Yet Implemented)**
+- **OCI VM images** (resolver-classified): **Direct kernel boot** via `payload.kernel` + `payload.initramfs` + `payload.cmdline` (implemented for local OCI-tag runtime path)
 
 The boot strategy is determined at VM creation time and stored immutably in `config.json`.
 
@@ -132,7 +132,7 @@ const (
     // This is the default boot strategy for non-OCI images.
     BootStrategyUEFI   BootStrategy = "uefi"
     // BootStrategyDirect boots with kernel + initramfs + cmdline via REST payload.
-    // Used automatically for OCI VM images. (Phase 2 — Not Yet Implemented)
+    // Used automatically for OCI VM images.
     BootStrategyDirect BootStrategy = "direct"
 )
 
@@ -145,7 +145,7 @@ const DefaultBootStrategy = BootStrategyUEFI
 | Image Type | Boot Strategy | Payload Fields | Firmware | Status |
 |------------|---------------|----------------|----------|--------|
 | Cloud images (qcow2, URL) | UEFI | `payload.firmware` | CLOUDHV.fd | Phase 1 (Implemented) |
-| OCI VM images (auto-detected) | Direct | `payload.kernel` + `payload.initramfs` + `payload.cmdline` | None | Phase 2 (Planned) |
+| OCI VM images (auto-detected) | Direct | `payload.kernel` + `payload.initramfs` + `payload.cmdline` | None | Implemented (local OCI-tag runtime path) |
 
 **No automatic fallback**: Cocoon boots using the strategy determined by the image type. If the boot fails (e.g., firmware missing, kernel not found), the boot fails with an error.
 
@@ -198,7 +198,7 @@ ls -la /sbin/init  # Should be symlink to systemd
 
 2. Firmware/bootloader loads kernel
    └─ UEFI: CLOUDHV.fd → GRUB → vmlinuz (Phase 1)
-   └─ Direct: kernel + initramfs passed directly (Phase 2)
+   └─ Direct: kernel + initramfs passed directly (OCI runtime path)
 
 3. systemd initializes services
    └─ Mounts filesystems, starts networking, reaches multi-user target
@@ -660,7 +660,7 @@ func ValidateBootability(rootfs string) error {
 
 **Firmware**:
 - UEFI: CLOUDHV.fd from `/var/lib/cocoon/firmware/CLOUDHV.fd` (deprecated fallback: `/usr/share/OVMF/OVMF_CODE.fd`) — Phase 1 (Implemented)
-- Direct kernel boot: No firmware needed (kernel + initramfs passed directly) — Phase 2 (Not Yet Implemented)
+- Direct kernel boot: No firmware needed (kernel + initramfs passed directly) — Implemented for local OCI-tag runtime path
 
 **Bootloader**:
 - ESP location: `/boot/efi/EFI/BOOT/BOOTX64.EFI`
@@ -698,10 +698,10 @@ func ValidateBootability(rootfs string) error {
   - [x] Locate UEFI firmware: primary `/var/lib/cocoon/firmware/CLOUDHV.fd`, deprecated fallback `/usr/share/OVMF/OVMF_CODE.fd`
   - [x] Launch CH with UEFI firmware via REST `payload.firmware` (default boot strategy for non-OCI images)
 
-- [ ] **Direct Kernel Boot** (OCI VM images) — **Phase 2 (Not Yet Implemented)**:
-  - [ ] Extract kernel and initramfs from OCI VM images
-  - [ ] Launch CH with `payload.kernel` + `payload.initramfs` + `payload.cmdline`
-  - [ ] Build kernel cmdline with `root=PARTUUID=<uuid> rw console=ttyS0,115200n8 console=hvc0`
+- [x] **Direct Kernel Boot** (OCI VM images) — implemented for local OCI-tag runtime path:
+  - [x] Extract kernel and initramfs from OCI VM images
+  - [x] Launch CH with `payload.kernel` + `payload.initramfs` + `payload.cmdline`
+  - [x] Build kernel cmdline with `root=<virtiofs_tag> rootfstype=virtiofs rw` (+ console entries)
 
 - [x] **Image Conversion** (`image/pipeline/manager.go`, `image/pipeline/convert_linux.go`):
   - [x] Regenerate GRUB config (if needed for console settings)
@@ -737,11 +737,11 @@ func ValidateBootability(rootfs string) error {
 
 **Boot Contract v2.0** establishes:
 
-1. **Boot strategy**: UEFI (cloud images, Phase 1) + Direct kernel boot (OCI VM images, Phase 2 planned)
+1. **Boot strategy**: UEFI (cloud images, Phase 1) + Direct kernel boot (OCI VM images, implemented for local OCI-tag runtime path)
 2. **Guest initialization**: User responsibility (Cocoon does not perform guest init)
 3. **Image requirements**: kernel + bootloader + systemd
 4. **Graceful lifecycle**: ACPI shutdown with timeout
-5. **Production ready**: Works with standard cloud images (Phase 1); OCI VM image direct boot planned for Phase 2
+5. **Production ready**: Works with standard cloud images (Phase 1) and OCI VM direct boot for local OCI-tag runtime path; registry OCI runtime materialization remains Phase 2 follow-up
 
 **Next Steps**:
 - Read `docs/03-hypervisor-integration.md` for CH API details

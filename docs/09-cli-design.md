@@ -2,8 +2,8 @@
 
 **Version**: 1.0
 **Status**: Implemented
-**Phase**: Phase 1
-**Last Updated**: 2026-02-18
+**Phase**: Phase 1 + Phase 2 (partial)
+**Last Updated**: 2026-02-19
 
 ## ⚠️ Supported Image Contract
 
@@ -17,14 +17,16 @@
 
 2. **Bootable OCI Images** (Custom-built):
    - **Phase 1**: OCI→qcow2 conversion with **strict bootability validation**
-   - Must contain: kernel, initrd, init system (systemd), bootloader
+   - **Phase 2 (implemented scope)**: resolver-driven OCI VM direct runtime (`payload.kernel` + `fs[]`) for local OCI tags
+   - Must contain: kernel, initrd, init system (systemd)
+   - Bootloader requirement applies to the OCI→qcow2 conversion path; direct OCI runtime path does not require bootloader-on-disk
    - **Non-bootable OCI images will fail with clear error**
    - Requires build tooling (see docs/11-bootable-oci-build.md)
 
-**NOT Supported** (Phase 1):
+**NOT Supported** (current):
 - Regular container images (`ubuntu:latest`, `python:3.11`, etc.)
-- These lack kernel/bootloader and will **fail bootability validation**
-- Phase 2 will add auto-conversion capabilities
+- These typically lack kernel/initrd/systemd and will fail bootability validation
+- Automatic "generic container image -> runnable VM" conversion is not provided
 
 See [00-overview.md § Supported Image Contract](./00-overview.md#️-supported-image-contract) for details.
 
@@ -34,7 +36,7 @@ See [00-overview.md § Supported Image Contract](./00-overview.md#️-supported-
 
 This document defines the command-line interface for Cocoon, a lightweight VM management tool built on Cloud Hypervisor. The CLI follows Docker-like patterns for familiarity while exposing VM-specific capabilities like UEFI/Direct kernel boot modes, resource allocation, and lifecycle management.
 
-The design integrates the [Boot Contract](./01-boot-contract.md) decisions, including UEFI boot for cloud images (Phase 1), serial console I/O, and graceful shutdown semantics. Direct kernel boot for OCI VM images is planned for Phase 2 (see [04.1-oci-vm-images.md](./04.1-oci-vm-images.md)). It also leverages the [storage management](./05-storage-management.md) system for efficient copy-on-write disk handling.
+The design integrates the [Boot Contract](./01-boot-contract.md) decisions, including UEFI boot for cloud images, resolver-driven OCI direct runtime for local OCI tags, serial console I/O, and graceful shutdown semantics. It also leverages the [storage management](./05-storage-management.md) system for efficient copy-on-write disk handling.
 
 ## Table of Contents
 
@@ -682,7 +684,7 @@ func runCommand() *cli.Command {
 2. **Print VM ID**: Output the VM ID immediately after Create, **before** boot detection. This allows scripts to capture the ID for cleanup even if Start fails (see `cmd/cocoon/run.go` rationale comment).
 3. **Start VM** (`vmMgr.Start`): Launch CH process, configure via REST, boot VM, poll serial log for boot completion (timeout: config default), transition to RUNNING.
 4. **Background behavior**: VM runs as a background CH process. Serial log is written to disk; use `cocoon logs --follow` to stream.
-   > **Phase 1 note**: All runs are background (CH process). The `--detach/-d` flag is accepted but is a no-op. In Phase 2, non-detach runs will attach to the serial log automatically; `--detach/-d` will then control attach vs. detach mode.
+   > **Current note**: Runs are background-only today. The `--detach/-d` flag is accepted but is currently a no-op.
 5. **Auto-remove** (if `--rm`): The `AutoRemove` flag is recorded in metadata after Start succeeds. When the VM is stopped via `cocoon stop`, the delete flow is triggered automatically. Note: if the VM crashes or is killed externally, auto-remove does not fire. Use `cocoon doctor --fix` for state reconciliation; automatic deletion of crashed `auto_remove` VMs is a future enhancement.
 
 **Example Usage**:
@@ -694,8 +696,8 @@ cocoon run ubuntu-22.04-cloudimg --name myvm --cpus 4 --memory 4G
 # Run VM with auto-remove on stop
 cocoon run --rm ubuntu-22.04-cloudimg --name temp-vm
 
-# Run an OCI VM image (Phase 2 runtime path -- not yet implemented)
-# cocoon run myorg/ubuntu-vm:22.04
+# Run an OCI VM image from local OCI tag store (direct kernel + virtiofs path)
+cocoon run myorg/ubuntu-vm:22.04 --name my-oci-vm
 
 # Run with TPM 2.0 emulation enabled
 cocoon run --tpm ubuntu-22.04-cloudimg --name secure-vm
@@ -712,14 +714,12 @@ cocoon run --boot-timeout 120 ubuntu-22.04-cloudimg --name slow-vm
 
 **IMAGE Parameter**:
 - **Positional argument** (required): Image path, URL, or OCI reference
-- **Phase 1 Support** (Current):
-  - Cloud image qcow2: `/path/to/ubuntu-22.04-cloudimg.qcow2`
-  - Cloud image URL: `https://cloud-images.ubuntu.com/.../ubuntu-22.04.img`
-  - **OCI→qcow2 conversion**: Supported with strict bootability validation
-    - Bootable OCI images: Converted and used successfully
-    - Non-bootable OCI images: **Fail with clear error** (missing kernel/bootloader)
-- **Phase 2 Support** (Planned):
-  - Enhanced bootability diagnostics with specific remediation guidance
+- **Current Support**:
+  - Cloud image qcow2: `/path/to/ubuntu-22.04-cloudimg.qcow2` (UEFI path)
+  - Cloud image URL: `https://cloud-images.ubuntu.com/.../ubuntu-22.04.img` (UEFI path)
+  - Bootable OCI image/container refs: OCI→qcow2 conversion path (UEFI) with strict bootability validation
+  - Local OCI VM tags: direct kernel + virtiofs runtime path (`image_type=oci-vm`)
+  - Registry OCI refs: type detection is supported; runtime start still requires local OCI materialization
 
 ```go
 func createCommand() *cli.Command {
@@ -754,7 +754,7 @@ func createAction(c *cli.Context) error {
 }
 ```
 
-The `createCommand` uses the same `vmCreateFlags()` as `runCommand`, which includes `--name`, `--cpus`, `--memory` (default "2048M"), `--disk`, `--skip-verify`, and `--tpm`. Runtime image-type selection is resolver-driven (user does not need a mode flag). The hidden `--oci` flag remains an internal debug override while Phase 2 runtime wiring is unfinished. Note: `--boot-timeout` is only available on `run` and `start` commands (not `create`, since `create` does not boot the VM).
+The `createCommand` uses the same `vmCreateFlags()` as `runCommand`, which includes `--name`, `--cpus`, `--memory` (default "2048M"), `--disk`, `--skip-verify`, and `--tpm`. Runtime image-type selection is resolver-driven (user does not need a mode flag). The hidden `--oci` flag remains an internal debug override. Note: `--boot-timeout` is only available on `run` and `start` commands (not `create`, since `create` does not boot the VM).
 
 **Example Usage**:
 
@@ -769,9 +769,8 @@ cocoon create ubuntu-22.04-cloudimg --cpus 2 --memory 2G
 cocoon create https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img \
   --name myvm --cpus 4 --memory 8G
 
-# Create from OCI image (Phase 1: requires bootable OCI, else error)
+# Create from local OCI VM tag (direct kernel + virtiofs path)
 cocoon create myorg/ubuntu-bootable:22.04 --name myvm
-# Error if not bootable: "Image is not bootable - missing kernel/bootloader"
 
 # Error: name already taken
 $ cocoon create ubuntu-22.04-cloudimg --name myvm
@@ -2164,7 +2163,7 @@ This CLI design implements the Boot Contract specification:
 
 | Boot Contract Section      | CLI Implementation                                                                                                                        |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| §1 Boot Path Decision      | UEFI boot (Phase 1); resolver-driven OCI direct-boot auto-routing in Phase 2 (not yet implemented)                                        |
+| §1 Boot Path Decision      | UEFI boot for non-OCI refs + resolver-driven OCI direct runtime for local OCI tags; hidden `--oci` remains debug-only                     |
 | §2 Guest Init Model        | Guest initialization is the user's responsibility; DHCP-based network config planned for Phase 2 ([16-networking.md](./16-networking.md)) |
 | §3 I/O Mechanisms          | Serial console via `--serial file=...` (CH flag), `cocoon logs` command                                                                   |
 | §4 Lifecycle Semantics     | `run`, `stop`, `delete`, `kill` commands                                                                                                  |
