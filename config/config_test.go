@@ -190,6 +190,8 @@ func TestDerivedPathHelpers(t *testing.T) {
 		{"OCIRuntimeKernelDir", cfg.OCIRuntimeKernelDir("abc123"), "/var/lib/cocoon/cache/oci/runtime/abc123/kernel"},
 		{"OCIRuntimeKernelPath", cfg.OCIRuntimeKernelPath("abc123"), "/var/lib/cocoon/cache/oci/runtime/abc123/kernel/vmlinuz"},
 		{"OCIRuntimeInitrdPath", cfg.OCIRuntimeInitrdPath("abc123"), "/var/lib/cocoon/cache/oci/runtime/abc123/kernel/initrd.img"},
+		{"OCIRuntimeRefsFile", cfg.OCIRuntimeRefsFile(), "/var/lib/cocoon/db/oci-runtime-refs.json"},
+		{"OCIRuntimeRefsLock", cfg.OCIRuntimeRefsLock(), "/var/lib/cocoon/db/oci-runtime-refs.lock"},
 		{"DBDir", cfg.DBDir(), "/var/lib/cocoon/db"},
 		{"ImageCacheDir", cfg.ImageCacheDir(), "/var/lib/cocoon/cache/images"},
 		{"BaseImagePath", cfg.BaseImagePath("abc123_amd64"), "/var/lib/cocoon/cache/images/abc123_amd64.qcow2"},

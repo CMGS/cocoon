@@ -1225,6 +1225,14 @@ func TestStart_OCIRuntimeMetadataWiring(t *testing.T) {
 	if meta.VirtiofsdBinary != "virtiofsd" {
 		t.Fatalf("virtiofsd_binary = %q, want %q", meta.VirtiofsdBinary, "virtiofsd")
 	}
+
+	refs, err := oci.GetRuntimeRefs(td.cfg, v.BaseKey)
+	if err != nil {
+		t.Fatalf("GetRuntimeRefs: %v", err)
+	}
+	if len(refs) != 1 || refs[0] != v.VMID {
+		t.Fatalf("runtime refs = %v, want [%s]", refs, v.VMID)
+	}
 }
 
 func TestStart_OCIRuntimeCleanupOnBootFailure(t *testing.T) {
@@ -1370,6 +1378,44 @@ func TestStop_CleansOCIRuntimeMetadata(t *testing.T) {
 	}
 	if meta.OCIOverlayMounted {
 		t.Fatal("oci_overlay_mounted = true, want false")
+	}
+}
+
+func TestDelete_OCIRuntimeUnpinsRuntimeCache(t *testing.T) {
+	t.Parallel()
+	td := setupTestManager(t)
+
+	v := createTestVM(t, td, &vm.CreateOptions{
+		Image: "docker.io/library/ubuntu:22.04",
+		Name:  "delete-oci-unpin-runtime",
+	})
+
+	runtimeKey := "runtime-pin-delete"
+	v.ImageType = types.VMImageTypeOCIVM
+	v.BaseKey = runtimeKey
+	v.BaseImagePath = td.cfg.OCIRuntimeRootfsDir(runtimeKey)
+	v.OverlayPath = ""
+	if err := os.MkdirAll(v.BaseImagePath, 0o755); err != nil {
+		t.Fatalf("mkdir runtime rootfs: %v", err)
+	}
+	if err := utils.AtomicWriteJSON(td.cfg.VMConfigPath(v.VMID), v); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+
+	if err := oci.AddRuntimeRef(td.cfg, runtimeKey, v.VMID); err != nil {
+		t.Fatalf("AddRuntimeRef: %v", err)
+	}
+
+	if err := td.mgr.Delete(t.Context(), v.VMID, false); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	refs, err := oci.GetRuntimeRefs(td.cfg, runtimeKey)
+	if err != nil {
+		t.Fatalf("GetRuntimeRefs: %v", err)
+	}
+	if len(refs) != 0 {
+		t.Fatalf("runtime refs = %v, want []", refs)
 	}
 }
 

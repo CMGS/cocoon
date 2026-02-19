@@ -21,6 +21,10 @@ type conversionLockGC interface {
 	CollectStaleConversionLocks(maxAge time.Duration) ([]string, error)
 }
 
+type ociRuntimeCacheGC interface {
+	CollectUnreferencedOCIRuntimeCaches() ([]string, error)
+}
+
 func gcCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "gc",
@@ -101,7 +105,19 @@ func gcAction(c *cli.Context) error {
 		fmt.Printf("collected unreferenced OCI blob: %s\n", digest)
 	}
 
-	// Phase 7: Collect stale conversion lock files (best-effort hygiene).
+	// Phase 7: Collect unreferenced OCI runtime caches.
+	ociRuntimeCaches := []string{}
+	if runtimeGC, ok := app.gc.(ociRuntimeCacheGC); ok {
+		ociRuntimeCaches, err = runtimeGC.CollectUnreferencedOCIRuntimeCaches()
+		if err != nil {
+			return fmt.Errorf("collect unreferenced OCI runtime caches: %w", err)
+		}
+		for _, runtimeKey := range ociRuntimeCaches {
+			fmt.Printf("collected unreferenced OCI runtime cache: %s\n", runtimeKey)
+		}
+	}
+
+	// Phase 8: Collect stale conversion lock files (best-effort hygiene).
 	lockFiles := []string{}
 	if lockGC, ok := app.gc.(conversionLockGC); ok {
 		lockFiles, err = lockGC.CollectStaleConversionLocks(conversionLockGCMaxAge)
@@ -113,7 +129,7 @@ func gcAction(c *cli.Context) error {
 		}
 	}
 
-	// Phase 8: Collect temp files.
+	// Phase 9: Collect temp files.
 	tempFiles, err := app.gc.CollectTempFiles(1 * time.Hour)
 	if err != nil {
 		return fmt.Errorf("collect temp files: %w", err)
@@ -122,12 +138,12 @@ func gcAction(c *cli.Context) error {
 		fmt.Printf("collected temp file: %s\n", name)
 	}
 
-	total := len(images) + len(overlays) + len(ociLayouts) + len(staleTags) + len(orphanedManifests) + len(ociBlobs) + len(lockFiles) + len(tempFiles)
+	total := len(images) + len(overlays) + len(ociLayouts) + len(staleTags) + len(orphanedManifests) + len(ociBlobs) + len(ociRuntimeCaches) + len(lockFiles) + len(tempFiles)
 	if total == 0 {
 		fmt.Println("Nothing to collect.")
 	} else {
-		fmt.Printf("\nCollected %d item(s): %d images, %d overlays, %d OCI layouts, %d stale tags, %d orphaned manifests, %d OCI blobs, %d stale locks, %d temp files.\n",
-			total, len(images), len(overlays), len(ociLayouts), len(staleTags), len(orphanedManifests), len(ociBlobs), len(lockFiles), len(tempFiles))
+		fmt.Printf("\nCollected %d item(s): %d images, %d overlays, %d OCI layouts, %d stale tags, %d orphaned manifests, %d OCI blobs, %d OCI runtime caches, %d stale locks, %d temp files.\n",
+			total, len(images), len(overlays), len(ociLayouts), len(staleTags), len(orphanedManifests), len(ociBlobs), len(ociRuntimeCaches), len(lockFiles), len(tempFiles))
 	}
 
 	return nil
@@ -221,7 +237,21 @@ func gcDryRun(app *appContext) error {
 		fmt.Println("\nNo unreferenced OCI blobs found.")
 	}
 
-	// Phase 7 preview: stale conversion lock files.
+	// Phase 7 preview: unreferenced OCI runtime cache dirs.
+	runtimeCacheCandidates, err := previewUnreferencedOCIRuntimeCacheCandidates(app)
+	if err != nil {
+		return fmt.Errorf("preview unreferenced OCI runtime caches: %w", err)
+	}
+	if len(runtimeCacheCandidates) > 0 {
+		fmt.Println("\nUnreferenced OCI runtime caches (candidates for collection):")
+		for _, runtimeKey := range runtimeCacheCandidates {
+			fmt.Printf("  %s\n", runtimeKey)
+		}
+	} else {
+		fmt.Println("\nNo unreferenced OCI runtime caches found.")
+	}
+
+	// Phase 8 preview: stale conversion lock files.
 	if _, ok := app.gc.(conversionLockGC); ok {
 		lockCandidates, lockErr := previewStaleConversionLockCandidates(app, conversionLockGCMaxAge)
 		if lockErr != nil {
@@ -239,7 +269,7 @@ func gcDryRun(app *appContext) error {
 		fmt.Println("\nStale conversion lock collection is not supported by this backend.")
 	}
 
-	// Phase 8 preview: old temp files (>1h).
+	// Phase 9 preview: old temp files (>1h).
 	tempCandidates, err := previewOldFileCandidates(app.cfg.TempDir(), 1*time.Hour)
 	if err != nil {
 		return fmt.Errorf("preview temp files: %w", err)
@@ -453,6 +483,48 @@ func previewUnreferencedOCIBlobCandidates(app *appContext) ([]string, error) {
 			}
 			candidates = append(candidates, digest)
 		}
+	}
+	sort.Strings(candidates)
+	return candidates, nil
+}
+
+func previewUnreferencedOCIRuntimeCacheCandidates(app *appContext) ([]string, error) {
+	entries, err := os.ReadDir(app.cfg.OCIRuntimeCacheDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []string{}, nil
+		}
+		return nil, err
+	}
+
+	runtimeRefs, err := oci.LoadRuntimeRefsSnapshot(app.cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	pinned := make(map[string]struct{}, len(runtimeRefs.Runtimes))
+	for runtimeKey, entry := range runtimeRefs.Runtimes {
+		if len(entry.Refs) == 0 {
+			continue
+		}
+		pinned[runtimeKey] = struct{}{}
+	}
+
+	cutoff := time.Now().Add(-ociGCGracePeriod)
+	candidates := make([]string, 0)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		runtimeKey := entry.Name()
+		if _, ok := pinned[runtimeKey]; ok {
+			continue
+		}
+		// Mirror real GC grace period.
+		if info, statErr := entry.Info(); statErr == nil && info.ModTime().After(cutoff) {
+			continue
+		}
+		candidates = append(candidates, runtimeKey)
 	}
 	sort.Strings(candidates)
 	return candidates, nil

@@ -20,6 +20,7 @@ import (
 	"github.com/CMGS/cocoon/image"
 	"github.com/CMGS/cocoon/image/refcache"
 	"github.com/CMGS/cocoon/lock/flock"
+	"github.com/CMGS/cocoon/oci"
 	"github.com/CMGS/cocoon/storage"
 	"github.com/CMGS/cocoon/types"
 	"github.com/CMGS/cocoon/utils"
@@ -415,6 +416,21 @@ func (m *manager) createOCIVM(
 	}
 	vmID := "vm-" + ulid.MustNew(ulid.Now(), rand.Reader).String()
 	now := time.Now().UTC().Format(time.RFC3339)
+	runtimePinned := false
+	createSucceeded := false
+	defer func() {
+		if createSucceeded || !runtimePinned {
+			return
+		}
+		if unpinErr := oci.RemoveRuntimeRef(m.cfg, runtimeSpec.RuntimeKey, vmID); unpinErr != nil {
+			log.Printf("warning: rollback OCI runtime pin for %s (%s): %v", vmID, runtimeSpec.RuntimeKey, unpinErr)
+		}
+	}()
+
+	if pinErr := oci.AddRuntimeRef(m.cfg, runtimeSpec.RuntimeKey, vmID); pinErr != nil {
+		return nil, fmt.Errorf("pin OCI runtime cache %s for %s: %w", runtimeSpec.RuntimeKey, vmID, pinErr)
+	}
+	runtimePinned = true
 
 	firmwarePath, err := resolveFirmwarePath(m.cfg, bootStrategy, runtimeSpec.Arch)
 	if err != nil {
@@ -496,6 +512,7 @@ func (m *manager) createOCIVM(
 		return nil, fmt.Errorf("transition to CREATED: %w", err)
 	}
 
+	createSucceeded = true
 	return vmCfg, nil
 }
 
@@ -777,6 +794,9 @@ func (m *manager) setupOCIRuntimeForStart(
 	if strings.TrimSpace(vmCfg.BaseImagePath) == "" {
 		return nil, false, fmt.Errorf("rootfs lowerdir is empty")
 	}
+	if err := oci.AddRuntimeRef(m.cfg, vmCfg.BaseKey, vmID); err != nil {
+		return nil, false, fmt.Errorf("pin OCI runtime cache %s for %s: %w", vmCfg.BaseKey, vmID, err)
+	}
 	if err := m.overlayMgr.MountVM(vmID, []string{vmCfg.BaseImagePath}); err != nil {
 		return nil, false, fmt.Errorf("mount OCI runtime overlay: %w", err)
 	}
@@ -1052,10 +1072,15 @@ func (m *manager) Delete(ctx context.Context, vmID string, force bool) error {
 		warnings = append(warnings, fmt.Sprintf("cleanup OCI runtime: %v", cleanupErr))
 	}
 
-	// Unpin reference: remove this VM from the base image's reference list.
+	// Unpin reference.
 	if cfgErr == nil && vmCfg.BaseKey != "" {
-		if refErr := m.refCounter.RemoveReference(vmCfg.BaseKey, vmID); refErr != nil {
-			warnings = append(warnings, fmt.Sprintf("remove reference %s: %v", vmCfg.BaseKey, refErr))
+		refErr := m.removeVMReference(vmCfg, vmID)
+		if refErr != nil {
+			message := "remove reference"
+			if vmCfg.ImageType == types.VMImageTypeOCIVM {
+				message = "remove OCI runtime pin"
+			}
+			warnings = append(warnings, fmt.Sprintf("%s %s: %v", message, vmCfg.BaseKey, refErr))
 		}
 	}
 
@@ -1142,6 +1167,13 @@ func (m *manager) ensureDeletePreconditions(ctx context.Context, vmID string, fo
 
 func (m *manager) cleanupOCIRuntimeByMetadata(vmID string) error {
 	return m.cleanupOCIRuntime(vmID, nil)
+}
+
+func (m *manager) removeVMReference(vmCfg *types.VMConfig, vmID string) error {
+	if vmCfg.ImageType == types.VMImageTypeOCIVM {
+		return oci.RemoveRuntimeRef(m.cfg, vmCfg.BaseKey, vmID)
+	}
+	return m.refCounter.RemoveReference(vmCfg.BaseKey, vmID)
 }
 
 func (m *manager) cleanupOCIRuntime(vmID string, meta *types.VMMetadataFile) error {

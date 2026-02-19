@@ -90,6 +90,28 @@ func writeLayerRefs(t *testing.T, cfg testableConfig, blobs map[string][]string)
 	}
 }
 
+func writeRuntimeRefs(t *testing.T, cfg testableConfig, refs map[string][]string) {
+	t.Helper()
+	idx := oci.RuntimeRefsIndex{Runtimes: make(map[string]oci.RuntimeRefEntry)}
+	for runtimeKey, vmIDs := range refs {
+		idx.Runtimes[runtimeKey] = oci.RuntimeRefEntry{
+			Refs:      vmIDs,
+			CreatedAt: time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339),
+		}
+	}
+	data, err := json.MarshalIndent(idx, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal runtime refs: %v", err)
+	}
+	path := cfg.cfg.OCIRuntimeRefsFile()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
 type testableConfig struct {
 	cfg *config.CocoonConfig
 }
@@ -624,5 +646,104 @@ func TestOCIGC_CollectOrphanedManifestRefs_GracePeriod(t *testing.T) {
 	}
 	if len(blobEntry.ManifestDigests) != 0 {
 		t.Errorf("recent-blob manifest digests should be empty, got %v", blobEntry.ManifestDigests)
+	}
+}
+
+func TestOCIGC_CollectUnreferencedOCIRuntimeCaches_RemovesUnpinned(t *testing.T) {
+	cfg := newTestConfig(t)
+	gc, ok := NewGarbageCollector(cfg).(*fileGarbageCollector)
+	if !ok {
+		t.Fatal("type assertion to *fileGarbageCollector failed")
+	}
+
+	cacheDir := cfg.OCIRuntimeCacheDir()
+	oldTime := time.Now().Add(-10 * time.Minute)
+
+	pinned := filepath.Join(cacheDir, "1111222233334444")
+	unpinned := filepath.Join(cacheDir, "aaaa2222bbbb3333")
+	if err := os.MkdirAll(filepath.Join(pinned, "rootfs"), 0o755); err != nil {
+		t.Fatalf("mkdir pinned runtime: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(unpinned, "rootfs"), 0o755); err != nil {
+		t.Fatalf("mkdir unpinned runtime: %v", err)
+	}
+	_ = os.Chtimes(pinned, oldTime, oldTime)
+	_ = os.Chtimes(unpinned, oldTime, oldTime)
+
+	tc := testableConfig{cfg: cfg}
+	writeRuntimeRefs(t, tc, map[string][]string{
+		"1111222233334444": {"vm-01HF00PINNED000000000000"},
+	})
+
+	collected, err := gc.CollectUnreferencedOCIRuntimeCaches()
+	if err != nil {
+		t.Fatalf("CollectUnreferencedOCIRuntimeCaches: %v", err)
+	}
+	if len(collected) != 1 || collected[0] != "aaaa2222bbbb3333" {
+		t.Fatalf("collected=%v, want [aaaa2222bbbb3333]", collected)
+	}
+	if _, err := os.Stat(unpinned); !os.IsNotExist(err) {
+		t.Fatalf("unpinned runtime dir should be removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(pinned); err != nil {
+		t.Fatalf("pinned runtime dir should remain: %v", err)
+	}
+}
+
+func TestOCIGC_CollectUnreferencedOCIRuntimeCaches_GracePeriod(t *testing.T) {
+	cfg := newTestConfig(t)
+	gc, ok := NewGarbageCollector(cfg).(*fileGarbageCollector)
+	if !ok {
+		t.Fatal("type assertion to *fileGarbageCollector failed")
+	}
+
+	cacheDir := cfg.OCIRuntimeCacheDir()
+	recent := filepath.Join(cacheDir, "abcdabcdabcdabcd")
+	if err := os.MkdirAll(filepath.Join(recent, "rootfs"), 0o755); err != nil {
+		t.Fatalf("mkdir recent runtime: %v", err)
+	}
+
+	collected, err := gc.CollectUnreferencedOCIRuntimeCaches()
+	if err != nil {
+		t.Fatalf("CollectUnreferencedOCIRuntimeCaches: %v", err)
+	}
+	if len(collected) != 0 {
+		t.Fatalf("expected 0 collected due to grace period, got %v", collected)
+	}
+	if _, err := os.Stat(recent); err != nil {
+		t.Fatalf("recent runtime dir should remain: %v", err)
+	}
+}
+
+func TestOCIGC_CollectUnreferencedOCIRuntimeCaches_CleansStaleZeroRefEntry(t *testing.T) {
+	cfg := newTestConfig(t)
+	gc, ok := NewGarbageCollector(cfg).(*fileGarbageCollector)
+	if !ok {
+		t.Fatal("type assertion to *fileGarbageCollector failed")
+	}
+	tc := testableConfig{cfg: cfg}
+
+	writeRuntimeRefs(t, tc, map[string][]string{
+		"deadbeefdeadbeef": {},
+	})
+
+	collected, err := gc.CollectUnreferencedOCIRuntimeCaches()
+	if err != nil {
+		t.Fatalf("CollectUnreferencedOCIRuntimeCaches: %v", err)
+	}
+	if len(collected) != 0 {
+		t.Fatalf("expected no dirs collected, got %v", collected)
+	}
+
+	var refs oci.RuntimeRefsIndex
+	data, err := os.ReadFile(cfg.OCIRuntimeRefsFile())
+	if err != nil {
+		t.Fatalf("read runtime refs: %v", err)
+	}
+	if err := json.Unmarshal(data, &refs); err != nil {
+		t.Fatalf("unmarshal runtime refs: %v", err)
+	}
+	if _, exists := refs.Runtimes["deadbeefdeadbeef"]; exists {
+		t.Fatalf("expected stale zero-ref runtime entry to be removed")
 	}
 }

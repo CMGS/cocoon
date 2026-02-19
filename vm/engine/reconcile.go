@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/CMGS/cocoon/lock/flock"
+	"github.com/CMGS/cocoon/oci"
 	"github.com/CMGS/cocoon/types"
 	"github.com/CMGS/cocoon/utils"
 	"github.com/CMGS/cocoon/vm"
@@ -75,8 +76,9 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inc
 		}
 		vmConfigs[vmID] = vmCfg
 
-		// Crash point 2: config exists but references.json does not contain vmID.
-		if vmCfg.BaseKey != "" {
+		// Crash point 2 (qcow2 path): config exists but references.json does not contain vmID.
+		// OCI-VM runtime pins are reconciled separately via oci-runtime-refs.
+		if vmCfg.ImageType != types.VMImageTypeOCIVM && vmCfg.BaseKey != "" {
 			refs, refsErr := m.refCounter.GetReferences(vmCfg.BaseKey)
 			if refsErr != nil {
 				inconsistencies = append(inconsistencies, vm.Inconsistency{
@@ -189,6 +191,27 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inc
 		inconsistencies = append(inconsistencies, nameIssues...)
 	}
 
+	runtimeRefs, runtimeRefsErr := oci.LoadRuntimeRefsSnapshot(m.cfg)
+	if runtimeRefsErr != nil {
+		inconsistencies = append(inconsistencies, vm.Inconsistency{
+			Type:     vm.InconsistencyMetadataCorrupt,
+			Severity: vm.SeverityWarning,
+			Details:  fmt.Sprintf("failed to scan oci-runtime-refs.json: %v", runtimeRefsErr),
+		})
+	} else {
+		inconsistencies = append(inconsistencies, m.detectOCIRuntimePinIssues(vmConfigs, runtimeRefs)...)
+		cacheIssues, cacheErr := m.detectOrphanedOCIRuntimeCacheIssues(vmConfigs, runtimeRefs)
+		if cacheErr != nil {
+			inconsistencies = append(inconsistencies, vm.Inconsistency{
+				Type:     vm.InconsistencyMetadataCorrupt,
+				Severity: vm.SeverityWarning,
+				Details:  fmt.Sprintf("failed to scan OCI runtime cache dirs: %v", cacheErr),
+			})
+		} else {
+			inconsistencies = append(inconsistencies, cacheIssues...)
+		}
+	}
+
 	// Apply fixes if requested.
 	if fix {
 		for i := range inconsistencies {
@@ -216,6 +239,96 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inc
 	inconsistencies = append(inconsistencies, orphans...)
 
 	return inconsistencies, nil
+}
+
+func (m *manager) detectOCIRuntimePinIssues(vmConfigs map[string]*types.VMConfig, runtimeRefs oci.RuntimeRefsIndex) []vm.Inconsistency {
+	issues := make([]vm.Inconsistency, 0)
+
+	for vmID, vmCfg := range vmConfigs {
+		if vmCfg.ImageType != types.VMImageTypeOCIVM || strings.TrimSpace(vmCfg.BaseKey) == "" {
+			continue
+		}
+		entry, ok := runtimeRefs.Runtimes[vmCfg.BaseKey]
+		if !ok || !slices.Contains(entry.Refs, vmID) {
+			issues = append(issues, vm.Inconsistency{
+				VMID:     vmID,
+				Type:     vm.InconsistencyMissingOCIRuntimePin,
+				Severity: vm.SeverityWarning,
+				Details:  fmt.Sprintf("OCI VM config exists but oci-runtime-refs.json is missing vmID under runtime_key %s", vmCfg.BaseKey),
+				BaseKey:  vmCfg.BaseKey,
+				ImageRef: vmCfg.ImageRef,
+			})
+		}
+	}
+
+	for runtimeKey, entry := range runtimeRefs.Runtimes {
+		for _, vmID := range entry.Refs {
+			vmCfg, ok := vmConfigs[vmID]
+			if !ok {
+				issues = append(issues, vm.Inconsistency{
+					VMID:     vmID,
+					Type:     vm.InconsistencyDanglingOCIRuntimePin,
+					Severity: vm.SeverityWarning,
+					Details:  fmt.Sprintf("oci-runtime-refs.json contains vmID %s under runtime_key %s but VM config is missing", vmID, runtimeKey),
+					BaseKey:  runtimeKey,
+				})
+				continue
+			}
+			if vmCfg.ImageType != types.VMImageTypeOCIVM || vmCfg.BaseKey != runtimeKey {
+				issues = append(issues, vm.Inconsistency{
+					VMID:     vmID,
+					Type:     vm.InconsistencyDanglingOCIRuntimePin,
+					Severity: vm.SeverityWarning,
+					Details:  fmt.Sprintf("oci-runtime-refs runtime_key %s does not match VM config image_type/base_key (%s/%s)", runtimeKey, vmCfg.ImageType, vmCfg.BaseKey),
+					BaseKey:  runtimeKey,
+				})
+			}
+		}
+	}
+
+	return issues
+}
+
+func (m *manager) detectOrphanedOCIRuntimeCacheIssues(vmConfigs map[string]*types.VMConfig, runtimeRefs oci.RuntimeRefsIndex) ([]vm.Inconsistency, error) {
+	entries, err := os.ReadDir(m.cfg.OCIRuntimeCacheDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	pinned := make(map[string]struct{}, len(runtimeRefs.Runtimes))
+	for runtimeKey, entry := range runtimeRefs.Runtimes {
+		for _, vmID := range entry.Refs {
+			vmCfg, ok := vmConfigs[vmID]
+			if !ok {
+				continue
+			}
+			if vmCfg.ImageType == types.VMImageTypeOCIVM && vmCfg.BaseKey == runtimeKey {
+				pinned[runtimeKey] = struct{}{}
+				break
+			}
+		}
+	}
+
+	issues := make([]vm.Inconsistency, 0)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		runtimeKey := entry.Name()
+		if _, ok := pinned[runtimeKey]; ok {
+			continue
+		}
+		issues = append(issues, vm.Inconsistency{
+			Type:     vm.InconsistencyOrphanedOCIRuntime,
+			Severity: vm.SeverityWarning,
+			Details:  fmt.Sprintf("OCI runtime cache dir %s has no active pins", m.cfg.OCIRuntimeEntryDir(runtimeKey)),
+			BaseKey:  runtimeKey,
+		})
+	}
+	return issues, nil
 }
 
 func (m *manager) detectDanglingReferenceIssues(vmConfigs map[string]*types.VMConfig) ([]vm.Inconsistency, error) {
@@ -545,21 +658,24 @@ func (m *manager) applyFix(inc *vm.Inconsistency, force bool) error {
 }
 
 var inconsistencyFixHandlers = map[vm.InconsistencyType]func(*manager, *vm.Inconsistency, bool) error{
-	vm.InconsistencyStateMismatch:     (*manager).applyFixStateMismatch,
-	vm.InconsistencyZombieSocket:      (*manager).applyFixZombieSocket,
-	vm.InconsistencyStalePIDFile:      (*manager).applyFixStalePIDFile,
-	vm.InconsistencyZombieProcess:     (*manager).applyFixZombieProcess,
-	vm.InconsistencyMissingOverlay:    (*manager).applyFixMissingOverlay,
-	vm.InconsistencyOrphanedOverlay:   (*manager).applyFixOrphanedOverlay,
-	vm.InconsistencyOCIRuntimeCache:   (*manager).applyFixOCIRuntimeCache,
-	vm.InconsistencyOCIRuntimeOverlay: (*manager).applyFixOCIRuntimeMismatch,
-	vm.InconsistencyOCIRuntimeVirtio:  (*manager).applyFixOCIRuntimeMismatch,
-	vm.InconsistencyMissingReference:  (*manager).applyFixMissingReference,
-	vm.InconsistencyDanglingReference: (*manager).applyFixDanglingReference,
-	vm.InconsistencyNameIndexStale:    (*manager).applyFixNameIndexStale,
-	vm.InconsistencyDuplicateVMName:   (*manager).applyFixDuplicateVMName,
-	vm.InconsistencyDeletedVMDir:      (*manager).applyFixDeletedVMDir,
-	vm.InconsistencyMetadataCorrupt:   (*manager).applyFixMetadataCorrupt,
+	vm.InconsistencyStateMismatch:         (*manager).applyFixStateMismatch,
+	vm.InconsistencyZombieSocket:          (*manager).applyFixZombieSocket,
+	vm.InconsistencyStalePIDFile:          (*manager).applyFixStalePIDFile,
+	vm.InconsistencyZombieProcess:         (*manager).applyFixZombieProcess,
+	vm.InconsistencyMissingOverlay:        (*manager).applyFixMissingOverlay,
+	vm.InconsistencyOrphanedOverlay:       (*manager).applyFixOrphanedOverlay,
+	vm.InconsistencyOCIRuntimeCache:       (*manager).applyFixOCIRuntimeCache,
+	vm.InconsistencyOCIRuntimeOverlay:     (*manager).applyFixOCIRuntimeMismatch,
+	vm.InconsistencyOCIRuntimeVirtio:      (*manager).applyFixOCIRuntimeMismatch,
+	vm.InconsistencyMissingOCIRuntimePin:  (*manager).applyFixMissingOCIRuntimePin,
+	vm.InconsistencyDanglingOCIRuntimePin: (*manager).applyFixDanglingOCIRuntimePin,
+	vm.InconsistencyOrphanedOCIRuntime:    (*manager).applyFixOrphanedOCIRuntime,
+	vm.InconsistencyMissingReference:      (*manager).applyFixMissingReference,
+	vm.InconsistencyDanglingReference:     (*manager).applyFixDanglingReference,
+	vm.InconsistencyNameIndexStale:        (*manager).applyFixNameIndexStale,
+	vm.InconsistencyDuplicateVMName:       (*manager).applyFixDuplicateVMName,
+	vm.InconsistencyDeletedVMDir:          (*manager).applyFixDeletedVMDir,
+	vm.InconsistencyMetadataCorrupt:       (*manager).applyFixMetadataCorrupt,
 }
 
 func (m *manager) applyFixStateMismatch(inc *vm.Inconsistency, force bool) error {
@@ -673,6 +789,47 @@ func (m *manager) applyFixDanglingReference(inc *vm.Inconsistency, _ bool) error
 		return fmt.Errorf("missing base_key for dangling reference cleanup")
 	}
 	return m.refCounter.RemoveReference(inc.BaseKey, inc.VMID)
+}
+
+func (m *manager) applyFixMissingOCIRuntimePin(inc *vm.Inconsistency, _ bool) error {
+	runtimeKey := strings.TrimSpace(inc.BaseKey)
+	if runtimeKey == "" {
+		cfg, err := m.LoadConfig(inc.VMID)
+		if err != nil {
+			return err
+		}
+		runtimeKey = strings.TrimSpace(cfg.BaseKey)
+	}
+	if runtimeKey == "" {
+		return fmt.Errorf("missing runtime_key for OCI runtime pin repair")
+	}
+	return oci.AddRuntimeRef(m.cfg, runtimeKey, inc.VMID)
+}
+
+func (m *manager) applyFixDanglingOCIRuntimePin(inc *vm.Inconsistency, _ bool) error {
+	runtimeKey := strings.TrimSpace(inc.BaseKey)
+	if runtimeKey == "" {
+		return fmt.Errorf("missing runtime_key for dangling OCI runtime pin cleanup")
+	}
+	if strings.TrimSpace(inc.VMID) == "" {
+		return fmt.Errorf("missing vm_id for dangling OCI runtime pin cleanup")
+	}
+	return oci.RemoveRuntimeRef(m.cfg, runtimeKey, inc.VMID)
+}
+
+func (m *manager) applyFixOrphanedOCIRuntime(inc *vm.Inconsistency, _ bool) error {
+	runtimeKey := strings.TrimSpace(inc.BaseKey)
+	if runtimeKey == "" {
+		return fmt.Errorf("missing runtime_key for orphan OCI runtime cleanup")
+	}
+	referenced, err := oci.IsRuntimeReferenced(m.cfg, runtimeKey)
+	if err != nil {
+		return err
+	}
+	if referenced {
+		return nil
+	}
+	return os.RemoveAll(m.cfg.OCIRuntimeEntryDir(runtimeKey))
 }
 
 func (m *manager) applyFixNameIndexStale(_ *vm.Inconsistency, _ bool) error {

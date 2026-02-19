@@ -10,6 +10,7 @@ import (
 	"github.com/CMGS/cocoon/config"
 	hypermocks "github.com/CMGS/cocoon/hypervisor/mocks"
 	imgmocks "github.com/CMGS/cocoon/image/mocks"
+	"github.com/CMGS/cocoon/oci"
 	"github.com/CMGS/cocoon/storage/local"
 	storemocks "github.com/CMGS/cocoon/storage/mocks"
 	"github.com/CMGS/cocoon/types"
@@ -436,5 +437,77 @@ func TestReconcile_FixStoppedOCIRuntimeLeak(t *testing.T) {
 
 	if _, err := os.Stat(socketPath); !os.IsNotExist(err) {
 		t.Fatalf("expected virtiofs socket removed, stat err=%v", err)
+	}
+}
+
+func TestReconcile_FixMissingOCIRuntimePin(t *testing.T) {
+	t.Parallel()
+
+	mgr, cfg := setupReconcileManager(t)
+	vmID := "vm-01HABC9D8E7F6G5H4J3K2M1N0V"
+	writeTestOCIVMArtifacts(t, cfg, vmID, "oci-runtime-pin-missing", types.VMStateCreated)
+
+	issues, err := mgr.Reconcile(context.Background(), true, false)
+	if err != nil {
+		t.Fatalf("Reconcile --fix: %v", err)
+	}
+	if !hasIssue(issues, vm.InconsistencyMissingOCIRuntimePin) {
+		t.Fatalf("expected %s issue", vm.InconsistencyMissingOCIRuntimePin)
+	}
+
+	refs, err := oci.GetRuntimeRefs(cfg, "oci-runtime-key")
+	if err != nil {
+		t.Fatalf("GetRuntimeRefs: %v", err)
+	}
+	found := false
+	for _, ref := range refs {
+		if ref == vmID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected vmID %s to be restored in oci-runtime-refs.json", vmID)
+	}
+}
+
+func TestReconcile_FixDanglingRuntimePinAndOrphanRuntimeCache(t *testing.T) {
+	t.Parallel()
+
+	mgr, cfg := setupReconcileManager(t)
+	runtimeKey := "deadbeefcafefeed"
+
+	// Runtime cache exists but pin points to a missing VM.
+	runtimeDir := cfg.OCIRuntimeEntryDir(runtimeKey)
+	if err := os.MkdirAll(filepath.Join(runtimeDir, "rootfs"), 0o755); err != nil { //nolint:gosec // test fixture directory
+		t.Fatalf("mkdir runtime cache: %v", err)
+	}
+	old := time.Now().Add(-10 * time.Minute)
+	_ = os.Chtimes(runtimeDir, old, old)
+
+	if err := oci.AddRuntimeRef(cfg, runtimeKey, "vm-DOES-NOT-EXIST"); err != nil {
+		t.Fatalf("AddRuntimeRef: %v", err)
+	}
+
+	issues, err := mgr.Reconcile(context.Background(), true, false)
+	if err != nil {
+		t.Fatalf("Reconcile --fix: %v", err)
+	}
+	if !hasIssue(issues, vm.InconsistencyDanglingOCIRuntimePin) {
+		t.Fatalf("expected %s issue", vm.InconsistencyDanglingOCIRuntimePin)
+	}
+	if !hasIssue(issues, vm.InconsistencyOrphanedOCIRuntime) {
+		t.Fatalf("expected %s issue", vm.InconsistencyOrphanedOCIRuntime)
+	}
+
+	refs, err := oci.GetRuntimeRefs(cfg, runtimeKey)
+	if err != nil {
+		t.Fatalf("GetRuntimeRefs: %v", err)
+	}
+	if len(refs) != 0 {
+		t.Fatalf("expected dangling runtime refs to be removed, got %v", refs)
+	}
+	if _, err := os.Stat(runtimeDir); !os.IsNotExist(err) {
+		t.Fatalf("expected orphan runtime cache dir removed, stat err=%v", err)
 	}
 }
