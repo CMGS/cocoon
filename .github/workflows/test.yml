@@ -30,6 +30,7 @@ jobs:
         run: go test -race -timeout 120s -count=1 -cover -coverprofile=coverage.out ./...
 
       - name: Upload coverage artifact
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: coverage

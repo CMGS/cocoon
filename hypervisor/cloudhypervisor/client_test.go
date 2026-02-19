@@ -8,11 +8,14 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/CMGS/cocoon/config"
 	"github.com/CMGS/cocoon/hypervisor"
+	"github.com/CMGS/cocoon/utils"
 )
 
 // ---------------------------------------------------------------------------
@@ -226,6 +229,87 @@ func TestDoWithRetry_ExhaustsRetries(t *testing.T) {
 	expectedCalls := c.maxRetries + 1
 	if calls != expectedCalls {
 		t.Fatalf("expected %d calls, got %d", expectedCalls, calls)
+	}
+}
+
+func TestShutdown_DoesNotCleanupWhenPIDAliveButNameMismatch(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	cfg := config.DefaultConfig()
+	cfg.RootDir = rootDir
+	runtimeDir, err := os.MkdirTemp("/tmp", "cocoon-shutdown-*")
+	if err != nil {
+		t.Fatalf("create short runtime dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(runtimeDir) })
+	cfg.RuntimeDir = runtimeDir
+	cfg.LogDir = filepath.Join(rootDir, "log")
+	// Deliberately mismatched name to reproduce stale config rename case.
+	cfg.CHBinary = "new-cloud-hypervisor"
+
+	vmID := "vm-shutdown-mismatch"
+	socketPath := cfg.VMSocketPath(vmID)
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil { //nolint:gosec // test fixture directory
+		t.Fatalf("mkdir runtime dir: %v", err)
+	}
+
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen on unix socket %s: %v", socketPath, err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPut && r.URL.Path == "/api/v1/vm.power-button" {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			http.NotFound(w, r)
+		}),
+	}
+	go func() { _ = srv.Serve(listener) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	sleepCmd := exec.Command("sleep", "10") //nolint:gosec // test-only helper process
+	if err := sleepCmd.Start(); err != nil {
+		t.Fatalf("start sleep process: %v", err)
+	}
+	t.Cleanup(func() {
+		if sleepCmd.Process != nil {
+			_ = sleepCmd.Process.Kill()
+		}
+		_ = sleepCmd.Wait()
+	})
+
+	if err := utils.WritePIDFile(cfg.VMPIDPath(vmID), sleepCmd.Process.Pid); err != nil {
+		t.Fatalf("write pid file: %v", err)
+	}
+
+	c := &client{
+		cfg:         cfg,
+		httpTimeout: 500 * time.Millisecond,
+		maxRetries:  0,
+		baseBackoff: 1 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 750*time.Millisecond)
+	defer cancel()
+
+	err = c.Shutdown(ctx, vmID, 5*time.Second)
+	if err == nil {
+		t.Fatal("Shutdown() error = nil, want context deadline exceeded")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown() error = %v, want deadline exceeded", err)
+	}
+
+	if _, statErr := os.Stat(cfg.VMSocketPath(vmID)); statErr != nil {
+		t.Fatalf("socket should not be cleaned up while PID is alive; stat error: %v", statErr)
+	}
+	if _, statErr := os.Stat(cfg.VMPIDPath(vmID)); statErr != nil {
+		t.Fatalf("pid file should not be cleaned up while PID is alive; stat error: %v", statErr)
 	}
 }
 
