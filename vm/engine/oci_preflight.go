@@ -46,7 +46,10 @@ func checkOCIRuntimePreflight(ctx context.Context, cfg *config.CocoonConfig, dep
 		return fmt.Errorf("OCI VM runtime requires OverlayFS support (read /proc/filesystems): %w", err)
 	}
 	if !overlayListedInProcFilesystems(filesystems) {
-		return fmt.Errorf("OCI VM runtime requires OverlayFS support: /proc/filesystems does not list overlay")
+		// Fallback: overlay may be available as an unloaded kernel module.
+		if !overlayModuleAvailable(ctx, deps) {
+			return fmt.Errorf("OCI VM runtime requires OverlayFS support: /proc/filesystems does not list overlay and modinfo overlay probe failed")
+		}
 	}
 
 	virtioMin := utils.SemVersion{Major: 1, Minor: 7, Patch: 0}
@@ -60,6 +63,17 @@ func checkOCIRuntimePreflight(ctx context.Context, cfg *config.CocoonConfig, dep
 	}
 
 	return nil
+}
+
+// overlayModuleAvailable probes for the overlay kernel module using modinfo.
+// Returns true if the module is available (even if not currently loaded).
+func overlayModuleAvailable(ctx context.Context, deps ociRuntimePreflightDeps) bool {
+	modinfoBin, err := deps.lookPathFn("modinfo")
+	if err != nil {
+		return false
+	}
+	_, err = deps.runFn(ctx, modinfoBin, "overlay")
+	return err == nil
 }
 
 func overlayListedInProcFilesystems(data []byte) bool {

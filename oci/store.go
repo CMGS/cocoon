@@ -99,7 +99,7 @@ func (s *Store) saveTagTxnLocked(tag, layoutPath, manifestDigest string) error {
 	if oldManifestDigest != "" && !oldManifestStillUsed {
 		if _, refErr := s.removeBlobRefsFn(s.cfg, oldManifestDigest); refErr != nil {
 			failures := blobRefCleanupFailures.Add(1)
-			log.Printf("warning: failed to clean old manifest %s blob refs (will be reclaimed by GC): %v (cleanup_failures=%d)", oldManifestDigest, refErr, failures)
+			log.Printf("WARNING: failed to clean old manifest %s blob refs (will be reclaimed by GC): %v (cleanup_failures=%d)", oldManifestDigest, refErr, failures)
 		}
 	}
 	return nil

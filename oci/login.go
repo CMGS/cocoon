@@ -20,10 +20,22 @@ import (
 	"github.com/CMGS/cocoon/utils"
 )
 
-const registryHTTPTimeout = 30 * time.Second
+// defaultRegistryHTTPTimeout is the fallback when no config override is set.
+const defaultRegistryHTTPTimeout = 30 * time.Second
 
+// registryHTTPClient is the default client used for registry HTTP requests.
+// The timeout can be overridden via CocoonConfig.RegistryHTTPTimeoutSeconds.
 var registryHTTPClient = &http.Client{
-	Timeout: registryHTTPTimeout,
+	Timeout: defaultRegistryHTTPTimeout,
+}
+
+// SetRegistryHTTPTimeout updates the package-level HTTP client timeout.
+// Call this with CocoonConfig.RegistryHTTPTimeout() during initialization
+// to apply user-configured timeout values.
+func SetRegistryHTTPTimeout(timeout time.Duration) {
+	if timeout > 0 {
+		registryHTTPClient.Timeout = timeout
+	}
 }
 
 // cocoonConfigPath returns the path to ~/.cocoon/config.json.

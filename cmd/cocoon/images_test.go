@@ -370,23 +370,47 @@ func TestResolveLocalOCITagRef_DefaultLatest(t *testing.T) {
 	}
 }
 
-func TestIsOCIVMRegistryRef_LocalOCITagReturnsTrue(t *testing.T) {
+func TestClassifyPullRef(t *testing.T) {
 	t.Parallel()
 
-	cfg := testCLIConfig(t)
-	store := oci.NewStore(cfg)
-	layoutPath := filepath.Join(t.TempDir(), "layout")
-	if err := os.MkdirAll(layoutPath, 0o755); err != nil {
-		t.Fatalf("MkdirAll layout: %v", err)
-	}
-	if err := store.SaveTag("demo:latest", layoutPath, "sha256:1111"); err != nil {
-		t.Fatalf("SaveTag: %v", err)
+	tests := []struct {
+		name string
+		ref  string
+		want pullRefKind
+	}{
+		// Cloud pipeline: URLs
+		{name: "https-url", ref: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img", want: pullRefCloudPipeline},
+		{name: "http-url", ref: "http://example.com/image.qcow2", want: pullRefCloudPipeline},
+
+		// Cloud pipeline: local paths
+		{name: "absolute-path", ref: "/tmp/noble-server-cloudimg-amd64.img", want: pullRefCloudPipeline},
+		{name: "relative-dot-path", ref: "./noble-server-cloudimg-amd64.img", want: pullRefCloudPipeline},
+		{name: "relative-parent-path", ref: "../images/noble.img", want: pullRefCloudPipeline},
+
+		// Short names: no dot in first segment (no slash)
+		{name: "official-image-with-tag", ref: "ubuntu:22.04", want: pullRefShortName},
+		{name: "official-image-bare", ref: "ubuntu", want: pullRefShortName},
+		{name: "bare-name-no-slash", ref: "noble-server-cloudimg-amd64", want: pullRefShortName},
+
+		// Short names: slash-based but first segment has no dot or colon
+		{name: "user-namespace", ref: "cmgs/test-u2404", want: pullRefShortName},
+		{name: "user-namespace-with-tag", ref: "cmgs/test-u2404:latest", want: pullRefShortName},
+
+		// Domain refs: dot or colon in first segment (with slash)
+		{name: "docker-io-explicit", ref: "docker.io/cmgs/test-u2404", want: pullRefDomainRef},
+		{name: "ghcr-io", ref: "ghcr.io/cmgs/myvm:v1", want: pullRefDomainRef},
+		{name: "custom-registry", ref: "registry.example.com/my-vm:v1", want: pullRefDomainRef},
+		{name: "localhost-port", ref: "localhost:5000/test/myvm:latest", want: pullRefDomainRef},
 	}
 
-	c := testImageCLIContext(t)
-	app := &appContext{cfg: cfg}
-	if !isOCIVMRegistryRef(c, app, "demo") {
-		t.Fatal("isOCIVMRegistryRef should return true for local OCI tags to preserve repull/update semantics")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := classifyPullRef(tt.ref)
+			if got != tt.want {
+				t.Fatalf("classifyPullRef(%q) = %d, want %d", tt.ref, got, tt.want)
+			}
+		})
 	}
 }
 

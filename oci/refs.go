@@ -2,6 +2,15 @@ package oci
 
 import "strings"
 
+// NOTE on tag parsing (L1 audit item): We intentionally use string
+// manipulation instead of name.NewTag() from go-containerregistry here.
+// name.NewTag() enforces Docker/OCI registry naming rules (e.g., lowercase,
+// valid hostname, max lengths) which would reject valid local-only tag names.
+// These functions are used for quick tag/digest detection and ":latest"
+// defaulting across both local and registry refs. The go-containerregistry
+// library is used at the pull/push boundary (pull.go, push.go) where full
+// registry validation is appropriate.
+
 // HasExplicitTagOrDigest reports whether ref contains an explicit tag (":tag")
 // or digest ("@sha256:...") suffix. Used by both CLI and runtime resolver to
 // decide whether to append implicit ":latest".

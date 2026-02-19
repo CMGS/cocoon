@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"text/tabwriter"
 
@@ -12,6 +13,20 @@ import (
 
 // formatJSON is the constant for "json" output format, used across CLI commands.
 const formatJSON = "json"
+
+// formatTable is the constant for "table" output format.
+const formatTable = "table"
+
+// validOutputFormats lists the allowed values for --format flags.
+var validOutputFormats = []string{formatTable, formatJSON}
+
+// validateOutputFormat returns an error if format is not a recognized value.
+func validateOutputFormat(format string) error {
+	if slices.Contains(validOutputFormats, format) {
+		return nil
+	}
+	return fmt.Errorf("invalid --format value %q: must be one of %v", format, validOutputFormats)
+}
 
 // printTable prints a formatted table with the given headers and rows.
 // Uses tabwriter for aligned columns.
