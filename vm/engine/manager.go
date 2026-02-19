@@ -399,6 +399,17 @@ func (m *manager) createOCIVM(
 		}
 	}
 	if localTag == "" {
+		// Auto-pull from registry if the source is a registry OCI VM ref.
+		if resolvedImage.Source == runtimeImageSourceRegistry && resolvedImage.VMImageType == types.VMImageTypeOCIVM {
+			pullResult, pullErr := oci.Pull(ctx, m.cfg, resolvedImage.PrepareRef)
+			if pullErr != nil {
+				return nil, fmt.Errorf("pull OCI VM image %q: %w", resolvedImage.PrepareRef, pullErr)
+			}
+			localTag = resolvedImage.PrepareRef
+			log.Printf("auto-pulled OCI VM image %q (digest: %s)", localTag, pullResult.ManifestDigest)
+		}
+	}
+	if localTag == "" {
 		return nil, fmt.Errorf(
 			"OCI VM runtime currently requires a local OCI tag; source %q is not materialized locally yet",
 			resolvedImage.Source,

@@ -55,6 +55,16 @@ type PushResult struct {
 	ManifestDigest string `json:"manifest_digest"`
 }
 
+// PullResult is returned by a successful Pull operation.
+type PullResult struct {
+	// Ref is the full registry reference that was pulled.
+	Ref string `json:"ref"`
+	// ManifestDigest is the sha256 digest of the pulled manifest.
+	ManifestDigest string `json:"manifest_digest"`
+	// LayoutPath is the local filesystem path to the OCI layout directory.
+	LayoutPath string `json:"layout_path"`
+}
+
 // TagEntry records one local OCI build tag mapping.
 type TagEntry struct {
 	// Tag is the OCI reference (e.g., "myregistry.io/ubuntu-vm:22.04").

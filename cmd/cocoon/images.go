@@ -217,6 +217,12 @@ func imagePullAction(c *cli.Context) error {
 
 	ref := c.Args().Get(0)
 
+	// Detect if this is an OCI VM image by probing the registry manifest.
+	if isOCIVMRegistryRef(c, app, ref) {
+		return pullOCIVMImage(c, app, ref)
+	}
+
+	// Existing cloud image pipeline.
 	// Check if the image is already cached before pulling.
 	_, cacheLookupErr := resolveBaseKeyFromCache(c, app, ref)
 	cachedBefore := cacheLookupErr == nil
@@ -245,6 +251,43 @@ func imagePullAction(c *cli.Context) error {
 	fmt.Printf("Base key: %s\n", identity.BaseKey())
 	fmt.Printf("Cached at: %s\n", basePath)
 
+	return nil
+}
+
+// isOCIVMRegistryRef checks whether ref is a remote OCI VM registry reference.
+// Returns false for URLs, local paths, and refs already in the local OCI store.
+func isOCIVMRegistryRef(c *cli.Context, app *appContext, ref string) bool {
+	// Skip URLs.
+	if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
+		return false
+	}
+	// Skip local file paths.
+	if strings.HasPrefix(ref, "/") || strings.HasPrefix(ref, "./") || strings.HasPrefix(ref, "../") {
+		return false
+	}
+	if _, err := os.Stat(ref); err == nil {
+		return false
+	}
+	// Skip refs already in local OCI store.
+	store := oci.NewStore(app.cfg)
+	if _, exists, err := resolveLocalOCITagRef(store, ref); err == nil && exists {
+		return false
+	}
+	// Probe the registry for Cocoon VM media types.
+	return oci.ProbeRegistryVMImage(c.Context, app.cfg, ref)
+}
+
+// pullOCIVMImage pulls an OCI VM image from a remote registry into the local store.
+func pullOCIVMImage(c *cli.Context, app *appContext, ref string) error {
+	ref = ensureLatestTag(ref)
+	result, err := oci.Pull(c.Context, app.cfg, ref)
+	if err != nil {
+		return fmt.Errorf("pull OCI VM image %q: %w", ref, err)
+	}
+
+	fmt.Printf("Pulled OCI VM image: %s\n", result.Ref)
+	fmt.Printf("Manifest digest: %s\n", result.ManifestDigest)
+	fmt.Printf("Layout: %s\n", result.LayoutPath)
 	return nil
 }
 

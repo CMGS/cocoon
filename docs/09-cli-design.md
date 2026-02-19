@@ -1318,7 +1318,7 @@ func imagesCommand() *cli.Command {
 
 **Cache Resolution Behavior**:
 
-- `image pull` updates the local manifest cache (`cache/manifests/index.json`) to map `IMAGE_REF` aliases to `base_key`.
+- `image pull` auto-detects image type: if the ref points to a Cocoon OCI VM image on a registry (detected via manifest media-type probe), it routes to `oci.Pull()` which stores the image in the local OCI store; otherwise it routes to the cloud image pipeline and updates the local manifest cache (`cache/manifests/index.json`) to map `IMAGE_REF` aliases to `base_key`.
 - `image inspect`, `image remove`, and `image verify` resolve local OCI tags with an implicit `:latest` fallback when no tag/digest is provided.
 - `image inspect` and `image remove` resolve cloud-image `IMAGE_REF` from local cache only (`base_key` direct hit or manifest-cache alias), without pulling.
 - `image tag SOURCE_REF TARGET_REF` behavior:
