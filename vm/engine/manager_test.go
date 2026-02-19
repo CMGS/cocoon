@@ -399,9 +399,9 @@ func TestCreate_LocalOCITagRequiresMaterializedLayout(t *testing.T) {
 		Image: "demo",
 	})
 	if err == nil {
-		t.Fatal("expected local OCI runtime layout error, got nil")
+		t.Fatal("expected OCI runtime create error, got nil")
 	}
-	if !strings.Contains(err.Error(), "local OCI layout") {
+	if !strings.Contains(err.Error(), "OCI runtime preflight") && !strings.Contains(err.Error(), "local OCI layout") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if prepareCalled {

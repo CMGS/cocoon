@@ -33,7 +33,7 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inc
 
 	var inconsistencies []vm.Inconsistency
 	knownPIDs := make(map[int]string) // pid -> vmID
-	expectedHypervisorNames := make(map[string]struct{})
+	expectedProcessNames := make(map[string]struct{})
 	vmConfigs := make(map[string]*types.VMConfig)
 
 	for _, entry := range entries {
@@ -125,7 +125,11 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inc
 		if meta.ProcessPID > 0 {
 			knownPIDs[meta.ProcessPID] = vmID
 		}
-		expectedHypervisorNames[meta.HypervisorProcessName(m.cfg.CHBinary)] = struct{}{}
+		if meta.VirtiofsdPID > 0 {
+			knownPIDs[meta.VirtiofsdPID] = vmID
+		}
+		expectedProcessNames[meta.HypervisorProcessName(m.cfg.CHBinary)] = struct{}{}
+		expectedProcessNames[meta.VirtiofsdProcessName(m.cfg.VirtiofsdBinary)] = struct{}{}
 
 		// Determine actual state by probing the system.
 		actualState := m.determineActualState(meta, vmCfg)
@@ -159,6 +163,8 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inc
 				}
 			}
 		}
+
+		inconsistencies = append(inconsistencies, m.detectOCIRuntimeIssues(vmID, vmCfg, meta)...)
 	}
 
 	refIssues, refErr := m.detectDanglingReferenceIssues(vmConfigs)
@@ -195,8 +201,8 @@ func (m *manager) Reconcile(ctx context.Context, fix bool, force bool) ([]vm.Inc
 
 	// Detect orphaned hypervisor/swtpm processes not tracked by any VM.
 	// Include all process names currently expected by loaded VM metadata.
-	processNames := make([]string, 0, len(expectedHypervisorNames)+1)
-	for name := range expectedHypervisorNames {
+	processNames := make([]string, 0, len(expectedProcessNames)+1)
+	for name := range expectedProcessNames {
 		if strings.TrimSpace(name) == "" {
 			continue
 		}
@@ -434,102 +440,256 @@ func (m *manager) detectZombieResources(vmID string, meta *types.VMMetadataFile,
 	return zombies
 }
 
+func (m *manager) detectOCIRuntimeIssues(vmID string, vmCfg *types.VMConfig, meta *types.VMMetadataFile) []vm.Inconsistency {
+	if vmCfg == nil || meta == nil || vmCfg.ImageType != types.VMImageTypeOCIVM {
+		return nil
+	}
+
+	state := types.VMState(meta.State)
+	if state == types.VMStateDeleted {
+		return nil
+	}
+
+	issues := make([]vm.Inconsistency, 0)
+
+	rootfsLowerDir := strings.TrimSpace(vmCfg.BaseImagePath)
+	if rootfsLowerDir == "" {
+		issues = append(issues, vm.Inconsistency{
+			VMID:     vmID,
+			Type:     vm.InconsistencyOCIRuntimeCache,
+			Severity: vm.SeverityCritical,
+			Details:  "OCI runtime rootfs cache path is empty in config.json",
+		})
+	} else if _, err := os.Stat(rootfsLowerDir); os.IsNotExist(err) {
+		issues = append(issues, vm.Inconsistency{
+			VMID:     vmID,
+			Type:     vm.InconsistencyOCIRuntimeCache,
+			Severity: vm.SeverityCritical,
+			Details:  fmt.Sprintf("OCI runtime rootfs cache missing at %s", rootfsLowerDir),
+		})
+	}
+
+	overlayMounted, overlayErr := m.overlayMgr.IsMounted(vmID)
+	if overlayErr != nil {
+		issues = append(issues, vm.Inconsistency{
+			VMID:     vmID,
+			Type:     vm.InconsistencyOCIRuntimeOverlay,
+			Severity: vm.SeverityWarning,
+			Details:  fmt.Sprintf("failed to probe OCI overlay mount state: %v", overlayErr),
+		})
+	}
+
+	virtioExpected := meta.VirtiofsdProcessName(m.cfg.VirtiofsdBinary)
+	virtioAlive := meta.VirtiofsdPID > 0 && utils.ValidateProcess(meta.VirtiofsdPID, virtioExpected)
+	virtioSocket := strings.TrimSpace(meta.VirtiofsdSocket)
+	if virtioSocket == "" {
+		virtioSocket = m.cfg.VMOCIRootfsVirtioFSSocketPath(vmID)
+	}
+
+	switch state {
+	case types.VMStateRunning:
+		if !overlayMounted || !meta.OCIOverlayMounted {
+			issues = append(issues, vm.Inconsistency{
+				VMID:     vmID,
+				Type:     vm.InconsistencyOCIRuntimeOverlay,
+				Severity: vm.SeverityCritical,
+				Details:  fmt.Sprintf("RUNNING OCI VM must have mounted overlay (mountinfo=%v, metadata=%v)", overlayMounted, meta.OCIOverlayMounted),
+			})
+		}
+		if !virtioAlive {
+			issues = append(issues, vm.Inconsistency{
+				VMID:     vmID,
+				Type:     vm.InconsistencyOCIRuntimeVirtio,
+				Severity: vm.SeverityCritical,
+				Details:  fmt.Sprintf("RUNNING OCI VM requires live virtiofsd process (pid=%d expected=%s)", meta.VirtiofsdPID, virtioExpected),
+			})
+		}
+		if _, err := os.Stat(virtioSocket); err != nil {
+			issues = append(issues, vm.Inconsistency{
+				VMID:     vmID,
+				Type:     vm.InconsistencyOCIRuntimeVirtio,
+				Severity: vm.SeverityWarning,
+				Details:  fmt.Sprintf("RUNNING OCI VM missing virtiofsd socket at %s", virtioSocket),
+			})
+		}
+
+	case types.VMStateCreated, types.VMStateStopped, types.VMStateError:
+		if overlayMounted || meta.OCIOverlayMounted {
+			issues = append(issues, vm.Inconsistency{
+				VMID:     vmID,
+				Type:     vm.InconsistencyOCIRuntimeOverlay,
+				Severity: vm.SeverityWarning,
+				Details:  fmt.Sprintf("%s OCI VM should not keep mounted overlay (mountinfo=%v, metadata=%v)", state, overlayMounted, meta.OCIOverlayMounted),
+			})
+		}
+		if virtioAlive || meta.VirtiofsdPID > 0 {
+			issues = append(issues, vm.Inconsistency{
+				VMID:     vmID,
+				Type:     vm.InconsistencyOCIRuntimeVirtio,
+				Severity: vm.SeverityWarning,
+				Details:  fmt.Sprintf("%s OCI VM should not keep virtiofsd runtime (pid=%d alive=%v)", state, meta.VirtiofsdPID, virtioAlive),
+			})
+		}
+	}
+
+	return issues
+}
+
 // applyFix attempts to repair an inconsistency.
 func (m *manager) applyFix(inc *vm.Inconsistency, force bool) error {
-	switch inc.Type {
-	case vm.InconsistencyStateMismatch:
-		return m.fixStateMismatch(inc, force)
-
-	case vm.InconsistencyZombieSocket:
-		// Remove the stale socket file.
-		vmCfg, err := m.LoadConfig(inc.VMID)
-		if err != nil {
-			return err
-		}
-		return os.Remove(vmCfg.SocketPath)
-
-	case vm.InconsistencyStalePIDFile:
-		pidFilePath := m.cfg.VMPIDPath(inc.VMID)
-		return os.Remove(pidFilePath)
-
-	case vm.InconsistencyZombieProcess:
-		if !force {
-			return fmt.Errorf("--force required to kill zombie processes")
-		}
-		if inc.VMID == "" {
-			return nil
-		}
-		meta, err := m.LoadMetadata(inc.VMID)
-		if err != nil {
-			return err
-		}
-		if meta.ProcessPID > 0 {
-			// Only kill if it is actually the hypervisor (guard against PID reuse).
-			if utils.ValidateProcess(meta.ProcessPID, meta.HypervisorProcessName(m.cfg.CHBinary)) {
-				_ = syscall.Kill(meta.ProcessPID, syscall.SIGKILL)
-			}
-			meta.ProcessPID = 0
-			return m.SaveMetadata(meta)
-		}
-		return nil
-
-	case vm.InconsistencyOrphanedOverlay:
-		return m.fixOrphanedOverlay(inc.VMID)
-
-	case vm.InconsistencyMissingReference:
-		baseKey := inc.BaseKey
-		digestFull := inc.DigestFull
-		imageRef := inc.ImageRef
-
-		if baseKey == "" || imageRef == "" {
-			cfg, err := m.LoadConfig(inc.VMID)
-			if err != nil {
-				return err
-			}
-			if baseKey == "" {
-				baseKey = cfg.BaseKey
-			}
-			if digestFull == "" {
-				digestFull = cfg.BaseDigestFull
-			}
-			if imageRef == "" {
-				imageRef = cfg.ImageRef
-			}
-		}
-
-		if baseKey == "" {
-			return fmt.Errorf("missing base_key for reference repair")
-		}
-
-		return m.refCounter.AddReference(baseKey, inc.VMID, digestFull, imageRef)
-
-	case vm.InconsistencyDanglingReference:
-		if inc.BaseKey == "" {
-			return fmt.Errorf("missing base_key for dangling reference cleanup")
-		}
-		return m.refCounter.RemoveReference(inc.BaseKey, inc.VMID)
-
-	case vm.InconsistencyNameIndexStale:
-		_, err := RebuildNameIndex(m.cfg)
-		return err
-
-	case vm.InconsistencyDuplicateVMName:
-		return fmt.Errorf("duplicate VM name requires manual intervention")
-
-	case vm.InconsistencyDeletedVMDir:
-		return m.cleanupDeletedVMArtifacts(inc.VMID)
-
-	case vm.InconsistencyMetadataCorrupt:
-		// Cannot auto-fix corrupt metadata without more context.
-		return fmt.Errorf("manual intervention required for corrupt metadata")
-
-	case vm.InconsistencyMissingOverlay:
-		// Cannot recreate an overlay.
-		return fmt.Errorf("overlay disk missing; VM data is lost")
-
-	default:
+	handler, ok := inconsistencyFixHandlers[inc.Type]
+	if !ok {
 		return fmt.Errorf("unknown inconsistency type: %s", inc.Type)
 	}
+	return handler(m, inc, force)
+}
+
+var inconsistencyFixHandlers = map[vm.InconsistencyType]func(*manager, *vm.Inconsistency, bool) error{
+	vm.InconsistencyStateMismatch:     (*manager).applyFixStateMismatch,
+	vm.InconsistencyZombieSocket:      (*manager).applyFixZombieSocket,
+	vm.InconsistencyStalePIDFile:      (*manager).applyFixStalePIDFile,
+	vm.InconsistencyZombieProcess:     (*manager).applyFixZombieProcess,
+	vm.InconsistencyMissingOverlay:    (*manager).applyFixMissingOverlay,
+	vm.InconsistencyOrphanedOverlay:   (*manager).applyFixOrphanedOverlay,
+	vm.InconsistencyOCIRuntimeCache:   (*manager).applyFixOCIRuntimeCache,
+	vm.InconsistencyOCIRuntimeOverlay: (*manager).applyFixOCIRuntimeMismatch,
+	vm.InconsistencyOCIRuntimeVirtio:  (*manager).applyFixOCIRuntimeMismatch,
+	vm.InconsistencyMissingReference:  (*manager).applyFixMissingReference,
+	vm.InconsistencyDanglingReference: (*manager).applyFixDanglingReference,
+	vm.InconsistencyNameIndexStale:    (*manager).applyFixNameIndexStale,
+	vm.InconsistencyDuplicateVMName:   (*manager).applyFixDuplicateVMName,
+	vm.InconsistencyDeletedVMDir:      (*manager).applyFixDeletedVMDir,
+	vm.InconsistencyMetadataCorrupt:   (*manager).applyFixMetadataCorrupt,
+}
+
+func (m *manager) applyFixStateMismatch(inc *vm.Inconsistency, force bool) error {
+	return m.fixStateMismatch(inc, force)
+}
+
+func (m *manager) applyFixZombieSocket(inc *vm.Inconsistency, _ bool) error {
+	vmCfg, err := m.LoadConfig(inc.VMID)
+	if err != nil {
+		return err
+	}
+	return os.Remove(vmCfg.SocketPath)
+}
+
+func (m *manager) applyFixStalePIDFile(inc *vm.Inconsistency, _ bool) error {
+	return os.Remove(m.cfg.VMPIDPath(inc.VMID))
+}
+
+func (m *manager) applyFixZombieProcess(inc *vm.Inconsistency, force bool) error {
+	if !force {
+		return fmt.Errorf("--force required to kill zombie processes")
+	}
+	if inc.VMID == "" {
+		return nil
+	}
+	meta, err := m.LoadMetadata(inc.VMID)
+	if err != nil {
+		return err
+	}
+	if meta.ProcessPID <= 0 {
+		return nil
+	}
+	if utils.ValidateProcess(meta.ProcessPID, meta.HypervisorProcessName(m.cfg.CHBinary)) {
+		_ = syscall.Kill(meta.ProcessPID, syscall.SIGKILL)
+	}
+	meta.ProcessPID = 0
+	return m.SaveMetadata(meta)
+}
+
+func (m *manager) applyFixMissingOverlay(_ *vm.Inconsistency, _ bool) error {
+	return fmt.Errorf("overlay disk missing; VM data is lost")
+}
+
+func (m *manager) applyFixOrphanedOverlay(inc *vm.Inconsistency, _ bool) error {
+	return m.fixOrphanedOverlay(inc.VMID)
+}
+
+func (m *manager) applyFixOCIRuntimeCache(_ *vm.Inconsistency, _ bool) error {
+	return fmt.Errorf("OCI runtime cache missing; recreate VM from source image")
+}
+
+func (m *manager) applyFixOCIRuntimeMismatch(inc *vm.Inconsistency, force bool) error {
+	meta, err := m.LoadMetadata(inc.VMID)
+	if err != nil {
+		return err
+	}
+
+	state := types.VMState(meta.State)
+	if state == types.VMStateRunning && !force {
+		return fmt.Errorf("--force required to repair OCI runtime mismatch on RUNNING VM")
+	}
+
+	if state == types.VMStateRunning {
+		_ = m.hyper.ForceKill(inc.VMID)
+		if meta.ProcessPID > 0 && utils.ValidateProcess(meta.ProcessPID, meta.HypervisorProcessName(m.cfg.CHBinary)) {
+			_ = syscall.Kill(meta.ProcessPID, syscall.SIGKILL)
+		}
+	}
+
+	if err := m.cleanupOCIRuntime(inc.VMID, meta); err != nil {
+		return err
+	}
+
+	if state == types.VMStateRunning {
+		return m.transitionStateWithUpdate(inc.VMID, types.VMStateError, "reconciled OCI runtime mismatch", func(md *types.VMMetadataFile) {
+			md.ProcessPID = 0
+		})
+	}
+	return nil
+}
+
+func (m *manager) applyFixMissingReference(inc *vm.Inconsistency, _ bool) error {
+	baseKey := inc.BaseKey
+	digestFull := inc.DigestFull
+	imageRef := inc.ImageRef
+
+	if baseKey == "" || imageRef == "" {
+		cfg, err := m.LoadConfig(inc.VMID)
+		if err != nil {
+			return err
+		}
+		if baseKey == "" {
+			baseKey = cfg.BaseKey
+		}
+		if digestFull == "" {
+			digestFull = cfg.BaseDigestFull
+		}
+		if imageRef == "" {
+			imageRef = cfg.ImageRef
+		}
+	}
+
+	if baseKey == "" {
+		return fmt.Errorf("missing base_key for reference repair")
+	}
+	return m.refCounter.AddReference(baseKey, inc.VMID, digestFull, imageRef)
+}
+
+func (m *manager) applyFixDanglingReference(inc *vm.Inconsistency, _ bool) error {
+	if inc.BaseKey == "" {
+		return fmt.Errorf("missing base_key for dangling reference cleanup")
+	}
+	return m.refCounter.RemoveReference(inc.BaseKey, inc.VMID)
+}
+
+func (m *manager) applyFixNameIndexStale(_ *vm.Inconsistency, _ bool) error {
+	_, err := RebuildNameIndex(m.cfg)
+	return err
+}
+
+func (m *manager) applyFixDuplicateVMName(_ *vm.Inconsistency, _ bool) error {
+	return fmt.Errorf("duplicate VM name requires manual intervention")
+}
+
+func (m *manager) applyFixDeletedVMDir(inc *vm.Inconsistency, _ bool) error {
+	return m.cleanupDeletedVMArtifacts(inc.VMID)
+}
+
+func (m *manager) applyFixMetadataCorrupt(_ *vm.Inconsistency, _ bool) error {
+	return fmt.Errorf("manual intervention required for corrupt metadata")
 }
 
 func (m *manager) cleanupDeletedVMArtifacts(vmID string) error {

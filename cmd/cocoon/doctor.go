@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -159,6 +160,12 @@ func runDependencyChecks(app *appContext) []checkResult {
 		"required hypervisor runtime",
 	))
 
+	// 1b. Check Linux OverlayFS availability for OCI runtime path.
+	results = append(results, checkOverlayFSSupport())
+
+	// 1c. Check virtiofsd binary + minimum version for OCI runtime path.
+	results = append(results, checkVirtiofsdBinary(app.cfg.VirtiofsdBinary))
+
 	// 2. Check UEFI firmware file (with fallback probing).
 	if app.cfg.UEFIFirmwarePath != "" {
 		results = append(results, checkUEFIFirmware(app.cfg.UEFIFirmwarePath))
@@ -305,6 +312,66 @@ func checkSwtpm() checkResult {
 	}
 }
 
+func checkVirtiofsdBinary(configuredBinary string) checkResult {
+	binary := strings.TrimSpace(configuredBinary)
+	if binary == "" {
+		binary = "virtiofsd"
+	}
+
+	path, err := exec.LookPath(binary)
+	if err != nil {
+		return checkResult{
+			Name:   "virtiofsd",
+			Status: "fail",
+			Detail: fmt.Sprintf("binary not found in PATH (required for OCI VM direct-boot runtime): %s", binary),
+		}
+	}
+
+	min := semVersion{Major: 1, Minor: 7, Patch: 0}
+	queries := [][]string{{"--version"}, {"-V"}}
+
+	var (
+		out  []byte
+		qErr error
+	)
+	for _, args := range queries {
+		cmd := exec.Command(path, args...) //nolint:gosec // binary path is resolved from PATH; args are fixed literals
+		out, qErr = cmd.CombinedOutput()
+		if qErr == nil {
+			ver, parseErr := parseSemVersion(string(out))
+			if parseErr != nil {
+				continue
+			}
+			if compareSemVersion(ver, min) < 0 {
+				return checkResult{
+					Name:   "virtiofsd",
+					Status: "fail",
+					Detail: fmt.Sprintf("detected %s, minimum required %s", ver.String(), min.String()),
+				}
+			}
+			return checkResult{
+				Name:   "virtiofsd",
+				Status: "pass",
+				Detail: fmt.Sprintf("%s (version %s)", path, ver.String()),
+			}
+		}
+	}
+
+	if qErr != nil {
+		return checkResult{
+			Name:   "virtiofsd",
+			Status: "fail",
+			Detail: fmt.Sprintf("failed to query version: %v", qErr),
+		}
+	}
+
+	return checkResult{
+		Name:   "virtiofsd",
+		Status: "fail",
+		Detail: fmt.Sprintf("failed to parse version from output: %s", strings.TrimSpace(string(out))),
+	}
+}
+
 // checkOptionalBinary checks if a binary exists and reports its version.
 // Unlike checkBinaryWithMinVersion, missing binaries are reported as "warn" not "fail".
 func checkOptionalBinary(name, binary string, args []string, purpose string) checkResult {
@@ -362,6 +429,45 @@ func checkUEFIFirmware(primaryPath string) checkResult {
 		Name:   "uefi-firmware",
 		Status: "fail",
 		Detail: fmt.Sprintf("not found at %s or system fallback paths", primaryPath),
+	}
+}
+
+func checkOverlayFSSupport() checkResult {
+	if runtime.GOOS != hostOSLinux {
+		return checkResult{
+			Name:   "overlayfs",
+			Status: "fail",
+			Detail: fmt.Sprintf("OverlayFS check requires Linux host (detected %s)", runtime.GOOS),
+		}
+	}
+
+	data, err := os.ReadFile("/proc/filesystems") //nolint:gosec // fixed kernel pseudo-file on linux
+	if err != nil {
+		return checkResult{
+			Name:   "overlayfs",
+			Status: "fail",
+			Detail: fmt.Sprintf("read /proc/filesystems: %v", err),
+		}
+	}
+
+	for line := range strings.SplitSeq(string(data), "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) == 0 {
+			continue
+		}
+		if fields[len(fields)-1] == "overlay" {
+			return checkResult{
+				Name:   "overlayfs",
+				Status: "pass",
+				Detail: "/proc/filesystems lists overlay",
+			}
+		}
+	}
+
+	return checkResult{
+		Name:   "overlayfs",
+		Status: "fail",
+		Detail: "/proc/filesystems does not list overlay",
 	}
 }
 

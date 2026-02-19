@@ -31,10 +31,12 @@ type appContext struct {
 	gc       storage.GarbageCollector
 }
 
+const hostOSLinux = "linux"
+
 // initApp creates and initializes all managers from CLI context.
 // On Linux, it requires root (euid 0) because Cocoon requires root privileges.
 func initApp(_ *cli.Context) (*appContext, error) {
-	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+	if runtime.GOOS == hostOSLinux && os.Geteuid() != 0 {
 		return nil, fmt.Errorf("cocoon requires root privileges. Run with sudo or as root")
 	}
 
