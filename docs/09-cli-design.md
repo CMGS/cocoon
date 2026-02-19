@@ -3,7 +3,7 @@
 **Version**: 1.0
 **Status**: Implemented
 **Phase**: Phase 1 + Phase 2 (partial)
-**Last Updated**: 2026-02-19
+**Last Updated**: 2026-02-20
 
 ## ⚠️ Supported Image Contract
 
@@ -1314,6 +1314,8 @@ func imagesCommand() *cli.Command {
 > **Short-name routing**: Short names (e.g., `cmgs/test-u2404`) are routed through go-containerregistry's OCI pipeline, which automatically resolves them to `index.docker.io` without requiring `registries.conf`. This makes `image pull` consistent with `image push` (both use go-containerregistry for Docker Hub resolution). If the image is a Cocoon OCI VM image, it is pulled via `oci.Pull()`; otherwise the ref is normalized to a domain-prefixed form and handed to the cloud image pipeline.
 
 > **Domain-ref probing**: Domain-prefixed refs probe for Cocoon VM media types via `oci.ProbeRegistryVMImage()` (go-containerregistry `remote.Get` + manifest validation). If the manifest matches, it routes to `oci.Pull()`; otherwise it falls back to the cloud image pipeline.
+
+> **Standard OCI image handling (P1/P2 design decision)**: Extending `oci.Pull()` to support standard (non-VM) OCI images is not needed. Short names that are not Cocoon VM images are normalized to fully-qualified Docker Hub refs (e.g., `ubuntu:22.04` becomes `docker.io/library/ubuntu:22.04`) via `normalizeDockerLikeOCIRef()` and handed to the cloud image pipeline (buildah/skopeo), which can resolve domain-prefixed refs without `registries.conf`. This avoids the complexity of a dual-mode `oci.Pull()` while keeping short-name pull behavior consistent with push.
 
 **Cache Resolution Behavior**:
 
