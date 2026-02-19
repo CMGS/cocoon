@@ -218,21 +218,21 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 	}
 
 	bootStrategy := opts.BootStrategy
+	if resolvedImage.VMImageType == types.VMImageTypeOCIVM {
+		if bootStrategy == "" {
+			bootStrategy = types.BootStrategyDirect
+		}
+		if bootStrategy != types.BootStrategyDirect {
+			return nil, fmt.Errorf("OCI VM image %q requires --boot-strategy=%s (got %q)", opts.Image, types.BootStrategyDirect, bootStrategy)
+		}
+		return m.createOCIVM(ctx, opts, resolvedImage, bootStrategy, cpus, memoryMB, diskSize)
+	}
 	if bootStrategy == "" {
 		bootStrategy = types.DefaultBootStrategy
 	}
 
-	if resolvedImage.VMImageType == types.VMImageTypeOCIVM {
-		return nil, fmt.Errorf(
-			"image %q resolves to OCI VM image path (source=%s), but OCI VM runtime boot path is not enabled yet (issue #7)",
-			opts.Image, resolvedImage.Source,
-		)
-	}
-
-	// Defense-in-depth: reject direct kernel boot until Phase 2 wires it
-	// to the image pipeline. See docs/04.1-oci-vm-images.md.
 	if bootStrategy == types.BootStrategyDirect {
-		return nil, fmt.Errorf("direct kernel boot runtime is not enabled yet for create/run (issue #7)")
+		return nil, fmt.Errorf("direct kernel boot requires an OCI VM image reference")
 	}
 
 	// Generate name if not provided.
@@ -368,6 +368,123 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 		_ = RemoveName(m.cfg, name)
 		_ = m.refCounter.RemoveReference(baseKey, vmID)
 		_ = m.cowMgr.RemoveOverlay(vmID)
+		_ = os.RemoveAll(vmDir)
+		return nil, fmt.Errorf("transition to CREATED: %w", err)
+	}
+
+	return vmCfg, nil
+}
+
+func (m *manager) createOCIVM(
+	ctx context.Context,
+	opts *vm.CreateOptions,
+	resolvedImage *resolvedRuntimeImage,
+	bootStrategy types.BootStrategy,
+	cpus int,
+	memoryMB int64,
+	diskSize string,
+) (*types.VMConfig, error) {
+	localTag := strings.TrimSpace(resolvedImage.LocalOCITag)
+	if localTag == "" {
+		if resolvedImage.Source == runtimeImageSourceLocalOCITag {
+			localTag = strings.TrimSpace(resolvedImage.PrepareRef)
+		}
+	}
+	if localTag == "" {
+		return nil, fmt.Errorf(
+			"OCI VM runtime currently requires a local OCI tag; source %q is not materialized locally yet",
+			resolvedImage.Source,
+		)
+	}
+
+	runtimeSpec, err := prepareLocalOCIRuntime(ctx, m.cfg, localTag)
+	if err != nil {
+		return nil, err
+	}
+
+	name := opts.Name
+	if name == "" {
+		name = generateDefaultName()
+	}
+	vmID := "vm-" + ulid.MustNew(ulid.Now(), rand.Reader).String()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	firmwarePath, err := resolveFirmwarePath(m.cfg, bootStrategy, runtimeSpec.Arch)
+	if err != nil {
+		return nil, fmt.Errorf("resolve firmware: %w", err)
+	}
+
+	var tpmSocketPath string
+	if opts.EnableTPM {
+		tpmSocketPath = m.cfg.VMTPMSocketPath(vmID)
+	}
+
+	baseDigest := strings.TrimPrefix(runtimeSpec.ManifestDigest, "sha256:")
+	vmCfg := &types.VMConfig{
+		VMID:           vmID,
+		Name:           name,
+		ImageRef:       opts.Image,
+		BaseKey:        runtimeSpec.RuntimeKey,
+		BaseDigestFull: baseDigest,
+		Arch:           runtimeSpec.Arch,
+		ImageType:      types.VMImageTypeOCIVM,
+		BootStrategy:   bootStrategy,
+		FirmwarePath:   firmwarePath,
+		KernelPath:     runtimeSpec.KernelPath,
+		InitramfsPath:  runtimeSpec.InitramfsPath,
+		Cmdline:        runtimeSpec.Cmdline,
+		VirtioFSTag:    runtimeSpec.VirtioFSTag,
+		VirtioFSSock:   m.cfg.VMOCIRootfsVirtioFSSocketPath(vmID),
+		CPUs:           cpus,
+		MemoryMB:       memoryMB,
+		DiskSize:       diskSize,
+		BaseImagePath:  runtimeSpec.RootfsLowerDir,
+		OverlayPath:    "",
+		SocketPath:     m.cfg.VMSocketPath(vmID),
+		TPMSocketPath:  tpmSocketPath,
+		SerialLog:      m.cfg.VMSerialLogPath(vmID),
+		CreatedAt:      now,
+		SchemaVersion:  types.CurrentConfigSchemaVersion,
+	}
+
+	vmDir := m.cfg.VMPersistDir(vmID)
+	if err := os.MkdirAll(vmDir, 0o755); err != nil { //nolint:gosec // VM directory needs world-readable access for CH process
+		return nil, fmt.Errorf("create VM directory: %w", err)
+	}
+	if err := m.overlayMgr.EnsureWorkspace(vmID); err != nil {
+		_ = os.RemoveAll(vmDir)
+		return nil, fmt.Errorf("create OCI runtime workspace for %s: %w", vmID, err)
+	}
+
+	configPath := m.cfg.VMConfigPath(vmID)
+	if err := utils.AtomicWriteJSON(configPath, vmCfg); err != nil {
+		_ = os.RemoveAll(vmDir)
+		return nil, fmt.Errorf("write config.json: %w", err)
+	}
+
+	runtimeHypervisor := (&types.VMMetadataFile{}).HypervisorProcessName(m.cfg.CHBinary)
+	runtimeVirtiofsd := (&types.VMMetadataFile{}).VirtiofsdProcessName(m.cfg.VirtiofsdBinary)
+	meta := &types.VMMetadataFile{
+		VMID:             vmID,
+		State:            string(types.VMStateCreating),
+		PreviousState:    "",
+		HypervisorBinary: runtimeHypervisor,
+		VirtiofsdBinary:  runtimeVirtiofsd,
+		UpdatedAt:        now,
+		SchemaVersion:    types.CurrentMetadataSchemaVersion,
+	}
+	metaPath := m.cfg.VMMetadataPath(vmID)
+	if err := utils.AtomicWriteJSON(metaPath, meta); err != nil {
+		_ = os.RemoveAll(vmDir)
+		return nil, fmt.Errorf("write metadata.json: %w", err)
+	}
+
+	if err := AddName(m.cfg, name, vmID); err != nil {
+		_ = os.RemoveAll(vmDir)
+		return nil, fmt.Errorf("%w: %s", types.ErrVMAlreadyExists, err)
+	}
+	if err := m.TransitionState(vmID, types.VMStateCreated, "creation completed"); err != nil {
+		_ = RemoveName(m.cfg, name)
 		_ = os.RemoveAll(vmDir)
 		return nil, fmt.Errorf("transition to CREATED: %w", err)
 	}
@@ -527,41 +644,37 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 		return transErr
 	}
 
-	var ociRuntime *virtiofsdRuntimeInfo
+	var (
+		ociRuntime        *virtiofsdRuntimeInfo
+		ociOverlayMounted bool
+	)
+
+	ociRuntime, ociOverlayMounted, err = m.setupOCIRuntimeForStart(ctx, vmID, vmCfg)
+	if err != nil {
+		_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("start OCI runtime failed: %v", err))
+		return fmt.Errorf("start OCI runtime for %s: %w", vmID, err)
+	}
+
 	cleanupOCIRuntimeOnFailure := func() {
 		if vmCfg.ImageType != types.VMImageTypeOCIVM {
 			return
 		}
-		if cleanupErr := m.cleanupOCIRuntimeByMetadata(vmID); cleanupErr != nil {
-			log.Printf("warning: cleanup OCI runtime for %s after failed start: %v", vmID, cleanupErr)
+		if ociRuntime != nil {
+			if stopErr := m.virtiofsMgr.Stop(vmID, ociRuntime.PID, ociRuntime.ProcessName, ociRuntime.SocketPath); stopErr != nil {
+				log.Printf("warning: stop OCI virtiofsd for %s after failed start: %v", vmID, stopErr)
+			}
 		}
-	}
-
-	// Phase 2 foundation: OCI VM runtime requires a rootfs-serving virtiofsd
-	// process before CH vm.create so fs[] socket wiring is valid.
-	if vmCfg.ImageType == types.VMImageTypeOCIVM {
-		socketPath := vmCfg.VirtioFSSock
-		if strings.TrimSpace(socketPath) == "" {
-			socketPath = m.cfg.VMOCIRootfsVirtioFSSocketPath(vmID)
+		if ociOverlayMounted {
+			if unmountErr := m.overlayMgr.UnmountVM(vmID); unmountErr != nil {
+				log.Printf("warning: unmount OCI runtime overlay for %s after failed start: %v", vmID, unmountErr)
+			}
 		}
-
-		runtimeInfo, runtimeErr := m.virtiofsMgr.Start(ctx, vmID, m.cfg.VMOCIMergedDir(vmID), socketPath)
-		if runtimeErr != nil {
-			_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("start OCI runtime failed: %v", runtimeErr))
-			return fmt.Errorf("start OCI runtime for %s: %w", vmID, runtimeErr)
-		}
-		ociRuntime = runtimeInfo
-
-		overlayMounted, _ := m.overlayMgr.IsMounted(vmID)
 		if mdErr := m.updateMetadata(vmID, func(md *types.VMMetadataFile) {
-			md.VirtiofsdPID = runtimeInfo.PID
-			md.VirtiofsdSocket = runtimeInfo.SocketPath
-			md.VirtiofsdBinary = runtimeInfo.ProcessName
-			md.OCIOverlayMounted = overlayMounted
-		}); mdErr != nil {
-			cleanupOCIRuntimeOnFailure()
-			_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("persist OCI runtime metadata failed: %v", mdErr))
-			return fmt.Errorf("record OCI runtime metadata for %s: %w", vmID, mdErr)
+			md.VirtiofsdPID = 0
+			md.VirtiofsdSocket = ""
+			md.OCIOverlayMounted = false
+		}); mdErr != nil && !isNotFound(mdErr) {
+			log.Printf("warning: clear OCI runtime metadata for %s after failed start: %v", vmID, mdErr)
 		}
 	}
 
@@ -625,6 +738,7 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 			md.VirtiofsdPID = ociRuntime.PID
 			md.VirtiofsdSocket = ociRuntime.SocketPath
 			md.VirtiofsdBinary = ociRuntime.ProcessName
+			md.OCIOverlayMounted = true
 		}
 	}); err != nil {
 		// Transition failed but VM is running; force kill and go to ERROR.
@@ -635,6 +749,54 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 	}
 
 	return nil
+}
+
+func (m *manager) setupOCIRuntimeForStart(
+	ctx context.Context,
+	vmID string,
+	vmCfg *types.VMConfig,
+) (*virtiofsdRuntimeInfo, bool, error) {
+	if vmCfg.ImageType != types.VMImageTypeOCIVM {
+		return nil, false, nil
+	}
+	if strings.TrimSpace(vmCfg.BaseImagePath) == "" {
+		return nil, false, fmt.Errorf("rootfs lowerdir is empty")
+	}
+	if err := m.overlayMgr.MountVM(vmID, []string{vmCfg.BaseImagePath}); err != nil {
+		return nil, false, fmt.Errorf("mount OCI runtime overlay: %w", err)
+	}
+
+	overlayMounted := true
+	socketPath := vmCfg.VirtioFSSock
+	if strings.TrimSpace(socketPath) == "" {
+		socketPath = m.cfg.VMOCIRootfsVirtioFSSocketPath(vmID)
+	}
+	runtimeInfo, err := m.virtiofsMgr.Start(ctx, vmID, m.cfg.VMOCIMergedDir(vmID), socketPath)
+	if err != nil {
+		_ = m.overlayMgr.UnmountVM(vmID)
+		return nil, false, err
+	}
+
+	vmCfg.VirtioFSSock = runtimeInfo.SocketPath
+	if strings.TrimSpace(vmCfg.VirtioFSTag) == "" {
+		vmCfg.VirtioFSTag = defaultOCIRuntimeVirtioFSTag
+	}
+	if strings.TrimSpace(vmCfg.Cmdline) == "" {
+		vmCfg.Cmdline = normalizeVirtiofsKernelCmdline("", vmCfg.VirtioFSTag)
+	}
+
+	if mdErr := m.updateMetadata(vmID, func(md *types.VMMetadataFile) {
+		md.VirtiofsdPID = runtimeInfo.PID
+		md.VirtiofsdSocket = runtimeInfo.SocketPath
+		md.VirtiofsdBinary = runtimeInfo.ProcessName
+		md.OCIOverlayMounted = true
+	}); mdErr != nil {
+		_ = m.virtiofsMgr.Stop(vmID, runtimeInfo.PID, runtimeInfo.ProcessName, runtimeInfo.SocketPath)
+		_ = m.overlayMgr.UnmountVM(vmID)
+		return nil, false, fmt.Errorf("record OCI runtime metadata: %w", mdErr)
+	}
+
+	return runtimeInfo, overlayMounted, nil
 }
 
 // Stop sends a shutdown signal to the VM and waits for graceful stop.
@@ -882,9 +1044,11 @@ func (m *manager) Delete(ctx context.Context, vmID string, force bool) error {
 		}
 	}
 
-	// Remove COW overlay.
-	if overlayErr := m.cowMgr.RemoveOverlay(vmID); overlayErr != nil {
-		warnings = append(warnings, fmt.Sprintf("remove overlay: %v", overlayErr))
+	// Remove COW overlay (qcow2 path only).
+	if cfgErr == nil && vmCfg.ImageType != types.VMImageTypeOCIVM && strings.TrimSpace(vmCfg.OverlayPath) != "" {
+		if overlayErr := m.cowMgr.RemoveOverlay(vmID); overlayErr != nil {
+			warnings = append(warnings, fmt.Sprintf("remove overlay: %v", overlayErr))
+		}
 	}
 
 	// Remove name from index.
@@ -1195,12 +1359,6 @@ func buildCHVMConfig(vmCfg *types.VMConfig) *hypervisor.CHVMConfig {
 			// CH expects memory size in bytes; VMConfig stores MB.
 			Size: vmCfg.MemoryMB * 1024 * 1024,
 		},
-		Disks: []hypervisor.CHDiskConfig{
-			{
-				Path:     vmCfg.OverlayPath,
-				ReadOnly: false,
-			},
-		},
 		Serial: hypervisor.CHSerialConfig{
 			Mode: "File",
 			File: vmCfg.SerialLog,
@@ -1208,6 +1366,12 @@ func buildCHVMConfig(vmCfg *types.VMConfig) *hypervisor.CHVMConfig {
 		Console: hypervisor.CHConsoleConfig{
 			Mode: "Pty",
 		},
+	}
+	if strings.TrimSpace(vmCfg.OverlayPath) != "" {
+		cfg.Disks = append(cfg.Disks, hypervisor.CHDiskConfig{
+			Path:     vmCfg.OverlayPath,
+			ReadOnly: false,
+		})
 	}
 
 	// Build payload based on boot strategy.

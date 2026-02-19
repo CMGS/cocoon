@@ -19,9 +19,10 @@ type VMInspect struct {
 
 // InspectImageInfo contains OCI image details.
 type InspectImageInfo struct {
-	Ref     string `json:"ref"`
-	Digest  string `json:"digest"`
-	BaseKey string `json:"base_key"`
+	Ref     string      `json:"ref"`
+	Digest  string      `json:"digest"`
+	BaseKey string      `json:"base_key"`
+	Type    VMImageType `json:"type,omitempty"`
 }
 
 // InspectStorageInfo contains disk information.
@@ -83,6 +84,7 @@ func BuildInspect(cfg *VMConfig, meta *VMMetadataFile) *VMInspect {
 			Ref:     cfg.ImageRef,
 			Digest:  cfg.BaseDigestFull,
 			BaseKey: cfg.BaseKey,
+			Type:    cfg.ImageType,
 		},
 		Storage: InspectStorageInfo{
 			OverlayPath: cfg.OverlayPath,

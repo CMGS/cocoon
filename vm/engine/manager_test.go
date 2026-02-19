@@ -374,7 +374,7 @@ func TestCreate_InvalidBootStrategy(t *testing.T) {
 	}
 }
 
-func TestCreate_RejectsLocalOCITagUntilRuntimeEnabled(t *testing.T) {
+func TestCreate_LocalOCITagRequiresMaterializedLayout(t *testing.T) {
 	t.Parallel()
 	td := setupTestManager(t)
 
@@ -393,9 +393,9 @@ func TestCreate_RejectsLocalOCITagUntilRuntimeEnabled(t *testing.T) {
 		Image: "demo",
 	})
 	if err == nil {
-		t.Fatal("expected local OCI runtime error, got nil")
+		t.Fatal("expected local OCI runtime layout error, got nil")
 	}
-	if !strings.Contains(err.Error(), "OCI VM image path") {
+	if !strings.Contains(err.Error(), "local OCI layout") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if prepareCalled {
