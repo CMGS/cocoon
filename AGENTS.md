@@ -38,7 +38,7 @@ func TestFoo(t *testing.T) {
 
 - Never use `context.Background()` inside business logic. The only allowed
   call site is the application entry point (`main.go`) where the root context
-  is created (e.g., `signal.NotifyContext(context.Background(), ...)`).
+  is created (e.g., `signal.NotifyContext(context.TODO(), ...)`).
 - Use `context.TODO()` as a placeholder when a function does not yet receive
   a context from its caller but should. This marks it as technical debt.
 - Always pass context through function parameters rather than creating a new
