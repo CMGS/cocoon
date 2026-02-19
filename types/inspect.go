@@ -36,6 +36,8 @@ type InspectHypervisorInfo struct {
 	CHSocket         string   `json:"ch_socket"`
 	CHPID            int      `json:"ch_pid"`
 	SerialLog        string   `json:"serial_log"`
+	VirtiofsdPID     int      `json:"virtiofsd_pid,omitempty"`
+	VirtiofsdSocket  string   `json:"virtiofsd_socket,omitempty"`
 	ConsolePTY       string   `json:"console_pty,omitempty"` // PTY path when console mode is Pty
 	SerialLogExcerpt []string `json:"serial_log_excerpt,omitempty"`
 }
@@ -58,9 +60,10 @@ type InspectTimestamps struct {
 
 // InspectRuntimeStatus contains runtime execution information.
 type InspectRuntimeStatus struct {
-	BootTime     string `json:"boot_time,omitempty"`
-	LastBootMode string `json:"last_boot_mode,omitempty"`
-	ErrorCount   int    `json:"error_count"`
+	BootTime          string `json:"boot_time,omitempty"`
+	LastBootMode      string `json:"last_boot_mode,omitempty"`
+	OCIOverlayMounted bool   `json:"oci_overlay_mounted,omitempty"`
+	ErrorCount        int    `json:"error_count"`
 }
 
 // InspectErrorInfo contains error details.
@@ -87,9 +90,11 @@ func BuildInspect(cfg *VMConfig, meta *VMMetadataFile) *VMInspect {
 			Size:        cfg.DiskSize,
 		},
 		Hypervisor: InspectHypervisorInfo{
-			CHSocket:  cfg.SocketPath,
-			CHPID:     meta.ProcessPID,
-			SerialLog: cfg.SerialLog,
+			CHSocket:        cfg.SocketPath,
+			CHPID:           meta.ProcessPID,
+			SerialLog:       cfg.SerialLog,
+			VirtiofsdPID:    meta.VirtiofsdPID,
+			VirtiofsdSocket: meta.VirtiofsdSocket,
 		},
 		BootConfig: InspectBootConfig{
 			CPUs:         cfg.CPUs,
@@ -104,9 +109,10 @@ func BuildInspect(cfg *VMConfig, meta *VMMetadataFile) *VMInspect {
 			StoppedAt: meta.StoppedAt,
 		},
 		Runtime: InspectRuntimeStatus{
-			BootTime:     meta.BootTime,
-			LastBootMode: meta.LastBootMode,
-			ErrorCount:   meta.ErrorCount,
+			BootTime:          meta.BootTime,
+			LastBootMode:      meta.LastBootMode,
+			OCIOverlayMounted: meta.OCIOverlayMounted,
+			ErrorCount:        meta.ErrorCount,
 		},
 	}
 	if meta.LastError != "" {

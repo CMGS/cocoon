@@ -41,12 +41,13 @@ var _ vm.Manager = (*manager)(nil)
 
 // manager is the concrete implementation of the Manager interface.
 type manager struct {
-	cfg        *config.CocoonConfig
-	hyper      hypervisor.Client
-	refCounter storage.ReferenceCounter
-	cowMgr     storage.COWManager
-	imgMgr     image.Manager
-	overlayMgr *overlayRuntimeManager
+	cfg         *config.CocoonConfig
+	hyper       hypervisor.Client
+	refCounter  storage.ReferenceCounter
+	cowMgr      storage.COWManager
+	imgMgr      image.Manager
+	overlayMgr  *overlayRuntimeManager
+	virtiofsMgr *virtiofsdRuntimeManager
 }
 
 // New creates a new VM manager backed by the given configuration and dependencies.
@@ -58,12 +59,13 @@ func New(
 	imgMgr image.Manager,
 ) vm.Manager {
 	return &manager{
-		cfg:        cfg,
-		hyper:      hyper,
-		refCounter: refCounter,
-		cowMgr:     cowMgr,
-		imgMgr:     imgMgr,
-		overlayMgr: newOverlayRuntimeManager(cfg),
+		cfg:         cfg,
+		hyper:       hyper,
+		refCounter:  refCounter,
+		cowMgr:      cowMgr,
+		imgMgr:      imgMgr,
+		overlayMgr:  newOverlayRuntimeManager(cfg),
+		virtiofsMgr: newVirtiofsdRuntimeManager(cfg),
 	}
 }
 
@@ -328,11 +330,13 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 
 	// Write initial metadata.json in CREATING state.
 	runtimeHypervisor := (&types.VMMetadataFile{}).HypervisorProcessName(m.cfg.CHBinary)
+	runtimeVirtiofsd := (&types.VMMetadataFile{}).VirtiofsdProcessName(m.cfg.VirtiofsdBinary)
 	meta := &types.VMMetadataFile{
 		VMID:             vmID,
 		State:            string(types.VMStateCreating),
 		PreviousState:    "",
 		HypervisorBinary: runtimeHypervisor,
+		VirtiofsdBinary:  runtimeVirtiofsd,
 		UpdatedAt:        now,
 		SchemaVersion:    types.CurrentMetadataSchemaVersion,
 	}
@@ -523,6 +527,44 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 		return transErr
 	}
 
+	var ociRuntime *virtiofsdRuntimeInfo
+	cleanupOCIRuntimeOnFailure := func() {
+		if vmCfg.ImageType != types.VMImageTypeOCIVM {
+			return
+		}
+		if cleanupErr := m.cleanupOCIRuntimeByMetadata(vmID); cleanupErr != nil {
+			log.Printf("warning: cleanup OCI runtime for %s after failed start: %v", vmID, cleanupErr)
+		}
+	}
+
+	// Phase 2 foundation: OCI VM runtime requires a rootfs-serving virtiofsd
+	// process before CH vm.create so fs[] socket wiring is valid.
+	if vmCfg.ImageType == types.VMImageTypeOCIVM {
+		socketPath := vmCfg.VirtioFSSock
+		if strings.TrimSpace(socketPath) == "" {
+			socketPath = m.cfg.VMOCIRootfsVirtioFSSocketPath(vmID)
+		}
+
+		runtimeInfo, runtimeErr := m.virtiofsMgr.Start(ctx, vmID, m.cfg.VMOCIMergedDir(vmID), socketPath)
+		if runtimeErr != nil {
+			_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("start OCI runtime failed: %v", runtimeErr))
+			return fmt.Errorf("start OCI runtime for %s: %w", vmID, runtimeErr)
+		}
+		ociRuntime = runtimeInfo
+
+		overlayMounted, _ := m.overlayMgr.IsMounted(vmID)
+		if mdErr := m.updateMetadata(vmID, func(md *types.VMMetadataFile) {
+			md.VirtiofsdPID = runtimeInfo.PID
+			md.VirtiofsdSocket = runtimeInfo.SocketPath
+			md.VirtiofsdBinary = runtimeInfo.ProcessName
+			md.OCIOverlayMounted = overlayMounted
+		}); mdErr != nil {
+			cleanupOCIRuntimeOnFailure()
+			_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("persist OCI runtime metadata failed: %v", mdErr))
+			return fmt.Errorf("record OCI runtime metadata for %s: %w", vmID, mdErr)
+		}
+	}
+
 	bootStartTime := time.Now()
 
 	// attemptBootAndWait runs attemptBoot + waitForBoot as a single unit.
@@ -566,6 +608,7 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 	}
 
 	if bootErr != nil {
+		cleanupOCIRuntimeOnFailure()
 		_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("boot failed: %v", bootErr))
 		return fmt.Errorf("boot VM %s: %w", vmID, bootErr)
 	}
@@ -578,9 +621,15 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 		md.BootTime = time.Since(bootStartTime).Round(time.Millisecond).String()
 		md.LastBootMode = string(result.bootMode)
 		md.LastFirmwarePath = result.firmwarePath
+		if ociRuntime != nil {
+			md.VirtiofsdPID = ociRuntime.PID
+			md.VirtiofsdSocket = ociRuntime.SocketPath
+			md.VirtiofsdBinary = ociRuntime.ProcessName
+		}
 	}); err != nil {
 		// Transition failed but VM is running; force kill and go to ERROR.
 		_ = m.hyper.ForceKill(vmID)
+		cleanupOCIRuntimeOnFailure()
 		_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("start transition failed: %v", err))
 		return fmt.Errorf("transition to RUNNING for %s: %w", vmID, err)
 	}
@@ -601,6 +650,9 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 
 	// Idempotent: already stopped -> no-op.
 	if state == types.VMStateStopped {
+		if cleanupErr := m.cleanupOCIRuntime(vmID, meta); cleanupErr != nil {
+			log.Printf("warning: cleanup OCI runtime resources for %s in stopped state: %v", vmID, cleanupErr)
+		}
 		return nil
 	}
 
@@ -669,8 +721,8 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 		return err
 	}
 
-	if unmountErr := m.overlayMgr.UnmountVM(vmID); unmountErr != nil {
-		log.Printf("warning: unmount OCI runtime overlay for %s during stop: %v", vmID, unmountErr)
+	if cleanupErr := m.cleanupOCIRuntimeByMetadata(vmID); cleanupErr != nil {
+		log.Printf("warning: cleanup OCI runtime resources for %s during stop: %v", vmID, cleanupErr)
 	}
 
 	return nil
@@ -693,6 +745,9 @@ func (m *manager) Kill(ctx context.Context, vmID string) error {
 
 	// Idempotent: already stopped -> no-op.
 	if state == types.VMStateStopped {
+		if cleanupErr := m.cleanupOCIRuntime(vmID, meta); cleanupErr != nil {
+			log.Printf("warning: cleanup OCI runtime resources for %s in stopped state: %v", vmID, cleanupErr)
+		}
 		return nil
 	}
 
@@ -715,21 +770,22 @@ func (m *manager) Kill(ctx context.Context, vmID string) error {
 
 	// Determine target state based on current state.
 	now := time.Now().UTC().Format(time.RFC3339)
+	var transErr error
 	switch state {
 	case types.VMStateRunning:
 		_ = m.TransitionState(vmID, types.VMStateStopping, "force killed")
-		return m.transitionStateWithUpdate(vmID, types.VMStateStopped, "force killed", func(md *types.VMMetadataFile) {
+		transErr = m.transitionStateWithUpdate(vmID, types.VMStateStopped, "force killed", func(md *types.VMMetadataFile) {
 			md.StoppedAt = now
 			md.ProcessPID = 0
 		})
 	case types.VMStateStopping:
-		return m.transitionStateWithUpdate(vmID, types.VMStateStopped, "force killed", func(md *types.VMMetadataFile) {
+		transErr = m.transitionStateWithUpdate(vmID, types.VMStateStopped, "force killed", func(md *types.VMMetadataFile) {
 			md.StoppedAt = now
 			md.ProcessPID = 0
 		})
 	case types.VMStateStarting:
 		// STARTING -> ERROR (cannot go through STOPPING).
-		return m.transitionStateWithUpdate(vmID, types.VMStateError, "force killed during start", func(md *types.VMMetadataFile) {
+		transErr = m.transitionStateWithUpdate(vmID, types.VMStateError, "force killed during start", func(md *types.VMMetadataFile) {
 			md.StoppedAt = now
 			md.ProcessPID = 0
 		})
@@ -738,13 +794,19 @@ func (m *manager) Kill(ctx context.Context, vmID string) error {
 		if m.hyper.IsAlive(vmID) {
 			_ = m.hyper.ForceKill(vmID)
 		}
-		return m.transitionStateWithUpdate(vmID, types.VMStateStopped, "force killed from error state", func(md *types.VMMetadataFile) {
+		transErr = m.transitionStateWithUpdate(vmID, types.VMStateStopped, "force killed from error state", func(md *types.VMMetadataFile) {
 			md.StoppedAt = now
 			md.ProcessPID = 0
 		})
 	default:
 		return fmt.Errorf("%w: cannot kill VM in state %s", types.ErrInvalidTransition, state)
 	}
+
+	if cleanupErr := m.cleanupOCIRuntime(vmID, meta); cleanupErr != nil {
+		log.Printf("warning: cleanup OCI runtime resources for %s during kill: %v", vmID, cleanupErr)
+	}
+
+	return transErr
 }
 
 // Delete removes a VM and all its resources.
@@ -808,9 +870,9 @@ func (m *manager) Delete(ctx context.Context, vmID string, force bool) error {
 	// caller knows about residual artifacts, but don't fail the delete.
 	var warnings []string
 
-	// Unmount OCI runtime overlay mount if present.
-	if unmountErr := m.overlayMgr.UnmountVM(vmID); unmountErr != nil {
-		warnings = append(warnings, fmt.Sprintf("unmount OCI runtime overlay: %v", unmountErr))
+	// Stop rootfs-serving virtiofsd and unmount OCI overlay runtime resources.
+	if cleanupErr := m.cleanupOCIRuntime(vmID, meta); cleanupErr != nil {
+		warnings = append(warnings, fmt.Sprintf("cleanup OCI runtime: %v", cleanupErr))
 	}
 
 	// Unpin reference: remove this VM from the base image's reference list.
@@ -895,6 +957,63 @@ func (m *manager) ensureDeletePreconditions(ctx context.Context, vmID string, fo
 
 	default:
 		// CREATED, STOPPED, etc. — no preconditions needed.
+	}
+	return nil
+}
+
+func (m *manager) cleanupOCIRuntimeByMetadata(vmID string) error {
+	return m.cleanupOCIRuntime(vmID, nil)
+}
+
+func (m *manager) cleanupOCIRuntime(vmID string, meta *types.VMMetadataFile) error {
+	metaExists := meta != nil
+	if !metaExists {
+		loadedMeta, err := m.LoadMetadata(vmID)
+		if err != nil {
+			if !isNotFound(err) {
+				return fmt.Errorf("load metadata for OCI runtime cleanup: %w", err)
+			}
+		} else {
+			meta = loadedMeta
+			metaExists = true
+		}
+	}
+
+	pid := 0
+	socketPath := m.cfg.VMOCIRootfsVirtioFSSocketPath(vmID)
+	expectedProc := (&types.VMMetadataFile{}).VirtiofsdProcessName(m.cfg.VirtiofsdBinary)
+	needsMetadataClear := false
+	if meta != nil {
+		pid = meta.VirtiofsdPID
+		if strings.TrimSpace(meta.VirtiofsdSocket) != "" {
+			socketPath = meta.VirtiofsdSocket
+		}
+		expectedProc = meta.VirtiofsdProcessName(m.cfg.VirtiofsdBinary)
+		needsMetadataClear = meta.VirtiofsdPID > 0 || strings.TrimSpace(meta.VirtiofsdSocket) != "" || meta.OCIOverlayMounted
+	}
+
+	var cleanupErrs []string
+
+	if err := m.virtiofsMgr.Stop(vmID, pid, expectedProc, socketPath); err != nil {
+		cleanupErrs = append(cleanupErrs, fmt.Sprintf("stop virtiofsd: %v", err))
+	}
+
+	if err := m.overlayMgr.UnmountVM(vmID); err != nil {
+		cleanupErrs = append(cleanupErrs, fmt.Sprintf("unmount overlay: %v", err))
+	}
+
+	if metaExists && needsMetadataClear {
+		if err := m.updateMetadata(vmID, func(md *types.VMMetadataFile) {
+			md.VirtiofsdPID = 0
+			md.VirtiofsdSocket = ""
+			md.OCIOverlayMounted = false
+		}); err != nil && !isNotFound(err) {
+			cleanupErrs = append(cleanupErrs, fmt.Sprintf("clear OCI runtime metadata: %v", err))
+		}
+	}
+
+	if len(cleanupErrs) > 0 {
+		return fmt.Errorf("%s", strings.Join(cleanupErrs, "; "))
 	}
 	return nil
 }

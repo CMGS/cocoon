@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/CMGS/cocoon/config"
 	"github.com/CMGS/cocoon/hypervisor"
@@ -1146,6 +1148,218 @@ func TestStart_RefreshesHypervisorBinaryInMetadata(t *testing.T) {
 	}
 	if meta.HypervisorBinary != "new-hypervisor" {
 		t.Fatalf("hypervisor_binary=%q, want %q", meta.HypervisorBinary, "new-hypervisor")
+	}
+}
+
+func TestStart_OCIRuntimeMetadataWiring(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "linux" {
+		t.Skip("OCI runtime virtiofsd lifecycle is Linux-only")
+	}
+	td := setupTestManager(t)
+
+	td.cfg.BootTimeoutSeconds = 0
+
+	v := createTestVM(t, td, &vm.CreateOptions{
+		Image: "docker.io/library/ubuntu:22.04",
+		Name:  "start-oci-runtime-metadata",
+	})
+
+	v.ImageType = types.VMImageTypeOCIVM
+	v.VirtioFSTag = "cocoon-rootfs"
+	v.VirtioFSSock = td.cfg.VMOCIRootfsVirtioFSSocketPath(v.VMID)
+	if err := utils.AtomicWriteJSON(td.cfg.VMConfigPath(v.VMID), v); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+
+	mgrImpl, ok := td.mgr.(*manager)
+	if !ok {
+		t.Fatal("manager implementation type assertion failed")
+	}
+	vfsMgr := newVirtiofsdRuntimeManager(td.cfg)
+	vfsMgr.resolveBinaryFn = func(string) (string, error) { return "/usr/bin/virtiofsd", nil }
+	vfsMgr.launchFn = func(context.Context, string, []string, string) (int, error) { return 7788, nil }
+	vfsMgr.waitReadyFn = func(context.Context, string, int, time.Duration) error { return nil }
+	vfsMgr.stopFn = func(int, string, time.Duration) error { return nil }
+	vfsMgr.removeFn = func(string) error { return nil }
+	mgrImpl.virtiofsMgr = vfsMgr
+
+	td.hyper.LaunchFunc = func(_ context.Context, _ string, _ *types.VMConfig) (int, error) {
+		return 4242, nil
+	}
+	td.hyper.CreateVMFunc = func(_ context.Context, _ string, vmCfg *hypervisor.CHVMConfig) error {
+		if len(vmCfg.Fs) != 1 {
+			t.Fatalf("fs entries = %d, want 1", len(vmCfg.Fs))
+		}
+		return nil
+	}
+	td.hyper.BootVMFunc = func(_ context.Context, _ string) error {
+		return nil
+	}
+
+	if err := td.mgr.Start(t.Context(), v.VMID); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	meta, err := td.mgr.LoadMetadata(v.VMID)
+	if err != nil {
+		t.Fatalf("LoadMetadata: %v", err)
+	}
+	if meta.State != string(types.VMStateRunning) {
+		t.Fatalf("state = %q, want %q", meta.State, types.VMStateRunning)
+	}
+	if meta.VirtiofsdPID != 7788 {
+		t.Fatalf("virtiofsd_pid = %d, want 7788", meta.VirtiofsdPID)
+	}
+	if meta.VirtiofsdSocket != v.VirtioFSSock {
+		t.Fatalf("virtiofsd_socket = %q, want %q", meta.VirtiofsdSocket, v.VirtioFSSock)
+	}
+	if meta.VirtiofsdBinary != "virtiofsd" {
+		t.Fatalf("virtiofsd_binary = %q, want %q", meta.VirtiofsdBinary, "virtiofsd")
+	}
+}
+
+func TestStart_OCIRuntimeCleanupOnBootFailure(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "linux" {
+		t.Skip("OCI runtime virtiofsd lifecycle is Linux-only")
+	}
+	td := setupTestManager(t)
+
+	td.cfg.BootTimeoutSeconds = 0
+
+	v := createTestVM(t, td, &vm.CreateOptions{
+		Image: "docker.io/library/ubuntu:22.04",
+		Name:  "start-oci-runtime-cleanup-failure",
+	})
+
+	v.ImageType = types.VMImageTypeOCIVM
+	v.VirtioFSTag = "cocoon-rootfs"
+	v.VirtioFSSock = td.cfg.VMOCIRootfsVirtioFSSocketPath(v.VMID)
+	if err := utils.AtomicWriteJSON(td.cfg.VMConfigPath(v.VMID), v); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+
+	mgrImpl, ok := td.mgr.(*manager)
+	if !ok {
+		t.Fatal("manager implementation type assertion failed")
+	}
+	stopCalled := false
+	vfsMgr := newVirtiofsdRuntimeManager(td.cfg)
+	vfsMgr.resolveBinaryFn = func(string) (string, error) { return "/usr/bin/virtiofsd", nil }
+	vfsMgr.launchFn = func(context.Context, string, []string, string) (int, error) { return 9900, nil }
+	vfsMgr.waitReadyFn = func(context.Context, string, int, time.Duration) error { return nil }
+	vfsMgr.stopFn = func(pid int, _ string, _ time.Duration) error {
+		stopCalled = true
+		if pid != 9900 {
+			t.Fatalf("stop pid = %d, want 9900", pid)
+		}
+		return nil
+	}
+	vfsMgr.removeFn = func(string) error { return nil }
+	mgrImpl.virtiofsMgr = vfsMgr
+
+	td.hyper.LaunchFunc = func(_ context.Context, _ string, _ *types.VMConfig) (int, error) {
+		return 0, errors.New("launch failed")
+	}
+
+	err := td.mgr.Start(t.Context(), v.VMID)
+	if err == nil {
+		t.Fatal("expected Start error, got nil")
+	}
+	if !strings.Contains(err.Error(), "launch failed") {
+		t.Fatalf("Start error = %v, want launch failure", err)
+	}
+	if !stopCalled {
+		t.Fatal("expected virtiofs stopFn to be called on boot failure")
+	}
+
+	meta, loadErr := td.mgr.LoadMetadata(v.VMID)
+	if loadErr != nil {
+		t.Fatalf("LoadMetadata: %v", loadErr)
+	}
+	if meta.State != string(types.VMStateError) {
+		t.Fatalf("state = %q, want %q", meta.State, types.VMStateError)
+	}
+	if meta.VirtiofsdPID != 0 {
+		t.Fatalf("virtiofsd_pid = %d, want 0", meta.VirtiofsdPID)
+	}
+	if meta.VirtiofsdSocket != "" {
+		t.Fatalf("virtiofsd_socket = %q, want empty", meta.VirtiofsdSocket)
+	}
+}
+
+func TestStop_CleansOCIRuntimeMetadata(t *testing.T) {
+	t.Parallel()
+	td := setupTestManager(t)
+
+	v := createTestVM(t, td, &vm.CreateOptions{
+		Image: "docker.io/library/ubuntu:22.04",
+		Name:  "stop-cleans-oci-runtime",
+	})
+
+	v.ImageType = types.VMImageTypeOCIVM
+	v.VirtioFSTag = "cocoon-rootfs"
+	v.VirtioFSSock = td.cfg.VMOCIRootfsVirtioFSSocketPath(v.VMID)
+	if err := utils.AtomicWriteJSON(td.cfg.VMConfigPath(v.VMID), v); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+
+	if err := td.mgr.UpdateMetadata(v.VMID, func(md *types.VMMetadataFile) {
+		md.State = string(types.VMStateRunning)
+		md.PreviousState = string(types.VMStateCreated)
+		md.ProcessPID = 100
+		md.VirtiofsdPID = 200
+		md.VirtiofsdSocket = v.VirtioFSSock
+		md.VirtiofsdBinary = "virtiofsd"
+		md.OCIOverlayMounted = true
+	}); err != nil {
+		t.Fatalf("UpdateMetadata: %v", err)
+	}
+
+	mgrImpl, ok := td.mgr.(*manager)
+	if !ok {
+		t.Fatal("manager implementation type assertion failed")
+	}
+	stopCalled := false
+	vfsMgr := newVirtiofsdRuntimeManager(td.cfg)
+	vfsMgr.stopFn = func(pid int, expectedProc string, _ time.Duration) error {
+		stopCalled = true
+		if pid != 200 {
+			t.Fatalf("virtiofs stop pid = %d, want 200", pid)
+		}
+		if expectedProc != "virtiofsd" {
+			t.Fatalf("virtiofs expected proc = %q, want virtiofsd", expectedProc)
+		}
+		return nil
+	}
+	vfsMgr.removeFn = func(string) error { return nil }
+	mgrImpl.virtiofsMgr = vfsMgr
+
+	td.hyper.ShutdownFunc = func(context.Context, string, time.Duration) error { return nil }
+
+	if err := td.mgr.Stop(t.Context(), v.VMID, 2*time.Second); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if !stopCalled {
+		t.Fatal("expected virtiofs stopFn to be called")
+	}
+
+	meta, err := td.mgr.LoadMetadata(v.VMID)
+	if err != nil {
+		t.Fatalf("LoadMetadata: %v", err)
+	}
+	if meta.State != string(types.VMStateStopped) {
+		t.Fatalf("state = %q, want %q", meta.State, types.VMStateStopped)
+	}
+	if meta.VirtiofsdPID != 0 {
+		t.Fatalf("virtiofsd_pid = %d, want 0", meta.VirtiofsdPID)
+	}
+	if meta.VirtiofsdSocket != "" {
+		t.Fatalf("virtiofsd_socket = %q, want empty", meta.VirtiofsdSocket)
+	}
+	if meta.OCIOverlayMounted {
+		t.Fatal("oci_overlay_mounted = true, want false")
 	}
 }
 
