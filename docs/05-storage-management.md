@@ -3,7 +3,7 @@
 **Version**: 1.0
 **Status**: Implemented
 **Phase**: Phase 1
-**Last Updated**: 2026-02-18
+**Last Updated**: 2026-02-19
 
 ## Overview
 
@@ -29,7 +29,9 @@ Lock file paths are additionally documented in [06-concurrency.md](./06-concurre
 │   ├── oci-build-txn.lock                # flock for OCI cross-index txn serialization
 │   ├── oci-build-tags.lock               # flock for OCI build tag index updates
 │   ├── oci-layer-refs.json               # Blob digest → [manifest digests] reference tracking (GC)
-│   └── oci-layer-refs.lock               # flock for oci-layer-refs.json updates
+│   ├── oci-layer-refs.lock               # flock for oci-layer-refs.json updates
+│   ├── oci-runtime-refs.json             # OCI runtime cache pin index: runtimeKey -> [vm-id]
+│   └── oci-runtime-refs.lock             # flock for oci-runtime-refs.json updates
 ├── cache/
 │   ├── images/                           # Base qcow2 images (content-addressed)
 │   │   ├── {checksum_16}_{arch}.qcow2    # e.g., a1b2c3d4e5f6a7b8_amd64.qcow2
@@ -41,10 +43,15 @@ Lock file paths are additionally documented in [06-concurrency.md](./06-concurre
 │   │   └── {checksum_16}_{arch}.lock     # Per-image conversion lock
 │   └── oci/                              # OCI VM image build cache (shared blob store)
 │       ├── blobs/sha256/{hex}            # Shared content-addressed blob store
-│       └── layouts/{sha256-hex}/             # OCI layouts (keyed by full tag+manifest hash, blobs are hardlinks)
-│           ├── oci-layout
-│           ├── index.json
-│           └── blobs/sha256/{hex}        # Hardlinks to ../../blobs/sha256/{hex}
+│       ├── layouts/{sha256-hex}/         # OCI layouts (keyed by full tag+manifest hash, blobs are hardlinks)
+│       │   ├── oci-layout
+│       │   ├── index.json
+│       │   └── blobs/sha256/{hex}        # Hardlinks to ../../blobs/sha256/{hex}
+│       └── runtime/{runtimeKey}/         # Materialized OCI runtime cache entry
+│           ├── rootfs/                   # Flattened rootfs lowerdir for OverlayFS
+│           └── kernel/
+│               ├── vmlinuz
+│               └── initrd.img
 ├── buildah/                              # Buildah storage root
 ├── vms/
 │   ├── {vm-id}/                          # e.g., vm-01HXYZ.../
@@ -104,19 +111,16 @@ Phase 2 Planned Paths:
 │   │           ├── index.json
 │   │           └── blobs/sha256/{hex}          # Hardlinks to shared blob store
 │   │
-│   ├── OCI VM Image Pull Cache (docs/04.1-oci-vm-images.md) — Phase 2 Planned
+│   ├── OCI VM Runtime Cache (docs/04.1-oci-vm-images.md) — Implemented
 │   │   └── cache/oci/
-│   │       └── {manifest-digest}/              # Per-image extracted artifacts
-│   │           ├── manifest.json               # OCI manifest
-│   │           ├── config.json                 # OCI VM config blob (kernel cmdline, etc.)
-│   │           ├── vmlinuz                     # Extracted kernel (payload.kernel)
-│   │           ├── initrd.img                  # Extracted initrd (payload.initramfs)
-│   │           ├── rootfs/                     # Rootfs layer (extracted dir tree, read-only)
-│   │           ├── custom-1/                   # First customization layer (read-only, if present)
-│   │           └── custom-N/                   # Nth customization layer (read-only, if present)
+│   │       └── runtime/{runtimeKey}/           # Per-manifest materialized runtime artifacts
+│   │           ├── rootfs/                     # Runtime lowerdir served through OverlayFS
+│   │           └── kernel/
+│   │               ├── vmlinuz                 # payload.kernel
+│   │               └── initrd.img              # payload.initramfs
 │   │   └── db/
-│   │       ├── oci-references.json             # manifest-digest -> [vm-id] ref tracking
-│   │       └── oci-references.lock             # flock for oci-references.json updates
+│   │       ├── oci-runtime-refs.json           # runtimeKey -> [vm-id] pin tracking
+│   │       └── oci-runtime-refs.lock           # flock for oci-runtime-refs.json updates
 │   │
 │   ├── Per-VM OCI Rootfs State (docs/04.1-oci-vm-images.md)
 │   │   └── vms/{vm-id}/
@@ -187,8 +191,8 @@ Path notes:
 - **OCI build cache** uses a shared blob store (`cache/oci/blobs/sha256/`) with
   hardlink-based deduplication across OCI layouts (`cache/oci/layouts/`).
   Blob reference counts are tracked in `db/oci-layer-refs.json`.
-- **OCI pull cache** (Phase 2 planned) directories are keyed by manifest digest
-  (content-addressable) and shared across all VMs created from the same OCI image.
+- **OCI runtime cache** directories live under `cache/oci/runtime/{runtimeKey}` and
+  are shared across all VMs created from the same OCI manifest.
 - **Network namespace** files under `/run/cocoon/` are lost on reboot; the Start()
   flow transparently recreates them when needed (see docs/16 Section 2.4).
 
@@ -241,6 +245,11 @@ Other documents MUST reference these definitions rather than re-defining fields.
 | `state` | string | `"RUNNING"` | Current VM state |
 | `previous_state` | string | `"STARTING"` | State before last transition |
 | `process_pid` | int | `12345` | CH process PID (0 if not running) |
+| `hypervisor_binary` | string | `"cloud-hypervisor"` | Basename of hypervisor process used for liveness checks |
+| `virtiofsd_pid` | int | `45678` | Rootfs virtiofsd PID (OCI runtime VMs only; omitted when not running) |
+| `virtiofsd_socket` | string | `"/run/cocoon/vms/{vm_id}/virtiofsd.sock"` | Rootfs-serving virtiofsd socket path (OCI runtime VMs only) |
+| `virtiofsd_binary` | string | `"virtiofsd"` | Basename of virtiofsd process used for liveness checks |
+| `oci_overlay_mounted` | bool | `true` | Whether the per-VM OCI OverlayFS mount is currently active |
 | `boot_time` | string | `"2.3s"` | Duration string |
 | `last_boot_mode` | string | `"uefi"` | Actual boot mode used (`"uefi"` / `"direct"`) |
 | `last_firmware_path` | string | `"/var/lib/cocoon/firmware/CLOUDHV.fd"` | Actual firmware used (empty for direct kernel boot) |
@@ -353,6 +362,7 @@ type CocoonConfig struct {
 
     // Binaries and firmware
     CHBinary         string `json:"ch_binary"`           // Cloud Hypervisor binary
+    VirtiofsdBinary  string `json:"virtiofsd_binary"`    // virtiofsd binary (OCI runtime path)
     UEFIFirmwarePath string `json:"uefi_firmware_path"`  // UEFI firmware path
     BuildahRoot      string `json:"buildah_root"`        // Buildah storage root
 
@@ -392,16 +402,14 @@ func (c *CocoonConfig) OCILayerRefsLock() string   // RootDir/db/oci-layer-refs.
 
 // EnsureDirs creates all required directories (db, cache/images,
 // cache/manifests, cache/locks, cache/oci/blobs/sha256, cache/oci/layouts,
-// vms, temp, firmware, buildah, RuntimeDir/vms, LogDir).
+// cache/oci/runtime, vms, temp, firmware, buildah, RuntimeDir/vms, LogDir).
 func (c *CocoonConfig) EnsureDirs() error { ... }
 ```
 
-#### Phase 2 Planned Path Helpers
+#### Phase 2 Path Helpers
 
-The following path helpers are planned for Phase 2 features. They are not yet
-implemented but are documented here to reserve the namespace and ensure
-consistency across design documents. See the Phase 2 tree diagram above for
-the full directory layout.
+The following path helpers are used by implemented and planned Phase 2
+features. See the Phase 2 tree diagram above for the full directory layout.
 
 ```go
 // Phase 2 — Warm Start (docs/15-warm-start.md)
@@ -422,7 +430,13 @@ func (c *CocoonConfig) OCILayerRefsFile() string                    // RootDir/d
 func (c *CocoonConfig) OCILayerRefsLock() string                    // RootDir/db/oci-layer-refs.lock
 
 // OCI VM Boot (docs/04.1-oci-vm-images.md) — Implemented
-func (c *CocoonConfig) OCICacheEntry(digest string) string                // RootDir/cache/oci/{digest}
+func (c *CocoonConfig) OCIRuntimeCacheDir() string                        // RootDir/cache/oci/runtime
+func (c *CocoonConfig) OCIRuntimeEntryDir(runtimeKey string) string       // RootDir/cache/oci/runtime/{runtimeKey}
+func (c *CocoonConfig) OCIRuntimeRootfsDir(runtimeKey string) string      // RootDir/cache/oci/runtime/{runtimeKey}/rootfs
+func (c *CocoonConfig) OCIRuntimeKernelPath(runtimeKey string) string     // RootDir/cache/oci/runtime/{runtimeKey}/kernel/vmlinuz
+func (c *CocoonConfig) OCIRuntimeInitrdPath(runtimeKey string) string     // RootDir/cache/oci/runtime/{runtimeKey}/kernel/initrd.img
+func (c *CocoonConfig) OCIRuntimeRefsFile() string                        // RootDir/db/oci-runtime-refs.json
+func (c *CocoonConfig) OCIRuntimeRefsLock() string                        // RootDir/db/oci-runtime-refs.lock
 func (c *CocoonConfig) VMOCIUpperDir(vmID string) string                  // RootDir/vms/{vmID}/upper
 func (c *CocoonConfig) VMOCIWorkDir(vmID string) string                   // RootDir/vms/{vmID}/work
 func (c *CocoonConfig) VMOCIMergedDir(vmID string) string                 // RootDir/vms/{vmID}/merged
@@ -440,7 +454,7 @@ func (c *CocoonConfig) SharesDir() string                            // RootDir/
 ```
 
 `EnsureDirs()` already creates `RootDir/cache/oci/blobs/sha256` and
-`RootDir/cache/oci/layouts` at startup. It will be extended to create
+`RootDir/cache/oci/layouts` and `RootDir/cache/oci/runtime` at startup. It will be extended to create
 `RootDir/checkpoints` and `RootDir/shares` at startup. `RootDir/dnsmasq`
 is created when the first networked VM is provisioned. Per-VM directories
 (`checkpoints/{ckptID}`, `vms/{vmID}/upper`, `vms/{vmID}/work`,
@@ -743,6 +757,11 @@ func (gc *fileGarbageCollector) CollectOrphanedOCIManifestRefs() ([]string, erro
 // Lock: gc.lock (L1) -> oci-layer-refs.lock for atomic check-and-delete.
 func (gc *fileGarbageCollector) CollectUnreferencedOCIBlobs() ([]string, error) { ... }
 
+// CollectUnreferencedOCIRuntimeCaches removes runtime cache entries in
+// cache/oci/runtime/ that have no VM pins in oci-runtime-refs.json.
+// Lock: gc.lock (L1) -> oci-runtime-refs.lock.
+func (gc *fileGarbageCollector) CollectUnreferencedOCIRuntimeCaches() ([]string, error) { ... }
+
 // CollectStaleConversionLocks removes stale conversion lock files from
 // cache/locks/ where the corresponding base image no longer exists and
 // the lock is not currently held.
@@ -766,6 +785,7 @@ func (gc *fileGarbageCollector) FullGC() error {
     gc.CollectStaleOCITags()
     gc.CollectOrphanedOCIManifestRefs()
     gc.CollectUnreferencedOCIBlobs()
+    gc.CollectUnreferencedOCIRuntimeCaches()
     gc.CollectStaleConversionLocks(lockMaxAge)
     gc.CollectTempFiles(tempMaxAge)
     return nil
@@ -782,7 +802,12 @@ GC operations must coordinate with concurrent VM create/delete operations. See [
 - Lock ordering to prevent deadlocks with VM operations
 - Crash recovery and lock auto-release
 
-**OCI lock note**: `oci-layer-refs.lock` is a Level 2 lock, at the same level as `references.lock`. These two locks protect different files and are never held simultaneously. During OCI GC phases, the lock acquisition order is: `gc.lock` (L1) -> `oci-build-txn.lock` -> `oci-build-tags.lock` / `oci-layer-refs.lock` (L2), which respects the hierarchy.
+**OCI lock note**: `oci-layer-refs.lock` and `oci-runtime-refs.lock` are Level 2 locks (same level as `references.lock`). During OCI GC phases, lock acquisition order is:
+
+- Build/index phases: `gc.lock` (L1) -> `oci-build-txn.lock` -> `oci-build-tags.lock` -> `oci-layer-refs.lock`
+- Runtime cache phase: `gc.lock` (L1) -> `oci-runtime-refs.lock`
+
+The runtime-refs lock is intentionally disjoint from tag/layer-refs locks to avoid deadlocks.
 
 **Key guarantee**: GC cannot delete a base image while any VM references it, even under high concurrency or process crashes.
 
@@ -846,7 +871,17 @@ Blobs in `cache/oci/blobs/sha256/` with zero manifest references in `oci-layer-r
 
 **Locking**: GC lock (L1) followed by `oci-layer-refs.lock` for atomic check-and-delete.
 
-#### 7. Stale Conversion Locks
+#### 7. Unreferenced OCI Runtime Caches
+
+Runtime cache directories under `cache/oci/runtime/` with no active VM pins in `oci-runtime-refs.json`.
+
+**Detection:** Runtime directory exists but either has no entry in `oci-runtime-refs.json` or has an entry with an empty `refs` array.
+
+**Action:** Remove the runtime cache directory and prune stale zero-ref entries from `oci-runtime-refs.json`.
+
+**Locking**: GC lock (L1) followed by `oci-runtime-refs.lock`.
+
+#### 8. Stale Conversion Locks
 
 Lock files in `cache/locks/` left behind after image deletion. These are best-effort hygiene to clean lock files that are no longer needed.
 
@@ -856,7 +891,7 @@ Lock files in `cache/locks/` left behind after image deletion. These are best-ef
 
 **Locking**: GC lock (L1) only. Active lock files are preserved.
 
-#### 8. Temporary Entries
+#### 9. Temporary Entries
 
 Files/directories in the `/var/lib/cocoon/temp/` directory older than a threshold (default: 1 hour).
 
@@ -872,6 +907,7 @@ OCI resources use a 5-minute defense-in-depth grace period to prevent races with
 
 - OCI layouts (Phase 3)
 - OCI blobs (Phase 5, 6)
+- OCI runtime cache entries (Phase 7)
 
 Temp entries use a 1-hour max age (hardcoded in `FullGC()`).
 

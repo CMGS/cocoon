@@ -16,6 +16,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 
 	cflock "github.com/CMGS/cocoon/lock/flock"
+	"github.com/CMGS/cocoon/utils"
 )
 
 const registryHTTPTimeout = 30 * time.Second
@@ -119,13 +120,8 @@ func Login(ctx context.Context, registry, username, password string) error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	tmpFile := configPath + ".tmp"
-	if err := os.WriteFile(tmpFile, append(data, '\n'), 0o600); err != nil {
+	if err := utils.AtomicWriteFile(configPath, append(data, '\n'), 0o600); err != nil {
 		return fmt.Errorf("write config: %w", err)
-	}
-	if err := os.Rename(tmpFile, configPath); err != nil {
-		os.Remove(tmpFile) //nolint:errcheck,gosec // G104: best-effort cleanup
-		return fmt.Errorf("rename config: %w", err)
 	}
 
 	return nil

@@ -216,6 +216,7 @@ gh api repos/CMGS/cocoon/pulls/<PR_NUMBER>/reviews --input /tmp/pr-inline.json
 - **Inline comments**: use for concrete code findings -- bugs, style issues,
   security concerns, suggestions. Prefix with severity:
   - `bug:` for correctness issues
+  - `security:` for vulnerabilities, unsafe defaults, or exploit paths
   - `nit:` for style / cosmetic
   - `suggestion:` for non-blocking improvements
   - `question:` for clarification requests

@@ -26,6 +26,7 @@ type RuntimeRefsIndex struct {
 // AddRuntimeRef pins vmID to a runtimeKey.
 // Idempotent: adding the same vmID twice does not duplicate refs.
 func AddRuntimeRef(cfg *config.CocoonConfig, runtimeKey, vmID string) error {
+	runtimeKey = strings.TrimSpace(runtimeKey)
 	if err := validateRuntimeKey(runtimeKey); err != nil {
 		return err
 	}
@@ -54,6 +55,7 @@ func AddRuntimeRef(cfg *config.CocoonConfig, runtimeKey, vmID string) error {
 // RemoveRuntimeRef unpins vmID from runtimeKey.
 // If the last ref is removed the runtimeKey entry is deleted.
 func RemoveRuntimeRef(cfg *config.CocoonConfig, runtimeKey, vmID string) error {
+	runtimeKey = strings.TrimSpace(runtimeKey)
 	if err := validateRuntimeKey(runtimeKey); err != nil {
 		return err
 	}
@@ -88,6 +90,7 @@ func RemoveRuntimeRef(cfg *config.CocoonConfig, runtimeKey, vmID string) error {
 
 // GetRuntimeRefs returns VM IDs currently pinning runtimeKey.
 func GetRuntimeRefs(cfg *config.CocoonConfig, runtimeKey string) ([]string, error) {
+	runtimeKey = strings.TrimSpace(runtimeKey)
 	if err := validateRuntimeKey(runtimeKey); err != nil {
 		return nil, err
 	}

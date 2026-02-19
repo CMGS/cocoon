@@ -15,6 +15,17 @@ import (
 // ociGCGracePeriod is an alias for the canonical constant in the storage package.
 const ociGCGracePeriod = storage.OCIGCGracePeriod
 
+// OCI GC lock hierarchy (must remain consistent with docs/06-concurrency.md):
+// 1. gc.lock (L1) is always outermost for all GC phases.
+// 2. Build/index phases then acquire:
+//   - oci-build-txn.lock
+//   - oci-build-tags.lock
+//   - oci-layer-refs.lock
+// 3. Runtime cache phases acquire:
+//   - oci-runtime-refs.lock
+// Never acquire oci-runtime-refs.lock while holding oci-build-tags.lock or
+// oci-layer-refs.lock.
+
 // CollectOrphanedOCILayouts removes OCI layout directories in cache/oci/layouts/
 // that are not referenced by any tag in oci-build-tags.json.
 //
