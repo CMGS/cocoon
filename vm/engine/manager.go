@@ -46,6 +46,7 @@ type manager struct {
 	refCounter storage.ReferenceCounter
 	cowMgr     storage.COWManager
 	imgMgr     image.Manager
+	overlayMgr *overlayRuntimeManager
 }
 
 // New creates a new VM manager backed by the given configuration and dependencies.
@@ -62,6 +63,7 @@ func New(
 		refCounter: refCounter,
 		cowMgr:     cowMgr,
 		imgMgr:     imgMgr,
+		overlayMgr: newOverlayRuntimeManager(cfg),
 	}
 }
 
@@ -667,6 +669,10 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 		return err
 	}
 
+	if unmountErr := m.overlayMgr.UnmountVM(vmID); unmountErr != nil {
+		log.Printf("warning: unmount OCI runtime overlay for %s during stop: %v", vmID, unmountErr)
+	}
+
 	return nil
 }
 
@@ -801,6 +807,11 @@ func (m *manager) Delete(ctx context.Context, vmID string, force bool) error {
 	// Best-effort cleanup: collect warnings for non-fatal failures so the
 	// caller knows about residual artifacts, but don't fail the delete.
 	var warnings []string
+
+	// Unmount OCI runtime overlay mount if present.
+	if unmountErr := m.overlayMgr.UnmountVM(vmID); unmountErr != nil {
+		warnings = append(warnings, fmt.Sprintf("unmount OCI runtime overlay: %v", unmountErr))
+	}
 
 	// Unpin reference: remove this VM from the base image's reference list.
 	if cfgErr == nil && vmCfg.BaseKey != "" {

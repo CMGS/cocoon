@@ -275,6 +275,27 @@ func (c *CocoonConfig) VMCHLogPath(vmID string) string {
 	return filepath.Join(c.LogDir, vmID+"-ch.log")
 }
 
+// VMOCIUpperDir returns the per-VM OverlayFS upper directory path.
+func (c *CocoonConfig) VMOCIUpperDir(vmID string) string {
+	return filepath.Join(c.RootDir, "vms", vmID, "upper")
+}
+
+// VMOCIWorkDir returns the per-VM OverlayFS work directory path.
+func (c *CocoonConfig) VMOCIWorkDir(vmID string) string {
+	return filepath.Join(c.RootDir, "vms", vmID, "work")
+}
+
+// VMOCIMergedDir returns the per-VM OverlayFS merged mount path.
+func (c *CocoonConfig) VMOCIMergedDir(vmID string) string {
+	return filepath.Join(c.RootDir, "vms", vmID, "merged")
+}
+
+// VMOCIRootfsVirtioFSSocketPath returns the rootfs-serving virtiofsd socket
+// path for OCI runtime VMs.
+func (c *CocoonConfig) VMOCIRootfsVirtioFSSocketPath(vmID string) string {
+	return filepath.Join(c.RootDir, "vms", vmID, "virtiofsd.sock")
+}
+
 // BaseImagePath returns the path to a cached base image.
 // The baseKey MUST have been validated via types.ParseBaseKey before calling.
 func (c *CocoonConfig) BaseImagePath(baseKey string) string {
