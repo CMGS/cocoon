@@ -22,8 +22,6 @@ type overlayRuntimeManager struct {
 	readMountInfoFn overlayMountInfoReader
 }
 
-var mkdirAll = os.MkdirAll
-
 func newOverlayRuntimeManager(cfg *config.CocoonConfig) *overlayRuntimeManager {
 	return &overlayRuntimeManager{
 		cfg:             cfg,
@@ -69,7 +67,7 @@ func (m *overlayRuntimeManager) MountVM(vmID string, lowerDirs []string) error {
 		return nil
 	}
 
-	if err := m.mountFn("overlay", m.cfg.VMOCIMergedDir(vmID), "overlay", 0, data); err != nil {
+	if err := m.mountFn("overlay", m.cfg.VMOCIMergedDir(vmID), "overlay", overlayMountFlags(), data); err != nil {
 		return fmt.Errorf("mount overlay for %s: %w", vmID, err)
 	}
 	return nil
@@ -142,7 +140,7 @@ func buildOverlayMountData(lowerDirs []string, upperDir, workDir string) (string
 }
 
 func ensureOverlayDir(path string) error {
-	if err := mkdirAll(path, 0o755); err != nil { //nolint:gosec // directories are VM runtime state
+	if err := os.MkdirAll(path, 0o755); err != nil { //nolint:gosec // directories are VM runtime state
 		return fmt.Errorf("create overlay directory %s: %w", path, err)
 	}
 	return nil

@@ -82,12 +82,14 @@ func TestOverlayRuntimeMountVMInvokesMount(t *testing.T) {
 
 	mountedCalled := false
 	var gotTarget, gotData string
+	var gotFlags uintptr
 	om := &overlayRuntimeManager{
 		cfg: cfg,
 		mountFn: func(source, target, fstype string, flags uintptr, data string) error {
 			mountedCalled = true
 			gotTarget = target
 			gotData = data
+			gotFlags = flags
 			return nil
 		},
 		unmountFn: overlayUnmount,
@@ -108,6 +110,9 @@ func TestOverlayRuntimeMountVMInvokesMount(t *testing.T) {
 	}
 	if !strings.Contains(gotData, "lowerdir=/cache/rootfs:/cache/custom") {
 		t.Fatalf("mount data = %q, expected lowerdir list", gotData)
+	}
+	if gotFlags != overlayMountFlags() {
+		t.Fatalf("mount flags = %d, want %d", gotFlags, overlayMountFlags())
 	}
 }
 

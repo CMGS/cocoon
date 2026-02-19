@@ -18,6 +18,10 @@ func overlayReadMountInfo() ([]byte, error) {
 	return nil, nil
 }
 
+func overlayMountFlags() uintptr {
+	return 0
+}
+
 func overlayUnmountFlags() int {
 	return 0
 }
