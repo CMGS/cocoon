@@ -1308,69 +1308,14 @@ func defaultBuildTagSource(source string) string {
 	return last
 }
 
-func ensureLatestTag(tag string) string {
-	tag = strings.TrimSpace(tag)
-	if tag == "" {
-		return ""
-	}
-	if strings.Contains(tag, "@sha256:") {
-		return tag
-	}
-	last := tag
-	if idx := strings.LastIndex(tag, "/"); idx >= 0 {
-		last = tag[idx+1:]
-	}
-	if strings.Contains(last, ":") {
-		return tag
-	}
-	return tag + ":latest"
-}
+// ensureLatestTag delegates to oci.EnsureLatestTag.
+var ensureLatestTag = oci.EnsureLatestTag
 
-func hasExplicitTagOrDigest(ref string) bool {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		return false
-	}
-	if strings.Contains(ref, "@sha256:") {
-		return true
-	}
-	last := ref
-	if idx := strings.LastIndex(ref, "/"); idx >= 0 {
-		last = ref[idx+1:]
-	}
-	return strings.Contains(last, ":")
-}
+// hasExplicitTagOrDigest delegates to oci.HasExplicitTagOrDigest.
+var hasExplicitTagOrDigest = oci.HasExplicitTagOrDigest
 
-func resolveLocalOCITagRef(store *oci.Store, ref string) (string, bool, error) {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		return "", false, nil
-	}
-
-	exists, err := store.HasTag(ref)
-	if err != nil {
-		return "", false, err
-	}
-	if exists {
-		return ref, true, nil
-	}
-
-	if hasExplicitTagOrDigest(ref) {
-		return "", false, nil
-	}
-	latest := ensureLatestTag(ref)
-	if latest == ref {
-		return "", false, nil
-	}
-	exists, err = store.HasTag(latest)
-	if err != nil {
-		return "", false, err
-	}
-	if exists {
-		return latest, true, nil
-	}
-	return "", false, nil
-}
+// resolveLocalOCITagRef delegates to oci.ResolveLocalTagRef.
+var resolveLocalOCITagRef = oci.ResolveLocalTagRef
 
 func imageBuildAction(c *cli.Context) error {
 	app, err := initApp(c)

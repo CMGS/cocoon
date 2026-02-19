@@ -660,8 +660,9 @@ func readPartUUID(ctx context.Context, imagePath, tmpDir string) (string, error)
 	if root == "" {
 		return "", fmt.Errorf("guestfish inspect-os returned no root device")
 	}
-	// If multiple roots, take the first line.
+	// If multiple roots, take the first line (primary OS).
 	if idx := strings.IndexByte(root, '\n'); idx >= 0 {
+		log.Printf("guestfish inspect-os returned multiple roots; using first: %s", root[:idx])
 		root = root[:idx]
 	}
 

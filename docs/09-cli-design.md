@@ -72,7 +72,7 @@ cocoon/
 │   ├── console.go            # cocoon console (interactive PTY relay)
 │   ├── console_linux.go      # Linux-specific SIGWINCH + ioctl
 │   ├── console_darwin.go     # Darwin stub (SIGWINCH no-op)
-│   ├── images.go             # cocoon image (list/pull/build/push/login/inspect/remove/verify)
+│   ├── images.go             # cocoon image (list/pull/build/push/login/inspect/tag/remove/verify)
 │   ├── gc.go                 # cocoon gc
 │   ├── firmware.go           # cocoon firmware (list/verify/install/update)
 │   ├── doctor.go             # cocoon doctor (deps + reconciliation)
