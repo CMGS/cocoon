@@ -17,7 +17,7 @@
 
 2. **Bootable OCI Images** (Custom-built):
    - **Phase 1**: OCI→qcow2 conversion with **strict bootability validation**
-   - **Phase 2 (implemented scope)**: resolver-driven OCI VM direct runtime (`payload.kernel` + `fs[]`) for local OCI tags
+   - **Phase 2 (implemented scope)**: resolver-driven OCI VM direct runtime (`payload.kernel` + `fs[]`) with registry auto-pull before runtime materialization
    - Must contain: kernel, initrd, init system (systemd)
    - Bootloader requirement applies to the OCI→qcow2 conversion path; direct OCI runtime path does not require bootloader-on-disk
    - **Non-bootable OCI images will fail with clear error**
@@ -36,7 +36,7 @@ See [00-overview.md § Supported Image Contract](./00-overview.md#️-supported-
 
 This document defines the command-line interface for Cocoon, a lightweight VM management tool built on Cloud Hypervisor. The CLI follows Docker-like patterns for familiarity while exposing VM-specific capabilities like UEFI/Direct kernel boot modes, resource allocation, and lifecycle management.
 
-The design integrates the [Boot Contract](./01-boot-contract.md) decisions, including UEFI boot for cloud images, resolver-driven OCI direct runtime for local OCI tags, serial console I/O, and graceful shutdown semantics. It also leverages the [storage management](./05-storage-management.md) system for efficient copy-on-write disk handling.
+The design integrates the [Boot Contract](./01-boot-contract.md) decisions, including UEFI boot for cloud images, resolver-driven OCI direct runtime (local tag + registry auto-pull paths), serial console I/O, and graceful shutdown semantics. It also leverages the [storage management](./05-storage-management.md) system for efficient copy-on-write disk handling.
 
 ## Table of Contents
 
@@ -121,10 +121,11 @@ cocoon/
 │   ├── build_linux.go        # Build pipeline: extract kernel/rootfs, assemble OCI layout
 │   ├── build_darwin.go       # Stub: returns "Linux only" error
 │   ├── push.go               # Push OCI layout to registry via go-containerregistry
+│   ├── pull.go               # Pull OCI VM image from registry into local OCI store
 │   ├── login.go              # Registry login, credential storage (~/.cocoon/config.json)
 │   ├── layout.go             # InspectLayout: parse OCI layout metadata
 │   ├── store.go              # Tag index: local build tag → OCI layout mapping
-│   ├── store_linux.go        # Linux-specific store operations (manifest ref cleanup)
+│   ├── layout_register.go    # Shared txn-locked layout registration helpers (build + pull)
 │   ├── blobstore.go          # Shared content-addressed blob store (cache/oci/blobs/)
 │   ├── layerrefs.go          # Blob-to-manifest reference tracking for GC
 │   ├── build_context.go      # Build context sidecar for FROM resolution and layer reuse
@@ -696,7 +697,7 @@ cocoon run ubuntu-22.04-cloudimg --name myvm --cpus 4 --memory 4G
 # Run VM with auto-remove on stop
 cocoon run --rm ubuntu-22.04-cloudimg --name temp-vm
 
-# Run an OCI VM image from local OCI tag store (direct kernel + virtiofs path)
+# Run an OCI VM image (local tag or registry ref; resolver auto-pulls when needed)
 cocoon run myorg/ubuntu-vm:22.04 --name my-oci-vm
 
 # Run with TPM 2.0 emulation enabled
@@ -1307,7 +1308,8 @@ func imagesCommand() *cli.Command {
 | -------------------------------------- | ------------- | --------------------------------------------------------------- |
 | `/path/to/*.qcow2` or `/path/to/*.img` | `qcow2`       | Validate file, copy/link to cache                               |
 | `https://...` or `http://...`          | `url`         | Download, validate, cache                                       |
-| `registry/repo:tag` or `repo:tag`      | `oci`         | Pull via Buildah, convert to qcow2, validate bootability, cache |
+| `registry/repo:tag` or `repo:tag`      | `oci-vm`      | If manifest matches Cocoon OCI VM media types: pull via `oci.Pull()` into local OCI store |
+| `registry/repo:tag` or `repo:tag`      | `oci`         | Otherwise: pull via Buildah, convert to qcow2, validate bootability, cache |
 
 > **Registry media-type probing**: When the runtime resolver needs to distinguish
 > Cocoon OCI VM images from standard container images at a registry ref, it uses
@@ -2178,7 +2180,7 @@ This CLI design implements the Boot Contract specification:
 
 | Boot Contract Section      | CLI Implementation                                                                                                                        |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| §1 Boot Path Decision      | UEFI boot for non-OCI refs + resolver-driven OCI direct runtime for local OCI tags; hidden `--oci` remains debug-only                     |
+| §1 Boot Path Decision      | UEFI boot for non-OCI refs + resolver-driven OCI direct runtime (local tags + registry auto-pull); hidden `--oci` remains debug-only      |
 | §2 Guest Init Model        | Guest initialization is the user's responsibility; DHCP-based network config planned for Phase 2 ([16-networking.md](./16-networking.md)) |
 | §3 I/O Mechanisms          | Serial console via `--serial file=...` (CH flag), `cocoon logs` command                                                                   |
 | §4 Lifecycle Semantics     | `run`, `stop`, `delete`, `kill` commands                                                                                                  |

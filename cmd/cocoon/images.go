@@ -217,7 +217,9 @@ func imagePullAction(c *cli.Context) error {
 
 	ref := c.Args().Get(0)
 
-	// Detect if this is an OCI VM image by probing the registry manifest.
+	// Detect if this ref should use the OCI VM pull pipeline.
+	// This includes local OCI tags (for repull/update) and remote refs that
+	// probe as Cocoon VM manifests.
 	if isOCIVMRegistryRef(c, app, ref) {
 		return pullOCIVMImage(c, app, ref)
 	}
@@ -254,8 +256,10 @@ func imagePullAction(c *cli.Context) error {
 	return nil
 }
 
-// isOCIVMRegistryRef checks whether ref is a remote OCI VM registry reference.
-// Returns false for URLs, local paths, and refs already in the local OCI store.
+// isOCIVMRegistryRef checks whether ref should use the OCI VM pull path.
+// Returns false for URLs/local paths. Returns true for refs already present as
+// local OCI tags (to support repull/update semantics) or refs that probe as
+// Cocoon VM images on a remote registry.
 func isOCIVMRegistryRef(c *cli.Context, app *appContext, ref string) bool {
 	// Skip URLs.
 	if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
@@ -268,18 +272,24 @@ func isOCIVMRegistryRef(c *cli.Context, app *appContext, ref string) bool {
 	if _, err := os.Stat(ref); err == nil {
 		return false
 	}
-	// Skip refs already in local OCI store.
+
+	// Local OCI tags should still route through oci.Pull so `image pull` can
+	// refresh/update the tag from registry instead of falling back to cloud path.
 	store := oci.NewStore(app.cfg)
-	if _, exists, err := resolveLocalOCITagRef(store, ref); err == nil && exists {
+	_, exists, err := resolveLocalOCITagRef(store, ref)
+	if err != nil {
 		return false
 	}
+	if exists {
+		return true
+	}
+
 	// Probe the registry for Cocoon VM media types.
 	return oci.ProbeRegistryVMImage(c.Context, app.cfg, ref)
 }
 
 // pullOCIVMImage pulls an OCI VM image from a remote registry into the local store.
 func pullOCIVMImage(c *cli.Context, app *appContext, ref string) error {
-	ref = ensureLatestTag(ref)
 	result, err := oci.Pull(c.Context, app.cfg, ref)
 	if err != nil {
 		return fmt.Errorf("pull OCI VM image %q: %w", ref, err)

@@ -202,23 +202,31 @@ func detectRegistryVMImageType(ctx context.Context, ref string, registryProbe re
 }
 
 func isCocoonVMManifest(manifest registryProbeManifest) bool {
-	if manifest.ArtifactType == oci.ArtifactTypeVMImage {
-		return true
+	if manifest.Config.MediaType != oci.MediaTypeVMConfig {
+		return false
 	}
-	if manifest.Config.MediaType == oci.MediaTypeVMConfig {
-		return true
+	if manifest.ArtifactType != "" && manifest.ArtifactType != oci.ArtifactTypeVMImage {
+		return false
 	}
+
+	kernelCount := 0
 	hasKernel := false
 	hasRootfs := false
-	for _, layer := range manifest.Layers {
+	for idx, layer := range manifest.Layers {
 		switch layer.MediaType {
 		case oci.MediaTypeKernelLayer:
+			if idx != 0 {
+				return false
+			}
+			kernelCount++
 			hasKernel = true
 		case oci.MediaTypeRootfsLayer:
 			hasRootfs = true
+		default:
+			return false
 		}
 	}
-	return hasKernel && hasRootfs
+	return kernelCount == 1 && hasKernel && hasRootfs
 }
 
 func hostOCIArch() string {
