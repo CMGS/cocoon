@@ -896,39 +896,7 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 
 	// If already stopping, wait for it to finish.
 	if state == types.VMStateStopping {
-		deadline := time.Now().Add(timeout)
-		for time.Now().Before(deadline) {
-			// Re-load metadata each iteration to pick up PID or state
-			// changes made by other processes (e.g., reconciliation).
-			freshMeta, reloadErr := m.LoadMetadata(vmID)
-			if reloadErr != nil {
-				return fmt.Errorf("reload metadata while waiting for stop: %w", reloadErr)
-			}
-			// If another process already transitioned us out of STOPPING, done.
-			if types.VMState(freshMeta.State) == types.VMStateStopped {
-				return nil
-			}
-
-			// Check both PID file (primary) and metadata PID (fallback).
-			alive := m.hyper.IsAlive(vmID)
-			if !alive && freshMeta.ProcessPID > 0 {
-				alive = utils.ValidateProcess(freshMeta.ProcessPID, freshMeta.HypervisorProcessName(m.cfg.CHBinary))
-			}
-			if !alive {
-				now := time.Now().UTC().Format(time.RFC3339)
-				_ = m.transitionStateWithUpdate(vmID, types.VMStateStopped, "process exited during stop wait", func(md *types.VMMetadataFile) {
-					md.StoppedAt = now
-					md.ProcessPID = 0
-				})
-				return nil
-			}
-			select {
-			case <-ctx.Done():
-				return fmt.Errorf("context canceled while waiting for VM %s to stop: %w", vmID, ctx.Err())
-			case <-time.After(250 * time.Millisecond):
-			}
-		}
-		return fmt.Errorf("VM %s still stopping after %v timeout", vmID, timeout)
+		return m.waitForStoppingVM(ctx, vmID, timeout)
 	}
 
 	// Validate that we can stop from the current state.
@@ -964,6 +932,49 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 	}
 
 	return nil
+}
+
+func (m *manager) waitForStoppingVM(ctx context.Context, vmID string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		// Re-load metadata each iteration to pick up PID or state
+		// changes made by other processes (e.g., reconciliation).
+		freshMeta, reloadErr := m.LoadMetadata(vmID)
+		if reloadErr != nil {
+			return fmt.Errorf("reload metadata while waiting for stop: %w", reloadErr)
+		}
+		// If another process already transitioned us out of STOPPING, done.
+		if types.VMState(freshMeta.State) == types.VMStateStopped {
+			if cleanupErr := m.cleanupOCIRuntime(vmID, freshMeta); cleanupErr != nil {
+				log.Printf("warning: cleanup OCI runtime resources for %s after external stop transition: %v", vmID, cleanupErr)
+			}
+			return nil
+		}
+
+		// Check both PID file (primary) and metadata PID (fallback).
+		alive := m.hyper.IsAlive(vmID)
+		if !alive && freshMeta.ProcessPID > 0 {
+			alive = utils.ValidateProcess(freshMeta.ProcessPID, freshMeta.HypervisorProcessName(m.cfg.CHBinary))
+		}
+		if !alive {
+			now := time.Now().UTC().Format(time.RFC3339)
+			_ = m.transitionStateWithUpdate(vmID, types.VMStateStopped, "process exited during stop wait", func(md *types.VMMetadataFile) {
+				md.StoppedAt = now
+				md.ProcessPID = 0
+			})
+			if cleanupErr := m.cleanupOCIRuntimeByMetadata(vmID); cleanupErr != nil {
+				log.Printf("warning: cleanup OCI runtime resources for %s after process exit during stop wait: %v", vmID, cleanupErr)
+			}
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("context canceled while waiting for VM %s to stop: %w", vmID, ctx.Err())
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	return fmt.Errorf("VM %s still stopping after %v timeout", vmID, timeout)
 }
 
 // Kill force-terminates a VM via SIGKILL and updates metadata atomically.

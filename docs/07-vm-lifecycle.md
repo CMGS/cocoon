@@ -1097,7 +1097,7 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 
     state := types.VMState(meta.State)
 
-    // Idempotent: already stopped → no-op
+    // Idempotent: already stopped → no-op (best-effort OCI runtime cleanup)
     if state == types.VMStateStopped {
         return nil
     }
@@ -1105,6 +1105,8 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
     // If already stopping, wait for process exit with polling
     if state == types.VMStateStopping {
         // Poll m.hyper.IsAlive(vmID) until timeout
+        // If process is observed exited, transition to STOPPED and run
+        // best-effort OCI runtime cleanup before returning.
         // ...
     }
 
@@ -1113,13 +1115,14 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
     // On timeout, Shutdown() internally calls ForceKill():
     //   - ForceKill succeeds → transition to STOPPED
     //   - ForceKill fails → transition to ERROR
+    // After STOPPED transition, run best-effort OCI runtime cleanup.
     // ...
 }
 ```
 
 **Behavior**:
 - Stopping STOPPED VM → **No-op, success**
-- Stopping STOPPING VM → **Wait for completion**
+- Stopping STOPPING VM → **Wait for completion + cleanup OCI runtime once STOPPED is observed**
 - **Idempotent for STOPPED state**
 
 #### delete
@@ -1742,6 +1745,8 @@ reconciliation by default (dry-run mode). Use `--fix` to apply repairs.
 - `--fix`: Automatically fix inconsistencies (default: dry-run)
 - `--force`: Force cleanup of stuck VMs and kill zombie processes
 - `--format`: Output format (`table`, `json`)
+
+**OCI runtime note**: For OCI VMs, fixing `state_mismatch` to `STOPPED` or `ERROR` also triggers best-effort OCI runtime teardown (`virtiofsd` stop, overlay unmount, metadata cleanup) to avoid leaked runtime artifacts.
 
 **Output**:
 ```bash
