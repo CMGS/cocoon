@@ -130,6 +130,8 @@ func (m *virtiofsdRuntimeManager) Stop(vmID string, pid int, expectedProc, socke
 }
 
 func buildVirtiofsdArgs(sharedDir, socketPath string) []string {
+	// Security baseline (docs/04.1 §6.6): keep the rootfs-serving virtiofsd
+	// sandboxed via chroot and avoid weakening this default implicitly.
 	return []string{
 		"--shared-dir", sharedDir,
 		"--socket-path", socketPath,
@@ -143,6 +145,7 @@ func launchVirtiofsdProcess(ctx context.Context, binary string, args []string, l
 
 	logFile, logErr := os.Create(logPath) //nolint:gosec // path is cocoon-managed
 	if logErr == nil {
+		cmd.Stdout = logFile
 		cmd.Stderr = logFile
 	}
 
@@ -154,6 +157,9 @@ func launchVirtiofsdProcess(ctx context.Context, binary string, args []string, l
 	}
 
 	pid := cmd.Process.Pid
+	// Detach the process handle intentionally: virtiofsd is lifecycle-managed
+	// through explicit PID-based stop/kill logic and must outlive the caller.
+	// After Release, reaping is delegated to the init/subreaper chain.
 	if relErr := cmd.Process.Release(); relErr != nil {
 		_ = cmd.Process.Kill()
 		if logFile != nil {
@@ -169,6 +175,9 @@ func launchVirtiofsdProcess(ctx context.Context, binary string, args []string, l
 
 func waitForVirtiofsdSocket(ctx context.Context, socketPath string, pid int, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(socketPath); err == nil {
 			conn, dialErr := net.DialTimeout("unix", socketPath, 100*time.Millisecond)
@@ -185,7 +194,7 @@ func waitForVirtiofsdSocket(ctx context.Context, socketPath string, pid int, tim
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("context canceled while waiting for virtiofsd socket: %w", ctx.Err())
-		case <-time.After(100 * time.Millisecond):
+		case <-ticker.C:
 		}
 	}
 	return fmt.Errorf("timeout waiting for virtiofsd socket after %s", timeout)
