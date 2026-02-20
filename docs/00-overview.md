@@ -138,9 +138,9 @@ Modern VM workloads and development environments face a challenging trade-off be
          │                   │                      │
          v                   v                      v
 ┌─────────────────┐ ┌──────────────────┐ ┌──────────────────────┐
-│  Buildah/Skopeo │ │ Cloud Hypervisor │ │  CNI Plugins         │
-│  qemu-img       │ │ (per-VM process) │ │  (bridge/macvlan/    │
-│  libguestfs     │ │  REST API        │ │   host-local/dhcp)   │
+│  go-container-  │ │ Cloud Hypervisor │ │  CNI Plugins         │
+│  registry       │ │ (per-VM process) │ │  (bridge/macvlan/    │
+│  qemu/guestfish │ │  REST API        │ │   host-local/dhcp)   │
 └────────┬────────┘ └────────┬─────────┘ └──────────────────────┘
          │                   │
          v                   v
@@ -156,7 +156,7 @@ Modern VM workloads and development environments face a challenging trade-off be
 ### Component Flow
 
 1. **User Request**: `cocoon create ubuntu-22.04-cloudimg --name myvm`
-2. **Image Pull**: Buildah downloads OCI image from registry (if not cached)
+2. **Image Pull**: go-containerregistry fetches OCI image from registry (if not cached)
 3. **Image Conversion**: qemu-img converts OCI rootfs to qcow2 base image with checksum-based filename
 4. **Storage Creation**: qcow2 COW overlay created from base image (instant, ~200KB initial size)
 5. **VM Launch**: Cloud Hypervisor boots VM using UEFI firmware and overlay disk
@@ -310,7 +310,7 @@ Cocoon is a general-purpose lightweight VM manager. Common use cases include:
 **Core (Phase 1)**:
 - **Hypervisor**: Cloud Hypervisor (Rust-based VMM, production-grade)
 - **Language**: Go 1.25.0 (interface-driven, factory pattern)
-- **OCI Tools**: Buildah (daemonless), go-containerregistry (OCI image push/login)
+- **OCI Tools**: go-containerregistry (native OCI probe/pull/push)
 - **Storage**: qcow2 via qemu-img and libguestfs
 - **Firmware**: OVMF (UEFI via CLOUDHV.fd) for cloud images; OCI VM path uses direct kernel boot (`payload.kernel` + `payload.initramfs`)
 - **TPM**: swtpm (optional TPM 2.0 emulation)
