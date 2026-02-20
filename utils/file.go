@@ -8,7 +8,9 @@ import (
 )
 
 // CopyFile copies src to dst with the given permissions. The destination file
-// is fsynced before close to ensure durability.
+// is fsynced before close to ensure durability. On any failure after the
+// destination file is created, it is removed to prevent partial/corrupt files
+// from being mistaken for valid content by subsequent operations.
 func CopyFile(src, dst string, mode os.FileMode) error {
 	in, err := os.Open(src) //nolint:gosec // caller-controlled path
 	if err != nil {
@@ -23,13 +25,19 @@ func CopyFile(src, dst string, mode os.FileMode) error {
 
 	if _, err := io.Copy(out, in); err != nil {
 		_ = out.Close()
+		_ = os.Remove(dst) // clean up partial file
 		return err
 	}
 	if err := out.Sync(); err != nil {
 		_ = out.Close()
+		_ = os.Remove(dst) // clean up unsynced file
 		return err
 	}
-	return out.Close()
+	if err := out.Close(); err != nil {
+		_ = os.Remove(dst) // clean up on close failure
+		return err
+	}
+	return nil
 }
 
 // FirstExistingPath joins baseDir with each relative path in rels and returns
