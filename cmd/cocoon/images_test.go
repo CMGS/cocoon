@@ -75,7 +75,6 @@ func TestShouldFallbackToPrepare(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			if got := shouldFallbackToPrepare(tt.err); got != tt.want {
@@ -163,7 +162,6 @@ func TestEnsureLatestTag(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			if got := ensureLatestTag(tt.in); got != tt.want {
@@ -188,7 +186,6 @@ func TestDefaultBuildTagSource(t *testing.T) {
 		{name: "digest-ref", in: "cmgs/noble-server-cloudimg-amd64@sha256:deadbeef", want: "noble-server-cloudimg-amd64"},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			if got := defaultBuildTagSource(tt.in); got != tt.want {
@@ -270,7 +267,6 @@ func TestNormalizeDockerLikeOCIRef(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got := normalizeDockerLikeOCIRef(tt.in)
@@ -299,7 +295,6 @@ func TestNormalizePullableFROMRef(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got := normalizePullableFROMRef(tt.in)
@@ -724,7 +719,6 @@ func TestShouldFallbackToOCIVMPull(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got := shouldFallbackToOCIVMPull(tt.err)

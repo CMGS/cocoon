@@ -63,6 +63,38 @@ func (m *manager) doWork() {
 }
 ```
 
+## Error Scope Minimization
+
+### Rule
+
+Prefer `if err := fn(); err != nil` over `err := fn()` followed by
+`if err != nil` to minimize the scope of the `err` variable.
+
+This applies **only** when the error is the sole return value, or when
+additional return values are not used after the if block. When you need
+the non-error return value later, the two-line pattern is correct.
+
+```go
+// Good — err scoped to the if block
+if err := doSomething(ctx, arg); err != nil {
+    return fmt.Errorf("do something: %w", err)
+}
+
+// Good — err needed after the if (e.g., for multiple return values)
+result, err := doSomething(ctx, arg)
+if err != nil {
+    return fmt.Errorf("do something: %w", err)
+}
+// result is used below...
+
+// Bad — err scope unnecessarily wide
+err := doSomething(ctx, arg)
+if err != nil {
+    return fmt.Errorf("do something: %w", err)
+}
+// err is never used again but remains in scope
+```
+
 ## Pre-Commit Checklist
 
 ### Rule

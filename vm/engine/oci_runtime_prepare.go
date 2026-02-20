@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -65,7 +64,7 @@ func prepareLocalOCIRuntime(ctx context.Context, cfg *config.CocoonConfig, local
 	if err != nil {
 		return nil, fmt.Errorf("inspect OCI layout for %q: %w", localTag, err)
 	}
-	runtimeKey, err := ociRuntimeKeyFromDigest(layoutInfo.ManifestDigest)
+	runtimeKey, err := oci.ParseSHA256Digest(layoutInfo.ManifestDigest)
 	if err != nil {
 		return nil, err
 	}
@@ -81,10 +80,7 @@ func prepareLocalOCIRuntime(ctx context.Context, cfg *config.CocoonConfig, local
 		return nil, err
 	}
 
-	virtiofsTag := normalizeOCIRuntimeVirtioFSTag("")
-	if layoutInfo.Config != nil && strings.TrimSpace(layoutInfo.Config.VirtiofsTag) != "" {
-		virtiofsTag = normalizeOCIRuntimeVirtioFSTag(layoutInfo.Config.VirtiofsTag)
-	}
+	virtiofsTag := defaultOCIRuntimeVirtioFSTag
 	cmdline := normalizeVirtiofsKernelCmdline("", virtiofsTag)
 	arch := runtime.GOARCH
 	if layoutInfo.Config != nil {
@@ -147,7 +143,7 @@ func materializeOCIRuntimeCache(ctx context.Context, cfg *config.CocoonConfig, r
 	}
 
 	for _, layer := range rootfsLayers {
-		layerPath, layerErr := ociLayoutBlobPath(layoutPath, layer.Digest)
+		layerPath, layerErr := oci.LayoutBlobPath(layoutPath, layer.Digest)
 		if layerErr != nil {
 			return fmt.Errorf("resolve OCI rootfs layer %s: %w", layer.Digest, layerErr)
 		}
@@ -156,7 +152,7 @@ func materializeOCIRuntimeCache(ctx context.Context, cfg *config.CocoonConfig, r
 		}
 	}
 
-	kernelLayerPath, err := ociLayoutBlobPath(layoutPath, kernelLayer.Digest)
+	kernelLayerPath, err := oci.LayoutBlobPath(layoutPath, kernelLayer.Digest)
 	if err != nil {
 		return fmt.Errorf("resolve OCI kernel layer %s: %w", kernelLayer.Digest, err)
 	}
@@ -256,14 +252,14 @@ func installOCIRuntimeKernelArtifacts(kernelDir string, cfg *oci.VMImageConfig) 
 		}
 	}
 
-	kernelSrc, err := firstExistingPath(kernelDir, kernelCandidates)
+	kernelSrc, err := utils.FirstExistingPath(kernelDir, kernelCandidates)
 	if err != nil {
 		return fmt.Errorf("locate OCI runtime kernel in layer: %w", err)
 	}
 	if sizeErr := ensureRuntimeArtifactMinSize(kernelSrc, minOCIRuntimeKernelBytes, "kernel"); sizeErr != nil {
 		return sizeErr
 	}
-	initrdSrc, err := firstExistingPath(kernelDir, initrdCandidates)
+	initrdSrc, err := utils.FirstExistingPath(kernelDir, initrdCandidates)
 	if err != nil {
 		return fmt.Errorf("locate OCI runtime initrd in layer: %w", err)
 	}
@@ -273,14 +269,14 @@ func installOCIRuntimeKernelArtifacts(kernelDir string, cfg *oci.VMImageConfig) 
 
 	kernelDst := filepath.Join(kernelDir, "vmlinuz")
 	if filepath.Clean(kernelSrc) != filepath.Clean(kernelDst) {
-		if err := copyRuntimeFile(kernelSrc, kernelDst, 0o644); err != nil { //nolint:gosec // cocoon-managed cache file
+		if err := utils.CopyFile(kernelSrc, kernelDst, 0o644); err != nil { //nolint:gosec // cocoon-managed cache file
 			return fmt.Errorf("write OCI runtime kernel artifact: %w", err)
 		}
 	}
 
 	initrdDst := filepath.Join(kernelDir, "initrd.img")
 	if filepath.Clean(initrdSrc) != filepath.Clean(initrdDst) {
-		if err := copyRuntimeFile(initrdSrc, initrdDst, 0o644); err != nil { //nolint:gosec // cocoon-managed cache file
+		if err := utils.CopyFile(initrdSrc, initrdDst, 0o644); err != nil { //nolint:gosec // cocoon-managed cache file
 			return fmt.Errorf("write OCI runtime initrd artifact: %w", err)
 		}
 	}
@@ -299,7 +295,9 @@ func ensureRuntimeArtifactMinSize(path string, minBytes int64, kind string) erro
 }
 
 func normalizeVirtiofsKernelCmdline(raw, virtiofsTag string) string {
-	virtiofsTag = normalizeOCIRuntimeVirtioFSTag(virtiofsTag)
+	if strings.TrimSpace(virtiofsTag) == "" {
+		virtiofsTag = defaultOCIRuntimeVirtioFSTag
+	}
 
 	fields := strings.Fields(strings.TrimSpace(raw))
 	out := make([]string, 0, len(fields)+4)
@@ -323,80 +321,6 @@ func normalizeVirtiofsKernelCmdline(raw, virtiofsTag string) string {
 	// source cmdline requested ro to avoid guest booting with a read-only root.
 	out = append(out, "root="+virtiofsTag, "rootfstype=virtiofs", "rw")
 	return strings.Join(out, " ")
-}
-
-func normalizeOCIRuntimeVirtioFSTag(tag string) string {
-	_ = strings.TrimSpace(tag) // retained for future compatibility branching
-	// Keep runtime rootfs tag canonical for Cloud Hypervisor virtio-fs root boot.
-	return defaultOCIRuntimeVirtioFSTag
-}
-
-func ociRuntimeKeyFromDigest(digest string) (string, error) {
-	const prefix = "sha256:"
-	if !strings.HasPrefix(digest, prefix) {
-		return "", fmt.Errorf("invalid OCI manifest digest %q", digest)
-	}
-	hex := strings.TrimPrefix(digest, prefix)
-	if len(hex) != 64 {
-		return "", fmt.Errorf("invalid OCI manifest digest length for %q", digest)
-	}
-	for _, c := range hex {
-		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
-		if !isHex {
-			return "", fmt.Errorf("invalid OCI manifest digest characters for %q", digest)
-		}
-	}
-	return strings.ToLower(hex), nil
-}
-
-func ociLayoutBlobPath(layoutPath, digest string) (string, error) {
-	const prefix = "sha256:"
-	if !strings.HasPrefix(digest, prefix) {
-		return "", fmt.Errorf("unsupported OCI digest format %q", digest)
-	}
-	hex := strings.TrimPrefix(digest, prefix)
-	if len(hex) != 64 {
-		return "", fmt.Errorf("invalid OCI digest length for %q", digest)
-	}
-	for _, c := range hex {
-		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
-		if !isHex {
-			return "", fmt.Errorf("invalid OCI digest characters for %q", digest)
-		}
-	}
-	return filepath.Join(layoutPath, "blobs", "sha256", hex), nil
-}
-
-func firstExistingPath(baseDir string, rels []string) (string, error) {
-	for _, rel := range rels {
-		p := filepath.Join(baseDir, rel)
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
-		}
-	}
-	return "", fmt.Errorf("none of %v found under %s", rels, baseDir)
-}
-
-func copyRuntimeFile(src, dst string, mode os.FileMode) error {
-	in, err := os.Open(src) //nolint:gosec // source path is cocoon-managed
-	if err != nil {
-		return err
-	}
-	defer in.Close() //nolint:errcheck
-
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode) //nolint:gosec // destination path is cocoon-managed
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		return err
-	}
-	if err := out.Sync(); err != nil {
-		_ = out.Close()
-		return err
-	}
-	return out.Close()
 }
 
 func statPathExists(path string) bool {

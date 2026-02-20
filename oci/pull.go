@@ -56,13 +56,13 @@ func Pull(ctx context.Context, cfg *config.CocoonConfig, ref string) (*PullResul
 		remote.WithPlatform(platform),
 	)
 	if err != nil {
-		return nil, classifyPullError(err)
+		return nil, classifyRegistryError("pull", err)
 	}
 
 	// Fetch and validate the manifest.
 	rawManifest, err := img.RawManifest()
 	if err != nil {
-		return nil, classifyPullError(err)
+		return nil, classifyRegistryError("pull", err)
 	}
 	if validateErr := validateCocoonVMManifest(rawManifest); validateErr != nil {
 		return nil, types.NewPermanentError(fmt.Errorf("validate manifest for %q: %w", ref, validateErr))
@@ -70,7 +70,7 @@ func Pull(ctx context.Context, cfg *config.CocoonConfig, ref string) (*PullResul
 
 	manifestDigest, err := img.Digest()
 	if err != nil {
-		return nil, classifyPullError(err)
+		return nil, classifyRegistryError("pull", err)
 	}
 
 	// Idempotency check: if we already have this tag with the same manifest, skip.
@@ -99,7 +99,7 @@ func Pull(ctx context.Context, cfg *config.CocoonConfig, ref string) (*PullResul
 	// Store config blob.
 	configData, err := img.RawConfigFile()
 	if err != nil {
-		return nil, classifyPullError(err)
+		return nil, classifyRegistryError("pull", err)
 	}
 	configDigestHex := stripSHA256Prefix(manifest.Config.Digest)
 	if _, storeErr := blobStore.StoreBlobFromBytes(configData, configDigestHex); storeErr != nil {
@@ -112,16 +112,16 @@ func Pull(ctx context.Context, cfg *config.CocoonConfig, ref string) (*PullResul
 	// Store layer blobs.
 	layers, err := img.Layers()
 	if err != nil {
-		return nil, classifyPullError(err)
+		return nil, classifyRegistryError("pull", err)
 	}
 	for i, layer := range layers {
 		layerDigest, layerDigestErr := layer.Digest()
 		if layerDigestErr != nil {
-			return nil, classifyPullError(layerDigestErr)
+			return nil, classifyRegistryError("pull", layerDigestErr)
 		}
 		layerSize, layerSizeErr := layer.Size()
 		if layerSizeErr != nil {
-			return nil, classifyPullError(layerSizeErr)
+			return nil, classifyRegistryError("pull", layerSizeErr)
 		}
 		layerHex := layerDigest.Hex
 
@@ -283,44 +283,6 @@ func validateCocoonVMManifest(rawManifest []byte) error {
 	return nil
 }
 
-// classifyPullError categorizes pull errors as transient or permanent.
-func classifyPullError(err error) error {
-	errStr := err.Error()
-
-	permanentPatterns := []string{
-		"UNAUTHORIZED", "unauthorized",
-		"DENIED", "denied",
-		"FORBIDDEN", "forbidden",
-		"NAME_UNKNOWN", "not found",
-		"MANIFEST_UNKNOWN",
-		"invalid reference",
-	}
-	for _, p := range permanentPatterns {
-		if strings.Contains(errStr, p) {
-			return types.NewPermanentError(fmt.Errorf("pull %w", err))
-		}
-	}
-
-	if isNetworkError(err) {
-		return types.NewTransientError(fmt.Errorf("pull %w", err))
-	}
-	transientPatterns := []string{
-		"timeout", "connection refused", "connection reset",
-		"EOF", "INTERNAL_ERROR", "BAD_GATEWAY",
-		"SERVICE_UNAVAILABLE", "TOO_MANY_REQUESTS",
-		"Service Unavailable", "Too Many Requests",
-		"Internal Server Error", "Bad Gateway",
-	}
-	errUpper := strings.ToUpper(errStr)
-	for _, p := range transientPatterns {
-		if strings.Contains(errUpper, strings.ToUpper(p)) {
-			return types.NewTransientError(fmt.Errorf("pull %w", err))
-		}
-	}
-
-	return types.NewPermanentError(fmt.Errorf("pull %w", err))
-}
-
 // checkIdempotent returns true and the layout path if the tag already exists
 // with the same manifest digest.
 func checkIdempotent(store *Store, ref, manifestHex string) (bool, string) {
@@ -346,7 +308,7 @@ func checkIdempotent(store *Store, ref, manifestHex string) (bool, string) {
 func pullLayerToStore(blobStore *BlobStore, layer v1.Layer, digestHexStr string, progress *pullLayerProgress) error {
 	rc, err := layer.Compressed()
 	if err != nil {
-		return classifyPullError(err)
+		return classifyRegistryError("pull", err)
 	}
 	defer rc.Close() //nolint:errcheck
 
@@ -374,7 +336,7 @@ func pullLayerToStore(blobStore *BlobStore, layer v1.Layer, digestHexStr string,
 	}
 	if _, err := io.Copy(io.MultiWriter(writers...), rc); err != nil {
 		_ = tmpFile.Close()
-		return classifyPullError(err)
+		return classifyRegistryError("pull", err)
 	}
 	if err := tmpFile.Sync(); err != nil {
 		_ = tmpFile.Close()

@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"maps"
 	"os"
@@ -254,7 +253,7 @@ func prepareLayerInputs(
 }
 
 func appendReusedBaseLayers(buildCtx *BuildContext, pw *ProgressWriter, layerInputs *[]layerInput) error {
-	kernelHex, err := digestHex(buildCtx.KernelLayer.Digest)
+	kernelHex, err := ParseSHA256Digest(buildCtx.KernelLayer.Digest)
 	if err != nil {
 		return fmt.Errorf("invalid base kernel layer digest: %w", err)
 	}
@@ -264,7 +263,7 @@ func appendReusedBaseLayers(buildCtx *BuildContext, pw *ProgressWriter, layerInp
 		Size:      buildCtx.KernelLayer.Size,
 	})
 	for _, layer := range buildCtx.RootfsLayers {
-		digestHexValue, digestErr := digestHex(layer.Digest)
+		digestHexValue, digestErr := ParseSHA256Digest(layer.Digest)
 		if digestErr != nil {
 			return fmt.Errorf("invalid base rootfs layer digest %q: %w", layer.Digest, digestErr)
 		}
@@ -486,7 +485,7 @@ func applyCocoonfileSteps(ctx context.Context, imagePath, tmpDir string, cf *Coc
 		return imagePath, nil
 	}
 	workCopy := filepath.Join(tmpDir, "work.qcow2")
-	if err := copyFile(imagePath, workCopy); err != nil {
+	if err := utils.CopyFile(imagePath, workCopy, 0o644); err != nil { //nolint:gosec // build pipeline temp file
 		return "", fmt.Errorf("copy image for customization: %w", err)
 	}
 
@@ -867,24 +866,6 @@ func sha256Hex(data []byte) string {
 	return hex.EncodeToString(h[:])
 }
 
-func digestHex(digest string) (string, error) {
-	const prefix = "sha256:"
-	if !strings.HasPrefix(digest, prefix) {
-		return "", fmt.Errorf("unsupported digest format %q", digest)
-	}
-	hexDigest := strings.TrimPrefix(digest, prefix)
-	if len(hexDigest) != 64 {
-		return "", fmt.Errorf("invalid digest length for %q", digest)
-	}
-	for _, c := range hexDigest {
-		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
-		if !isHex {
-			return "", fmt.Errorf("invalid digest characters for %q", digest)
-		}
-	}
-	return strings.ToLower(hexDigest), nil
-}
-
 // isValidUUID checks that s matches UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.
 func isValidUUID(s string) bool {
 	if len(s) != 36 {
@@ -922,23 +903,4 @@ func isValidMBRPartUUID(s string) bool {
 		}
 	}
 	return true
-}
-
-func copyFile(src, dst string) error {
-	sf, err := os.Open(src) //nolint:gosec // G304: src is a build pipeline temp file
-	if err != nil {
-		return err
-	}
-	defer sf.Close() //nolint:errcheck
-
-	df, err := os.Create(dst) //nolint:gosec // G304: dst is a build pipeline output path
-	if err != nil {
-		return err
-	}
-
-	if _, err = io.Copy(df, sf); err != nil {
-		df.Close() //nolint:errcheck,gosec // G104: best-effort close on error path
-		return err
-	}
-	return df.Close()
 }

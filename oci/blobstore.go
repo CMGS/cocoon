@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/CMGS/cocoon/config"
+	"github.com/CMGS/cocoon/utils"
 )
 
 // BlobStore manages a content-addressed blob store at cache/oci/blobs/sha256/.
@@ -186,7 +187,11 @@ func (bs *BlobStore) LinkBlobToLayout(digest, layoutDir string) error {
 		return nil // already linked
 	}
 	// Fallback: copy (e.g., cross-device link not supported).
-	return copyFileSync(src, dst)
+	info, err := os.Stat(src)
+	if err != nil {
+		return fmt.Errorf("stat source blob %s: %w", src, err)
+	}
+	return utils.CopyFile(src, dst, info.Mode())
 }
 
 // RemoveBlob removes a blob from the shared store (called by GC only).
@@ -195,34 +200,4 @@ func (bs *BlobStore) RemoveBlob(digest string) error {
 		return err
 	}
 	return os.Remove(bs.blobPath(digest))
-}
-
-// copyFileSync copies src to dst with fsync for durability.
-func copyFileSync(src, dst string) error {
-	sf, err := os.Open(src) //nolint:gosec // G304: src is a shared blob store path
-	if err != nil {
-		return err
-	}
-	defer sf.Close() //nolint:errcheck
-
-	df, err := os.Create(dst) //nolint:gosec // G304: dst is a layout blob path
-	if err != nil {
-		return err
-	}
-
-	if _, err = io.Copy(df, sf); err != nil {
-		_ = df.Close()
-		_ = os.Remove(dst)
-		return err
-	}
-	if err = df.Sync(); err != nil {
-		_ = df.Close()
-		_ = os.Remove(dst)
-		return err
-	}
-	if err = df.Close(); err != nil {
-		_ = os.Remove(dst)
-		return err
-	}
-	return nil
 }

@@ -73,7 +73,7 @@ func TestClassifyPushError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			classified := classifyPushError(tt.err)
+			classified := classifyRegistryError("push", tt.err)
 			if types.IsTransient(classified) != tt.wantTransient {
 				t.Errorf("IsTransient = %v, want %v", types.IsTransient(classified), tt.wantTransient)
 			}
@@ -115,7 +115,6 @@ func TestFormatPushProgressLine(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			if got := formatPushProgressLine(tt.in); got != tt.want {
@@ -140,7 +139,6 @@ func TestHumanBytes(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			if got := utils.HumanBytes(tt.in); got != tt.want {
