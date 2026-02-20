@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/CMGS/cocoon/config"
 	"github.com/CMGS/cocoon/storage"
+	"github.com/CMGS/cocoon/utils"
 )
 
 // Compile-time interface check.
@@ -131,7 +133,53 @@ func (m *fileCOWManager) CreateOverlay(ctx context.Context, baseKey, vmID, diskS
 		}
 	}
 
+	// Fsync the overlay file and its parent directory to ensure qcow2
+	// metadata (header, L1/L2 tables, refcounts) written by qemu-img
+	// create and resize is persisted to disk before the VM boots.
+	if err := syncFile(overlayPath); err != nil {
+		_ = os.Remove(overlayPath)
+		return "", fmt.Errorf("fsync overlay after create: %w", err)
+	}
+	if err := utils.SyncParentDir(filepath.Dir(overlayPath)); err != nil {
+		_ = os.Remove(overlayPath)
+		return "", fmt.Errorf("fsync overlay directory: %w", err)
+	}
+
 	return overlayPath, nil
+}
+
+// RepairOverlay runs `qemu-img check --repair=leaks` on the overlay for vmID.
+// This repairs leaked clusters that may result from an unclean VM shutdown
+// (e.g., SIGKILL of the Cloud Hypervisor process). The repair is idempotent:
+// a clean overlay passes the check with no modifications.
+func (m *fileCOWManager) RepairOverlay(ctx context.Context, vmID string) error {
+	overlayPath := m.cfg.VMOverlayPath(vmID)
+	if _, err := os.Stat(overlayPath); err != nil {
+		return fmt.Errorf("overlay not found for %s: %w", vmID, err)
+	}
+
+	cmd := exec.CommandContext(ctx, "qemu-img", "check", "--repair=leaks", overlayPath) //nolint:gosec // G204: overlayPath is a controlled internal path
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// qemu-img check exits 2 for corrected leaks (repairs applied),
+		// 3 for uncorrectable corruption. Exit 0 means clean.
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 2 {
+			log.Printf("qemu-img repaired leaked clusters in overlay for %s: %s", vmID, string(output))
+			return nil
+		}
+		return fmt.Errorf("qemu-img check overlay for %s: %s: %w", vmID, string(output), err)
+	}
+	return nil
+}
+
+// syncFile opens a file and fsyncs it to flush page-cache writes to disk.
+func syncFile(path string) error {
+	f, err := os.Open(path) //nolint:gosec // G304: path is a controlled internal path
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	return f.Sync()
 }
 
 // RemoveOverlay permanently removes the overlay disk file for vmID.

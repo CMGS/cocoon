@@ -73,6 +73,11 @@ type COWManager interface {
 
 	// GetOverlayInfo returns metadata about an existing overlay.
 	GetOverlayInfo(ctx context.Context, vmID string) (*OverlayInfo, error)
+
+	// RepairOverlay runs `qemu-img check --repair=leaks` on the overlay
+	// for vmID to fix leaked clusters from an unclean shutdown.
+	// Returns nil if the overlay is clean or was successfully repaired.
+	RepairOverlay(ctx context.Context, vmID string) error
 }
 
 // GarbageCollector reclaims unreferenced storage resources.

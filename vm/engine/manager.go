@@ -420,6 +420,15 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 		return fmt.Errorf("load config for %s: %w", vmID, err)
 	}
 
+	// Repair the overlay if the VM was previously stopped. An unclean
+	// shutdown (e.g., SIGKILL) can leave leaked clusters in the qcow2
+	// overlay, which causes I/O errors on the next boot.
+	if state == types.VMStateStopped && vmCfg.OverlayPath != "" {
+		if repairErr := m.cowMgr.RepairOverlay(ctx, vmID); repairErr != nil {
+			log.Printf("warning: overlay repair for %s failed: %v", vmID, repairErr)
+		}
+	}
+
 	// Transition to STARTING.
 	if transErr := m.TransitionState(vmID, types.VMStateStarting, "start requested"); transErr != nil {
 		return transErr

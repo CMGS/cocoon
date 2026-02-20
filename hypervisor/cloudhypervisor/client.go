@@ -209,7 +209,14 @@ func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (
 	return 0, fmt.Errorf("CH socket %s did not appear within %s: %s", socketPath, socketTimeout, stderr)
 }
 
-// Shutdown performs a graceful shutdown of the VM, falling back to SIGKILL.
+// Shutdown performs a graceful shutdown of the VM.
+//
+// Shutdown strategy (three tiers):
+//  1. ACPI power-button: asks the guest OS to shut down gracefully.
+//  2. vm.shutdown API: if the guest does not respond within the timeout,
+//     tells Cloud Hypervisor to shut down at the VMM level, which flushes
+//     all block backends (qcow2 metadata, dirty pages) before stopping.
+//  3. SIGKILL: last resort if the vm.shutdown API also fails.
 func (c *client) Shutdown(ctx context.Context, vmID string, timeout time.Duration) error {
 	socketPath := c.cfg.VMSocketPath(vmID)
 
@@ -241,11 +248,43 @@ func (c *client) Shutdown(ctx context.Context, vmID string, timeout time.Duratio
 				return nil
 			}
 			if time.Now().After(deadline) {
-				// Timeout reached; force kill.
-				return c.ForceKill(vmID)
+				// Guest did not respond to ACPI power-button in time.
+				// Try vm.shutdown API to flush disk backends before killing.
+				return c.shutdownWithFallback(ctx, vmID, socketPath)
 			}
 		}
 	}
+}
+
+// shutdownWithFallback tries the CH vm.shutdown API (which flushes block
+// backends) and waits briefly for the process to exit. Falls back to
+// ForceKill if vm.shutdown fails or the process does not exit in time.
+func (c *client) shutdownWithFallback(ctx context.Context, vmID, socketPath string) error {
+	// Try vm.shutdown API — this tells CH to shut down at the VMM level,
+	// flushing dirty qcow2 pages to disk before the process exits.
+	if err := c.ShutdownVM(ctx, socketPath); err != nil {
+		log.Printf("vm.shutdown API failed for %s: %v; falling back to SIGKILL", vmID, err)
+		return c.ForceKill(vmID)
+	}
+
+	// Give CH a few seconds to flush and exit after vm.shutdown.
+	const vmmShutdownWait = 5 * time.Second
+	waitDeadline := time.Now().Add(vmmShutdownWait)
+	for time.Now().Before(waitDeadline) {
+		stopped, probeErr := c.isVMProcessStopped(vmID)
+		if probeErr != nil {
+			return fmt.Errorf("probe VM %s after vm.shutdown: %w", vmID, probeErr)
+		}
+		if stopped {
+			c.cleanupRuntimeFiles(vmID)
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// vm.shutdown succeeded but process lingered; force kill.
+	log.Printf("CH process for %s did not exit after vm.shutdown; falling back to SIGKILL", vmID)
+	return c.ForceKill(vmID)
 }
 
 // isVMProcessStopped reports whether the CH process for vmID has exited.
