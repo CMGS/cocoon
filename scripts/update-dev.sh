@@ -91,7 +91,7 @@ update_system_packages() {
     case "$PKG_MANAGER" in
         apt)
             apt-get update -qq
-            local packages=(qemu-utils buildah skopeo libguestfs-tools swtpm swtpm-tools virtiofsd)
+            local packages=(qemu-utils libguestfs-tools swtpm swtpm-tools virtiofsd)
             for pkg in "${packages[@]}"; do
                 if dpkg -l "$pkg" 2>/dev/null | grep -q "^ii"; then
                     info "Upgrading $pkg..."
@@ -111,7 +111,7 @@ update_system_packages() {
             done
             ;;
         dnf)
-            local packages=(qemu-img buildah skopeo libguestfs-tools swtpm swtpm-tools virtiofsd)
+            local packages=(qemu-img libguestfs-tools swtpm swtpm-tools virtiofsd)
             for pkg in "${packages[@]}"; do
                 if rpm -q "$pkg" &>/dev/null; then
                     info "Upgrading $pkg..."

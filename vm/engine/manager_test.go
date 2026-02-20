@@ -47,7 +47,7 @@ func setupTestManager(t *testing.T) *testDeps {
 	logDir := t.TempDir()
 
 	cfg := config.DefaultConfig()
-	// RebaseRootDir updates RootDir and re-derives BuildahRoot, firmware paths, etc.
+	// RebaseRootDir updates RootDir and re-derives firmware paths, etc.
 	cfg.RebaseRootDir(rootDir)
 	cfg.RuntimeDir = runtimeDir
 	cfg.LogDir = logDir

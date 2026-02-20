@@ -62,7 +62,6 @@ func initAction(c *cli.Context) error {
 		cfg.ImageCacheDir(),
 		cfg.ManifestCacheDir(),
 		cfg.ConversionLockDir(),
-		cfg.BuildahRoot,
 		cfg.VMDir(),
 		cfg.TempDir(),
 		cfg.FirmwareDir(),

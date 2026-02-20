@@ -228,7 +228,6 @@ sudo mkdir -p /var/lib/cocoon/cache/locks
 sudo mkdir -p /var/lib/cocoon/cache/manifests
 sudo mkdir -p /var/lib/cocoon/cache/oci
 sudo mkdir -p /var/lib/cocoon/db
-sudo mkdir -p /var/lib/cocoon/buildah
 sudo mkdir -p /var/lib/cocoon/vms
 sudo mkdir -p /var/lib/cocoon/temp
 

@@ -100,14 +100,11 @@ cocoon/
 │   │   ├── manager.go        # Pipeline implementation (pull → convert → cache)
 │   │   ├── checksum.go       # Content-addressed checksum generation
 │   │   ├── format.go         # Image format detection (qcow2/URL/OCI)
-│   │   ├── oci_linux.go      # OCI pull via skopeo + buildah (Linux only)
-│   │   ├── oci_darwin.go     # Stub: returns "Linux only" error
+│   │   ├── identify.go       # OCI identify/pull materialization via go-containerregistry
 │   │   ├── convert_linux.go  # OCI→qcow2 via qemu-img + guestfish (Linux only)
 │   │   ├── convert_darwin.go # Stub: returns "Linux only" error
 │   │   ├── verify_linux.go   # Bootability verification via guestfish
-│   │   ├── verify_darwin.go  # Stub: returns "Linux only" error
-│   │   ├── cleanup_linux.go  # buildah umount + rm
-│   │   └── cleanup_darwin.go # No-op
+│   │   └── verify_darwin.go  # Stub: returns "Linux only" error
 │   ├── refcache/
 │   │   ├── index.go             # Manifest ref-cache: IMAGE_REF → base_key mapping
 │   │   └── index_test.go
@@ -569,7 +566,7 @@ func initCommand() *cli.Command {
 **Behavior**:
 
 1. Build config from `config.DefaultConfig()`, apply `--root-dir`, `--runtime-dir`, `--log-dir` overrides
-2. Create all directories via `cfg.EnsureDirs()` (db/, cache/images/, cache/manifests/, cache/locks/, cache/oci/blobs/sha256/, cache/oci/layouts/, vms/, temp/, firmware/, buildah/, runtime/vms/, log/)
+2. Create all directories via `cfg.EnsureDirs()` (db/, cache/images/, cache/manifests/, cache/locks/, cache/oci/blobs/sha256/, cache/oci/layouts/, vms/, temp/, firmware/, runtime/vms/, log/)
 3. If `--with-uefi-firmware URL`: download to `firmware/CLOUDHV.fd` (0644), atomic rename
 4. Write `config.json` to `--config` path (default `/etc/cocoon/config.json`); skip if exists unless `--force`
 5. Print "Done. Run 'cocoon doctor' to verify system dependencies."
@@ -1307,7 +1304,7 @@ func imagesCommand() *cli.Command {
 
 > **Domain-ref probing**: Domain-prefixed refs probe for Cocoon VM media types via `oci.ProbeRegistryVMImage()` (go-containerregistry `remote.Get` + manifest validation). If the manifest matches, it routes to `oci.Pull()`; otherwise it falls back to the cloud image pipeline.
 
-> **Standard OCI image handling (P1/P2 design decision)**: Extending `oci.Pull()` to support standard (non-VM) OCI images is not needed. Short names that are not Cocoon VM images are normalized to fully-qualified Docker Hub refs (e.g., `ubuntu:22.04` becomes `docker.io/library/ubuntu:22.04`) via `normalizeDockerLikeOCIRef()` and handed to the cloud image pipeline (buildah/skopeo), which can resolve domain-prefixed refs without `registries.conf`. This avoids the complexity of a dual-mode `oci.Pull()` while keeping short-name pull behavior consistent with push.
+> **Standard OCI image handling (P1/P2 design decision)**: Extending `oci.Pull()` to support standard (non-VM) OCI images is not needed. Short names that are not Cocoon VM images are normalized to fully-qualified Docker Hub refs (e.g., `ubuntu:22.04` becomes `docker.io/library/ubuntu:22.04`) via `normalizeDockerLikeOCIRef()` and handed to the cloud image pipeline (native go-containerregistry identify/materialize + qcow2 conversion). This avoids the complexity of a dual-mode `oci.Pull()` while keeping short-name pull behavior consistent with push.
 
 **Cache Resolution Behavior**:
 
@@ -1586,19 +1583,16 @@ func doctorAction(c *cli.Context) error {
 - ch-remote binary (minimum `38.0.0`)
 - UEFI firmware file (CLOUDHV.fd)
 - qemu-img binary (minimum `8.0.0`)
-- buildah binary (minimum `1.35.0`)
-- skopeo binary (minimum `1.14.0`)
 - guestfish binary (minimum `1.50.0`)
 - swtpm binary (TPM 2.0 emulator)
 - virt-customize binary (optional; required for Cocoonfile RUN/COPY steps)
 - overlayfs availability check (Linux OCI runtime path prerequisite)
 - virtiofsd binary (minimum `1.7.0`, required for OCI runtime path)
 - /dev/kvm device
-- Directory structure (root, runtime, log, db, vm, cache, buildah, firmware)
+- Directory structure (root, runtime, log, db, vm, cache, firmware)
 - OCI blob-ref cleanup diagnostic counter (`oci/blob-ref-cleanup`)
 
 `cocoon doctor --fix` dependency remediation scope:
-- `buildah` / `skopeo`: if missing or below minimum version, doctor attempts package remediation (`apt-get install` / `dnf install`) and re-checks versions.
 - `virtiofsd`: if missing/outdated/path-mismatched, doctor attempts package remediation (`apt-get install` / `dnf install`) and links a stable command name when distro installs only to non-PATH fallback locations.
 - Other dependencies remain check-only (manual install/upgrade required).
 
@@ -1649,8 +1643,6 @@ cloud-hypervisor   pass    /usr/bin/cloud-hypervisor
 uefi-firmware      fail    not found at /var/lib/cocoon/firmware/CLOUDHV.fd
 qemu-img           pass    /usr/bin/qemu-img (version 8.2.0)
 ch-remote          pass    /usr/bin/ch-remote
-buildah            pass    /usr/bin/buildah (version 1.35.2)
-skopeo             pass    /usr/bin/skopeo (version 1.14.4)
 guestfish          fail    binary not found in PATH (required for OCI-to-qcow2 conversion)
 swtpm              pass    /usr/bin/swtpm (TPM 2.0 emulator)
 virt-customize     warn    not found in PATH (optional: required for Cocoonfile RUN/COPY steps)
@@ -1904,7 +1896,6 @@ type CocoonConfig struct {
 
     CHBinary         string `json:"ch_binary"`           // Cloud Hypervisor binary path
     UEFIFirmwarePath string `json:"uefi_firmware_path"`  // UEFI firmware path
-    BuildahRoot      string `json:"buildah_root"`        // Buildah storage root
 
     DefaultCPUs     int    `json:"default_cpus"`      // Default vCPUs per VM
     DefaultMemoryMB int64  `json:"default_memory_mb"` // Default memory in MB
@@ -1928,7 +1919,6 @@ type CocoonConfig struct {
   "log_dir": "/var/log/cocoon",
   "ch_binary": "cloud-hypervisor",
   "uefi_firmware_path": "/var/lib/cocoon/firmware/CLOUDHV.fd",
-  "buildah_root": "/var/lib/cocoon/buildah",
   "default_cpus": 2,
   "default_memory_mb": 2048,
   "default_disk_size": "10G",

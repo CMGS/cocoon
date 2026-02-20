@@ -18,7 +18,6 @@ func testConfig(t *testing.T) *config.CocoonConfig {
 	cfg.RootDir = tmpDir
 	cfg.RuntimeDir = filepath.Join(tmpDir, "run")
 	cfg.LogDir = filepath.Join(tmpDir, "log")
-	cfg.BuildahRoot = filepath.Join(tmpDir, "buildah")
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("EnsureDirs: %v", err)
 	}

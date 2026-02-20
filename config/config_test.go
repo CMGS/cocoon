@@ -39,10 +39,6 @@ func TestDefaultConfig(t *testing.T) {
 		t.Errorf("UEFIFirmwarePath = %q, want /var/lib/cocoon/firmware/CLOUDHV.fd", cfg.UEFIFirmwarePath)
 	}
 
-	// BuildahRoot.
-	if cfg.BuildahRoot != "/var/lib/cocoon/buildah" {
-		t.Errorf("BuildahRoot = %q, want /var/lib/cocoon/buildah", cfg.BuildahRoot)
-	}
 	if cfg.VirtiofsdBinary != "virtiofsd" {
 		t.Errorf("VirtiofsdBinary = %q, want virtiofsd", cfg.VirtiofsdBinary)
 	}
@@ -148,9 +144,6 @@ func TestRebaseRootDir(t *testing.T) {
 	if cfg.RootDir != "/tmp/test" {
 		t.Errorf("RootDir = %q, want /tmp/test", cfg.RootDir)
 	}
-	if cfg.BuildahRoot != "/tmp/test/buildah" {
-		t.Errorf("BuildahRoot = %q, want /tmp/test/buildah", cfg.BuildahRoot)
-	}
 	if cfg.UEFIFirmwarePath != "/tmp/test/firmware/CLOUDHV.fd" {
 		t.Errorf("UEFIFirmwarePath = %q, want /tmp/test/firmware/CLOUDHV.fd", cfg.UEFIFirmwarePath)
 	}
@@ -159,12 +152,12 @@ func TestRebaseRootDir(t *testing.T) {
 func TestRebaseRootDir_NonDefaultPathUnchanged(t *testing.T) {
 	cfg := DefaultConfig()
 	// Set a path that is NOT under the default root.
-	cfg.BuildahRoot = "/opt/custom/buildah"
+	cfg.UEFIFirmwarePath = "/opt/custom/CLOUDHV.fd"
 	cfg.RebaseRootDir("/tmp/test")
 
 	// Should NOT be rebased because it was not under the old root.
-	if cfg.BuildahRoot != "/opt/custom/buildah" {
-		t.Errorf("BuildahRoot = %q, want /opt/custom/buildah (unchanged)", cfg.BuildahRoot)
+	if cfg.UEFIFirmwarePath != "/opt/custom/CLOUDHV.fd" {
+		t.Errorf("UEFIFirmwarePath = %q, want /opt/custom/CLOUDHV.fd (unchanged)", cfg.UEFIFirmwarePath)
 	}
 }
 
@@ -251,7 +244,6 @@ func TestEnsureDirs(t *testing.T) {
 	cfg.RootDir = root
 	cfg.RuntimeDir = runtimeDir
 	cfg.LogDir = logDir
-	cfg.BuildahRoot = filepath.Join(root, "buildah")
 
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatalf("EnsureDirs error: %v", err)
@@ -270,7 +262,6 @@ func TestEnsureDirs(t *testing.T) {
 		cfg.VMDir(),
 		cfg.TempDir(),
 		cfg.FirmwareDir(),
-		cfg.BuildahRoot,
 		filepath.Join(cfg.RuntimeDir, "vms"),
 		cfg.LogDir,
 	}

@@ -1,6 +1,6 @@
 // Package mocks provides mock implementations of the image.Manager interface
 // for use in unit tests. These mocks allow tests to exercise image-dependent
-// code paths without requiring actual OCI registries, Buildah, or libguestfs.
+// code paths without requiring actual OCI registries or libguestfs.
 //
 // This is a placeholder. A full mock implementation will be added when the
 // testing infrastructure is built out in Phase 1.

@@ -30,7 +30,7 @@ var _ image.Manager = (*manager)(nil)
 
 // manager is the default implementation of the image.Manager interface.
 // It coordinates image pulling, conversion, caching, and bootability
-// verification using external tools (Buildah, qemu-img, libguestfs).
+// verification using external tools (qemu-img, libguestfs).
 type manager struct {
 	cfg    *config.CocoonConfig
 	refCtr storage.ReferenceCounter

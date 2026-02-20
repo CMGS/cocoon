@@ -252,12 +252,11 @@ go test ./pkg/storage -run TestGarbageCollect -v
 
 **Implementation Order**:
 
-1. **Buildah Integration** (docs/04-oci-conversion.md §2-3)
+1. **Native OCI Pull Integration** (docs/04-oci-conversion.md §2-3)
    ```go
-   // pkg/image/buildah.go
+   // pkg/image/identify.go
    func PullImage(imageRef string) error
-   func MountImage(imageRef string) (string, error)
-   func UnmountImage(mountPoint string) error
+   func MaterializeRootfs(imageRef string) (string, error)
    ```
 
 2. **Checksum Calculation** (docs/04-oci-conversion.md §6)
@@ -283,8 +282,8 @@ go test ./pkg/storage -run TestGarbageCollect -v
 
 **Validation**:
 ```bash
-# Test buildah pull
-buildah pull myorg/ubuntu-bootable:22.04
+# Test OCI identify/pull pipeline
+go test ./image/pipeline -run TestPull
 
 # Test conversion
 go run ./cmd/convert-test/main.go myorg/ubuntu-bootable:22.04
@@ -294,7 +293,7 @@ cloud-hypervisor --disk path=converted.qcow2 --cpus boot=1 --memory size=1024M
 ```
 
 **Exit Criteria**:
-- Can pull OCI images using buildah
+- Can pull OCI images using native go-containerregistry path
 - Can calculate manifest checksums correctly
 - Can convert rootfs to qcow2 with partitions
 - Converted-image boot path validated in a KVM-backed E2E environment
@@ -628,7 +627,7 @@ touch pkg/vm/interface.go
 
 **Day 3-4: Dependency Validation**
 - Implement `cocoon doctor` command
-- Check for cloud-hypervisor, buildah, qemu-img, libguestfs
+- Check for cloud-hypervisor, qemu-img, libguestfs
 - Validate /dev/kvm access
 - Check UEFI firmware availability
 
@@ -697,12 +696,10 @@ func SetupVMDirectory(vmID string) error {
 
 ### Week 4-5: OCI Conversion Pipeline
 
-**Day 1-2: Buildah Integration**
+**Day 1-2: Native OCI Pull Integration**
 ```bash
-# Test buildah operations
-buildah pull myorg/ubuntu-bootable:22.04
-buildah from myorg/ubuntu-bootable:22.04
-buildah mount ubuntu-working-container
+# Test OCI pull/materialize operations
+go test ./image/pipeline -run TestIdentifyOCI
 ```
 
 **Day 3-4: Checksum and Caching**
@@ -1248,7 +1245,6 @@ go test -race ./pkg/image -run TestConcurrentConversion -count=50
 **Pinned Versions**:
 ```
 cloud-hypervisor >= v38.0
-buildah >= 1.35.0
 qemu-img >= 8.0
 ```
 
