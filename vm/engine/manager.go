@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -458,7 +459,7 @@ func (m *manager) createOCIVM(
 		CPUs:           cpus,
 		MemoryMB:       memoryMB,
 		DiskSize:       diskSize,
-		BaseImagePath:  runtimeSpec.RootfsLowerDir,
+		BaseImagePath:  m.cfg.OCIRuntimeEntryDir(runtimeSpec.RuntimeKey),
 		OverlayPath:    "",
 		SocketPath:     m.cfg.VMSocketPath(vmID),
 		TPMSocketPath:  tpmSocketPath,
@@ -814,7 +815,7 @@ func (m *manager) setupOCIRuntimeForStart(
 		return nil, nil
 	}
 	if strings.TrimSpace(vmCfg.BaseImagePath) == "" {
-		return nil, fmt.Errorf("rootfs lowerdir is empty")
+		return nil, fmt.Errorf("OCI runtime entry path is empty")
 	}
 	// Re-pin on each start as a self-healing guard:
 	// create-time pin is authoritative, but start-time idempotent pin repairs
@@ -822,8 +823,25 @@ func (m *manager) setupOCIRuntimeForStart(
 	if err := oci.AddRuntimeRef(m.cfg, vmCfg.BaseKey, vmID); err != nil {
 		return nil, fmt.Errorf("pin OCI runtime cache %s for %s: %w", vmCfg.BaseKey, vmID, err)
 	}
-	if err := m.overlayMgr.MountVM(vmID, []string{vmCfg.BaseImagePath}); err != nil {
-		return nil, fmt.Errorf("mount OCI runtime overlay: %w", err)
+
+	// Read entry metadata to derive multi-lowerdir list for OverlayFS mount.
+	entryMetaPath := filepath.Join(vmCfg.BaseImagePath, "meta.json")
+	entryMeta, err := oci.ReadEntryMeta(entryMetaPath)
+	if err != nil {
+		return nil, fmt.Errorf("read OCI runtime entry metadata for %s: %w", vmCfg.BaseKey, err)
+	}
+	// OverlayFS lowerdir: leftmost = highest priority (top layer).
+	// OCI layers in meta are base-to-top, so reverse for lowerdir order.
+	lowerDirs := make([]string, len(entryMeta.RootfsLayerDigests))
+	for i, digest := range entryMeta.RootfsLayerDigests {
+		hex, hexErr := oci.ParseSHA256Digest("sha256:" + digest)
+		if hexErr != nil {
+			return nil, fmt.Errorf("invalid rootfs layer digest in entry meta: %w", hexErr)
+		}
+		lowerDirs[len(lowerDirs)-1-i] = filepath.Join(m.cfg.OCIRuntimeLayerDir(hex), "rootfs")
+	}
+	if mountErr := m.overlayMgr.MountVM(vmID, lowerDirs); mountErr != nil {
+		return nil, fmt.Errorf("mount OCI runtime overlay: %w", mountErr)
 	}
 	socketPath := vmCfg.VirtioFSSock
 	if strings.TrimSpace(socketPath) == "" {

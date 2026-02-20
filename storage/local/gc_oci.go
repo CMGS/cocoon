@@ -420,23 +420,21 @@ func (gc *fileGarbageCollector) CollectUnreferencedOCIBlobs() ([]string, error) 
 	return collected, err
 }
 
-// CollectUnreferencedOCIRuntimeCaches removes OCI runtime cache directories
-// under cache/oci/runtime/ that have no active pins in oci-runtime-refs.json.
+// CollectUnreferencedOCIRuntimeCaches removes unreferenced OCI runtime entries
+// and orphaned layer cache directories using a two-phase approach:
+//
+// Phase 1 (Entry Sweep): scan entries/ directory and remove entries whose
+// runtimeKey has no active pins in oci-runtime-refs.json.
+//
+// Phase 2 (Layer Mark-and-Sweep): scan surviving entry meta.json files to
+// build a set of referenced layer digests, then remove any layer directory
+// not in the referenced set.
 //
 // Lock: gc.lock (L1) -> oci-runtime-refs.lock.
 func (gc *fileGarbageCollector) CollectUnreferencedOCIRuntimeCaches() ([]string, error) {
 	var collected []string
 
 	err := gc.withGCLock(func() error {
-		cacheDir := gc.cfg.OCIRuntimeCacheDir()
-		entries, err := os.ReadDir(cacheDir)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return fmt.Errorf("read OCI runtime cache dir: %w", err)
-		}
-
 		refsLock := flock.New(gc.cfg.OCIRuntimeRefsLock())
 		if err := refsLock.Lock(); err != nil {
 			return fmt.Errorf("acquire OCI runtime refs lock: %w", err)
@@ -451,52 +449,27 @@ func (gc *fileGarbageCollector) CollectUnreferencedOCIRuntimeCaches() ([]string,
 			}
 		}
 
-		changed := false
 		cutoff := time.Now().Add(-storage.OCIGCGracePeriod)
 
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			runtimeKey := entry.Name()
-			refEntry, exists := refsIdx.Runtimes[runtimeKey]
-			if exists && len(refEntry.Refs) > 0 {
-				continue
-			}
-
-			// Defense-in-depth: skip recently-created runtime dirs that may be
-			// in the window between materialization and pin recording.
-			if info, statErr := entry.Info(); statErr == nil && info.ModTime().After(cutoff) {
-				continue
-			}
-
-			if err := os.RemoveAll(gc.cfg.OCIRuntimeEntryDir(runtimeKey)); err != nil {
-				continue // non-fatal
-			}
-			collected = append(collected, runtimeKey)
-
-			if exists {
-				delete(refsIdx.Runtimes, runtimeKey)
-				changed = true
-			}
+		// Phase 1: Entry Sweep — remove unpinned entry dirs.
+		swept, changed, sweepErr := gc.sweepOCIRuntimeEntries(refsIdx, cutoff)
+		if sweepErr != nil {
+			return sweepErr
 		}
-
-		// Cleanup stale zero-ref entries even when their dirs were already gone.
-		for runtimeKey, entry := range refsIdx.Runtimes {
-			if len(entry.Refs) > 0 {
-				continue
-			}
-			if _, statErr := os.Stat(gc.cfg.OCIRuntimeEntryDir(runtimeKey)); os.IsNotExist(statErr) {
-				delete(refsIdx.Runtimes, runtimeKey)
-				changed = true
-			}
-		}
+		collected = append(collected, swept...)
 
 		if changed {
 			if err := utils.AtomicWriteJSON(refsPath, refsIdx); err != nil {
 				return fmt.Errorf("save OCI runtime refs: %w", err)
 			}
 		}
+
+		// Phase 2: Layer Mark-and-Sweep.
+		layerCollected, layerErr := gc.sweepOCIRuntimeLayers(cutoff)
+		if layerErr != nil {
+			return layerErr
+		}
+		collected = append(collected, layerCollected...)
 
 		return nil
 	})
@@ -505,6 +478,111 @@ func (gc *fileGarbageCollector) CollectUnreferencedOCIRuntimeCaches() ([]string,
 		collected = []string{}
 	}
 	return collected, err
+}
+
+// sweepOCIRuntimeEntries removes unpinned entry dirs and stale zero-ref index
+// entries. Returns collected entry keys, whether refsIdx was mutated, and error.
+func (gc *fileGarbageCollector) sweepOCIRuntimeEntries(refsIdx *oci.RuntimeRefsIndex, cutoff time.Time) ([]string, bool, error) {
+	entriesDir := gc.cfg.OCIRuntimeEntriesDir()
+	entries, err := os.ReadDir(entriesDir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, false, fmt.Errorf("read OCI runtime entries dir: %w", err)
+	}
+
+	var collected []string
+	changed := false
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		runtimeKey := entry.Name()
+		refEntry, exists := refsIdx.Runtimes[runtimeKey]
+		if exists && len(refEntry.Refs) > 0 {
+			continue
+		}
+
+		// Defense-in-depth: skip recently-created entry dirs that may be
+		// in the window between materialization and pin recording.
+		if info, statErr := entry.Info(); statErr == nil && info.ModTime().After(cutoff) {
+			continue
+		}
+
+		if removeErr := os.RemoveAll(gc.cfg.OCIRuntimeEntryDir(runtimeKey)); removeErr != nil {
+			continue // non-fatal
+		}
+		collected = append(collected, "entry:"+runtimeKey)
+
+		if exists {
+			delete(refsIdx.Runtimes, runtimeKey)
+			changed = true
+		}
+	}
+
+	// Cleanup stale zero-ref entries even when their dirs were already gone.
+	for runtimeKey, refEntry := range refsIdx.Runtimes {
+		if len(refEntry.Refs) > 0 {
+			continue
+		}
+		if _, statErr := os.Stat(gc.cfg.OCIRuntimeEntryDir(runtimeKey)); os.IsNotExist(statErr) {
+			delete(refsIdx.Runtimes, runtimeKey)
+			changed = true
+		}
+	}
+
+	return collected, changed, nil
+}
+
+// sweepOCIRuntimeLayers collects referenced layers from surviving entry meta
+// files, then removes unreferenced layer dirs.
+func (gc *fileGarbageCollector) sweepOCIRuntimeLayers(cutoff time.Time) ([]string, error) {
+	entriesDir := gc.cfg.OCIRuntimeEntriesDir()
+	referencedLayers := make(map[string]struct{})
+	survivingEntries, _ := os.ReadDir(entriesDir)
+	for _, entry := range survivingEntries {
+		if !entry.IsDir() {
+			continue
+		}
+		metaPath := gc.cfg.OCIRuntimeEntryMetaPath(entry.Name())
+		meta, readErr := oci.ReadEntryMeta(metaPath)
+		if readErr != nil {
+			continue // skip unreadable entries
+		}
+		referencedLayers[meta.KernelLayerDigest] = struct{}{}
+		for _, digest := range meta.RootfsLayerDigests {
+			referencedLayers[digest] = struct{}{}
+		}
+	}
+
+	layersDir := gc.cfg.OCIRuntimeLayersDir()
+	layers, layerReadErr := os.ReadDir(layersDir)
+	if layerReadErr != nil && !os.IsNotExist(layerReadErr) {
+		return nil, fmt.Errorf("read OCI runtime layers dir: %w", layerReadErr)
+	}
+
+	var collected []string
+	for _, layer := range layers {
+		if !layer.IsDir() {
+			continue
+		}
+		hexDigest := layer.Name()
+		if _, referenced := referencedLayers[hexDigest]; referenced {
+			continue
+		}
+
+		// Defense-in-depth: skip recently-created layers.
+		if info, statErr := layer.Info(); statErr == nil && info.ModTime().After(cutoff) {
+			continue
+		}
+
+		layerDir := gc.cfg.OCIRuntimeLayerDir(hexDigest)
+		if removeErr := os.RemoveAll(layerDir); removeErr != nil {
+			continue // non-fatal
+		}
+		collected = append(collected, "layer:"+hexDigest)
+	}
+
+	return collected, nil
 }
 
 // filterManifestDigests returns a new slice with entries not in the remove set.

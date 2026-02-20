@@ -47,11 +47,14 @@ Lock file paths are additionally documented in [06-concurrency.md](./06-concurre
 │       │   ├── oci-layout
 │       │   ├── index.json
 │       │   └── blobs/sha256/{hex}        # Hardlinks to ../../blobs/sha256/{hex}
-│       └── runtime/{runtimeKey}/         # Materialized OCI runtime cache entry
-│           ├── rootfs/                   # Flattened rootfs lowerdir for OverlayFS
-│           └── kernel/
-│               ├── vmlinuz
-│               └── initrd.img
+│       └── runtime/                      # OCI runtime cache (per-layer dedup)
+│           ├── layers/
+│           │   └── {hexDigest}/          # Per-layer, extracted once, shared across entries
+│           │       ├── rootfs/           # For rootfs layers
+│           │       └── kernel/           # For kernel layer (vmlinuz + initrd.img)
+│           └── entries/
+│               └── {runtimeKey}/
+│                   └── meta.json         # Entry metadata: layer digests, arch, cmdline
 ├── buildah/                              # Buildah storage root
 ├── vms/
 │   ├── {vm-id}/                          # e.g., vm-01HXYZ.../
@@ -112,13 +115,13 @@ Phase 2 Planned Paths:
 │   │           ├── index.json
 │   │           └── blobs/sha256/{hex}          # Hardlinks to shared blob store
 │   │
-│   ├── OCI VM Runtime Cache (docs/04.1-oci-vm-images.md) — Implemented
-│   │   └── cache/oci/
-│   │       └── runtime/{runtimeKey}/           # Per-manifest materialized runtime artifacts
-│   │           ├── rootfs/                     # Runtime lowerdir served through OverlayFS
-│   │           └── kernel/
-│   │               ├── vmlinuz                 # payload.kernel
-│   │               └── initrd.img              # payload.initramfs
+│   ├── OCI VM Runtime Cache (docs/04.1-oci-vm-images.md) — Implemented (per-layer dedup)
+│   │   └── cache/oci/runtime/
+│   │       ├── layers/{hexDigest}/             # Per-layer, extracted once, shared across entries
+│   │       │   ├── rootfs/                     # For rootfs layers
+│   │       │   └── kernel/                     # For kernel layer (vmlinuz + initrd.img)
+│   │       └── entries/{runtimeKey}/
+│   │           └── meta.json                   # Entry metadata: layer digests, arch, cmdline
 │   │   └── db/
 │   │       ├── oci-runtime-refs.json           # runtimeKey -> [vm-id] pin tracking
 │   │       └── oci-runtime-refs.lock           # flock for oci-runtime-refs.json updates
@@ -192,8 +195,9 @@ Path notes:
 - **OCI build cache** uses a shared blob store (`cache/oci/blobs/sha256/`) with
   hardlink-based deduplication across OCI layouts (`cache/oci/layouts/`).
   Blob reference counts are tracked in `db/oci-layer-refs.json`.
-- **OCI runtime cache** directories live under `cache/oci/runtime/{runtimeKey}` and
-  are shared across all VMs created from the same OCI manifest.
+- **OCI runtime cache** uses per-layer dedup: each layer is cached once under
+  `cache/oci/runtime/layers/{hexDigest}/` and shared across entries. Entry metadata
+  at `cache/oci/runtime/entries/{runtimeKey}/meta.json` points to shared layers.
 - **Network namespace** files under `/run/cocoon/` are lost on reboot; the Start()
   flow transparently recreates them when needed (see docs/16 Section 2.4).
 
@@ -434,12 +438,13 @@ func (c *CocoonConfig) OCIBuildTagLock() string                     // RootDir/d
 func (c *CocoonConfig) OCILayerRefsFile() string                    // RootDir/db/oci-layer-refs.json
 func (c *CocoonConfig) OCILayerRefsLock() string                    // RootDir/db/oci-layer-refs.lock
 
-// OCI VM Boot (docs/04.1-oci-vm-images.md) — Implemented
+// OCI VM Boot (docs/04.1-oci-vm-images.md) — Implemented (per-layer dedup)
 func (c *CocoonConfig) OCIRuntimeCacheDir() string                        // RootDir/cache/oci/runtime
-func (c *CocoonConfig) OCIRuntimeEntryDir(runtimeKey string) string       // RootDir/cache/oci/runtime/{runtimeKey}
-func (c *CocoonConfig) OCIRuntimeRootfsDir(runtimeKey string) string      // RootDir/cache/oci/runtime/{runtimeKey}/rootfs
-func (c *CocoonConfig) OCIRuntimeKernelPath(runtimeKey string) string     // RootDir/cache/oci/runtime/{runtimeKey}/kernel/vmlinuz
-func (c *CocoonConfig) OCIRuntimeInitrdPath(runtimeKey string) string     // RootDir/cache/oci/runtime/{runtimeKey}/kernel/initrd.img
+func (c *CocoonConfig) OCIRuntimeLayersDir() string                       // RootDir/cache/oci/runtime/layers
+func (c *CocoonConfig) OCIRuntimeLayerDir(hexDigest string) string        // RootDir/cache/oci/runtime/layers/{hexDigest}
+func (c *CocoonConfig) OCIRuntimeEntriesDir() string                      // RootDir/cache/oci/runtime/entries
+func (c *CocoonConfig) OCIRuntimeEntryDir(runtimeKey string) string       // RootDir/cache/oci/runtime/entries/{runtimeKey}
+func (c *CocoonConfig) OCIRuntimeEntryMetaPath(runtimeKey string) string  // RootDir/cache/oci/runtime/entries/{runtimeKey}/meta.json
 func (c *CocoonConfig) OCIRuntimeRefsFile() string                        // RootDir/db/oci-runtime-refs.json
 func (c *CocoonConfig) OCIRuntimeRefsLock() string                        // RootDir/db/oci-runtime-refs.lock
 func (c *CocoonConfig) VMOCIUpperDir(vmID string) string                  // RootDir/vms/{vmID}/upper
@@ -458,8 +463,9 @@ func (c *CocoonConfig) VMVirtiofsPIDPath(vmID, tag string) string    // RuntimeD
 func (c *CocoonConfig) SharesDir() string                            // RootDir/shares
 ```
 
-`EnsureDirs()` already creates `RootDir/cache/oci/blobs/sha256` and
-`RootDir/cache/oci/layouts` and `RootDir/cache/oci/runtime` at startup. Creation of
+`EnsureDirs()` already creates `RootDir/cache/oci/blobs/sha256`,
+`RootDir/cache/oci/layouts`, `RootDir/cache/oci/runtime/layers`, and
+`RootDir/cache/oci/runtime/entries` at startup. Creation of
 `RootDir/checkpoints` and `RootDir/shares` is planned but not yet implemented. `RootDir/dnsmasq`
 is created when the first networked VM is provisioned. Per-VM directories
 (`checkpoints/{ckptID}`, `vms/{vmID}/upper`, `vms/{vmID}/work`,
@@ -882,13 +888,13 @@ Blobs in `cache/oci/blobs/sha256/` with zero manifest references in `oci-layer-r
 
 **Locking**: GC lock (L1) followed by `oci-layer-refs.lock` for atomic check-and-delete.
 
-#### 7. Unreferenced OCI Runtime Caches
+#### 7. Unreferenced OCI Runtime Caches (Two-Phase)
 
-Runtime cache directories under `cache/oci/runtime/` with no active VM pins in `oci-runtime-refs.json`.
+Uses a two-phase approach for the per-layer dedup layout:
 
-**Detection:** Runtime directory exists but either has no entry in `oci-runtime-refs.json` or has an entry with an empty `refs` array.
+**Phase 1 (Entry Sweep):** Scan `entries/` directory. Remove entries whose `runtimeKey` has no active pins in `oci-runtime-refs.json` (with grace period). Prune stale zero-ref index entries.
 
-**Action:** Remove the runtime cache directory and prune stale zero-ref entries from `oci-runtime-refs.json`.
+**Phase 2 (Layer Mark-and-Sweep):** Scan surviving entry `meta.json` files to build a set of referenced layer digests. Remove any `layers/{hexDigest}/` directory not in the referenced set (with grace period).
 
 **Locking**: GC lock (L1) followed by `oci-runtime-refs.lock`.
 

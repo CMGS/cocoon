@@ -44,6 +44,8 @@ Level 3: Image Conversion Lock (per-checksum)
     ↓
 Level 3: OCI Cache Lock (per-manifest-digest) — Phase 2, docs/04.1-oci-vm-images.md
     ↓
+Level 3: OCI Layer Extraction Lock (per-layer-digest) — Implemented, vm/engine/oci_runtime_prepare.go
+    ↓
 Level 4: VM Metadata Lock (per-VM)
     ↓
 Level 5: Checkpoint Lock (per-VM) — Phase 2, docs/15-warm-start.md
@@ -71,6 +73,7 @@ Level 6: dnsmasq Lock (global) — Phase 2, docs/16-networking.md
 - OCI Reference Lock (Phase 2): `/var/lib/cocoon/db/oci-references.lock`
 - Checkpoint Index Lock (Phase 2): `/var/lib/cocoon/checkpoints/checkpoint-index.lock`
 - OCI Cache Lock (Phase 2): `/var/lib/cocoon/cache/oci/{digest}.lock`
+- OCI Layer Extraction Lock: `/var/lib/cocoon/cache/locks/oci-layer-{hexDigest}.lock`
 - dnsmasq Lock (Phase 2): `/run/cocoon/dnsmasq/dnsmasq.lock`
 
 **Name Index Lock Notes**:
@@ -1336,6 +1339,7 @@ func lockWithTimeout(mu *sync.Mutex, timeout time.Duration) error {
 | OCI layer refs | `/var/lib/cocoon/db/oci-layer-refs.lock` | Level 2 (never held with references.lock) |
 | OCI runtime refs | `/var/lib/cocoon/db/oci-runtime-refs.lock` | Level 2 (never held with layer-refs or references.lock) |
 | Image conversion | `/var/lib/cocoon/cache/locks/{checksum}_{arch}.lock` | Level 3 |
+| OCI layer extraction | `/var/lib/cocoon/cache/locks/oci-layer-{hexDigest}.lock` | Level 3 |
 | VM metadata | `/var/lib/cocoon/vms/{vm-id}/metadata.lock` | Level 4 |
 | Checkpoint (Phase 2) | `/var/lib/cocoon/vms/{vm-id}/checkpoint.lock` | Level 5 |
 | Network (Phase 2) | `/run/cocoon/vms/{vm-id}/network.lock` | Level 5 |

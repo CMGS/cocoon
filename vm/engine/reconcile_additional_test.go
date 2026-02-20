@@ -108,9 +108,34 @@ func writeTestOCIVMArtifacts(t *testing.T, cfg *config.CocoonConfig, vmID, name 
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	baseKey := "oci-runtime-key"
-	rootfsLowerDir := cfg.OCIRuntimeRootfsDir(baseKey)
-	if err := os.MkdirAll(rootfsLowerDir, 0o755); err != nil { //nolint:gosec // test fixture directory
-		t.Fatalf("mkdir runtime rootfs dir: %v", err)
+
+	// Create per-layer cache directories and entry metadata.
+	const (
+		kernelDigest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		rootfsDigest = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	)
+	kernelLayerDir := filepath.Join(cfg.OCIRuntimeLayerDir(kernelDigest), "kernel")
+	rootfsLayerDir := filepath.Join(cfg.OCIRuntimeLayerDir(rootfsDigest), "rootfs")
+	if err := os.MkdirAll(kernelLayerDir, 0o755); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("mkdir kernel layer dir: %v", err)
+	}
+	if err := os.MkdirAll(rootfsLayerDir, 0o755); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("mkdir rootfs layer dir: %v", err)
+	}
+
+	entryDir := cfg.OCIRuntimeEntryDir(baseKey)
+	if err := os.MkdirAll(entryDir, 0o755); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("mkdir entry dir: %v", err)
+	}
+	entryMeta := &oci.OCIRuntimeEntryMeta{
+		ManifestDigest:     "sha256:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+		KernelLayerDigest:  kernelDigest,
+		RootfsLayerDigests: []string{rootfsDigest},
+		Arch:               "amd64",
+		VirtioFSTag:        "/dev/root",
+	}
+	if err := oci.WriteEntryMeta(cfg.OCIRuntimeEntryMetaPath(baseKey), entryMeta); err != nil {
+		t.Fatalf("write entry meta: %v", err)
 	}
 
 	vmCfg := &types.VMConfig{
@@ -122,9 +147,9 @@ func writeTestOCIVMArtifacts(t *testing.T, cfg *config.CocoonConfig, vmID, name 
 		ImageType:      types.VMImageTypeOCIVM,
 		Arch:           "amd64",
 		BootStrategy:   types.BootStrategyDirect,
-		BaseImagePath:  rootfsLowerDir,
-		KernelPath:     cfg.OCIRuntimeKernelPath(baseKey),
-		InitramfsPath:  cfg.OCIRuntimeInitrdPath(baseKey),
+		BaseImagePath:  entryDir,
+		KernelPath:     filepath.Join(kernelLayerDir, "vmlinuz"),
+		InitramfsPath:  filepath.Join(kernelLayerDir, "initrd.img"),
 		Cmdline:        "root=/dev/root rootfstype=virtiofs rw",
 		VirtioFSTag:    "/dev/root",
 		VirtioFSSock:   cfg.VMOCIRootfsVirtioFSSocketPath(vmID),
