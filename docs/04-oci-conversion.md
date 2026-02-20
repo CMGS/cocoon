@@ -1,233 +1,169 @@
-# OCI-to-qcow2 Conversion (Native Pipeline)
+# OCI to qcow2 Conversion Pipeline
 
 **Version**: 2.0
 **Status**: Implemented
-**Scope**: `image/pipeline` cloud-image path (OCI/URL/local file -> cached qcow2)
+**Phase**: Phase 1
 **Last Updated**: 2026-02-20
 
+## Executive Summary
+
+This document specifies the pipeline for converting OCI container images into bootable qcow2 disk images for Cloud Hypervisor VMs. The conversion process must produce images that satisfy the [Boot Contract](01-boot-contract.md) while maintaining efficiency through caching and deduplication.
+
+**Key Requirements**:
+1. Pull OCI images using native Go library (`go-containerregistry`), eliminating `buildah`/`skopeo` CLI dependencies.
+2. Materialize rootfs layers into a flattened directory, handling whiteouts and permissions.
+3. Convert rootfs to qcow2 format with proper partitioning (via `guestfish` + `qemu-img`).
+4. Validate GRUB config presence post-conversion.
+5. Cache images based on content checksums (atomic rename into cache with `fsync`).
+6. Provide robust error handling via ClassifiedError (transient/permanent).
+
 ---
 
-## 1. Overview
+## 1. Architecture Overview
 
-Cocoon supports three source types for base image preparation:
-- Registry OCI references
-- HTTP/HTTPS image URLs
-- Local image files
-
-All three converge to a cached immutable qcow2 base image:
+### 1.1 Conversion Pipeline
 
 ```
-source ref -> identify -> conversion lock -> materialize/convert -> cache/base.qcow2
++-----------------+
+|  OCI Registry   | (Docker Hub, GHCR, etc.)
++--------+--------+
+         | remote.Get (manifest only)
+         | Recursive Index resolution (multi-arch)
+         v
++-----------------+
+| Image Identity  | (Checksum, Arch, ManifestDigest)
++--------+--------+
+         | Lock(baseKey)
+         | remote.Image (pull layers)
+         v
++-----------------+
+| Materialized FS | (Temp dir 0700)
++--------+--------+
+         | guestfish (partition + tar-in)
+         v
++-----------------+
+|  Base qcow2     | (Bootable disk image, .tmp)
++--------+--------+
+         | os.Rename + Parent Dir fsync
+         v
++-----------------+
+|  Image Cache    | (/var/lib/cocoon/cache/images/)
++-----------------+
 ```
 
-For OCI refs, Cocoon now uses native registry access (Go library) instead of external OCI CLIs.
+### 1.2 Component Responsibilities
+
+| Component | Responsibility | Implementation |
+|-----------|----------------|------|
+| **Image Identifier** | Compute content-addressed identity from OCI manifest | `go-containerregistry` |
+| **Image Puller** | Download layers and config | `go-containerregistry` |
+| **Rootfs Materializer** | Flatten layers, handle whiteouts, protect paths | `utils/tar.go` (`os.OpenRoot`) |
+| **qcow2 Converter** | Create disk image with partitions, copy rootfs | `qemu-img`, `guestfish` |
+| **Process Manager** | Manage external tool lifecycles (kill groups) | `utils.CommandContextWithGroup` |
+| **Cache Manager** | Deduplicate and cache base images | `image/pipeline/manager.go` |
 
 ---
 
-## 2. Architecture
+## 2. OCI Integration (Native)
 
-### 2.1 Main Components
+**Decision**: Use `google/go-containerregistry` library instead of shelling out to `buildah` or `skopeo`.
 
-- `image/pipeline/manager.go`
-  - orchestrates `Pull`, `Convert`, `Prepare`, cache lookup, lock handling
-- `image/pipeline/identify.go`
-  - OCI identify and OCI rootfs materialization via go-containerregistry
-- `image/pipeline/convert_linux.go`
-  - rootfs directory -> qcow2 using `qemu-img` + `guestfish`
-- `image/refcache`
-  - `IMAGE_REF -> base_key` mapping for fast cache hits
+**Rationale**:
+- **Daemonless**: Pure Go implementation, no background process.
+- **Dependency Reduction**: Removes requirement for users to install `buildah`/`skopeo`.
+- **Control**: Fine-grained control over layer extraction, timeout handling, and retry logic.
+- **Performance**: In-process execution avoids fork/exec overhead for metadata operations.
 
-### 2.2 Data Flow
+### 2.1 Manifest Resolution
+
+The pipeline supports both single Manifests and Manifest Lists (OCI Indexes).
+- **Manifest List**: Recursively resolves the manifest matching `linux/<GOARCH>`.
+- **Config Digest**: Extracted from the resolved single manifest to form the cache key.
+
+---
+
+## 3. Pull & Materialize
+
+### 3.1 Flow
+
+1. **Identify (Cheap)**: Fetch manifest headers only. Compute `base_key` = `SHA256(config + layers + arch)[:16]`.
+2. **Lock**: Acquire exclusive lock on `base_key`.
+3. **Check Cache**: If exists, unlock and return.
+4. **Pull (Expensive)**: Download all layers using the library.
+5. **Materialize**: Extract layers to a temporary directory (`0700` permissions).
+   - Uses `utils/tar.go` with `os.OpenRoot` (Go 1.25) to strictly confine extraction to the target directory, preventing path traversal attacks.
+   - Applies OCI whiteouts (flattening).
+
+---
+
+## 4. Convert Workflow
+
+### 4.1 Conversion Steps
 
 ```
-Registry/URL/File
-   -> ImageIdentity (checksum + arch + metadata)
-   -> per-baseKey conversion lock
-   -> conversion output
-   -> /var/lib/cocoon/cache/images/{checksum16}_{arch}.qcow2
+Materialized Rootfs (Temp Dir)
+    |
+    v
+1. Create empty qcow2 image (qemu-img create)
+    |
+    v
+2. Check guestfish availability (Required)
+    |
+    v
+3. Pack rootfs into tar archive (uncompressed)
+    |
+    v
+4. Guestfish script: partition, format, tar-in rootfs
+   (GPT table, ESP FAT32, root ext4, tar-in, sync)
+    |
+    v
+5. Validate GRUB config (ensureGRUBConfig)
+    |
+    v
+6. Atomic Publish (Rename + DirSync)
 ```
 
----
+### 4.2 Guestfish Dependency
 
-## 3. Reference Classification
-
-Classification logic (`classifyRef`) in `image/pipeline/manager.go`:
-
-- `http://` / `https://` -> URL source
-- absolute/relative existing path -> local file source
-- otherwise -> OCI registry reference
-
-This keeps pull behavior deterministic and allows a unified `Prepare()` pipeline.
+**Hard Requirement**: The OCI conversion path **strictly requires** `libguestfs-tools` (`guestfish`).
+- If `guestfish` is missing, conversion fails immediately.
+- This differs from the *verification* path for existing images, where `guestfish` is optional.
 
 ---
 
-## 4. OCI Identify (No Layer Download)
+## 5. Security & Durability
 
-`identifyOCIRemote(ctx, ref)` performs manifest-level identify:
+### 5.1 Path Safety
+- **Extraction**: Uses `os.OpenRoot` to enforce chroot-like containment during layer extraction.
+- **Ref Classification**: Local files must be prefixed with `./`, `../`, or `/` to avoid shadowing remote registry references (e.g., `ubuntu:latest`).
 
-1. Normalize implicit tag (`:latest`) with `oci.EnsureLatestTag`
-2. Resolve tag with `name.NewTag`
-3. Pull manifest for `linux/<GOARCH>` platform using `remote.Image`
-4. Parse config digest + layer digests
-5. Compute deterministic checksum (`computeOCIChecksum`)
-6. Return `ImageIdentity` with:
-   - `Checksum` (short)
-   - `FullDigest` (full computed identity)
-   - `ManifestDigest` (remote digest)
-   - `Arch`
+### 5.2 Process Management
+- External tools (`qemu-img`, `guestfish`) are executed in their own process groups (`Setpgid`).
+- On context cancellation (timeout/interrupt), the entire process group is killed to prevent orphaned zombie processes.
 
-Goal: cheap identity probe outside conversion lock.
+### 5.3 Data Durability
+- **Atomic Write**: `os.Rename` is followed by `SyncParentDir` (fsync on parent directory) to ensure metadata is flushed to stable storage.
+- **Temp Permissions**: All temporary directories are created with `0700` to prevent information leakage to other users on the host.
 
 ---
 
-## 5. OCI Pull + Rootfs Materialization
+## 6. Caching Strategy
 
-Inside conversion lock, `pullAndMaterializeOCI` does:
-
-1. Fetch image for the resolved platform
-2. Re-check digest if identify produced `ManifestDigest` (TOCTOU guard)
-3. Write temporary OCI layout locally (`writeImageToTempLayout`)
-4. Materialize rootfs into temp dir via `oci.MaterializeRootfs`
-5. Set `identity.TempPath` to materialized rootfs path
-
-Whiteout semantics and layer application order are handled by `oci.MaterializeRootfs`.
+Cache keys are content-addressable based on the **resolved** OCI configuration and layers.
+- **Key**: `{checksum16}_{arch}`
+- **Refcache**: Maintains a mapping of `IMAGE_REF` -> `base_key` to avoid repeated manifest fetches.
 
 ---
 
-## 6. Conversion to qcow2
+## 7. Implementation Status
 
-`Convert()` uses a per-image lock (`cache/locks/{baseKey}.lock`) and double-check cache strategy:
-
-1. Check cache before lock (fast path)
-2. Acquire lock
-3. Re-check cache after lock
-4. Convert source if still missing
-
-### 6.1 URL/Local Source
-
-- detect format with `qemu-img info`
-- if source is qcow2: atomic copy into cache
-- if source is raw: `qemu-img convert -f raw -O qcow2`
-
-### 6.2 OCI Source
-
-- `convertOCI(identity.TempPath, tmpPath, diskSize)` in `convert_linux.go`
-- creates qcow2 and imports materialized rootfs
-- ensures boot contract expectations for Linux VM image path
-
-### 6.3 Atomic Placement
-
-For all sources:
-
-- write `*.tmp` under cache dir
-- `os.Rename(tmp, final)` for atomic publish
-- `chmod 0444` on final base image (immutable shared backing)
+| Feature | Status | Implementation |
+|---------|--------|----------------|
+| Native OCI Pull | **Done** | `go-containerregistry` |
+| Manifest Lists | **Done** | Recursive resolution |
+| Path Safety | **Done** | `os.OpenRoot` |
+| Atomic Durability | **Done** | `SyncParentDir` |
+| Process Cleanup | **Done** | `CommandContextWithGroup` |
+| Sparse File Support | *Deferred* | Planned for Phase 2 |
 
 ---
-
-## 7. Caching and Idempotency
-
-### 7.1 Base Key
-
-Base key format:
-
-```
-{checksum16}_{arch}
-```
-
-Example:
-
-```
-a1b2c3d4e5f6a7b8_amd64
-```
-
-### 7.2 Refcache
-
-`image/refcache` tracks aliases (`IMAGE_REF -> base_key`) for pull/prepare shortcuts.
-
-### 7.3 Concurrency Contract
-
-Only one conversion for a specific `base_key` can run at a time. Concurrent callers either:
-
-- hit cache immediately, or
-- wait lock and then observe post-lock cache hit
-
-This eliminates duplicate conversion work.
-
----
-
-## 8. Verification Integration
-
-After pull/prepare (via CLI), bootability verification is controlled by cache + verify state:
-
-- cache miss: verify by default
-- cache hit and previously verified: skip verify by default
-- `--skip-verify`: force skip
-
-Verification implementation is in `verify_linux.go` (guestfish-based deep checks).
-
----
-
-## 9. Error Model
-
-Cocoon uses classified errors (`types`):
-
-- transient: retryable network/remote issues
-- permanent: deterministic invalid input/config/state
-
-OCI registry errors are normalized via `oci.ClassifyRegistryError`.
-
----
-
-## 10. Platform Support
-
-- Linux: full conversion pipeline supported
-- Darwin: conversion stubs return explicit unsupported errors for Linux-only tooling paths
-
----
-
-## 11. External Tooling Requirements
-
-For this pipeline:
-
-- `qemu-img` (required)
-- `guestfish` (required)
-
-OCI registry probe/pull/inspect in this path is implemented in Go and does not require external OCI CLI tools.
-
----
-
-## 12. Sequence (Simplified)
-
-```text
-Prepare(ref)
-  -> tryRefcacheHit
-  -> classifyRef
-  -> Pull(ref)
-      - OCI: identifyOCIRemote
-      - URL: download temp file + checksum
-      - Local: checksum local file
-  -> Convert(identity)
-      - lock(baseKey)
-      - cache recheck
-      - materialize/convert
-      - atomic publish
-  -> return base image path
-```
-
----
-
-## 13. Known Limitations
-
-- Conversion path remains Linux-tool dependent (`guestfish`, `qemu-img`)
-- OCI runtime direct boot and cloud-image conversion are separate runtime paths with different storage contracts
-- Very large rootfs conversion can be I/O intensive; SSD strongly recommended
-
----
-
-## 14. Validation Checklist
-
-- `go test ./image/pipeline ./oci ./image/refcache`
-- `cocoon image pull <oci-ref|url|local-file>`
-- `cocoon image ls` shows expected cache entries
-- repeated pull/prepare for same ref should produce cache hit
