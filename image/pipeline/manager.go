@@ -22,6 +22,7 @@ import (
 	"github.com/CMGS/cocoon/lock/flock"
 	"github.com/CMGS/cocoon/storage"
 	"github.com/CMGS/cocoon/types"
+	"github.com/CMGS/cocoon/utils"
 )
 
 // Compile-time interface check.
@@ -134,7 +135,9 @@ func (m *manager) Convert(ctx context.Context, identity *image.ImageIdentity) (s
 	case "qcow2":
 		// Already qcow2: atomic copy (temp + fsync + rename).
 		log.Printf("image %s: source is qcow2, performing atomic copy to cache", baseKey)
-		if err := atomicCopyFile(srcPath, tmpPath); err != nil {
+		// Use utils.CopyFile which provides fsync guarantees, then rename into place.
+		// We use 0600 for the temp file initially.
+		if err := utils.CopyFile(srcPath, tmpPath, 0o600); err != nil {
 			return "", types.NewPermanentError(fmt.Errorf("convert %s: copy qcow2 to cache: %w", baseKey, err))
 		}
 
@@ -826,42 +829,6 @@ func (m *manager) pullLocal(_ context.Context, ref string) (*image.ImageIdentity
 
 	log.Printf("image pull (local): %s -> base_key=%s", ref, identity.BaseKey())
 	return identity, nil
-}
-
-// atomicCopyFile copies src to dst using a write + fsync pattern.
-// The caller is responsible for the final rename if needed; this function
-// writes directly to dst.
-func atomicCopyFile(src, dst string) error {
-	in, err := os.Open(src) //nolint:gosec // G304: src is an internal image cache path
-	if err != nil {
-		return fmt.Errorf("open source %s: %w", src, err)
-	}
-	defer func() { _ = in.Close() }()
-
-	out, err := os.Create(dst) //nolint:gosec // G304: dst is an internal cache path
-	if err != nil {
-		return fmt.Errorf("create destination %s: %w", dst, err)
-	}
-
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		_ = os.Remove(dst)
-		return fmt.Errorf("copy %s -> %s: %w", src, dst, err)
-	}
-
-	// Fsync to ensure data is flushed to disk before rename.
-	if err := out.Sync(); err != nil {
-		_ = out.Close()
-		_ = os.Remove(dst)
-		return fmt.Errorf("sync %s: %w", dst, err)
-	}
-
-	if err := out.Close(); err != nil {
-		_ = os.Remove(dst)
-		return fmt.Errorf("close %s: %w", dst, err)
-	}
-
-	return nil
 }
 
 // parseBaseKey splits a base_key ("{checksum}_{arch}") into its components.

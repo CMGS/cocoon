@@ -1234,14 +1234,14 @@ func (m *manager) cleanupOCIRuntime(vmID string, meta *types.VMMetadataFile) err
 		needsMetadataClear = meta.VirtiofsdPID > 0 || strings.TrimSpace(meta.VirtiofsdSocket) != "" || meta.OCIOverlayMounted
 	}
 
-	var cleanupErrs []string
+	var cleanupErr error
 
 	if err := m.virtiofsMgr.Stop(vmID, pid, expectedProc, socketPath); err != nil {
-		cleanupErrs = append(cleanupErrs, fmt.Sprintf("stop virtiofsd: %v", err))
+		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("stop virtiofsd: %w", err))
 	}
 
 	if err := m.overlayMgr.UnmountVM(vmID); err != nil {
-		cleanupErrs = append(cleanupErrs, fmt.Sprintf("unmount overlay: %v", err))
+		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("unmount overlay: %w", err))
 	}
 
 	if metaExists && needsMetadataClear {
@@ -1250,14 +1250,11 @@ func (m *manager) cleanupOCIRuntime(vmID string, meta *types.VMMetadataFile) err
 			md.VirtiofsdSocket = ""
 			md.OCIOverlayMounted = false
 		}); err != nil && !isNotFound(err) {
-			cleanupErrs = append(cleanupErrs, fmt.Sprintf("clear OCI runtime metadata: %v", err))
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("clear OCI runtime metadata: %w", err))
 		}
 	}
 
-	if len(cleanupErrs) > 0 {
-		return fmt.Errorf("%s", strings.Join(cleanupErrs, "; "))
-	}
-	return nil
+	return cleanupErr
 }
 
 // Inspect returns a merged view of config.json and metadata.json.
@@ -1391,13 +1388,8 @@ func readSerialLogExcerpt(path string, maxLines int) ([]string, error) {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-// transitionStateWithUpdate validates a state transition and applies an
-// additional mutation function to metadata before persisting.
-//
-// Callers MUST NOT already hold the VM metadata lock (Level 4). This method
-// acquires it internally. Calling while holding the lock will deadlock because
-// flock is not reentrant.
-func (m *manager) transitionStateWithUpdate(vmID string, to types.VMState, reason string, mutate func(*types.VMMetadataFile)) error {
+// withMetadataLock executes fn while holding the VM metadata lock.
+func (m *manager) withMetadataLock(vmID string, fn func(*types.VMMetadataFile) error) error {
 	lockPath := m.cfg.VMMetadataLock(vmID)
 	fl := flock.New(lockPath)
 	if err := fl.Lock(); err != nil {
@@ -1411,30 +1403,41 @@ func (m *manager) transitionStateWithUpdate(vmID string, to types.VMState, reaso
 		return fmt.Errorf("read metadata for %s: %w", vmID, err)
 	}
 
-	from := types.VMState(meta.State)
-	if err := types.ValidateTransition(from, to); err != nil {
-		return fmt.Errorf("%w: %s -> %s (%s)", types.ErrInvalidTransition, from, to, reason)
+	if err := fn(&meta); err != nil {
+		return err
 	}
 
-	meta.PreviousState = meta.State
-	meta.State = string(to)
 	meta.UpdatedAt = nowRFC3339()
-
-	// Auto-track errors: when entering ERROR, record reason and increment count.
-	if to == types.VMStateError {
-		meta.LastError = reason
-		meta.LastErrorType = string(classifyError(reason))
-		meta.LastErrorAt = nowRFC3339()
-		if meta.ErrorCount < 1000 {
-			meta.ErrorCount++
-		}
-	}
-
-	if mutate != nil {
-		mutate(&meta)
-	}
-
 	return utils.AtomicWriteJSON(metaPath, &meta)
+}
+
+// transitionStateWithUpdate validates a state transition and applies an
+// additional mutation function to metadata before persisting.
+func (m *manager) transitionStateWithUpdate(vmID string, to types.VMState, reason string, mutate func(*types.VMMetadataFile)) error {
+	return m.withMetadataLock(vmID, func(meta *types.VMMetadataFile) error {
+		from := types.VMState(meta.State)
+		if err := types.ValidateTransition(from, to); err != nil {
+			return fmt.Errorf("%w: %s -> %s (%s)", types.ErrInvalidTransition, from, to, reason)
+		}
+
+		meta.PreviousState = meta.State
+		meta.State = string(to)
+
+		// Auto-track errors: when entering ERROR, record reason and increment count.
+		if to == types.VMStateError {
+			meta.LastError = reason
+			meta.LastErrorType = string(classifyError(reason))
+			meta.LastErrorAt = nowRFC3339()
+			if meta.ErrorCount < 1000 {
+				meta.ErrorCount++
+			}
+		}
+
+		if mutate != nil {
+			mutate(meta)
+		}
+		return nil
+	})
 }
 
 // UpdateMetadata applies a mutation function to metadata without performing
@@ -1444,29 +1447,14 @@ func (m *manager) UpdateMetadata(vmID string, mutate func(*types.VMMetadataFile)
 }
 
 // updateMetadata applies a mutation function to metadata without performing
-// a state transition. Used for recording runtime information (e.g., PID)
-// within the same state.
+// a state transition.
 func (m *manager) updateMetadata(vmID string, mutate func(*types.VMMetadataFile)) error {
-	lockPath := m.cfg.VMMetadataLock(vmID)
-	fl := flock.New(lockPath)
-	if err := fl.Lock(); err != nil {
-		return fmt.Errorf("acquire metadata lock for %s: %w", vmID, err)
-	}
-	defer fl.Unlock() //nolint:errcheck
-
-	metaPath := m.cfg.VMMetadataPath(vmID)
-	var meta types.VMMetadataFile
-	if err := utils.ReadJSON(metaPath, &meta); err != nil {
-		return fmt.Errorf("read metadata for %s: %w", vmID, err)
-	}
-
-	meta.UpdatedAt = nowRFC3339()
-
-	if mutate != nil {
-		mutate(&meta)
-	}
-
-	return utils.AtomicWriteJSON(metaPath, &meta)
+	return m.withMetadataLock(vmID, func(meta *types.VMMetadataFile) error {
+		if mutate != nil {
+			mutate(meta)
+		}
+		return nil
+	})
 }
 
 // buildCHVMConfig converts a types.VMConfig to the Cloud Hypervisor REST API
