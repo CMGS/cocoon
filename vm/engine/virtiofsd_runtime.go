@@ -161,14 +161,20 @@ func launchVirtiofsdProcess(_ context.Context, binary string, args []string, log
 	}
 
 	pid := cmd.Process.Pid
-	// Reap in background to avoid zombie processes if virtiofsd exits while
-	// the CLI/manager process is still alive.
-	go func(f *os.File) {
-		_ = cmd.Wait()
-		if f != nil {
-			_ = f.Close()
+	// Release the process handle so virtiofsd is fully detached from the Go
+	// runtime and lives as an independent OS process. cmd.Wait() must NOT be
+	// used here: keeping a Go-side reference causes the runtime to kill the
+	// process on CLI exit. With Release(), virtiofsd is reparented to init.
+	if relErr := cmd.Process.Release(); relErr != nil {
+		_ = cmd.Process.Kill()
+		if logFile != nil {
+			_ = logFile.Close()
 		}
-	}(logFile)
+		return 0, fmt.Errorf("release virtiofsd process handle: %w", relErr)
+	}
+	if logFile != nil {
+		_ = logFile.Close()
+	}
 	return pid, nil
 }
 

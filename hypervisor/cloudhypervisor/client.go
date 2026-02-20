@@ -162,14 +162,15 @@ func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (
 		// Check socket existence then connectivity.
 		if _, statErr := os.Stat(socketPath); statErr == nil {
 			if connErr := c.CheckSocketConnectivity(socketPath); connErr == nil {
-				// Socket ready. Reap in background to avoid zombie processes if CH
-				// exits while the CLI process is still alive.
-				go func(logFile *os.File) {
-					_ = cmd.Wait()
-					if logFile != nil {
-						_ = logFile.Close()
-					}
-				}(chLogFile)
+				// Socket ready. Release the process handle so CH is fully detached
+				// from the Go runtime and lives as an independent OS process.
+				// cmd.Wait() must NOT be used here: it keeps a Go-side reference to
+				// the process, causing the runtime to kill it on CLI exit.
+				// With Release(), CH is reparented to init and outlives the CLI.
+				_ = cmd.Process.Release()
+				if chLogFile != nil {
+					_ = chLogFile.Close()
+				}
 				return pid, nil
 			}
 		}
@@ -371,14 +372,13 @@ func (c *client) startSwtpm(_ context.Context, vmID string, tpmSocketPath string
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(tpmSocketPath); err == nil {
-			// Socket ready. Reap in background to avoid zombie processes if swtpm
-			// exits while the CLI process is still alive.
-			go func(f *os.File) {
-				_ = cmd.Wait()
-				if f != nil {
-					_ = f.Close()
-				}
-			}(logFile)
+			// Socket ready. Release the process handle so swtpm is fully detached
+			// from the Go runtime and lives as an independent OS process.
+			// See Launch() for rationale — same reasoning applies here.
+			_ = cmd.Process.Release()
+			if logFile != nil {
+				_ = logFile.Close()
+			}
 			return nil
 		}
 		// Fast fail: if swtpm already exited, don't wait the full 5s.
