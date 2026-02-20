@@ -306,6 +306,34 @@ In practice: leave conversations open until a confirming reply is posted
 (e.g., "Confirmed", "Accepted", "Tracked in #N"). The person who raised the
 finding is the one who should resolve it, not the author.
 
+When a conversation reaches consensus (fixed/accepted/deferred), you must
+explicitly mark that inline conversation as **resolved** in GitHub (do not
+leave agreed threads open).
+
+Use GraphQL to resolve the thread by ID:
+
+```bash
+# 1. List review thread IDs and resolution state
+gh api graphql -f query='
+  query($owner:String!, $repo:String!, $pr:Int!) {
+    repository(owner:$owner, name:$repo) {
+      pullRequest(number:$pr) {
+        reviewThreads(first:100) {
+          nodes { id isResolved }
+        }
+      }
+    }
+  }' -F owner=CMGS -F repo=cocoon -F pr=<PR_NUMBER>
+
+# 2. Resolve a thread that reached consensus
+gh api graphql -f query='
+  mutation($threadId:ID!) {
+    resolveReviewThread(input:{threadId:$threadId}) {
+      thread { id isResolved }
+    }
+  }' -F threadId=<THREAD_ID>
+```
+
 ## Issue Management
 
 ### Rule

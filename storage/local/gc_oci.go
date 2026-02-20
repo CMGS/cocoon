@@ -548,10 +548,13 @@ func (gc *fileGarbageCollector) sweepOCIRuntimeLayers(cutoff time.Time) ([]strin
 		if !entry.IsDir() {
 			continue
 		}
-		metaPath := gc.cfg.OCIRuntimeEntryMetaPath(entry.Name())
+		runtimeKey := entry.Name()
+		metaPath := gc.cfg.OCIRuntimeEntryMetaPath(runtimeKey)
 		meta, readErr := oci.ReadEntryMeta(metaPath)
 		if readErr != nil {
-			continue // skip unreadable entries
+			// Fail-safe: unreadable entry metadata can under-mark layer references
+			// and lead to destructive false-positive layer deletion.
+			return nil, fmt.Errorf("read OCI runtime entry meta for %s: %w", runtimeKey, readErr)
 		}
 		referencedLayers[meta.KernelLayerDigest] = struct{}{}
 		for _, digest := range meta.RootfsLayerDigests {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -109,6 +110,29 @@ func writeRuntimeRefs(t *testing.T, cfg testableConfig, refs map[string][]string
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+func writeRuntimeEntryMeta(t *testing.T, cfg *config.CocoonConfig, runtimeKey string) {
+	t.Helper()
+	const (
+		kernelDigest = "1111111111111111111111111111111111111111111111111111111111111111"
+		rootfsDigest = "2222222222222222222222222222222222222222222222222222222222222222"
+	)
+
+	entryDir := cfg.OCIRuntimeEntryDir(runtimeKey)
+	if err := os.MkdirAll(entryDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll entry dir: %v", err)
+	}
+	meta := &oci.OCIRuntimeEntryMeta{
+		ManifestDigest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		KernelLayerDigest:  kernelDigest,
+		RootfsLayerDigests: []string{rootfsDigest},
+		Arch:               "amd64",
+		VirtioFSTag:        "/dev/root",
+	}
+	if err := oci.WriteEntryMeta(cfg.OCIRuntimeEntryMetaPath(runtimeKey), meta); err != nil {
+		t.Fatalf("write entry meta: %v", err)
 	}
 }
 
@@ -667,6 +691,7 @@ func TestOCIGC_CollectUnreferencedOCIRuntimeCaches_RemovesUnpinned(t *testing.T)
 	if err := os.MkdirAll(unpinnedEntry, 0o755); err != nil {
 		t.Fatalf("mkdir unpinned entry: %v", err)
 	}
+	writeRuntimeEntryMeta(t, cfg, "1111222233334444")
 	_ = os.Chtimes(pinnedEntry, oldTime, oldTime)
 	_ = os.Chtimes(unpinnedEntry, oldTime, oldTime)
 
@@ -701,6 +726,7 @@ func TestOCIGC_CollectUnreferencedOCIRuntimeCaches_GracePeriod(t *testing.T) {
 	if err := os.MkdirAll(recent, 0o755); err != nil {
 		t.Fatalf("mkdir recent entry: %v", err)
 	}
+	writeRuntimeEntryMeta(t, cfg, "abcdabcdabcdabcd")
 
 	collected, err := gc.CollectUnreferencedOCIRuntimeCaches()
 	if err != nil {
@@ -817,5 +843,58 @@ func TestOCIGC_CollectUnreferencedOCIRuntimeCaches_LayerMarkAndSweep(t *testing.
 	// Unreferenced layer should be gone.
 	if _, err := os.Stat(cfg.OCIRuntimeLayerDir(unreferencedLayer)); !os.IsNotExist(err) {
 		t.Fatalf("unreferenced layer should be removed, stat err=%v", err)
+	}
+}
+
+func TestOCIGC_CollectUnreferencedOCIRuntimeCaches_LayerSweepFailsOnUnreadableEntryMeta(t *testing.T) {
+	cfg := newTestConfig(t)
+	gc, ok := NewGarbageCollector(cfg).(*fileGarbageCollector)
+	if !ok {
+		t.Fatal("type assertion to *fileGarbageCollector failed")
+	}
+
+	oldTime := time.Now().Add(-10 * time.Minute)
+	const (
+		referencedLayer = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+		otherLayer      = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+		runtimeKey      = "pinned-unreadable-meta"
+	)
+
+	entryDir := cfg.OCIRuntimeEntryDir(runtimeKey)
+	if err := os.MkdirAll(entryDir, 0o755); err != nil {
+		t.Fatalf("mkdir entry dir: %v", err)
+	}
+	// Corrupt meta.json to simulate unreadable metadata while entry is still pinned.
+	if err := os.WriteFile(cfg.OCIRuntimeEntryMetaPath(runtimeKey), []byte("{"), 0o644); err != nil {
+		t.Fatalf("write corrupt entry meta: %v", err)
+	}
+
+	tc := testableConfig{cfg: cfg}
+	writeRuntimeRefs(t, tc, map[string][]string{
+		runtimeKey: {"vm-PINNED"},
+	})
+
+	for _, hex := range []string{referencedLayer, otherLayer} {
+		layerDir := cfg.OCIRuntimeLayerDir(hex)
+		if err := os.MkdirAll(layerDir, 0o755); err != nil {
+			t.Fatalf("mkdir layer %s: %v", hex, err)
+		}
+		_ = os.Chtimes(layerDir, oldTime, oldTime)
+	}
+
+	_, err := gc.CollectUnreferencedOCIRuntimeCaches()
+	if err == nil {
+		t.Fatal("expected CollectUnreferencedOCIRuntimeCaches to fail on unreadable entry meta")
+	}
+	if !strings.Contains(err.Error(), "read OCI runtime entry meta for "+runtimeKey) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Fail-safe behavior: no layer should be removed when reference scan fails.
+	if _, statErr := os.Stat(cfg.OCIRuntimeLayerDir(referencedLayer)); statErr != nil {
+		t.Fatalf("referenced layer should remain after failed sweep: %v", statErr)
+	}
+	if _, statErr := os.Stat(cfg.OCIRuntimeLayerDir(otherLayer)); statErr != nil {
+		t.Fatalf("other layer should remain after failed sweep: %v", statErr)
 	}
 }
