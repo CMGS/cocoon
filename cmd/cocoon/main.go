@@ -17,7 +17,6 @@ var (
 	rootDir    string
 	runtimeDir string
 	logDir     string
-	logLevel   string
 )
 
 func main() {
@@ -54,13 +53,6 @@ func main() {
 			Usage:       "log directory for VM serial logs (overrides config)",
 			Destination: &logDir,
 			EnvVars:     []string{"COCOON_LOG_DIR"},
-		},
-		&cli.StringFlag{
-			Name:        "log-level",
-			Value:       "info",
-			Usage:       "log level (debug, info, warn, error)",
-			Destination: &logLevel,
-			EnvVars:     []string{"COCOON_LOG_LEVEL"},
 		},
 	}
 

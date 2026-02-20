@@ -111,6 +111,14 @@ type GarbageCollector interface {
 	// that have zero manifest references. Returns collected blob digests.
 	CollectUnreferencedOCIBlobs() ([]string, error)
 
+	// CollectUnreferencedOCIRuntimeCaches removes OCI runtime cache directories
+	// that have no active pins. Returns collected runtime key names.
+	CollectUnreferencedOCIRuntimeCaches() ([]string, error)
+
+	// CollectStaleConversionLocks removes stale image-conversion lock files
+	// older than maxAge. Returns the filenames that were collected.
+	CollectStaleConversionLocks(maxAge time.Duration) ([]string, error)
+
 	// CollectTempFiles removes files in temp/ older than maxAge.
 	// Returns the filenames that were collected.
 	CollectTempFiles(maxAge time.Duration) ([]string, error)
@@ -119,6 +127,7 @@ type GarbageCollector interface {
 	// CollectUnreferencedImages + CollectOrphanedOverlays +
 	// CollectOrphanedOCILayouts + CollectStaleOCITags +
 	// CollectOrphanedOCIManifestRefs + CollectUnreferencedOCIBlobs +
+	// CollectUnreferencedOCIRuntimeCaches + CollectStaleConversionLocks +
 	// CollectTempFiles.
 	FullGC() error
 }

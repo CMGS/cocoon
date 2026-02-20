@@ -13,9 +13,6 @@ import (
 	"github.com/CMGS/cocoon/utils"
 )
 
-// ociGCGracePeriod is an alias for the canonical constant in the storage package.
-const ociGCGracePeriod = storage.OCIGCGracePeriod
-
 // OCI GC lock hierarchy (must remain consistent with docs/06-concurrency.md):
 // 1. gc.lock (L1) is always outermost for all GC phases.
 // 2. Build/index phases then acquire:
@@ -72,7 +69,7 @@ func (gc *fileGarbageCollector) CollectOrphanedOCILayouts() ([]string, error) {
 			knownLayouts[entry.LayoutPath] = true
 		}
 
-		cutoff := time.Now().Add(-ociGCGracePeriod)
+		cutoff := time.Now().Add(-storage.OCIGCGracePeriod)
 
 		for _, entry := range entries {
 			if !entry.IsDir() {
@@ -204,7 +201,7 @@ func (gc *fileGarbageCollector) CollectStaleOCITags() ([]string, error) {
 		}
 
 		changed := false
-		cutoff := time.Now().Add(-ociGCGracePeriod)
+		cutoff := time.Now().Add(-storage.OCIGCGracePeriod)
 		blobDir := gc.cfg.OCIBlobDir()
 		for digest, blobRef := range layerRefs.Blobs {
 			filtered := filterManifestDigests(blobRef.ManifestDigests, orphanSet)
@@ -302,7 +299,7 @@ func (gc *fileGarbageCollector) CollectOrphanedOCIManifestRefs() ([]string, erro
 		}
 
 		// Filter orphaned manifests from blob entries.
-		cutoff := time.Now().Add(-ociGCGracePeriod)
+		cutoff := time.Now().Add(-storage.OCIGCGracePeriod)
 		blobDir := gc.cfg.OCIBlobDir()
 		changed := false
 
@@ -372,7 +369,7 @@ func (gc *fileGarbageCollector) CollectUnreferencedOCIBlobs() ([]string, error) 
 			}
 		}
 
-		cutoff := time.Now().Add(-ociGCGracePeriod)
+		cutoff := time.Now().Add(-storage.OCIGCGracePeriod)
 		changed := false
 		for _, entry := range entries {
 			if entry.IsDir() {
@@ -455,7 +452,7 @@ func (gc *fileGarbageCollector) CollectUnreferencedOCIRuntimeCaches() ([]string,
 		}
 
 		changed := false
-		cutoff := time.Now().Add(-ociGCGracePeriod)
+		cutoff := time.Now().Add(-storage.OCIGCGracePeriod)
 
 		for _, entry := range entries {
 			if !entry.IsDir() {

@@ -114,14 +114,16 @@ func (m *MockCOWManager) GetOverlayInfo(vmID string) (*storage.OverlayInfo, erro
 // Each method can be overridden by setting the corresponding Func field.
 // If a Func field is nil, the method returns zero values.
 type MockGarbageCollector struct {
-	CollectUnreferencedImagesFunc      func() ([]string, error)
-	CollectOrphanedOverlaysFunc        func() ([]string, error)
-	CollectOrphanedOCILayoutsFunc      func() ([]string, error)
-	CollectStaleOCITagsFunc            func() ([]string, error)
-	CollectOrphanedOCIManifestRefsFunc func() ([]string, error)
-	CollectUnreferencedOCIBlobsFunc    func() ([]string, error)
-	CollectTempFilesFunc               func(maxAge time.Duration) ([]string, error)
-	FullGCFunc                         func() error
+	CollectUnreferencedImagesFunc           func() ([]string, error)
+	CollectOrphanedOverlaysFunc             func() ([]string, error)
+	CollectOrphanedOCILayoutsFunc           func() ([]string, error)
+	CollectStaleOCITagsFunc                 func() ([]string, error)
+	CollectOrphanedOCIManifestRefsFunc      func() ([]string, error)
+	CollectUnreferencedOCIBlobsFunc         func() ([]string, error)
+	CollectUnreferencedOCIRuntimeCachesFunc func() ([]string, error)
+	CollectStaleConversionLocksFunc         func(maxAge time.Duration) ([]string, error)
+	CollectTempFilesFunc                    func(maxAge time.Duration) ([]string, error)
+	FullGCFunc                              func() error
 }
 
 // Compile-time check that MockGarbageCollector implements storage.GarbageCollector.
@@ -165,6 +167,20 @@ func (m *MockGarbageCollector) CollectOrphanedOCIManifestRefs() ([]string, error
 func (m *MockGarbageCollector) CollectUnreferencedOCIBlobs() ([]string, error) {
 	if m.CollectUnreferencedOCIBlobsFunc != nil {
 		return m.CollectUnreferencedOCIBlobsFunc()
+	}
+	return []string{}, nil
+}
+
+func (m *MockGarbageCollector) CollectUnreferencedOCIRuntimeCaches() ([]string, error) {
+	if m.CollectUnreferencedOCIRuntimeCachesFunc != nil {
+		return m.CollectUnreferencedOCIRuntimeCachesFunc()
+	}
+	return []string{}, nil
+}
+
+func (m *MockGarbageCollector) CollectStaleConversionLocks(maxAge time.Duration) ([]string, error) {
+	if m.CollectStaleConversionLocksFunc != nil {
+		return m.CollectStaleConversionLocksFunc(maxAge)
 	}
 	return []string{}, nil
 }

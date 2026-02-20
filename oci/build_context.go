@@ -38,9 +38,9 @@ type BuildContext struct {
 	BaseRootfsDir string `json:"base_rootfs_dir,omitempty"`
 }
 
-// BuildContextPathForImage returns the sidecar build-context path associated
+// buildContextPathForImage returns the sidecar build-context path associated
 // with a materialized image path.
-func BuildContextPathForImage(imagePath string) string {
+func buildContextPathForImage(imagePath string) string {
 	return filepath.Join(filepath.Dir(imagePath), buildContextFilename)
 }
 
@@ -50,7 +50,7 @@ func WriteBuildContextForImage(imagePath string, ctx *BuildContext) error {
 	if ctx == nil {
 		return fmt.Errorf("build context is nil")
 	}
-	ctxPath := BuildContextPathForImage(imagePath)
+	ctxPath := buildContextPathForImage(imagePath)
 	if err := os.MkdirAll(filepath.Dir(ctxPath), 0o755); err != nil { //nolint:gosec // temporary workspace path
 		return fmt.Errorf("create build context dir: %w", err)
 	}
@@ -63,7 +63,7 @@ func WriteBuildContextForImage(imagePath string, ctx *BuildContext) error {
 // ReadBuildContextForImage reads the optional build-context sidecar associated
 // with imagePath. It returns (nil, nil) when no context file exists.
 func ReadBuildContextForImage(imagePath string) (*BuildContext, error) {
-	ctxPath := BuildContextPathForImage(imagePath)
+	ctxPath := buildContextPathForImage(imagePath)
 	var ctx BuildContext
 	if err := utils.ReadJSON(ctxPath, &ctx); err != nil {
 		if os.IsNotExist(err) {

@@ -38,6 +38,9 @@ import (
 // a lock MUST NOT attempt to acquire the same lock again. All current
 // call paths are verified to be non-recursive.
 
+// nowRFC3339 returns the current UTC time formatted as RFC3339.
+func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
+
 // Compile-time interface check.
 var _ vm.Manager = (*manager)(nil)
 
@@ -175,7 +178,7 @@ func (m *manager) SaveMetadata(meta *types.VMMetadataFile) error {
 	}
 	defer fl.Unlock() //nolint:errcheck
 
-	meta.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	meta.UpdatedAt = nowRFC3339()
 
 	metaPath := m.cfg.VMMetadataPath(meta.VMID)
 	return utils.AtomicWriteJSON(metaPath, meta)
@@ -250,7 +253,7 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 	// Generate vm_id.
 	vmID := "vm-" + ulid.MustNew(ulid.Now(), rand.Reader).String()
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 	cachedBaseKeysBefore := m.snapshotCachedBaseKeys(ctx)
 
 	// Step 1: Prepare image (pull + convert + cache).
@@ -282,7 +285,7 @@ func (m *manager) Create(ctx context.Context, opts *vm.CreateOptions) (*types.VM
 	}
 
 	// Resolve firmware path based on boot strategy and arch.
-	firmwarePath, err := resolveFirmwarePath(m.cfg, bootStrategy, identity.Arch)
+	firmwarePath, err := resolveFirmwarePath(m.cfg, bootStrategy)
 	if err != nil {
 		_ = m.refCounter.RemoveReference(baseKey, vmID)
 		return nil, fmt.Errorf("resolve firmware: %w", err)
@@ -412,7 +415,7 @@ func (m *manager) createOCIVM(
 		name = generateDefaultName()
 	}
 	vmID := "vm-" + ulid.MustNew(ulid.Now(), rand.Reader).String()
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 	runtimePinned := false
 	createSucceeded := false
 	defer func() {
@@ -429,7 +432,7 @@ func (m *manager) createOCIVM(
 	}
 	runtimePinned = true
 
-	firmwarePath, err := resolveFirmwarePath(m.cfg, bootStrategy, runtimeSpec.Arch)
+	firmwarePath, err := resolveFirmwarePath(m.cfg, bootStrategy)
 	if err != nil {
 		return nil, fmt.Errorf("resolve firmware: %w", err)
 	}
@@ -666,7 +669,7 @@ func (m *manager) attemptBoot(ctx context.Context, vmID string, vmCfg *types.VMC
 	if err := m.updateMetadata(vmID, func(md *types.VMMetadataFile) {
 		md.ProcessPID = pid
 		md.HypervisorBinary = runtimeHypervisor
-		md.StartedAt = time.Now().UTC().Format(time.RFC3339)
+		md.StartedAt = nowRFC3339()
 	}); err != nil {
 		_ = m.hyper.ForceKill(vmID)
 		return nil, fmt.Errorf("record PID for %s: %w", vmID, err)
@@ -746,7 +749,7 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 		if vmCfg.ImageType != types.VMImageTypeOCIVM {
 			return
 		}
-		if cleanupErr := m.cleanupOCIRuntimeByMetadata(vmID); cleanupErr != nil {
+		if cleanupErr := m.cleanupOCIRuntime(vmID, nil); cleanupErr != nil {
 			log.Printf("warning: rollback OCI runtime for %s after %s (%v): %v", vmID, trigger, triggerErr, cleanupErr)
 		}
 	}
@@ -919,7 +922,7 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 	}
 
 	// Transition STOPPING -> STOPPED with stopped_at and cleared PID.
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 	if err := m.transitionStateWithUpdate(vmID, types.VMStateStopped, "graceful stop completed", func(md *types.VMMetadataFile) {
 		md.StoppedAt = now
 		md.ProcessPID = 0
@@ -928,7 +931,7 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 		return err
 	}
 
-	if cleanupErr := m.cleanupOCIRuntimeByMetadata(vmID); cleanupErr != nil {
+	if cleanupErr := m.cleanupOCIRuntime(vmID, nil); cleanupErr != nil {
 		log.Printf("warning: cleanup OCI runtime resources for %s during stop: %v", vmID, cleanupErr)
 	}
 
@@ -958,12 +961,12 @@ func (m *manager) waitForStoppingVM(ctx context.Context, vmID string, timeout ti
 			alive = utils.ValidateProcess(freshMeta.ProcessPID, freshMeta.HypervisorProcessName(m.cfg.CHBinary))
 		}
 		if !alive {
-			now := time.Now().UTC().Format(time.RFC3339)
+			now := nowRFC3339()
 			_ = m.transitionStateWithUpdate(vmID, types.VMStateStopped, "process exited during stop wait", func(md *types.VMMetadataFile) {
 				md.StoppedAt = now
 				md.ProcessPID = 0
 			})
-			if cleanupErr := m.cleanupOCIRuntimeByMetadata(vmID); cleanupErr != nil {
+			if cleanupErr := m.cleanupOCIRuntime(vmID, nil); cleanupErr != nil {
 				log.Printf("warning: cleanup OCI runtime resources for %s after process exit during stop wait: %v", vmID, cleanupErr)
 			}
 			return nil
@@ -1019,7 +1022,7 @@ func (m *manager) Kill(ctx context.Context, vmID string) error {
 	}
 
 	// Determine target state based on current state.
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowRFC3339()
 	var transErr error
 	switch state {
 	case types.VMStateRunning:
@@ -1194,7 +1197,7 @@ func (m *manager) ensureDeletePreconditions(ctx context.Context, vmID string, fo
 		if meta.ProcessPID > 0 && utils.ValidateProcess(meta.ProcessPID, meta.HypervisorProcessName(m.cfg.CHBinary)) {
 			_ = utils.ForceKillProcess(meta.ProcessPID)
 		}
-		now := time.Now().UTC().Format(time.RFC3339)
+		now := nowRFC3339()
 		_ = m.transitionStateWithUpdate(vmID, types.VMStateStopped, "force killed for delete", func(md *types.VMMetadataFile) {
 			md.StoppedAt = now
 			md.ProcessPID = 0
@@ -1217,10 +1220,6 @@ func (m *manager) ensureDeletePreconditions(ctx context.Context, vmID string, fo
 		// CREATED, STOPPED, etc. — no preconditions needed.
 	}
 	return nil
-}
-
-func (m *manager) cleanupOCIRuntimeByMetadata(vmID string) error {
-	return m.cleanupOCIRuntime(vmID, nil)
 }
 
 func (m *manager) removeVMReference(vmCfg *types.VMConfig, vmID string) error {
@@ -1441,13 +1440,13 @@ func (m *manager) transitionStateWithUpdate(vmID string, to types.VMState, reaso
 
 	meta.PreviousState = meta.State
 	meta.State = string(to)
-	meta.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	meta.UpdatedAt = nowRFC3339()
 
 	// Auto-track errors: when entering ERROR, record reason and increment count.
 	if to == types.VMStateError {
 		meta.LastError = reason
 		meta.LastErrorType = string(classifyError(reason))
-		meta.LastErrorAt = time.Now().UTC().Format(time.RFC3339)
+		meta.LastErrorAt = nowRFC3339()
 		if meta.ErrorCount < 1000 {
 			meta.ErrorCount++
 		}
@@ -1483,7 +1482,7 @@ func (m *manager) updateMetadata(vmID string, mutate func(*types.VMMetadataFile)
 		return fmt.Errorf("read metadata for %s: %w", vmID, err)
 	}
 
-	meta.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	meta.UpdatedAt = nowRFC3339()
 
 	if mutate != nil {
 		mutate(&meta)
@@ -1589,12 +1588,10 @@ func resolveUEFIFirmwarePath(cfg *config.CocoonConfig) (string, error) {
 }
 
 // resolveFirmwarePath determines the firmware file path based on the boot
-// strategy and architecture. For UEFI, it returns the UEFI firmware
-// (CLOUDHV.fd) with fallback to system OVMF paths. For direct kernel boot,
-// no firmware is needed (kernel/initramfs come from the OCI image).
-func resolveFirmwarePath(cfg *config.CocoonConfig, strategy types.BootStrategy, arch string) (string, error) {
-	_ = arch // Reserved for future multi-arch firmware selection.
-
+// strategy. For UEFI, it returns the UEFI firmware (CLOUDHV.fd) with
+// fallback to system OVMF paths. For direct kernel boot, no firmware is
+// needed (kernel/initramfs come from the OCI image).
+func resolveFirmwarePath(cfg *config.CocoonConfig, strategy types.BootStrategy) (string, error) {
 	switch strategy {
 	case types.BootStrategyDirect:
 		// Direct kernel boot does not use firmware; kernel path is resolved separately.

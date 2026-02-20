@@ -494,11 +494,11 @@ func TestTagCloudImageAlias_RejectsImplicitLatestOCICollision(t *testing.T) {
 }
 
 // TestPullDomainRefRouting verifies that domain-prefixed refs are classified
-// as pullRefDomainRef and that pullDomainRefImage correctly routes to the
-// cloud pipeline when the ref is not a local OCI tag and the registry probe
-// returns false (non-VM image). This exercises the T2 acceptance test from
-// issue #28: "docker.io/cmgs/test-u2404" is classified as domain ref, probes
-// first, then routes accordingly.
+// as pullRefDomainRef and that pullOCIRoutedImage (with normalizeForCloud=false)
+// correctly routes to the cloud pipeline when the ref is not a local OCI tag
+// and the registry probe returns false (non-VM image). This exercises the T2
+// acceptance test from issue #28: "docker.io/cmgs/test-u2404" is classified
+// as domain ref, probes first, then routes accordingly.
 func TestPullDomainRefRouting(t *testing.T) {
 	t.Parallel()
 
@@ -555,13 +555,13 @@ func TestPullDomainRefRouting(t *testing.T) {
 			},
 		}
 
-		// pullDomainRefImage: no local OCI tag, probe says non-VM image,
+		// pullOCIRoutedImage (domain ref): no local OCI tag, probe says non-VM image,
 		// so it falls back to pullCloudPipelineImage which calls Prepare
 		// with the domain-prefixed ref.
 		ref := "registry.example.com/my-cloud-image:v1"
-		err := pullDomainRefImage(c, app, ref)
+		err := pullOCIRoutedImage(c, app, ref, false)
 		if err != nil {
-			t.Fatalf("pullDomainRefImage(%q): %v", ref, err)
+			t.Fatalf("pullOCIRoutedImage(%q): %v", ref, err)
 		}
 		if preparedRef != ref {
 			t.Fatalf("Prepare ref = %q, want %q (domain ref passed through unchanged)", preparedRef, ref)
@@ -569,7 +569,7 @@ func TestPullDomainRefRouting(t *testing.T) {
 	})
 
 	// Verify routing: when a local OCI tag exists for the domain ref,
-	// pullDomainRefImage routes to pullOCIVMImage (OCI VM pull path).
+	// pullOCIRoutedImage routes to pullOCIVMImage (OCI VM pull path).
 	t.Run("local-oci-tag-routes-to-oci-pull", func(t *testing.T) {
 		t.Parallel()
 		cfg := testCLIConfig(t)
@@ -597,7 +597,7 @@ func TestPullDomainRefRouting(t *testing.T) {
 			},
 		}
 
-		err := pullDomainRefImage(c, app, ref)
+		err := pullOCIRoutedImage(c, app, ref, false)
 		if err == nil {
 			t.Fatal("expected error from pullOCIVMImage path, got nil")
 		}
@@ -611,9 +611,9 @@ func TestPullDomainRefRouting(t *testing.T) {
 }
 
 // TestPullShortNameRouting verifies that short-name refs (no domain in first
-// segment) are correctly classified and routed through pullShortNameImage.
-// When the probe fails (no real registry), it falls back to the cloud pipeline
-// with a normalized docker.io domain ref.
+// segment) are correctly classified and routed through pullOCIRoutedImage
+// (with normalizeForCloud=true). When the probe fails (no real registry), it
+// falls back to the cloud pipeline with a normalized docker.io domain ref.
 func TestPullShortNameRouting(t *testing.T) {
 	t.Parallel()
 
@@ -646,9 +646,9 @@ func TestPullShortNameRouting(t *testing.T) {
 		// Probe is stubbed to non-VM, so short-name routing must normalize
 		// to Docker Hub and fall back to the cloud pipeline.
 		ref := "cmgs/test-u2404"
-		err := pullShortNameImage(c, app, ref)
+		err := pullOCIRoutedImage(c, app, ref, true)
 		if err != nil {
-			t.Fatalf("pullShortNameImage(%q): %v", ref, err)
+			t.Fatalf("pullOCIRoutedImage(%q): %v", ref, err)
 		}
 		// The normalized ref should prepend "docker.io/" and append ":latest".
 		want := "docker.io/cmgs/test-u2404:latest"

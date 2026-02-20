@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 
 	"github.com/CMGS/cocoon/config"
 	"github.com/CMGS/cocoon/image"
@@ -828,9 +827,6 @@ func (m *manager) pullLocal(_ context.Context, ref string) (*image.ImageIdentity
 	log.Printf("image pull (local): %s -> base_key=%s", ref, identity.BaseKey())
 	return identity, nil
 }
-
-// Ensure time import is used (referenced in CachedImage.CreatedAt via info.ModTime()).
-var _ = time.Now
 
 // atomicCopyFile copies src to dst using a write + fsync pattern.
 // The caller is responsible for the final rename if needed; this function
