@@ -224,6 +224,11 @@ For the complete filesystem layout, see [05-storage-management.md](./05-storage-
 # Create Cocoon directories
 sudo mkdir -p /var/lib/cocoon/firmware
 sudo mkdir -p /var/lib/cocoon/cache/images
+sudo mkdir -p /var/lib/cocoon/cache/locks
+sudo mkdir -p /var/lib/cocoon/cache/manifests
+sudo mkdir -p /var/lib/cocoon/cache/oci
+sudo mkdir -p /var/lib/cocoon/db
+sudo mkdir -p /var/lib/cocoon/buildah
 sudo mkdir -p /var/lib/cocoon/vms
 sudo mkdir -p /var/lib/cocoon/temp
 
@@ -235,6 +240,10 @@ sudo chmod -R 755 /var/lib/cocoon
 sudo chmod -R 755 /var/log/cocoon
 sudo chmod -R 755 /run/cocoon
 ```
+
+> **Note**: `cocoon init` creates all the above directories automatically and also
+> writes a default `config.json` (at the path specified by `--config` or
+> `$COCOON_CONFIG_PATH`, defaulting to `/etc/cocoon/config.json`).
 
 ## Verification
 

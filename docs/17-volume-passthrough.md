@@ -458,6 +458,14 @@ func launchVirtiofsd(ctx context.Context, vol *VolumeConfig, socketPath string) 
 
 ### 5.5 Cloud Hypervisor Configuration
 
+> **Implementation status**: `CHFsConfig`, `CHMemoryConfig.Shared`, and the
+> `CHVMConfig.Fs` field are **already implemented** in `hypervisor/types.go`
+> for the OCI VM rootfs virtiofs runtime path (see `docs/04.1-oci-vm-images.md`).
+> The types and configuration wiring below are in production code today. What
+> remains to be implemented for user-facing volume passthrough is the `--volume`
+> CLI flag, the `VolumeConfig` type, and the `volume.Manager` interface that
+> manages per-volume virtiofsd processes (Sections 5.1, 6.1, and 9.3).
+
 The `CHVMConfig` struct gains a new `Fs` field for virtio-fs devices. This
 is sent to CH in the `PUT /api/v1/vm.create` payload.
 
@@ -1562,6 +1570,7 @@ maintenance status and security concerns.
 When all Phase 2 features are implemented, the unified `CHVMConfig` in `hypervisor/types.go` will be:
 
     type CHVMConfig struct {
+        Payload *CHPayloadConfig `json:"payload,omitempty"`   // Boot firmware or kernel
         CPUs    CHCPUConfig      `json:"cpus"`
         Memory  CHMemoryConfig   `json:"memory"`
         Disks   []CHDiskConfig   `json:"disks,omitempty"`
@@ -1569,6 +1578,7 @@ When all Phase 2 features are implemented, the unified `CHVMConfig` in `hypervis
         Fs      []CHFsConfig     `json:"fs,omitempty"`       // Volume passthrough (virtio-fs)
         Serial  CHSerialConfig   `json:"serial"`
         Console CHConsoleConfig  `json:"console"`             // Console: mode changes to "Pty"
+        TPM     *CHTPMConfig     `json:"tpm,omitempty"`       // TPM 2.0 emulation (swtpm)
         Devices []CHDeviceConfig `json:"devices,omitempty"`   // Device passthrough (VFIO)
     }
 

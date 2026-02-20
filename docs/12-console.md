@@ -565,13 +565,12 @@ func consoleAction(c *cli.Context) error {
 
     // Verify VM is running.
     // TODO: also allow VMStatePaused when pause/resume is implemented (docs/13-pause-resume.md).
-    meta, err := app.vmMgr.LoadMetadata(vmID)
+    inspect, err := app.vmMgr.Inspect(c.Context, vmID)
     if err != nil {
         return err
     }
-    state := types.VMState(meta.State)
-    if state != types.VMStateRunning {
-        return fmt.Errorf("VM %s is not running (state: %s)", ref, meta.State)
+    if inspect.State != types.VMStateRunning {
+        return fmt.Errorf("VM %s is not running (state: %s)", ref, inspect.State)
     }
 
     // Get PTY path from CH API.

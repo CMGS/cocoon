@@ -50,7 +50,7 @@ const (
     // STARTING: Cloud Hypervisor process starting, VM booting.
     // boot_strategy determines boot method:
     //   "uefi":   UEFI boot with CLOUDHV.fd (Phase 1, default)
-    //   "direct": Direct kernel boot with kernel + initramfs (Phase 2, not yet implemented)
+    //   "direct": Direct kernel boot with kernel + initramfs (implemented for OCI VM images)
     // Actual mode used is recorded in metadata.last_boot_mode.
     VMStateStarting  VMState = "STARTING"
 
@@ -273,7 +273,7 @@ CREATING -----> CREATED -----> STARTING -----> RUNNING -----> STOPPING -----> ST
 
 #### 1.4.2 name (User-Facing Alias)
 
-- Optional on create. If omitted, auto-generated as `cocoon-{random-8-chars}` (e.g., `cocoon-a3f7b2c1`).
+- Optional on create. If omitted, auto-generated as `cocoon-{random-16-hex-chars}` (e.g., `cocoon-a3f7b2c1d9e0f1a2`).
 - **Globally unique** — `cocoon create` fails with a clear error if the name already exists.
 - **Immutable after create** — no rename support in Phase 1.
 - Stored in `config.json` and in the global name index.
@@ -676,9 +676,10 @@ type VMInspect struct {
 
 // InspectImageInfo contains OCI image details.
 type InspectImageInfo struct {
-    Ref     string `json:"ref"`
-    Digest  string `json:"digest"`
-    BaseKey string `json:"base_key"`
+    Ref     string      `json:"ref"`
+    Digest  string      `json:"digest"`
+    BaseKey string      `json:"base_key"`
+    Type    VMImageType `json:"type,omitempty"`
 }
 
 // InspectStorageInfo contains disk information.
@@ -694,6 +695,8 @@ type InspectHypervisorInfo struct {
     CHPID            int      `json:"ch_pid"`
     SerialLog        string   `json:"serial_log"`
     ConsolePTY       string   `json:"console_pty,omitempty"` // PTY path when console mode is Pty
+    VirtiofsdPID     int      `json:"virtiofsd_pid,omitempty"`
+    VirtiofsdSocket  string   `json:"virtiofsd_socket,omitempty"`
     SerialLogExcerpt []string `json:"serial_log_excerpt,omitempty"`
 }
 
@@ -715,9 +718,10 @@ type InspectTimestamps struct {
 
 // InspectRuntimeStatus contains runtime execution information.
 type InspectRuntimeStatus struct {
-    BootTime     string `json:"boot_time,omitempty"`
-    LastBootMode string `json:"last_boot_mode,omitempty"`
-    ErrorCount   int    `json:"error_count"`
+    BootTime          string `json:"boot_time,omitempty"`
+    LastBootMode      string `json:"last_boot_mode,omitempty"`
+    ErrorCount        int    `json:"error_count"`
+    OCIOverlayMounted bool   `json:"oci_overlay_mounted,omitempty"`
 }
 
 // InspectErrorInfo contains error details.
@@ -809,9 +813,9 @@ type VMConfig struct {
     // Boot configuration (immutable)
     BootStrategy  BootStrategy `json:"boot_strategy"`            // "uefi" (default), "direct" (OCI)
     FirmwarePath  string       `json:"firmware_path"`             // Primary firmware path resolved at creation
-    KernelPath    string       `json:"kernel_path,omitempty"`     // Direct boot kernel (Phase 2)
-    InitramfsPath string       `json:"initramfs_path,omitempty"`  // Direct boot initramfs (Phase 2)
-    Cmdline       string       `json:"cmdline,omitempty"`         // Direct boot kernel cmdline (Phase 2)
+    KernelPath    string       `json:"kernel_path,omitempty"`     // Direct boot kernel (OCI VM images)
+    InitramfsPath string       `json:"initramfs_path,omitempty"`  // Direct boot initramfs (OCI VM images)
+    Cmdline       string       `json:"cmdline,omitempty"`         // Direct boot kernel cmdline (OCI VM images)
     TPMSocketPath string       `json:"tpm_socket_path,omitempty"` // swtpm socket path (if TPM enabled)
 
     // Resources (immutable after create; Phase 2 may allow resize)
@@ -868,10 +872,15 @@ type VMMetadataFile struct {
     PreviousState string `json:"previous_state"`   // For transition auditing
 
     // Runtime (changes with each start/stop cycle)
-    ProcessPID       int    `json:"process_pid,omitempty"`       // CH process PID (0 if not running)
-    BootTime         string `json:"boot_time,omitempty"`         // Duration string, e.g. "2.3s"
-    LastBootMode     string `json:"last_boot_mode,omitempty"`    // Actual mode used: "uefi" or "direct"
-    LastFirmwarePath string `json:"last_firmware_path,omitempty"` // Actual firmware path used this boot
+    ProcessPID        int    `json:"process_pid,omitempty"`        // CH process PID (0 if not running)
+    HypervisorBinary  string `json:"hypervisor_binary,omitempty"`  // Basename of hypervisor process used for liveness checks
+    VirtiofsdPID      int    `json:"virtiofsd_pid,omitempty"`      // Rootfs virtiofsd PID (OCI runtime VMs only; 0 when not running)
+    VirtiofsdSocket   string `json:"virtiofsd_socket,omitempty"`   // Rootfs-serving virtiofsd socket path (OCI runtime VMs only)
+    VirtiofsdBinary   string `json:"virtiofsd_binary,omitempty"`   // Basename of virtiofsd process used for liveness checks
+    OCIOverlayMounted bool   `json:"oci_overlay_mounted,omitempty"` // Whether the per-VM OCI OverlayFS mount is currently active
+    BootTime          string `json:"boot_time,omitempty"`          // Duration string, e.g. "2.3s"
+    LastBootMode      string `json:"last_boot_mode,omitempty"`     // Actual mode used: "uefi" or "direct"
+    LastFirmwarePath  string `json:"last_firmware_path,omitempty"` // Actual firmware path used this boot
 
     // Error tracking
     LastError     string `json:"last_error,omitempty"`
@@ -1346,6 +1355,14 @@ const (
     InconsistencyNameIndexStale    InconsistencyType = "name_index_stale"
     InconsistencyDuplicateVMName   InconsistencyType = "duplicate_vm_name"
     InconsistencyDeletedVMDir      InconsistencyType = "deleted_vm_directory"
+
+    // OCI runtime inconsistencies
+    InconsistencyOCIRuntimeCache       InconsistencyType = "oci_runtime_cache_missing"
+    InconsistencyOCIRuntimeOverlay     InconsistencyType = "oci_runtime_overlay_mismatch"
+    InconsistencyOCIRuntimeVirtio      InconsistencyType = "oci_runtime_virtiofsd_mismatch"
+    InconsistencyMissingOCIRuntimePin  InconsistencyType = "missing_oci_runtime_pin"
+    InconsistencyDanglingOCIRuntimePin InconsistencyType = "dangling_oci_runtime_pin"
+    InconsistencyOrphanedOCIRuntime    InconsistencyType = "orphaned_oci_runtime_cache"
 )
 
 // InconsistencySeverity indicates how serious an inconsistency is.
@@ -1791,6 +1808,12 @@ The `Reconcile` method on `*manager` performs the following checks:
 | Name index stale | `name_index_stale` | name-index.json is out of sync with VM configs |
 | Duplicate VM name | `duplicate_vm_name` | Two config.json files claim the same name |
 | Deleted VM dir | `deleted_vm_directory` | Metadata state is DELETED but directory still exists |
+| OCI runtime cache missing | `oci_runtime_cache_missing` | OCI VM config references a runtime cache entry that does not exist on disk |
+| OCI runtime overlay mismatch | `oci_runtime_overlay_mismatch` | OCI OverlayFS mount state differs between metadata and actual mount status |
+| OCI runtime virtiofsd mismatch | `oci_runtime_virtiofsd_mismatch` | virtiofsd process state differs between metadata and actual process status |
+| Missing OCI runtime pin | `missing_oci_runtime_pin` | OCI VM config exists but oci-runtime-refs.json lacks its pin entry |
+| Dangling OCI runtime pin | `dangling_oci_runtime_pin` | oci-runtime-refs.json entry points to non-existent VM |
+| Orphaned OCI runtime cache | `orphaned_oci_runtime_cache` | OCI runtime cache directory exists with no VM pins |
 
 ### 9.6 Reconciliation Schedule
 
@@ -1956,9 +1979,6 @@ cocoon delete vm-abc123
 ```bash
 # View current state
 cocoon inspect vm-abc123
-
-# View error details
-cocoon inspect vm-abc123 --error
 
 # List all VMs with states
 cocoon ps -a

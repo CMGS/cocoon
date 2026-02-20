@@ -34,6 +34,8 @@ Level 2: OCI Build Tag Lock (global, acquired under OCI Build Txn Lock for tag i
     ↓
 Level 2: OCI Layer Refs Lock (global, acquired under OCI Build Txn Lock for blob-ref mutations) — Implemented, oci/layerrefs.go
     ↓
+Level 2: OCI Runtime Refs Lock (global, same level — never held with layer-refs or name-index) — Implemented, oci/runtime_refs.go
+    ↓
 Level 2: OCI Reference Lock (global, same level — never held with references or name-index) — Phase 2, docs/04.1-oci-vm-images.md
     ↓
 Level 2: Checkpoint Index Lock (global, same level — never held with name-index or references) — Phase 2, docs/15-warm-start.md
@@ -65,6 +67,7 @@ Level 6: dnsmasq Lock (global) — Phase 2, docs/16-networking.md
 - OCI Build Txn Lock: `/var/lib/cocoon/db/oci-build-txn.lock`
 - OCI Build Tag Lock: `/var/lib/cocoon/db/oci-build-tags.lock`
 - OCI Layer Refs Lock: `/var/lib/cocoon/db/oci-layer-refs.lock`
+- OCI Runtime Refs Lock: `/var/lib/cocoon/db/oci-runtime-refs.lock`
 - OCI Reference Lock (Phase 2): `/var/lib/cocoon/db/oci-references.lock`
 - Checkpoint Index Lock (Phase 2): `/var/lib/cocoon/checkpoints/checkpoint-index.lock`
 - OCI Cache Lock (Phase 2): `/var/lib/cocoon/cache/oci/{digest}.lock`
@@ -508,7 +511,7 @@ parallel -j 50 cocoon create myorg/ubuntu-bootable:22.04 --name vm-{} ::: {001..
 
 **Expected Behavior**:
 
-1. **Image Conversion** (Level 2 Lock):
+1. **Image Conversion** (Level 3 Lock):
    - Process 1: Acquires image lock, pulls and converts myorg/ubuntu-bootable:22.04
    - Processes 2-50: Wait on image lock
    - Process 1: Completes conversion, releases lock
@@ -519,7 +522,7 @@ parallel -j 50 cocoon create myorg/ubuntu-bootable:22.04 --name vm-{} ::: {001..
    - Each writes to different file: `vms/vm-001/overlay.qcow2`, `vms/vm-002/overlay.qcow2`, etc.
    - No contention
 
-3. **Reference Updates** (Level 4 Lock):
+3. **Reference Updates** (Level 2 Lock):
    - Processes serialize on `references.lock`
    - Each adds its VM ID to the base image's reference list
    - Order doesn't matter (set semantics)
@@ -1103,6 +1106,10 @@ func (gc *GarbageCollector) DeleteUnreferencedImage(image string) error {
 
 GC must follow strict lock ordering to prevent deadlocks and races:
 
+> **Note**: The code below is illustrative. The actual implementation uses the
+> `flock.New(path)` lock abstraction (see `lock/flock/flock.go`) rather than raw
+> `syscall.Flock` calls. The locking semantics are identical.
+
 ```go
 package gc
 
@@ -1111,8 +1118,8 @@ import (
     "os"
     "path/filepath"
     "strings"
-    "syscall"
-    "time"
+
+    "github.com/CMGS/cocoon/lock/flock"
 )
 
 type GarbageCollector struct {
@@ -1132,17 +1139,11 @@ func NewGarbageCollector(storageDir string, refs *ReferenceCounter) *GarbageColl
 // Run performs garbage collection with proper locking
 func (gc *GarbageCollector) Run() error {
     // 1. Acquire global GC lock (Level 1)
-    gcLock, err := os.OpenFile(gc.gcLockFile, os.O_RDWR|os.O_CREATE, 0644)
-    if err != nil {
-        return fmt.Errorf("failed to open GC lock: %w", err)
-    }
-    defer gcLock.Close()
-
-    err = syscall.Flock(int(gcLock.Fd()), syscall.LOCK_EX)
-    if err != nil {
+    fl := flock.New(gc.gcLockFile)
+    if err := fl.Lock(); err != nil {
         return fmt.Errorf("failed to acquire GC lock: %w", err)
     }
-    defer syscall.Flock(int(gcLock.Fd()), syscall.LOCK_UN)
+    defer fl.Unlock()
 
     // 2. Now safe to perform GC operations.
     //    Scan cache/images/ for content-addressed files ({checksum}_{arch}.qcow2).
@@ -1207,18 +1208,11 @@ VM create and delete operations must prevent GC from running concurrently:
 func (vm *VMManager) CreateVM(image string, vmID string) error {
     // Acquire GC lock (blocking — waits if GC is running)
     gcLockPath := filepath.Join(vm.storageDir, "db", "gc.lock")
-    gcLock, err := os.OpenFile(gcLockPath, os.O_RDWR|os.O_CREATE, 0644)
-    if err != nil {
-        return err
-    }
-    defer gcLock.Close()
-
-    // Blocking exclusive lock — VM creation waits until GC finishes
-    err = syscall.Flock(int(gcLock.Fd()), syscall.LOCK_EX)
-    if err != nil {
+    fl := flock.New(gcLockPath)
+    if err := fl.Lock(); err != nil {
         return fmt.Errorf("cannot acquire GC lock: %w", err)
     }
-    defer syscall.Flock(int(gcLock.Fd()), syscall.LOCK_UN)
+    defer fl.Unlock()
 
     // Now safe to proceed with VM creation
     // ...
@@ -1340,6 +1334,7 @@ func lockWithTimeout(mu *sync.Mutex, timeout time.Duration) error {
 | OCI build txn | `/var/lib/cocoon/db/oci-build-txn.lock` | Level 2 (parent lock for OCI cross-index updates) |
 | OCI build tags | `/var/lib/cocoon/db/oci-build-tags.lock` | Level 2 (never held with references.lock) |
 | OCI layer refs | `/var/lib/cocoon/db/oci-layer-refs.lock` | Level 2 (never held with references.lock) |
+| OCI runtime refs | `/var/lib/cocoon/db/oci-runtime-refs.lock` | Level 2 (never held with layer-refs or references.lock) |
 | Image conversion | `/var/lib/cocoon/cache/locks/{checksum}_{arch}.lock` | Level 3 |
 | VM metadata | `/var/lib/cocoon/vms/{vm-id}/metadata.lock` | Level 4 |
 | Checkpoint (Phase 2) | `/var/lib/cocoon/vms/{vm-id}/checkpoint.lock` | Level 5 |

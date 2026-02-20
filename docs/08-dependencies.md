@@ -20,6 +20,8 @@ Cocoon relies on several external tools and libraries to provide VM management w
 | skopeo | OCI image inspection | 1.14.0 | apt/dnf |
 | qemu-img | qcow2 operations | 8.0 | apt/dnf (qemu-utils) |
 | guestfish | OCI-to-qcow2 conversion (partition, copy rootfs) — **required** | libguestfs 1.50 | apt/dnf (libguestfs-tools) |
+| virtiofsd | virtio-fs daemon for OCI VM rootfs and volume passthrough — **required** (doctor checks it) | 1.7.0 | apt/dnf (virtiofsd) |
+| virt-customize | Applies Cocoonfile RUN/COPY steps during `cocoon image build` — **optional** | any | apt/dnf (libguestfs-tools) |
 | swtpm | TPM 2.0 software emulator for VM TPM support | any | apt/dnf (swtpm, swtpm-tools) |
 | /dev/kvm | KVM device access | kernel 5.6+ | Built-in (kernel module) |
 
@@ -43,11 +45,12 @@ The following Go libraries are used by Cocoon and managed via `go.mod`:
 
 **Minimum Version**: v38.0
 
+**Note**: `virtiofsd` (v1.7.0+) is checked by `cocoon doctor` as a required
+dependency (used for the OCI VM rootfs runtime path). See [docs/04.1](./04.1-oci-vm-images.md) and [docs/17](./17-volume-passthrough.md).
+
 Phase 2 features may require additional dependencies beyond Phase 1. Each is
 documented in detail in its respective design document, but they are listed here
 for discoverability:
-
-- **virtiofsd** (v1.7.0+) — virtio-fs daemon for OCI rootfs and volume passthrough. See [docs/04.1](./04.1-oci-vm-images.md), [docs/17](./17-volume-passthrough.md).
 - **dnsmasq** — lightweight DHCP/DNS server for VM networking. See [docs/16](./16-networking.md).
 - **CNI plugins** (bridge, host-local, portmap) — Container Network Interface plugins for VM network setup. See [docs/16](./16-networking.md).
 - **nsenter** (util-linux) — enters network namespaces for TAP device creation. See [docs/16](./16-networking.md).
@@ -559,12 +562,15 @@ Cocoon Dependency Check
 
 Core Dependencies:
 ✅ cloud-hypervisor v38.0 found at /usr/local/bin/cloud-hypervisor
+✅ ch-remote v38.0 found at /usr/local/bin/ch-remote
+✅ virtiofsd 1.12.0 found at /usr/libexec/virtiofsd
 ✅ buildah 1.35.0 found at /usr/bin/buildah
 ✅ skopeo 1.14.0 found at /usr/bin/skopeo
 ✅ qemu-img 8.2.0 found at /usr/bin/qemu-img
-❌ guestfish not found (required)
+❌ guestfish not found
+   → required for OCI-to-qcow2 conversion
    → Install: sudo apt-get install libguestfs-tools
-   → Note: Required for OCI-to-qcow2 conversion and deep bootability verification
+✅ virt-customize found (optional: required for Cocoonfile RUN/COPY steps)
 ✅ /dev/kvm accessible
 
 Firmware Files:
@@ -574,7 +580,7 @@ Firmware Files:
 swtpm:
 ✅ swtpm 0.9.0 found at /usr/bin/swtpm
 
-Summary: 9/10 required dependencies found
+Summary: 10/11 required dependencies found
 1 required dependency missing (guestfish)
 Status: Not ready (install missing dependencies)
 ```

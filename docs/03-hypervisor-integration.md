@@ -205,17 +205,20 @@ type VMMetadataFile struct {
 // types/config.go (immutable, written once at creation)
 
 type VMConfig struct {
-    VMID           string `json:"vm_id"`
-    Name           string `json:"name"`
-    ImageRef       string `json:"image_ref"`
-    BaseKey        string `json:"base_key"`
-    BaseDigestFull string `json:"base_digest_full"`
-    Arch           string `json:"arch"`
+    VMID           string      `json:"vm_id"`
+    Name           string      `json:"name"`
+    ImageRef       string      `json:"image_ref"`
+    BaseKey        string      `json:"base_key"`
+    BaseDigestFull string      `json:"base_digest_full"`
+    Arch           string      `json:"arch"`
+    ImageType      VMImageType `json:"image_type,omitempty"`  // "qcow2" (default) or "oci-vm"
     BootStrategy  BootStrategy `json:"boot_strategy"`
     FirmwarePath  string       `json:"firmware_path"`
     KernelPath    string       `json:"kernel_path,omitempty"`
     InitramfsPath string       `json:"initramfs_path,omitempty"`
     Cmdline       string       `json:"cmdline,omitempty"`
+    VirtioFSTag   string       `json:"virtiofs_tag,omitempty"`   // OCI VM rootfs virtiofs tag
+    VirtioFSSock  string       `json:"virtiofs_sock,omitempty"`  // OCI VM rootfs virtiofs socket
     TPMSocketPath string       `json:"tpm_socket_path,omitempty"`
     CPUs          int    `json:"cpus"`
     MemoryMB      int64  `json:"memory_mb"`
@@ -709,6 +712,7 @@ type CHVMConfig struct {
     CPUs    CHCPUConfig      `json:"cpus"`
     Memory  CHMemoryConfig   `json:"memory"`
     Disks   []CHDiskConfig   `json:"disks,omitempty"`
+    Fs      []CHFsConfig     `json:"fs,omitempty"`
     Serial  CHSerialConfig   `json:"serial"`
     Console CHConsoleConfig  `json:"console"`
     TPM     *CHTPMConfig     `json:"tpm,omitempty"`
@@ -731,7 +735,16 @@ type CHCPUConfig struct {
 }
 
 type CHMemoryConfig struct {
-    Size int64 `json:"size"` // In bytes
+    Size   int64 `json:"size"`             // In bytes
+    Shared bool  `json:"shared,omitempty"` // Enable shared memory for vhost-user devices (e.g., virtio-fs)
+}
+
+// CHFsConfig describes a single virtio-fs shared filesystem.
+type CHFsConfig struct {
+    Tag       string `json:"tag"`
+    Socket    string `json:"socket"`
+    NumQueues int    `json:"num_queues,omitempty"`
+    QueueSize int    `json:"queue_size,omitempty"`
 }
 
 type CHDiskConfig struct {
@@ -944,6 +957,7 @@ type Client interface {
     PowerButton(ctx context.Context, socketPath string) error
     DeleteVM(ctx context.Context, socketPath string) error
     GetVMInfo(ctx context.Context, socketPath string) (*CHVMInfo, error)
+    GetConsolePTYPath(ctx context.Context, socketPath string) (string, error)
 
     // --- Utilities ---
     WaitForSocket(ctx context.Context, socketPath string, timeout time.Duration) error
