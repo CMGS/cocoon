@@ -140,8 +140,11 @@ func buildVirtiofsdArgs(sharedDir, socketPath string) []string {
 	}
 }
 
-func launchVirtiofsdProcess(ctx context.Context, binary string, args []string, logPath string) (int, error) {
-	cmd := exec.CommandContext(ctx, binary, args...) //nolint:gosec // binary comes from trusted config
+func launchVirtiofsdProcess(_ context.Context, binary string, args []string, logPath string) (int, error) {
+	// Use context.Background() so virtiofsd is NOT tied to the caller's context.
+	// virtiofsd is a long-lived daemon serving the VM rootfs via virtio-fs;
+	// it must outlive the CLI command that started it.
+	cmd := exec.CommandContext(context.Background(), binary, args...) //nolint:gosec // binary comes from trusted config
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	logFile, logErr := os.Create(logPath) //nolint:gosec // path is cocoon-managed
