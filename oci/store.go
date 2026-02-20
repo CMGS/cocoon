@@ -194,6 +194,13 @@ func (s *Store) RemoveTag(tag string) (string, []string, error) {
 			}
 			manifestDigest = entry.ManifestDigest
 			layoutPath = entry.LayoutPath
+
+			// Refuse removal when running VMs still reference this image's
+			// OCI runtime cache entry.
+			if err := checkRuntimeRefsForRemoval(s.cfg, tag, manifestDigest); err != nil {
+				return err
+			}
+
 			delete(idx.Tags, tag)
 			if err := s.save(idx); err != nil {
 				return err
@@ -236,6 +243,27 @@ func (s *Store) RemoveTag(tag string) (string, []string, error) {
 	}
 
 	return manifestDigest, zeroRefBlobs, nil
+}
+
+// checkRuntimeRefsForRemoval returns an error if the given manifest digest
+// has an OCI runtime cache entry that is still pinned by at least one VM.
+func checkRuntimeRefsForRemoval(cfg *config.CocoonConfig, tag, manifestDigest string) error {
+	if manifestDigest == "" {
+		return nil
+	}
+	runtimeKey, parseErr := ParseSHA256Digest(manifestDigest)
+	if parseErr != nil {
+		return nil // non-standard digest format — nothing to check
+	}
+	referenced, err := IsRuntimeReferenced(cfg, runtimeKey)
+	if err != nil {
+		return fmt.Errorf("check OCI runtime refs for %s: %w", tag, err)
+	}
+	if !referenced {
+		return nil
+	}
+	refs, _ := GetRuntimeRefs(cfg, runtimeKey)
+	return fmt.Errorf("image %s is still referenced by VMs: %v", tag, refs)
 }
 
 func (s *Store) load() (*TagIndex, error) {

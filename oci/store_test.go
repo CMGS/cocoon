@@ -302,6 +302,48 @@ func TestStoreRemoveTagSharedLayoutKeepsLayoutUntilLastTag(t *testing.T) {
 	}
 }
 
+func TestStoreRemoveTag_ReferencedByVM(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(t)
+	store := NewStore(cfg)
+
+	// Use a valid sha256: manifest digest so the runtime-ref check fires.
+	manifestDigest := "sha256:" + testHexDigest(999)
+	runtimeKey := testHexDigest(999)
+
+	layoutDir := store.LayoutDir("referenced-tag")
+	if err := os.MkdirAll(layoutDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := store.SaveTag("referenced-tag", layoutDir, manifestDigest); err != nil {
+		t.Fatalf("SaveTag: %v", err)
+	}
+
+	// Pin the runtime key to a VM.
+	if err := AddRuntimeRef(cfg, runtimeKey, "vm-pinned"); err != nil {
+		t.Fatalf("AddRuntimeRef: %v", err)
+	}
+
+	// RemoveTag must refuse while the VM still references the image.
+	_, _, err := store.RemoveTag("referenced-tag")
+	if err == nil {
+		t.Fatal("expected error removing OCI image referenced by VM")
+	}
+	if !strings.Contains(err.Error(), "still referenced") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// After removing the VM ref, RemoveTag should succeed.
+	if err := RemoveRuntimeRef(cfg, runtimeKey, "vm-pinned"); err != nil {
+		t.Fatalf("RemoveRuntimeRef: %v", err)
+	}
+	_, _, err = store.RemoveTag("referenced-tag")
+	if err != nil {
+		t.Fatalf("RemoveTag after unpin: %v", err)
+	}
+}
+
 func TestStoreSaveTag_CleanupFailureCounter(t *testing.T) {
 	cfg := testConfig(t)
 	store := NewStore(cfg)
