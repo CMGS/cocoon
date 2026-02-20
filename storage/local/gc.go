@@ -176,8 +176,13 @@ func (gc *fileGarbageCollector) CollectOrphanedOverlays() ([]string, error) {
 			}
 
 			if overlayExists && !configExists {
-				// Orphaned overlay -- permanently delete the VM directory.
+				// Safety: skip deletion if the VM process is still alive.
 				vmDir := filepath.Join(gc.cfg.VMDir(), vmID)
+				if isVMProcessAlive(gc.cfg, vmID) {
+					log.Printf("gc: skipping orphaned VM %s: process still alive", vmID)
+					continue
+				}
+				// Orphaned overlay -- permanently delete the VM directory.
 				if err := os.RemoveAll(vmDir); err != nil {
 					log.Printf("gc: remove orphaned VM dir %s: %v", vmDir, err)
 					continue
@@ -363,6 +368,22 @@ func (gc *fileGarbageCollector) FullGC() error {
 	}
 
 	return nil
+}
+
+// isVMProcessAlive reads metadata.json for the given VM and checks whether
+// the hypervisor process (recorded PID) is still running. This is a lock-free
+// read because metadata.json is always atomically replaced.
+// Returns false if metadata is missing, unreadable, or the process is dead.
+func isVMProcessAlive(cfg *config.CocoonConfig, vmID string) bool {
+	metaPath := cfg.VMMetadataPath(vmID)
+	var meta types.VMMetadataFile
+	if err := utils.ReadJSON(metaPath, &meta); err != nil {
+		return false
+	}
+	if meta.ProcessPID <= 0 {
+		return false
+	}
+	return utils.ValidateProcess(meta.ProcessPID, meta.HypervisorProcessName(cfg.CHBinary))
 }
 
 // fileExists reports whether path exists on the filesystem.

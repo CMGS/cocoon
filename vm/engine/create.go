@@ -204,7 +204,7 @@ func (m *manager) provisionVM(
 	// Metadata must exist before storage creation so reconciliation can
 	// find the VM if we crash after pinning.
 	vmDir := m.cfg.VMPersistDir(vmID)
-	if mkdirErr := os.MkdirAll(vmDir, 0o755); mkdirErr != nil { //nolint:gosec // G301: VM directory needs world-readable access for CH process
+	if mkdirErr := os.MkdirAll(vmDir, 0o700); mkdirErr != nil { //nolint:gosec // G301: restricted to owner — VM persistent state
 		return nil, fmt.Errorf("create VM directory: %w", mkdirErr)
 	}
 

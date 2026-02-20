@@ -407,24 +407,36 @@ func (c *CocoonConfig) OCIRuntimeRefsLock() string {
 }
 
 // EnsureDirs creates all required directories.
+// Restricted directories (runtime state, locks, VM data) use 0700.
+// Shared directories (caches, firmware, logs) use 0755.
 func (c *CocoonConfig) EnsureDirs() error {
-	dirs := []string{
+	// Restricted directories: runtime state, locks, VM data.
+	restrictedDirs := []string{
 		c.DBDir(),
+		c.ConversionLockDir(),
+		c.VMDir(),
+		c.TempDir(),
+		filepath.Join(c.RuntimeDir, "vms"),
+	}
+	for _, dir := range restrictedDirs {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("create directory %s: %w", dir, err)
+		}
+	}
+
+	// Shared directories: read-only caches, firmware, logs.
+	sharedDirs := []string{
 		c.ImageCacheDir(),
 		c.ManifestCacheDir(),
-		c.ConversionLockDir(),
 		c.OCIBlobDir(),
 		c.OCILayoutDir(),
 		c.OCIRuntimeLayersDir(),
 		c.OCIRuntimeEntriesDir(),
-		c.VMDir(),
-		c.TempDir(),
 		c.FirmwareDir(),
-		filepath.Join(c.RuntimeDir, "vms"),
 		c.LogDir,
 	}
-	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: cocoon directories need world-readable access for VM processes
+	for _, dir := range sharedDirs {
+		if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: shared cache/firmware/log directories
 			return fmt.Errorf("create directory %s: %w", dir, err)
 		}
 	}

@@ -67,6 +67,9 @@ func initApp(_ *cli.Context) (*appContext, error) {
 		return nil, fmt.Errorf("ensure directories: %w", err)
 	}
 
+	// Apply user-configured registry HTTP timeout.
+	oci.SetRegistryHTTPTimeout(cfg.RegistryHTTPTimeout())
+
 	// Initialize managers.
 	hyper := cloudhypervisor.New(cfg)
 	refCtr := local.NewReferenceCounter(cfg)

@@ -244,6 +244,45 @@ func TestResolveRuntimeImageRef_RegistryCocoonVMMediaTypes(t *testing.T) {
 	}
 }
 
+func TestResolveRuntimeImageRef_BareFilenameResolvedAsLocal(t *testing.T) {
+	cfg := testResolverConfig(t)
+
+	tmpDir := t.TempDir()
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if chdirErr := os.Chdir(tmpDir); chdirErr != nil {
+		t.Fatalf("chdir temp dir: %v", chdirErr)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldWD)
+	})
+
+	// Create a bare filename in CWD with no OCI tag or cache alias match.
+	if err := os.WriteFile(filepath.Join(tmpDir, "ubuntu.qcow2"), []byte("img"), 0o644); err != nil {
+		t.Fatalf("write local image: %v", err)
+	}
+
+	got, err := resolveRuntimeImageRefForTest(t.Context(), cfg, "ubuntu.qcow2")
+	if err != nil {
+		t.Fatalf("resolveRuntimeImageRef: %v", err)
+	}
+	if got.Source != runtimeImageSourceLocalPath {
+		t.Fatalf("Source = %q, want %q", got.Source, runtimeImageSourceLocalPath)
+	}
+	if got.VMImageType != types.VMImageTypeQCOW2 {
+		t.Fatalf("VMImageType = %q, want %q", got.VMImageType, types.VMImageTypeQCOW2)
+	}
+	// On macOS, /var is a symlink to /private/var. resolveLocalPathRef uses
+	// filepath.Abs which may resolve differently, so compare real paths.
+	wantPath, _ := filepath.EvalSymlinks(filepath.Join(tmpDir, "ubuntu.qcow2"))
+	gotPath, _ := filepath.EvalSymlinks(got.PrepareRef)
+	if gotPath != wantPath {
+		t.Fatalf("PrepareRef = %q, want %q", got.PrepareRef, wantPath)
+	}
+}
+
 func TestResolveRuntimeImageRef_NonExplicitLocalFileDoesNotShadowOCITag(t *testing.T) {
 	cfg := testResolverConfig(t)
 	store := oci.NewStore(cfg)

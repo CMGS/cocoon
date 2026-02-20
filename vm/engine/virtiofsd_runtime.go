@@ -66,7 +66,7 @@ func (m *virtiofsdRuntimeManager) Start(ctx context.Context, vmID, sharedDir, so
 		socketPath = m.cfg.VMOCIRootfsVirtioFSSocketPath(vmID)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil { //nolint:gosec // VM runtime paths are cocoon-managed
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil { //nolint:gosec // G301: restricted to owner — VM runtime state
 		return nil, fmt.Errorf("create virtiofsd socket directory: %w", err)
 	}
 	if err := m.removeFn(socketPath); err != nil && !os.IsNotExist(err) {
