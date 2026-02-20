@@ -47,15 +47,15 @@ var _ vm.Manager = (*manager)(nil)
 
 // manager is the concrete implementation of the Manager interface.
 type manager struct {
-	cfg                *config.CocoonConfig
-	hyper              hypervisor.Client
-	refCounter         storage.ReferenceCounter
-	cowMgr             storage.COWManager
-	imgMgr             image.Manager
-	overlayMgr         *overlayRuntimeManager
-	virtiofsMgr        *virtiofsdRuntimeManager
-	registryProbeRawFn registryProbeRawFunc
-	ociPullFn          func(context.Context, *config.CocoonConfig, string) (*oci.PullResult, error)
+	cfg             *config.CocoonConfig
+	hyper           hypervisor.Client
+	refCounter      storage.ReferenceCounter
+	cowMgr          storage.COWManager
+	imgMgr          image.Manager
+	overlayMgr      *overlayRuntimeManager
+	virtiofsMgr     *virtiofsdRuntimeManager
+	registryProbeFn registryProbeFunc
+	ociPullFn       func(context.Context, *config.CocoonConfig, string) (*oci.PullResult, error)
 }
 
 // New creates a new VM manager backed by the given configuration and dependencies.
@@ -67,15 +67,15 @@ func New(
 	imgMgr image.Manager,
 ) vm.Manager {
 	return &manager{
-		cfg:                cfg,
-		hyper:              hyper,
-		refCounter:         refCounter,
-		cowMgr:             cowMgr,
-		imgMgr:             imgMgr,
-		overlayMgr:         newOverlayRuntimeManager(cfg),
-		virtiofsMgr:        newVirtiofsdRuntimeManager(cfg),
-		registryProbeRawFn: defaultRunSkopeoInspectRaw,
-		ociPullFn:          oci.Pull,
+		cfg:             cfg,
+		hyper:           hyper,
+		refCounter:      refCounter,
+		cowMgr:          cowMgr,
+		imgMgr:          imgMgr,
+		overlayMgr:      newOverlayRuntimeManager(cfg),
+		virtiofsMgr:     newVirtiofsdRuntimeManager(cfg),
+		registryProbeFn: oci.ProbeRegistryVMImageType,
+		ociPullFn:       oci.Pull,
 	}
 }
 
@@ -568,11 +568,7 @@ func (m *manager) snapshotCachedBaseKeys(ctx context.Context) map[string]struct{
 }
 
 func (m *manager) resolveRuntimeImageRef(ctx context.Context, ref string) (*resolvedRuntimeImage, error) {
-	probe := m.registryProbeRawFn
-	if probe == nil {
-		probe = defaultRunSkopeoInspectRaw
-	}
-	return resolveRuntimeImageRefWithProbe(ctx, m.cfg, ref, probe)
+	return resolveRuntimeImageRefWithProbe(ctx, m.cfg, ref, m.registryProbeFn)
 }
 
 func (m *manager) shouldSkipVerifyForCacheHit(skipVerify bool, cachedBaseKeysBefore map[string]struct{}, baseKey, imageRef string) bool {

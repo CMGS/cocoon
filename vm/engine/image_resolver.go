@@ -2,14 +2,11 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/CMGS/cocoon/config"
@@ -38,45 +35,13 @@ type resolvedRuntimeImage struct {
 	LocalBaseKey string
 }
 
-type registryProbeManifest struct {
-	MediaType    string `json:"mediaType"`
-	ArtifactType string `json:"artifactType,omitempty"`
-	Config       struct {
-		MediaType string `json:"mediaType,omitempty"`
-	} `json:"config"`
-	Layers []struct {
-		MediaType string `json:"mediaType,omitempty"`
-	} `json:"layers,omitempty"`
-}
-
-type registryProbeIndex struct {
-	MediaType string `json:"mediaType"`
-}
-
-type registryProbeRawFunc func(ctx context.Context, ref, arch string) ([]byte, error)
-
-func defaultRunSkopeoInspectRaw(ctx context.Context, ref, arch string) ([]byte, error) {
-	args := []string{"inspect", "--raw"}
-	if arch != "" {
-		args = append(args, "--override-arch", arch)
-	}
-	args = append(args, "docker://"+ref)
-	cmd := exec.CommandContext(ctx, "skopeo", args...) //nolint:gosec // command is fixed and args are controlled inputs
-	out, err := cmd.Output()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("skopeo %s: %s", strings.Join(args, " "), strings.TrimSpace(string(exitErr.Stderr)))
-		}
-		return nil, fmt.Errorf("skopeo %s: %w", strings.Join(args, " "), err)
-	}
-	return out, nil
-}
+type registryProbeFunc func(ctx context.Context, cfg *config.CocoonConfig, ref string) (types.VMImageType, error)
 
 func resolveRuntimeImageRefWithProbe(
 	ctx context.Context,
 	cfg *config.CocoonConfig,
 	ref string,
-	registryProbe registryProbeRawFunc,
+	registryProbe registryProbeFunc,
 ) (*resolvedRuntimeImage, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
@@ -139,7 +104,7 @@ func resolveRuntimeImageRefWithProbe(
 			VMImageType: types.VMImageTypeQCOW2,
 		}, nil
 	}
-	vmType, probeErr := detectRegistryVMImageType(ctx, ref, registryProbe)
+	vmType, probeErr := registryProbe(ctx, cfg, ref)
 	if probeErr != nil {
 		log.Printf("ERROR: registry probe failed for %q — if this is a Cocoon OCI VM image, check network connectivity and registry credentials: %v", ref, probeErr)
 		return nil, fmt.Errorf("probe registry image type for %q: %w", ref, probeErr)
@@ -168,75 +133,6 @@ func localOCITagAndCacheRefDiffer(cfg *config.CocoonConfig, ociRef, cacheBaseKey
 		return false, nil
 	}
 	return ociBaseKey != cacheBaseKey, nil
-}
-
-func detectRegistryVMImageType(ctx context.Context, ref string, registryProbe registryProbeRawFunc) (types.VMImageType, error) {
-	if registryProbe == nil {
-		registryProbe = defaultRunSkopeoInspectRaw
-	}
-
-	rawManifest, err := registryProbe(ctx, ref, "")
-	if err != nil {
-		return types.VMImageTypeQCOW2, err
-	}
-
-	var idx registryProbeIndex
-	if unmarshalErr := json.Unmarshal(rawManifest, &idx); unmarshalErr != nil {
-		return types.VMImageTypeQCOW2, fmt.Errorf("parse registry manifest for %q: %w", ref, unmarshalErr)
-	}
-	if strings.Contains(idx.MediaType, "image.index") || strings.Contains(idx.MediaType, "manifest.list") {
-		rawManifest, err = registryProbe(ctx, ref, hostOCIArch())
-		if err != nil {
-			return types.VMImageTypeQCOW2, err
-		}
-	}
-
-	var manifest registryProbeManifest
-	if unmarshalErr := json.Unmarshal(rawManifest, &manifest); unmarshalErr != nil {
-		return types.VMImageTypeQCOW2, fmt.Errorf("parse single manifest for %q: %w", ref, unmarshalErr)
-	}
-
-	if isCocoonVMManifest(manifest) {
-		return types.VMImageTypeOCIVM, nil
-	}
-	return types.VMImageTypeQCOW2, nil
-}
-
-func isCocoonVMManifest(manifest registryProbeManifest) bool {
-	if manifest.Config.MediaType != oci.MediaTypeVMConfig {
-		return false
-	}
-	if manifest.ArtifactType != "" && manifest.ArtifactType != oci.ArtifactTypeVMImage {
-		return false
-	}
-
-	kernelCount := 0
-	hasKernel := false
-	hasRootfs := false
-	for idx, layer := range manifest.Layers {
-		switch layer.MediaType {
-		case oci.MediaTypeKernelLayer:
-			if idx != 0 {
-				return false
-			}
-			kernelCount++
-			hasKernel = true
-		case oci.MediaTypeRootfsLayer:
-			hasRootfs = true
-		default:
-			return false
-		}
-	}
-	return kernelCount == 1 && hasKernel && hasRootfs
-}
-
-func hostOCIArch() string {
-	switch runtime.GOARCH {
-	case "arm64":
-		return "arm64"
-	default:
-		return "amd64"
-	}
 }
 
 func resolveLocalPathRef(ref string) (*resolvedRuntimeImage, error) {

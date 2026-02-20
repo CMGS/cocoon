@@ -72,8 +72,8 @@ func setupTestManager(t *testing.T) *testDeps {
 	if !ok {
 		t.Fatalf("unexpected manager type %T", mgr)
 	}
-	// Keep manager tests hermetic: never depend on host skopeo/network.
-	concreteMgr.registryProbeRawFn = resolverProbeStub
+	// Keep manager tests hermetic: never depend on network/registry access.
+	concreteMgr.registryProbeFn = resolverProbeStub
 
 	return &testDeps{
 		mgr:        concreteMgr,

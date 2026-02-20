@@ -209,29 +209,12 @@ func Pull(ctx context.Context, cfg *config.CocoonConfig, ref string) (*PullResul
 // image on a remote registry by fetching just the manifest and validating
 // its media types. Returns false on any error (safe fallback to cloud pipeline).
 func ProbeRegistryVMImage(ctx context.Context, cfg *config.CocoonConfig, ref string) bool {
-	ref = EnsureLatestTag(ref)
-	tag, err := name.NewTag(ref)
+	vmType, err := ProbeRegistryVMImageType(ctx, cfg, ref)
 	if err != nil {
-		log.Printf("warning: probe registry VM image %q: invalid tag: %v", ref, err)
+		log.Printf("warning: probe registry VM image %q: %v", ref, err)
 		return false
 	}
-
-	keychain := authn.NewMultiKeychain(CocoonKeychain(), authn.DefaultKeychain)
-	desc, err := remote.Get(tag,
-		remote.WithAuthFromKeychain(keychain),
-		remote.WithContext(ctx),
-		remote.WithPlatform(hostPlatform()),
-	)
-	if err != nil {
-		log.Printf("warning: probe registry VM image %q: remote.Get failed: %v", ref, err)
-		return false
-	}
-
-	if validateErr := validateCocoonVMManifest(desc.Manifest); validateErr != nil {
-		log.Printf("warning: probe registry VM image %q: manifest validation failed: %v", ref, validateErr)
-		return false
-	}
-	return true
+	return vmType == types.VMImageTypeOCIVM
 }
 
 // validateCocoonVMManifest checks that rawManifest describes a valid Cocoon VM image.

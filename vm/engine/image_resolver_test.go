@@ -15,14 +15,14 @@ import (
 	"github.com/CMGS/cocoon/types"
 )
 
-func resolverProbeStub(_ context.Context, ref string, _ string) ([]byte, error) {
+func resolverProbeStub(_ context.Context, _ *config.CocoonConfig, ref string) (types.VMImageType, error) {
 	switch {
 	case strings.Contains(ref, "probe-error"):
-		return nil, errors.New("network timeout")
+		return types.VMImageTypeQCOW2, errors.New("network timeout")
 	case strings.Contains(ref, "cocoon-vm"):
-		return []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","artifactType":"application/vnd.cocoon.vm.image.v1","config":{"mediaType":"application/vnd.cocoon.vm.config.v1+json"},"layers":[{"mediaType":"application/vnd.cocoon.vm.kernel.v1.tar"},{"mediaType":"application/vnd.cocoon.vm.rootfs.v1.tar"}]}`), nil
+		return types.VMImageTypeOCIVM, nil
 	}
-	return []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json"},"layers":[]}`), nil
+	return types.VMImageTypeQCOW2, nil
 }
 
 func resolveRuntimeImageRefForTest(ctx context.Context, cfg *config.CocoonConfig, ref string) (*resolvedRuntimeImage, error) {
