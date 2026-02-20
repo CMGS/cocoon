@@ -132,7 +132,7 @@ func writeTestOCIVMArtifacts(t *testing.T, cfg *config.CocoonConfig, vmID, name 
 		KernelLayerDigest:  kernelDigest,
 		RootfsLayerDigests: []string{rootfsDigest},
 		Arch:               "amd64",
-		VirtioFSTag:        "/dev/root",
+		VirtioFSTag:        "cocoon-rootfs",
 	}
 	if err := oci.WriteEntryMeta(cfg.OCIRuntimeEntryMetaPath(baseKey), entryMeta); err != nil {
 		t.Fatalf("write entry meta: %v", err)
@@ -150,8 +150,8 @@ func writeTestOCIVMArtifacts(t *testing.T, cfg *config.CocoonConfig, vmID, name 
 		BaseImagePath:  entryDir,
 		KernelPath:     filepath.Join(kernelLayerDir, "vmlinuz"),
 		InitramfsPath:  filepath.Join(kernelLayerDir, "initrd.img"),
-		Cmdline:        "root=/dev/root rootfstype=virtiofs rw",
-		VirtioFSTag:    "/dev/root",
+		Cmdline:        "root=cocoon-rootfs rootfstype=virtiofs rw",
+		VirtioFSTag:    "cocoon-rootfs",
 		VirtioFSSock:   cfg.VMOCIRootfsVirtioFSSocketPath(vmID),
 		SocketPath:     cfg.VMSocketPath(vmID),
 		SerialLog:      cfg.VMSerialLogPath(vmID),

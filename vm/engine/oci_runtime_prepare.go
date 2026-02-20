@@ -15,12 +15,9 @@ import (
 )
 
 const (
-	defaultOCIRuntimeVirtioFSTag = "/dev/root"
-)
-
-const (
-	minOCIRuntimeKernelBytes = 1024
-	minOCIRuntimeInitrdBytes = 1
+	defaultOCIRuntimeVirtioFSTag = "cocoon-rootfs"
+	minOCIRuntimeKernelBytes     = 1024
+	minOCIRuntimeInitrdBytes     = 1
 )
 
 type ociRuntimeSpec struct {

@@ -86,7 +86,7 @@ func TestLogVMCreatePayload(t *testing.T) {
 			Shared: true,
 		},
 		Fs: []hypervisor.CHFsConfig{
-			{Tag: "/dev/root", Socket: "/run/cocoon/vms/vm-1/virtiofsd.sock"},
+			{Tag: "cocoon-rootfs", Socket: "/run/cocoon/vms/vm-1/virtiofsd.sock"},
 		},
 	}
 
@@ -100,7 +100,7 @@ func TestLogVMCreatePayload(t *testing.T) {
 	if !strings.Contains(got, "CH RPC vm.create request: socket=/run/cocoon/vms/vm-1/api.sock") {
 		t.Fatalf("expected socket path in log, got: %q", got)
 	}
-	if !strings.Contains(got, `"fs": [`) || !strings.Contains(got, `"tag": "/dev/root"`) {
+	if !strings.Contains(got, `"fs": [`) || !strings.Contains(got, `"tag": "cocoon-rootfs"`) {
 		t.Fatalf("expected fs payload in log, got: %q", got)
 	}
 }

@@ -428,7 +428,7 @@ func buildVMConfig(
 		KernelCmdline:   fmt.Sprintf("console=hvc0 root=PARTUUID=%s ro quiet", partUUID),
 		KernelPath:      "/vmlinuz",
 		InitrdPath:      "/initrd.img",
-		VirtiofsTag:     "/dev/root",
+		VirtiofsTag:     "cocoon-rootfs",
 		RootfsPartUUID:  partUUID,
 	}
 

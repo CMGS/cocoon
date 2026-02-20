@@ -15,8 +15,8 @@ import (
 func TestNormalizeVirtiofsKernelCmdline_EnforcesSerialAndVirtioConsoles(t *testing.T) {
 	t.Parallel()
 
-	got := normalizeVirtiofsKernelCmdline("quiet splash", "/dev/root")
-	want := "quiet splash console=ttyS0 console=hvc0 root=/dev/root rootfstype=virtiofs rw"
+	got := normalizeVirtiofsKernelCmdline("quiet splash", "cocoon-rootfs")
+	want := "quiet splash console=ttyS0 console=hvc0 root=cocoon-rootfs rootfstype=virtiofs rw"
 	if got != want {
 		t.Fatalf("normalizeVirtiofsKernelCmdline() = %q, want %q", got, want)
 	}
@@ -25,8 +25,8 @@ func TestNormalizeVirtiofsKernelCmdline_EnforcesSerialAndVirtioConsoles(t *testi
 func TestNormalizeVirtiofsKernelCmdline_RewritesRootAndConsoleArgs(t *testing.T) {
 	t.Parallel()
 
-	got := normalizeVirtiofsKernelCmdline("foo=bar console=ttyS1 root=/dev/vda1 ro console=hvc0", "/dev/root")
-	want := "foo=bar console=ttyS0 console=hvc0 root=/dev/root rootfstype=virtiofs rw"
+	got := normalizeVirtiofsKernelCmdline("foo=bar console=ttyS1 root=/dev/vda1 ro console=hvc0", "cocoon-rootfs")
+	want := "foo=bar console=ttyS0 console=hvc0 root=cocoon-rootfs rootfstype=virtiofs rw"
 	if got != want {
 		t.Fatalf("normalizeVirtiofsKernelCmdline() = %q, want %q", got, want)
 	}
