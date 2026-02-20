@@ -162,6 +162,9 @@ func materializeOCIRuntimeCache(ctx context.Context, cfg *config.CocoonConfig, r
 	if err = installOCIRuntimeKernelArtifacts(workKernel, info.Config); err != nil {
 		return err
 	}
+	if err = validateOCIRuntimeInitramfsVirtiofs(filepath.Join(workKernel, "initrd.img")); err != nil {
+		return fmt.Errorf("OCI runtime initramfs check failed for %s: %w", runtimeKey, err)
+	}
 
 	if err := promoteOCIRuntimeCacheDir(workDir, cfg.OCIRuntimeEntryDir(runtimeKey)); err != nil {
 		return fmt.Errorf("promote OCI runtime cache %s: %w", runtimeKey, err)
@@ -300,27 +303,44 @@ func normalizeVirtiofsKernelCmdline(raw, virtiofsTag string) string {
 	}
 
 	fields := strings.Fields(strings.TrimSpace(raw))
-	out := make([]string, 0, len(fields)+4)
-	hasConsole := false
+	out := make([]string, 0, len(fields)+5)
 	for _, field := range fields {
 		switch {
 		case strings.HasPrefix(field, "root="),
 			strings.HasPrefix(field, "rootfstype="),
 			field == "ro",
-			field == "rw":
+			field == "rw",
+			strings.HasPrefix(field, "console="):
 			continue
-		case strings.HasPrefix(field, "console="):
-			hasConsole = true
 		}
 		out = append(out, field)
 	}
-	if !hasConsole {
-		out = append(out, "console=hvc0")
-	}
+	// Ensure serial output is always visible to boot detection (ttyS0), while
+	// keeping hvc0 as the primary console by appending it last.
+	out = append(out, "console=ttyS0", "console=hvc0")
 	// The runtime overlay upperdir is writable, so force rw semantics even if
 	// source cmdline requested ro to avoid guest booting with a read-only root.
 	out = append(out, "root="+virtiofsTag, "rootfstype=virtiofs", "rw")
 	return strings.Join(out, " ")
+}
+
+func validateOCIRuntimeInitramfsVirtiofs(initramfsPath string) error {
+	path := strings.TrimSpace(initramfsPath)
+	if path == "" {
+		return fmt.Errorf("initramfs path is empty")
+	}
+
+	found, err := oci.CheckInitramfsVirtiofsFromInitrdPath(path)
+	if err != nil {
+		return fmt.Errorf("virtiofs module detection failed for %s: %w", path, err)
+	}
+	if !found {
+		return fmt.Errorf(
+			"virtiofs module not found in initramfs %s; rebuild image/initramfs with virtiofs support before create/run",
+			path,
+		)
+	}
+	return nil
 }
 
 func statPathExists(path string) bool {
