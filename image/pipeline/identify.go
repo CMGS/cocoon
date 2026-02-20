@@ -2,8 +2,6 @@ package pipeline
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -40,7 +38,7 @@ func identifyOCIRemote(ctx context.Context, ref string) (*image.ImageIdentity, e
 		OS:           "linux",
 	}
 
-	desc, err := remote.Get(tag,
+	img, err := remote.Image(tag,
 		remote.WithAuthFromKeychain(keychain),
 		remote.WithContext(ctx),
 		remote.WithPlatform(platform),
@@ -49,7 +47,10 @@ func identifyOCIRemote(ctx context.Context, ref string) (*image.ImageIdentity, e
 		return nil, oci.ClassifyRegistryError("identify", err)
 	}
 
-	rawManifest := desc.Manifest
+	rawManifest, err := img.RawManifest()
+	if err != nil {
+		return nil, oci.ClassifyRegistryError("identify", err)
+	}
 
 	// Parse single manifest for config digest and layer digests.
 	var manifest struct {
@@ -60,8 +61,8 @@ func identifyOCIRemote(ctx context.Context, ref string) (*image.ImageIdentity, e
 			Digest string `json:"digest"`
 		} `json:"layers"`
 	}
-	if err := json.Unmarshal(rawManifest, &manifest); err != nil {
-		return nil, types.NewPermanentError(fmt.Errorf("parse manifest for %s: %w", ref, err))
+	if unmarshalErr := json.Unmarshal(rawManifest, &manifest); unmarshalErr != nil {
+		return nil, types.NewPermanentError(fmt.Errorf("parse manifest for %s: %w", ref, unmarshalErr))
 	}
 
 	configDigest := manifest.Config.Digest
@@ -72,14 +73,16 @@ func identifyOCIRemote(ctx context.Context, ref string) (*image.ImageIdentity, e
 
 	fullDigest, checksum := computeOCIChecksum(configDigest, layerDigests, arch)
 
-	manifestHash := sha256.Sum256(rawManifest)
-	manifestDigest := hex.EncodeToString(manifestHash[:])
+	manifestDigest, err := img.Digest()
+	if err != nil {
+		return nil, oci.ClassifyRegistryError("identify", err)
+	}
 
 	return &image.ImageIdentity{
 		Checksum:       checksum,
 		Arch:           arch,
 		FullDigest:     fullDigest,
-		ManifestDigest: manifestDigest,
+		ManifestDigest: manifestDigest.Hex,
 		SourceRef:      ref,
 		ImageType:      image.ImageTypeOCI,
 	}, nil

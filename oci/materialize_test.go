@@ -267,6 +267,28 @@ func TestMaterializeRootfs_CompressedLayer(t *testing.T) {
 	assertFileContent(t, filepath.Join(targetDir, "etc", "os-release"), "ID=ubuntu\n")
 }
 
+func TestMaterializeRootfs_CompressedLayer_DockerMediaType(t *testing.T) {
+	t.Parallel()
+
+	layoutPath, info := buildTestOCILayout(t, []testLayerSpec{
+		{
+			mediaType:  "application/vnd.docker.image.rootfs.diff.tar.gzip",
+			compressed: true,
+			entries: []testTarEntry{
+				{Name: "etc/", IsDir: true},
+				{Name: "etc/issue", Content: []byte("docker-media-type\n")},
+			},
+		},
+	})
+
+	targetDir := filepath.Join(t.TempDir(), "rootfs")
+	if err := MaterializeRootfs(t.Context(), layoutPath, targetDir, info); err != nil {
+		t.Fatalf("MaterializeRootfs: %v", err)
+	}
+
+	assertFileContent(t, filepath.Join(targetDir, "etc", "issue"), "docker-media-type\n")
+}
+
 func TestMaterializeRootfs_MultiLayerWithWhiteout(t *testing.T) {
 	t.Parallel()
 
