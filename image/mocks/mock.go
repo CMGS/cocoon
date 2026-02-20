@@ -8,6 +8,7 @@ package mocks
 
 import (
 	"context"
+	"iter"
 
 	"github.com/CMGS/cocoon/image"
 )
@@ -20,7 +21,7 @@ type MockManager struct {
 	ConvertFunc           func(ctx context.Context, identity *image.ImageIdentity) (string, error)
 	PrepareFunc           func(ctx context.Context, ref string) (*image.ImageIdentity, string, error)
 	VerifyBootabilityFunc func(ctx context.Context, imagePath string) (*image.BootCheckResult, error)
-	ListCachedFunc        func(ctx context.Context) ([]*image.CachedImage, error)
+	ListCachedFunc        func(ctx context.Context) iter.Seq2[*image.CachedImage, error]
 	RemoveCachedFunc      func(ctx context.Context, baseKey string) error
 }
 
@@ -58,11 +59,12 @@ func (m *MockManager) VerifyBootability(ctx context.Context, imagePath string) (
 }
 
 // ListCached delegates to ListCachedFunc if set, otherwise returns nil.
-func (m *MockManager) ListCached(ctx context.Context) ([]*image.CachedImage, error) {
+func (m *MockManager) ListCached(ctx context.Context) iter.Seq2[*image.CachedImage, error] {
 	if m.ListCachedFunc != nil {
 		return m.ListCachedFunc(ctx)
 	}
-	return nil, nil
+	// Return empty iterator
+	return func(yield func(*image.CachedImage, error) bool) {}
 }
 
 // RemoveCached delegates to RemoveCachedFunc if set, otherwise returns nil.

@@ -178,7 +178,7 @@ func ExtractTarToDir(ctx context.Context, tarPath, targetDir string) error {
 			if err := root.MkdirAll(name, mode); err != nil {
 				return fmt.Errorf("mkdir %q: %w", name, err)
 			}
-		case tar.TypeReg, 0:
+		case tar.TypeReg, 0, tar.TypeGNUSparse:
 			if hdr.Size < 0 {
 				return fmt.Errorf("invalid negative file size for %q: %d", name, hdr.Size)
 			}
@@ -192,6 +192,18 @@ func ExtractTarToDir(ctx context.Context, tarPath, targetDir string) error {
 			if err != nil {
 				return fmt.Errorf("create file %q: %w", name, err)
 			}
+
+			// Handle sparse files efficiently by seeking over holes.
+			// Go's tar.Reader handles the sparse map logic internally and presents
+			// a stream of data (zeros for holes). However, simply CopyNing that stream
+			// writes real zeros to disk, inflating the file.
+			// To truly preserve sparseness, we must detect zero blocks and seek.
+			//
+			// Optimization: use a simple heuristic for now. If it's explicitly marked sparse,
+			// we could use io.ReadFull + check for zeros + Seek, but Go's tar.Reader
+			// doesn't expose the holes map directly in a way that aligns with the stream easily.
+			// For P2, we'll stick to standard copy but ensure TypeGNUSparse is handled.
+			// (Future optimization: implement zero-block detection copy).
 			if _, err := io.CopyN(wf, tr, hdr.Size); err != nil {
 				wf.Close()
 				return fmt.Errorf("write file %q: %w", name, err)
@@ -397,6 +409,8 @@ func applyOCIWhiteout(targetDir, entryName string) (bool, error) {
 		if mkErr != nil {
 			return false, fmt.Errorf("create opaque whiteout parent %q: %w", parentPath, mkErr)
 		}
+		// Opaque whiteout semantics: in a layered union fs, this means "block lower layers".
+		// In our flattened extraction (materialize), this means "delete everything currently in this directory".
 		rmErr := removeDirChildren(parentPath)
 		if rmErr != nil {
 			return false, fmt.Errorf("apply opaque whiteout for %q: %w", parentPath, rmErr)

@@ -238,17 +238,15 @@ func (m *manager) resolveOCIRuntimeLocalTag(ctx context.Context, resolvedImage *
 }
 
 func (m *manager) snapshotCachedBaseKeys(ctx context.Context) map[string]struct{} {
-	images, err := m.imgMgr.ListCached(ctx)
-	if err != nil {
-		log.Printf("warning: list cached images before prepare: %v", err)
-		return nil
-	}
-	keys := make(map[string]struct{}, len(images))
-	for _, img := range images {
-		if img == nil || img.BaseKey == "" {
-			continue
+	keys := make(map[string]struct{})
+	for img, err := range m.imgMgr.ListCached(ctx) {
+		if err != nil {
+			log.Printf("warning: list cached images before prepare: %v", err)
+			return nil
 		}
-		keys[img.BaseKey] = struct{}{}
+		if img != nil && img.BaseKey != "" {
+			keys[img.BaseKey] = struct{}{}
+		}
 	}
 	return keys
 }
