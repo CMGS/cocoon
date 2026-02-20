@@ -48,9 +48,9 @@ type ImageIdentity struct {
 	FullDigest string `json:"full_digest"`
 
 	// ManifestDigest is the sha256 of the raw OCI manifest JSON.
-	// Used to pin buildah pull to the exact manifest identified by skopeo,
-	// preventing TOCTOU races when a tag is updated between identify and pull.
-	// Only set for OCI images.
+	// Used to pin the pull to the exact manifest identified during the
+	// identify phase, preventing TOCTOU races when a tag is updated
+	// between identify and pull. Only set for OCI images.
 	ManifestDigest string `json:"manifest_digest,omitempty"`
 
 	// SourceRef is the original image reference as provided by the user
@@ -64,8 +64,8 @@ type ImageIdentity struct {
 	// stored before conversion. It is not persisted to JSON.
 	TempPath string `json:"-"`
 
-	// ContainerID is the buildah container ID for OCI images.
-	// Transient; needed for cleanup after conversion.
+	// ContainerID is a legacy field (formerly used for buildah container cleanup).
+	// Retained for backward compatibility but no longer set by the pipeline.
 	ContainerID string `json:"-"`
 }
 

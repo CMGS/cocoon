@@ -174,12 +174,15 @@ func (m *manager) Convert(ctx context.Context, identity *image.ImageIdentity) (s
 }
 
 // convertOCIImage handles the OCI-specific conversion path within Convert().
-// It creates a temporary qcow2 from the OCI rootfs and atomically moves it
-// into the cache at basePath. On failure, any associated buildah container is
-// cleaned up.
+// It creates a temporary qcow2 from the OCI rootfs (at identity.TempPath)
+// and atomically moves it into the cache at basePath.
 func (m *manager) convertOCIImage(ctx context.Context, identity *image.ImageIdentity, basePath, baseKey string) error {
 	log.Printf("image %s: converting OCI rootfs -> qcow2", baseKey)
-	defer cleanupBuildahContainerFromIdentity(identity, m.cfg)
+
+	// Clean up materialized rootfs dir when done.
+	if identity.TempPath != "" {
+		defer func() { _ = os.RemoveAll(identity.TempPath) }()
+	}
 
 	// Ensure cache directory exists.
 	cacheDir := m.cfg.ImageCacheDir()
@@ -208,19 +211,11 @@ func (m *manager) convertOCIImage(ctx context.Context, identity *image.ImageIden
 	return nil
 }
 
-func cleanupBuildahContainerFromIdentity(identity *image.ImageIdentity, cfg *config.CocoonConfig) {
-	if identity == nil || identity.ContainerID == "" {
-		return
-	}
-	cleanupBuildahContainer(identity.ContainerID, cfg)
-	identity.ContainerID = ""
-}
-
 // Prepare is the combined pull+convert+cache pipeline. It first checks whether
 // a cached base image already exists for the given ref. If so, it skips pull
 // and convert entirely. Otherwise it runs Pull + Convert and caches the result.
 //
-// For OCI images, the expensive pull+mount (buildah) steps are performed inside
+// For OCI images, the expensive pull+materialize steps are performed inside
 // the per-image conversion lock so that concurrent creates for the same image
 // result in only one pull. See docs/06-concurrency.md Section 1 for details.
 // tryRefcacheHit checks the refcache for a cached base image.
@@ -264,7 +259,7 @@ func (m *manager) tryRefcacheHit(ref string) (*image.ImageIdentity, string, bool
 func (m *manager) Prepare(ctx context.Context, ref string) (*image.ImageIdentity, string, error) {
 	// Fast path: check refcache first for any ref format (handles short names, aliases, etc.).
 	// This prevents short names like "ubuntu-22.04-cloudimg" from being misclassified as OCI
-	// refs and sent into the buildah/skopeo pipeline when they already exist in the cache.
+	// refs and sent into the OCI pipeline when they already exist in the cache.
 	if identity, basePath, ok, err := m.tryRefcacheHit(ref); err != nil {
 		return nil, "", err
 	} else if ok {
@@ -304,19 +299,20 @@ func (m *manager) Prepare(ctx context.Context, ref string) (*image.ImageIdentity
 	return identity, basePath, nil
 }
 
-// prepareOCI implements the OCI-specific Prepare pipeline where the pull+mount
-// happens inside the conversion lock to prevent parallel pulls of the same image.
+// prepareOCI implements the OCI-specific Prepare pipeline using go-containerregistry
+// for manifest fetching and image download, and oci.MaterializeRootfs for rootfs
+// flattening.
 //
 // Flow:
-//  1. Identify (skopeo inspect) — cheap, outside lock
+//  1. Identify (go-containerregistry manifest fetch) — cheap, outside lock
 //  2. Fast-path cache check — outside lock
 //  3. Acquire per-image conversion lock (Level 3)
 //  4. Double-check cache — inside lock
-//  5. Pull + mount + convert — inside lock
+//  5. Pull + materialize rootfs + convert — inside lock
 //  6. Release lock
 func (m *manager) prepareOCI(ctx context.Context, ref string) (*image.ImageIdentity, string, error) {
-	// Phase 1: Identify — skopeo inspect only, no lock needed.
-	identity, err := identifyOCIPlatform(ctx, ref)
+	// Phase 1: Identify — manifest fetch only, no lock needed.
+	identity, err := identifyOCIRemote(ctx, ref)
 	if err != nil {
 		return nil, "", fmt.Errorf("identify OCI %q: %w", ref, err)
 	}
@@ -333,12 +329,12 @@ func (m *manager) prepareOCI(ctx context.Context, ref string) (*image.ImageIdent
 	// Phase 3: Acquire per-image conversion lock (Level 3 in lock hierarchy).
 	lockPath := m.cfg.ConversionLockPath(baseKey)
 	fl := flock.New(lockPath)
-	if err := fl.Lock(); err != nil {
-		return nil, "", fmt.Errorf("acquire conversion lock for %s: %w", baseKey, err)
+	if lockErr := fl.Lock(); lockErr != nil {
+		return nil, "", fmt.Errorf("acquire conversion lock for %s: %w", baseKey, lockErr)
 	}
 	defer func() {
-		if err := fl.Unlock(); err != nil {
-			log.Printf("warning: failed to release conversion lock for %s: %v", baseKey, err)
+		if unlockErr := fl.Unlock(); unlockErr != nil {
+			log.Printf("warning: failed to release conversion lock for %s: %v", baseKey, unlockErr)
 		}
 	}()
 
@@ -349,26 +345,16 @@ func (m *manager) prepareOCI(ctx context.Context, ref string) (*image.ImageIdent
 		return identity, basePath, nil
 	}
 
-	// Phase 5: Pull + mount (buildah) — inside lock.
+	// Phase 5: Pull + materialize rootfs — inside lock.
 	log.Printf("image %s: pulling OCI image %q", baseKey, ref)
-	if err := pullAndMountOCIPlatform(ctx, m.cfg, identity); err != nil {
-		// Clean up partially-created buildah container on failure.
-		cleanupBuildahContainerFromIdentity(identity, m.cfg)
+	rootfsDir, err := pullAndMaterializeOCI(ctx, ref, identity)
+	if err != nil {
 		return nil, "", fmt.Errorf("pull OCI %q: %w", ref, err)
 	}
-	defer cleanupBuildahContainerFromIdentity(identity, m.cfg)
+	defer func() { _ = os.RemoveAll(rootfsDir) }()
 
-	// Phase 6: Convert OCI rootfs -> qcow2 — inside lock.
+	// Phase 6: Convert materialized rootfs -> qcow2 — inside lock.
 	log.Printf("image %s: converting OCI rootfs -> qcow2", baseKey)
-
-	srcPath := identity.TempPath
-	if srcPath == "" {
-		return nil, "", fmt.Errorf("convert %s: no source path (TempPath) set after pull", baseKey)
-	}
-
-	if _, statErr := os.Stat(srcPath); statErr != nil {
-		return nil, "", fmt.Errorf("convert %s: source rootfs not found at %s: %w", baseKey, srcPath, statErr)
-	}
 
 	// Ensure cache directory exists.
 	cacheDir := m.cfg.ImageCacheDir()
@@ -380,7 +366,7 @@ func (m *manager) prepareOCI(ctx context.Context, ref string) (*image.ImageIdent
 	defer func() { _ = os.Remove(tmpPath) }()
 
 	diskSize := "10G" // Default size for OCI conversion
-	if err := convertOCI(ctx, srcPath, tmpPath, diskSize); err != nil {
+	if err := convertOCI(ctx, rootfsDir, tmpPath, diskSize); err != nil {
 		return nil, "", types.NewPermanentError(fmt.Errorf("convert OCI %s: %w", baseKey, err))
 	}
 
@@ -668,13 +654,13 @@ func classifyRef(ref string) image.ImageType {
 }
 
 // pullOCI handles pulling an OCI image from a container registry.
-// It only performs the identify phase (skopeo inspect) to compute the
-// content-addressed identity. The expensive pull+mount steps are deferred
-// to inside the conversion lock in Prepare(). For callers using Pull()
-// directly (outside the Prepare pipeline), the identity will not have
-// TempPath or ContainerID set.
+// It only performs the identify phase (go-containerregistry remote.Get) to
+// compute the content-addressed identity. The expensive pull+materialize
+// steps are deferred to inside the conversion lock in Prepare(). For callers
+// using Pull() directly (outside the Prepare pipeline), the identity will
+// not have TempPath set.
 func (m *manager) pullOCI(ctx context.Context, ref string) (*image.ImageIdentity, error) {
-	return identifyOCIPlatform(ctx, ref)
+	return identifyOCIRemote(ctx, ref)
 }
 
 // pullURL handles downloading an image from an HTTP/HTTPS URL.

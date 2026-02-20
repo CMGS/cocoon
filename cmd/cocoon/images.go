@@ -214,8 +214,8 @@ type pullRefKind int
 
 const (
 	// pullRefCloudPipeline routes through the existing cloud image pipeline
-	// (Buildah/skopeo for OCI container images, or direct download for URLs
-	// and local paths).
+	// (go-containerregistry for OCI container images, or direct download for
+	// URLs and local paths).
 	pullRefCloudPipeline pullRefKind = iota
 	// pullRefShortName is a Docker-style short name (e.g., "cmgs/test-u2404",
 	// "ubuntu:22.04") where the first path segment has no dot. These are

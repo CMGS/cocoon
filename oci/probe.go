@@ -15,7 +15,7 @@ import (
 
 // ProbeRegistryVMImageType fetches the manifest for ref from a remote registry
 // and returns whether it is a Cocoon VM image or a standard container image.
-// Errors are classified via classifyRegistryError.
+// Errors are classified via ClassifyRegistryError.
 func ProbeRegistryVMImageType(ctx context.Context, cfg *config.CocoonConfig, ref string) (types.VMImageType, error) {
 	ref = EnsureLatestTag(ref)
 
@@ -32,7 +32,7 @@ func ProbeRegistryVMImageType(ctx context.Context, cfg *config.CocoonConfig, ref
 		remote.WithPlatform(hostPlatform()),
 	)
 	if err != nil {
-		return types.VMImageTypeQCOW2, classifyRegistryError("probe", err)
+		return types.VMImageTypeQCOW2, ClassifyRegistryError("probe", err)
 	}
 
 	if validateErr := validateCocoonVMManifest(desc.Manifest); validateErr != nil {

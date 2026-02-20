@@ -56,13 +56,13 @@ func Pull(ctx context.Context, cfg *config.CocoonConfig, ref string) (*PullResul
 		remote.WithPlatform(platform),
 	)
 	if err != nil {
-		return nil, classifyRegistryError("pull", err)
+		return nil, ClassifyRegistryError("pull", err)
 	}
 
 	// Fetch and validate the manifest.
 	rawManifest, err := img.RawManifest()
 	if err != nil {
-		return nil, classifyRegistryError("pull", err)
+		return nil, ClassifyRegistryError("pull", err)
 	}
 	if validateErr := validateCocoonVMManifest(rawManifest); validateErr != nil {
 		return nil, types.NewPermanentError(fmt.Errorf("validate manifest for %q: %w", ref, validateErr))
@@ -70,7 +70,7 @@ func Pull(ctx context.Context, cfg *config.CocoonConfig, ref string) (*PullResul
 
 	manifestDigest, err := img.Digest()
 	if err != nil {
-		return nil, classifyRegistryError("pull", err)
+		return nil, ClassifyRegistryError("pull", err)
 	}
 
 	// Idempotency check: if we already have this tag with the same manifest, skip.
@@ -99,7 +99,7 @@ func Pull(ctx context.Context, cfg *config.CocoonConfig, ref string) (*PullResul
 	// Store config blob.
 	configData, err := img.RawConfigFile()
 	if err != nil {
-		return nil, classifyRegistryError("pull", err)
+		return nil, ClassifyRegistryError("pull", err)
 	}
 	configDigestHex := stripSHA256Prefix(manifest.Config.Digest)
 	if _, storeErr := blobStore.StoreBlobFromBytes(configData, configDigestHex); storeErr != nil {
@@ -112,16 +112,16 @@ func Pull(ctx context.Context, cfg *config.CocoonConfig, ref string) (*PullResul
 	// Store layer blobs.
 	layers, err := img.Layers()
 	if err != nil {
-		return nil, classifyRegistryError("pull", err)
+		return nil, ClassifyRegistryError("pull", err)
 	}
 	for i, layer := range layers {
 		layerDigest, layerDigestErr := layer.Digest()
 		if layerDigestErr != nil {
-			return nil, classifyRegistryError("pull", layerDigestErr)
+			return nil, ClassifyRegistryError("pull", layerDigestErr)
 		}
 		layerSize, layerSizeErr := layer.Size()
 		if layerSizeErr != nil {
-			return nil, classifyRegistryError("pull", layerSizeErr)
+			return nil, ClassifyRegistryError("pull", layerSizeErr)
 		}
 		layerHex := layerDigest.Hex
 
@@ -291,7 +291,7 @@ func checkIdempotent(store *Store, ref, manifestHex string) (bool, string) {
 func pullLayerToStore(blobStore *BlobStore, layer v1.Layer, digestHexStr string, progress *pullLayerProgress) error {
 	rc, err := layer.Compressed()
 	if err != nil {
-		return classifyRegistryError("pull", err)
+		return ClassifyRegistryError("pull", err)
 	}
 	defer rc.Close() //nolint:errcheck
 
@@ -319,7 +319,7 @@ func pullLayerToStore(blobStore *BlobStore, layer v1.Layer, digestHexStr string,
 	}
 	if _, err := io.Copy(io.MultiWriter(writers...), rc); err != nil {
 		_ = tmpFile.Close()
-		return classifyRegistryError("pull", err)
+		return ClassifyRegistryError("pull", err)
 	}
 	if err := tmpFile.Sync(); err != nil {
 		_ = tmpFile.Close()

@@ -1201,12 +1201,13 @@ The following pipeline stages MUST pass for every PR:
 | File | Purpose |
 |------|---------|
 | `image/pipeline/manager.go` | Main pipeline: Pull, Convert, Prepare, VerifyBootability, ListCached, RemoveCached |
-| `image/pipeline/oci_linux.go` | OCI-specific: identifyOCIPlatform, pullAndMountOCIPlatform, runCmd, error classification |
+| `image/pipeline/identify.go` | OCI identify+pull: identifyOCIRemote, pullAndMaterializeOCI (go-containerregistry) |
 | `image/pipeline/convert_linux.go` | Conversion: convertOCI, ensureGRUBConfig, guestfish script |
-| `image/pipeline/checksum.go` | Checksum: computeFileChecksum, goarchToOCI, defaultArch |
-| `image/pipeline/cleanup_linux.go` | Cleanup: cleanupBuildahContainer |
+| `image/pipeline/checksum.go` | Checksum: computeFileChecksum, computeOCIChecksum, goarchToOCI, defaultArch |
 | `image/pipeline/verify_linux.go` | Deep boot verification: deepVerifyBoot |
 | `image/pipeline/format.go` | Format detection: detectImageFormat via qemu-img info |
+| `oci/materialize.go` | OCI rootfs materialization: MaterializeRootfs (layer extraction with whiteout handling) |
+| `oci/classify.go` | Registry error classification: ClassifyRegistryError |
 | `image/refcache/index.go` | Manifest refcache: Upsert, ResolveBaseKey, alias generation |
 | `image/types.go` | Types: ImageIdentity, BootCheckResult, CachedImage, ImageType |
 | `types/errors.go` | Error types: ClassifiedError, IsTransient, ErrorType constants |
@@ -1216,10 +1217,9 @@ The following pipeline stages MUST pass for every PR:
 
 | Tool | Purpose | Documentation |
 |------|---------|---------------|
-| Buildah | OCI image operations | https://buildah.io/ |
+| go-containerregistry | OCI registry operations (identify, pull) | https://github.com/google/go-containerregistry |
 | qemu-img | qcow2 image creation | https://www.qemu.org/docs/master/tools/qemu-img.html |
 | libguestfs | Disk image manipulation | https://libguestfs.org/ |
-| skopeo | OCI manifest inspection | https://github.com/containers/skopeo |
 
 ### 12.4 Installation
 

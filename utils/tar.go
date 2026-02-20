@@ -178,6 +178,21 @@ func ExtractOCILayerTarForOverlayDir(ctx context.Context, tarPath, targetDir str
 	return extractOCILayer(ctx, tarPath, targetDir, whiteoutOverlay)
 }
 
+// ExtractOCILayerTarFromReader extracts an OCI diff layer from an io.Reader
+// (e.g. a gzip.Reader wrapping a compressed blob) into targetDir while applying
+// OCI whiteout semantics (flatten mode). The label is used in error messages.
+func ExtractOCILayerTarFromReader(ctx context.Context, label, targetDir string, r io.Reader) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(targetDir, 0o755); err != nil { //nolint:gosec // targetDir is a caller-controlled local temp path
+		return fmt.Errorf("create target directory %q: %w", targetDir, err)
+	}
+
+	return extractTarStream(ctx, label, targetDir, tar.NewReader(r), whiteoutApply)
+}
+
 func extractOCILayer(ctx context.Context, tarPath, targetDir string, mode whiteoutMode) error {
 	if err := ctx.Err(); err != nil {
 		return err

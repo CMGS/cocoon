@@ -73,7 +73,7 @@ func TestClassifyPushError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			classified := classifyRegistryError("push", tt.err)
+			classified := ClassifyRegistryError("push", tt.err)
 			if types.IsTransient(classified) != tt.wantTransient {
 				t.Errorf("IsTransient = %v, want %v", types.IsTransient(classified), tt.wantTransient)
 			}
