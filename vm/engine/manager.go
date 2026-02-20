@@ -403,6 +403,9 @@ func (m *manager) createOCIVM(
 	if err != nil {
 		return nil, err
 	}
+	if checkErr := validateOCIRuntimeInitramfsVirtiofs(runtimeSpec.InitramfsPath); checkErr != nil {
+		return nil, fmt.Errorf("OCI runtime initramfs check failed for %q: %w", localTag, checkErr)
+	}
 
 	name := opts.Name
 	if name == "" {
@@ -508,6 +511,25 @@ func (m *manager) createOCIVM(
 
 	createSucceeded = true
 	return vmCfg, nil
+}
+
+func validateOCIRuntimeInitramfsVirtiofs(initramfsPath string) error {
+	path := strings.TrimSpace(initramfsPath)
+	if path == "" {
+		return fmt.Errorf("initramfs path is empty")
+	}
+
+	found, err := oci.CheckInitramfsVirtiofsFromInitrdPath(path)
+	if err != nil {
+		return fmt.Errorf("virtiofs module detection failed for %s: %w", path, err)
+	}
+	if !found {
+		return fmt.Errorf(
+			"virtiofs module not found in initramfs %s; rebuild image/initramfs with virtiofs support before create/run",
+			path,
+		)
+	}
+	return nil
 }
 
 func (m *manager) resolveOCIRuntimeLocalTag(ctx context.Context, resolvedImage *resolvedRuntimeImage) (string, error) {

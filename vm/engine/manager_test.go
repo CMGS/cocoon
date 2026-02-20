@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -115,6 +117,70 @@ func createTestVM(t *testing.T, td *testDeps, opts *vm.CreateOptions) *types.VMC
 		t.Fatalf("Create: %v", err)
 	}
 	return vmCfg
+}
+
+type initramfsTestEntry struct {
+	Name string
+	Data []byte
+}
+
+func buildTestNewcCPIO(entries []initramfsTestEntry) []byte {
+	var buf bytes.Buffer
+	ino := uint32(1)
+	for _, e := range entries {
+		writeTestCPIONewcEntry(&buf, ino, e.Name, e.Data)
+		ino++
+	}
+	writeTestCPIONewcEntry(&buf, 0, "TRAILER!!!", nil)
+	return buf.Bytes()
+}
+
+func writeTestCPIONewcEntry(w *bytes.Buffer, ino uint32, name string, data []byte) {
+	nameWithNul := name + "\x00"
+	namesize := len(nameWithNul)
+	filesize := len(data)
+
+	hdr := fmt.Sprintf("070701"+
+		"%08X"+ // ino
+		"%08X"+ // mode
+		"%08X"+ // uid
+		"%08X"+ // gid
+		"%08X"+ // nlink
+		"%08X"+ // mtime
+		"%08X"+ // filesize
+		"%08X"+ // devmajor
+		"%08X"+ // devminor
+		"%08X"+ // rdevmajor
+		"%08X"+ // rdevminor
+		"%08X"+ // namesize
+		"%08X", // check
+		ino,
+		0o100644,  // mode
+		uint32(0), // uid
+		uint32(0), // gid
+		uint32(1), // nlink
+		uint32(0), // mtime
+		uint32(filesize),
+		uint32(0), // devmajor
+		uint32(0), // devminor
+		uint32(0), // rdevmajor
+		uint32(0), // rdevminor
+		uint32(namesize),
+		uint32(0), // check
+	)
+
+	w.WriteString(hdr)
+	w.WriteString(nameWithNul)
+
+	headerPlusName := 110 + namesize
+	if pad := (headerPlusName + 3) &^ 3; pad > headerPlusName {
+		w.Write(make([]byte, pad-headerPlusName))
+	}
+
+	w.Write(data)
+	if pad := (filesize + 3) &^ 3; pad > filesize {
+		w.Write(make([]byte, pad-filesize))
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -440,6 +506,68 @@ func TestResolveOCIRuntimeLocalTag_RegistryPullNormalizesLatest(t *testing.T) {
 	}
 	if localTag != "example.com/repo:latest" {
 		t.Fatalf("local tag = %q, want %q", localTag, "example.com/repo:latest")
+	}
+}
+
+func TestValidateOCIRuntimeInitramfsVirtiofs_Found(t *testing.T) {
+	t.Parallel()
+
+	cpioData := buildTestNewcCPIO([]initramfsTestEntry{
+		{Name: "lib/modules/6.8.0/kernel/fs/fuse/virtiofs.ko", Data: []byte("ELF-fake")},
+	})
+	var gzBuf bytes.Buffer
+	gzw := gzip.NewWriter(&gzBuf)
+	if _, err := gzw.Write(cpioData); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gzw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+
+	initrdPath := filepath.Join(t.TempDir(), "initrd.img")
+	if err := os.WriteFile(initrdPath, gzBuf.Bytes(), 0o644); err != nil {
+		t.Fatalf("write initrd: %v", err)
+	}
+
+	if err := validateOCIRuntimeInitramfsVirtiofs(initrdPath); err != nil {
+		t.Fatalf("validateOCIRuntimeInitramfsVirtiofs: %v", err)
+	}
+}
+
+func TestValidateOCIRuntimeInitramfsVirtiofs_NotFound(t *testing.T) {
+	t.Parallel()
+
+	cpioData := buildTestNewcCPIO([]initramfsTestEntry{
+		{Name: "lib/modules/6.8.0/kernel/fs/ext4/ext4.ko", Data: []byte("ELF-fake")},
+	})
+	initrdPath := filepath.Join(t.TempDir(), "initrd.img")
+	if err := os.WriteFile(initrdPath, cpioData, 0o644); err != nil {
+		t.Fatalf("write initrd: %v", err)
+	}
+
+	err := validateOCIRuntimeInitramfsVirtiofs(initrdPath)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "virtiofs module not found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateOCIRuntimeInitramfsVirtiofs_InconclusiveFails(t *testing.T) {
+	t.Parallel()
+
+	initrdPath := filepath.Join(t.TempDir(), "initrd.img")
+	if err := os.WriteFile(initrdPath, []byte{0xde, 0xad, 0xbe, 0xef, 0x00, 0x01}, 0o644); err != nil {
+		t.Fatalf("write initrd: %v", err)
+	}
+
+	err := validateOCIRuntimeInitramfsVirtiofs(initrdPath)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "virtiofs module detection failed") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

@@ -156,6 +156,57 @@ func TestCheckInitramfsVirtiofs_NotFound(t *testing.T) {
 	}
 }
 
+func TestCheckInitramfsVirtiofsFromInitrdPath_Found(t *testing.T) {
+	t.Parallel()
+
+	cpioData := buildNewcCPIO([]cpioTestEntry{
+		{Name: "lib/modules/6.8.0-40-generic/kernel/fs/fuse/virtiofs.ko", Data: []byte("ELF-fake")},
+	})
+
+	var gzBuf bytes.Buffer
+	gzw := gzip.NewWriter(&gzBuf)
+	if _, err := gzw.Write(cpioData); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gzw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+
+	initrdPath := filepath.Join(t.TempDir(), "initrd.img")
+	if err := os.WriteFile(initrdPath, gzBuf.Bytes(), 0o644); err != nil {
+		t.Fatalf("write initrd: %v", err)
+	}
+
+	found, err := CheckInitramfsVirtiofsFromInitrdPath(initrdPath)
+	if err != nil {
+		t.Fatalf("CheckInitramfsVirtiofsFromInitrdPath: %v", err)
+	}
+	if !found {
+		t.Fatal("expected virtiofs module to be found")
+	}
+}
+
+func TestCheckInitramfsVirtiofsFromInitrdPath_NotFound(t *testing.T) {
+	t.Parallel()
+
+	cpioData := buildNewcCPIO([]cpioTestEntry{
+		{Name: "lib/modules/6.8.0-40-generic/kernel/fs/ext4/ext4.ko", Data: []byte("ELF-fake")},
+	})
+
+	initrdPath := filepath.Join(t.TempDir(), "initrd.img")
+	if err := os.WriteFile(initrdPath, cpioData, 0o644); err != nil {
+		t.Fatalf("write initrd: %v", err)
+	}
+
+	found, err := CheckInitramfsVirtiofsFromInitrdPath(initrdPath)
+	if err != nil {
+		t.Fatalf("CheckInitramfsVirtiofsFromInitrdPath: %v", err)
+	}
+	if found {
+		t.Fatal("expected virtiofs module NOT to be found")
+	}
+}
+
 func TestCheckInitramfsVirtiofs_UncompressedCPIO(t *testing.T) {
 	t.Parallel()
 
@@ -286,6 +337,7 @@ func TestContainsVirtiofsModule(t *testing.T) {
 		{name: "gz-compressed", path: "lib/modules/6.8.0/kernel/fs/fuse/virtiofs.ko.gz", want: true},
 		{name: "different-module", path: "lib/modules/6.8.0/kernel/fs/ext4/ext4.ko", want: false},
 		{name: "partial-match", path: "lib/modules/6.8.0/kernel/fs/fuse/virtiofs.ko.bak", want: false},
+		{name: "prefix-match", path: "lib/modules/6.8.0/kernel/fs/fuse/notvirtiofs.ko", want: false},
 		{name: "empty", path: "", want: false},
 	}
 
