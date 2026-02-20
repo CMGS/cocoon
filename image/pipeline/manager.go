@@ -618,16 +618,17 @@ func (m *manager) RemoveCached(ctx context.Context, baseKey string) error {
 		}
 	}()
 
-	// Refuse to remove images still referenced by VMs (under lock).
-	if m.refCtr != nil {
-		referenced, err := m.refCtr.IsReferenced(baseKey)
-		if err != nil {
-			return fmt.Errorf("check references for %s: %w", baseKey, err)
-		}
-		if referenced {
-			refs, _ := m.refCtr.GetReferences(baseKey)
-			return fmt.Errorf("image %s is still referenced by VMs: %v", baseKey, refs)
-		}
+	// Read references.json directly under the already-held lock.
+	// We MUST NOT call m.refCtr.IsReferenced() here because the
+	// ReferenceCounter also acquires references.lock internally, and
+	// flock(2) is not reentrant across different file descriptors —
+	// that would self-deadlock.
+	refs := make(types.ReferencesFile)
+	if readErr := utils.ReadJSON(m.cfg.ReferencesFile(), &refs); readErr != nil && !os.IsNotExist(readErr) {
+		return fmt.Errorf("read references for %s: %w", baseKey, readErr)
+	}
+	if entry := refs[baseKey]; entry != nil && len(entry.Refs) > 0 {
+		return fmt.Errorf("image %s is still referenced by VMs: %v", baseKey, entry.Refs)
 	}
 
 	if err := os.Remove(basePath); err != nil {
