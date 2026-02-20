@@ -538,7 +538,12 @@ func (gc *fileGarbageCollector) sweepOCIRuntimeEntries(refsIdx *oci.RuntimeRefsI
 func (gc *fileGarbageCollector) sweepOCIRuntimeLayers(cutoff time.Time) ([]string, error) {
 	entriesDir := gc.cfg.OCIRuntimeEntriesDir()
 	referencedLayers := make(map[string]struct{})
-	survivingEntries, _ := os.ReadDir(entriesDir)
+	survivingEntries, err := os.ReadDir(entriesDir)
+	if err != nil && !os.IsNotExist(err) {
+		// Transient/permission I/O errors: abort layer sweep to avoid
+		// incorrectly treating valid layers as unreferenced.
+		return nil, fmt.Errorf("read OCI runtime entries dir for layer reference scan: %w", err)
+	}
 	for _, entry := range survivingEntries {
 		if !entry.IsDir() {
 			continue
