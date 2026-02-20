@@ -53,7 +53,7 @@ func gcAction(c *cli.Context) error {
 	}
 
 	var errs error
-	var collectedCount int
+	var imageCount, overlayCount, layoutCount, tagCount, manifestCount, blobCount, runtimeCount, lockCount, tempCount int
 
 	// Phase 1: Collect unreferenced images.
 	if images, err := app.gc.CollectUnreferencedImages(); err != nil {
@@ -62,7 +62,7 @@ func gcAction(c *cli.Context) error {
 		for _, baseKey := range images {
 			fmt.Printf("collected image: %s\n", baseKey)
 		}
-		collectedCount += len(images)
+		imageCount = len(images)
 	}
 
 	// Phase 2: Collect orphaned overlays.
@@ -72,7 +72,7 @@ func gcAction(c *cli.Context) error {
 		for _, vmID := range overlays {
 			fmt.Printf("collected orphaned overlay: %s\n", vmID)
 		}
-		collectedCount += len(overlays)
+		overlayCount = len(overlays)
 	}
 
 	// Phase 3: Collect orphaned OCI layouts.
@@ -82,7 +82,7 @@ func gcAction(c *cli.Context) error {
 		for _, name := range ociLayouts {
 			fmt.Printf("collected orphaned OCI layout: %s\n", name)
 		}
-		collectedCount += len(ociLayouts)
+		layoutCount = len(ociLayouts)
 	}
 
 	// Phase 4: Collect stale OCI tags.
@@ -92,7 +92,7 @@ func gcAction(c *cli.Context) error {
 		for _, tag := range staleTags {
 			fmt.Printf("collected stale OCI tag: %s\n", tag)
 		}
-		collectedCount += len(staleTags)
+		tagCount = len(staleTags)
 	}
 
 	// Phase 5: Collect orphaned OCI manifest refs.
@@ -102,7 +102,7 @@ func gcAction(c *cli.Context) error {
 		for _, digest := range orphanedManifests {
 			fmt.Printf("collected orphaned OCI manifest ref: %s\n", digest)
 		}
-		collectedCount += len(orphanedManifests)
+		manifestCount = len(orphanedManifests)
 	}
 
 	// Phase 6: Collect unreferenced OCI blobs.
@@ -112,7 +112,7 @@ func gcAction(c *cli.Context) error {
 		for _, digest := range ociBlobs {
 			fmt.Printf("collected unreferenced OCI blob: %s\n", digest)
 		}
-		collectedCount += len(ociBlobs)
+		blobCount = len(ociBlobs)
 	}
 
 	// Phase 7: Collect unreferenced OCI runtime caches.
@@ -123,7 +123,7 @@ func gcAction(c *cli.Context) error {
 			for _, runtimeKey := range ociRuntimeCaches {
 				fmt.Printf("collected unreferenced OCI runtime cache: %s\n", runtimeKey)
 			}
-			collectedCount += len(ociRuntimeCaches)
+			runtimeCount = len(ociRuntimeCaches)
 		}
 	}
 
@@ -135,7 +135,7 @@ func gcAction(c *cli.Context) error {
 			for _, name := range lockFiles {
 				fmt.Printf("collected stale conversion lock: %s\n", name)
 			}
-			collectedCount += len(lockFiles)
+			lockCount = len(lockFiles)
 		}
 	}
 
@@ -146,13 +146,15 @@ func gcAction(c *cli.Context) error {
 		for _, name := range tempFiles {
 			fmt.Printf("collected temp file: %s\n", name)
 		}
-		collectedCount += len(tempFiles)
+		tempCount = len(tempFiles)
 	}
 
-	if collectedCount == 0 {
+	total := imageCount + overlayCount + layoutCount + tagCount + manifestCount + blobCount + runtimeCount + lockCount + tempCount
+	if total == 0 {
 		fmt.Println("Nothing to collect.")
 	} else {
-		fmt.Printf("\nCollected %d item(s).\n", collectedCount)
+		fmt.Printf("\nCollected %d item(s): %d images, %d overlays, %d OCI layouts, %d stale tags, %d orphaned manifests, %d OCI blobs, %d OCI runtime caches, %d stale locks, %d temp files.\n",
+			total, imageCount, overlayCount, layoutCount, tagCount, manifestCount, blobCount, runtimeCount, lockCount, tempCount)
 	}
 
 	if errs != nil {
