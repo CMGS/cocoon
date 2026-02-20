@@ -132,7 +132,7 @@ func (m *manager) Convert(ctx context.Context, identity *image.ImageIdentity) (s
 
 	// Ensure cache directory exists.
 	cacheDir := m.cfg.ImageCacheDir()
-	if err := os.MkdirAll(cacheDir, 0o750); err != nil {
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		return "", fmt.Errorf("convert %s: create cache dir: %w", baseKey, err)
 	}
 
@@ -153,7 +153,7 @@ func (m *manager) Convert(ctx context.Context, identity *image.ImageIdentity) (s
 	case "raw":
 		// Convert raw to qcow2 using qemu-img.
 		log.Printf("image %s: converting raw -> qcow2", baseKey)
-		cmd := exec.CommandContext(ctx, "qemu-img", "convert", "-f", "raw", "-O", "qcow2", srcPath, tmpPath) //nolint:gosec // args are controlled internal paths, not user input
+		cmd := utils.CommandContextWithGroup(ctx, "qemu-img", "convert", "-f", "raw", "-O", "qcow2", srcPath, tmpPath) //nolint:gosec // args are controlled internal paths
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return "", types.NewPermanentError(fmt.Errorf("convert %s: qemu-img convert: %s: %w", baseKey, string(out), err))
 		}
@@ -166,6 +166,9 @@ func (m *manager) Convert(ctx context.Context, identity *image.ImageIdentity) (s
 	// their COW overlays and the shared base image stays immutable.
 	if err := os.Rename(tmpPath, basePath); err != nil {
 		return "", fmt.Errorf("convert %s: rename to cache path: %w", baseKey, err)
+	}
+	if err := utils.SyncParentDir(filepath.Dir(basePath)); err != nil {
+		return "", fmt.Errorf("convert %s: sync parent dir: %w", baseKey, err)
 	}
 	if err := os.Chmod(basePath, 0o444); err != nil { //nolint:gosec // G302: intentionally world-readable — base images are shared immutable backing files for COW overlays
 		return "", fmt.Errorf("convert %s: chmod read-only: %w", baseKey, err)
@@ -195,7 +198,7 @@ func (m *manager) convertOCIImage(ctx context.Context, identity *image.ImageIden
 
 	// Ensure cache directory exists.
 	cacheDir := m.cfg.ImageCacheDir()
-	if err := os.MkdirAll(cacheDir, 0o750); err != nil {
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		return fmt.Errorf("convert %s: create cache dir: %w", baseKey, err)
 	}
 
@@ -211,6 +214,9 @@ func (m *manager) convertOCIImage(ctx context.Context, identity *image.ImageIden
 	// their COW overlays and the shared base image stays immutable.
 	if err := os.Rename(tmpPath, basePath); err != nil {
 		return fmt.Errorf("convert %s: rename to cache: %w", baseKey, err)
+	}
+	if err := utils.SyncParentDir(filepath.Dir(basePath)); err != nil {
+		return fmt.Errorf("convert %s: sync parent dir: %w", baseKey, err)
 	}
 	if err := os.Chmod(basePath, 0o444); err != nil { //nolint:gosec // G302: intentionally world-readable — base images are shared immutable backing files for COW overlays
 		return fmt.Errorf("convert %s: chmod read-only: %w", baseKey, err)
@@ -367,7 +373,7 @@ func (m *manager) prepareOCI(ctx context.Context, ref string) (*image.ImageIdent
 
 	// Ensure cache directory exists.
 	cacheDir := m.cfg.ImageCacheDir()
-	if err := os.MkdirAll(cacheDir, 0o750); err != nil {
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		return nil, "", fmt.Errorf("convert %s: create cache dir: %w", baseKey, err)
 	}
 
@@ -383,6 +389,9 @@ func (m *manager) prepareOCI(ctx context.Context, ref string) (*image.ImageIdent
 	// their COW overlays and the shared base image stays immutable.
 	if err := os.Rename(tmpPath, basePath); err != nil {
 		return nil, "", fmt.Errorf("convert %s: rename to cache: %w", baseKey, err)
+	}
+	if err := utils.SyncParentDir(filepath.Dir(basePath)); err != nil {
+		return nil, "", fmt.Errorf("convert %s: sync parent dir: %w", baseKey, err)
 	}
 	if err := os.Chmod(basePath, 0o444); err != nil { //nolint:gosec // G302: intentionally world-readable — base images are shared immutable backing files for COW overlays
 		return nil, "", fmt.Errorf("convert %s: chmod read-only: %w", baseKey, err)
@@ -648,14 +657,12 @@ func classifyRef(ref string) image.ImageType {
 		return image.ImageTypeURL
 	}
 
-	// Local file: check if path exists on disk.
+	// Local file: MUST start with explicit path prefix to avoid shadowing remote refs.
 	if strings.HasPrefix(ref, "/") || strings.HasPrefix(ref, "./") || strings.HasPrefix(ref, "../") {
-		return image.ImageTypeLocalFile
-	}
-
-	// If the reference has no scheme and exists as a file, treat it as local.
-	if _, err := os.Stat(ref); err == nil {
-		return image.ImageTypeLocalFile
+		// Only treat as local file if it actually exists.
+		if _, err := os.Stat(ref); err == nil {
+			return image.ImageTypeLocalFile
+		}
 	}
 
 	// Default: treat as OCI registry reference.
@@ -681,7 +688,7 @@ func (m *manager) pullURL(ctx context.Context, ref string) (*image.ImageIdentity
 
 	// Ensure temp directory exists.
 	tempDir := m.cfg.TempDir()
-	if err := os.MkdirAll(tempDir, 0o755); err != nil { //nolint:gosec // G301: temp dir needs world-readable access for image operations
+	if err := os.MkdirAll(tempDir, 0o700); err != nil { //nolint:gosec // G301: temp dir needs restrictive access
 		return nil, types.NewPermanentError(fmt.Errorf("create temp dir: %w", err))
 	}
 

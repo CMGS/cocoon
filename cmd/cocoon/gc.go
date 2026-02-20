@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -51,99 +52,111 @@ func gcAction(c *cli.Context) error {
 		return gcDryRun(app)
 	}
 
+	var errs error
+	var collectedCount int
+
 	// Phase 1: Collect unreferenced images.
-	images, err := app.gc.CollectUnreferencedImages()
-	if err != nil {
-		return fmt.Errorf("collect unreferenced images: %w", err)
-	}
-	for _, baseKey := range images {
-		fmt.Printf("collected image: %s\n", baseKey)
+	if images, err := app.gc.CollectUnreferencedImages(); err != nil {
+		errs = errors.Join(errs, fmt.Errorf("phase 1 (images): %w", err))
+	} else {
+		for _, baseKey := range images {
+			fmt.Printf("collected image: %s\n", baseKey)
+		}
+		collectedCount += len(images)
 	}
 
 	// Phase 2: Collect orphaned overlays.
-	overlays, err := app.gc.CollectOrphanedOverlays()
-	if err != nil {
-		return fmt.Errorf("collect orphaned overlays: %w", err)
-	}
-	for _, vmID := range overlays {
-		fmt.Printf("collected orphaned overlay: %s\n", vmID)
+	if overlays, err := app.gc.CollectOrphanedOverlays(); err != nil {
+		errs = errors.Join(errs, fmt.Errorf("phase 2 (overlays): %w", err))
+	} else {
+		for _, vmID := range overlays {
+			fmt.Printf("collected orphaned overlay: %s\n", vmID)
+		}
+		collectedCount += len(overlays)
 	}
 
 	// Phase 3: Collect orphaned OCI layouts.
-	ociLayouts, err := app.gc.CollectOrphanedOCILayouts()
-	if err != nil {
-		return fmt.Errorf("collect orphaned OCI layouts: %w", err)
-	}
-	for _, name := range ociLayouts {
-		fmt.Printf("collected orphaned OCI layout: %s\n", name)
+	if ociLayouts, err := app.gc.CollectOrphanedOCILayouts(); err != nil {
+		errs = errors.Join(errs, fmt.Errorf("phase 3 (layouts): %w", err))
+	} else {
+		for _, name := range ociLayouts {
+			fmt.Printf("collected orphaned OCI layout: %s\n", name)
+		}
+		collectedCount += len(ociLayouts)
 	}
 
 	// Phase 4: Collect stale OCI tags.
-	staleTags, err := app.gc.CollectStaleOCITags()
-	if err != nil {
-		return fmt.Errorf("collect stale OCI tags: %w", err)
-	}
-	for _, tag := range staleTags {
-		fmt.Printf("collected stale OCI tag: %s\n", tag)
+	if staleTags, err := app.gc.CollectStaleOCITags(); err != nil {
+		errs = errors.Join(errs, fmt.Errorf("phase 4 (tags): %w", err))
+	} else {
+		for _, tag := range staleTags {
+			fmt.Printf("collected stale OCI tag: %s\n", tag)
+		}
+		collectedCount += len(staleTags)
 	}
 
 	// Phase 5: Collect orphaned OCI manifest refs.
-	orphanedManifests, err := app.gc.CollectOrphanedOCIManifestRefs()
-	if err != nil {
-		return fmt.Errorf("collect orphaned OCI manifest refs: %w", err)
-	}
-	for _, digest := range orphanedManifests {
-		fmt.Printf("collected orphaned OCI manifest ref: %s\n", digest)
+	if orphanedManifests, err := app.gc.CollectOrphanedOCIManifestRefs(); err != nil {
+		errs = errors.Join(errs, fmt.Errorf("phase 5 (manifests): %w", err))
+	} else {
+		for _, digest := range orphanedManifests {
+			fmt.Printf("collected orphaned OCI manifest ref: %s\n", digest)
+		}
+		collectedCount += len(orphanedManifests)
 	}
 
 	// Phase 6: Collect unreferenced OCI blobs.
-	ociBlobs, err := app.gc.CollectUnreferencedOCIBlobs()
-	if err != nil {
-		return fmt.Errorf("collect unreferenced OCI blobs: %w", err)
-	}
-	for _, digest := range ociBlobs {
-		fmt.Printf("collected unreferenced OCI blob: %s\n", digest)
+	if ociBlobs, err := app.gc.CollectUnreferencedOCIBlobs(); err != nil {
+		errs = errors.Join(errs, fmt.Errorf("phase 6 (blobs): %w", err))
+	} else {
+		for _, digest := range ociBlobs {
+			fmt.Printf("collected unreferenced OCI blob: %s\n", digest)
+		}
+		collectedCount += len(ociBlobs)
 	}
 
 	// Phase 7: Collect unreferenced OCI runtime caches.
-	ociRuntimeCaches := []string{}
 	if runtimeGC, ok := app.gc.(ociRuntimeCacheGC); ok {
-		ociRuntimeCaches, err = runtimeGC.CollectUnreferencedOCIRuntimeCaches()
-		if err != nil {
-			return fmt.Errorf("collect unreferenced OCI runtime caches: %w", err)
-		}
-		for _, runtimeKey := range ociRuntimeCaches {
-			fmt.Printf("collected unreferenced OCI runtime cache: %s\n", runtimeKey)
+		if ociRuntimeCaches, err := runtimeGC.CollectUnreferencedOCIRuntimeCaches(); err != nil {
+			errs = errors.Join(errs, fmt.Errorf("phase 7 (runtime caches): %w", err))
+		} else {
+			for _, runtimeKey := range ociRuntimeCaches {
+				fmt.Printf("collected unreferenced OCI runtime cache: %s\n", runtimeKey)
+			}
+			collectedCount += len(ociRuntimeCaches)
 		}
 	}
 
 	// Phase 8: Collect stale conversion lock files (best-effort hygiene).
-	lockFiles := []string{}
 	if lockGC, ok := app.gc.(conversionLockGC); ok {
-		lockFiles, err = lockGC.CollectStaleConversionLocks(conversionLockGCMaxAge)
-		if err != nil {
-			return fmt.Errorf("collect stale conversion locks: %w", err)
-		}
-		for _, name := range lockFiles {
-			fmt.Printf("collected stale conversion lock: %s\n", name)
+		if lockFiles, err := lockGC.CollectStaleConversionLocks(conversionLockGCMaxAge); err != nil {
+			errs = errors.Join(errs, fmt.Errorf("phase 8 (locks): %w", err))
+		} else {
+			for _, name := range lockFiles {
+				fmt.Printf("collected stale conversion lock: %s\n", name)
+			}
+			collectedCount += len(lockFiles)
 		}
 	}
 
 	// Phase 9: Collect temp files.
-	tempFiles, err := app.gc.CollectTempFiles(1 * time.Hour)
-	if err != nil {
-		return fmt.Errorf("collect temp files: %w", err)
-	}
-	for _, name := range tempFiles {
-		fmt.Printf("collected temp file: %s\n", name)
+	if tempFiles, err := app.gc.CollectTempFiles(1 * time.Hour); err != nil {
+		errs = errors.Join(errs, fmt.Errorf("phase 9 (temp files): %w", err))
+	} else {
+		for _, name := range tempFiles {
+			fmt.Printf("collected temp file: %s\n", name)
+		}
+		collectedCount += len(tempFiles)
 	}
 
-	total := len(images) + len(overlays) + len(ociLayouts) + len(staleTags) + len(orphanedManifests) + len(ociBlobs) + len(ociRuntimeCaches) + len(lockFiles) + len(tempFiles)
-	if total == 0 {
+	if collectedCount == 0 {
 		fmt.Println("Nothing to collect.")
 	} else {
-		fmt.Printf("\nCollected %d item(s): %d images, %d overlays, %d OCI layouts, %d stale tags, %d orphaned manifests, %d OCI blobs, %d OCI runtime caches, %d stale locks, %d temp files.\n",
-			total, len(images), len(overlays), len(ociLayouts), len(staleTags), len(orphanedManifests), len(ociBlobs), len(ociRuntimeCaches), len(lockFiles), len(tempFiles))
+		fmt.Printf("\nCollected %d item(s).\n", collectedCount)
+	}
+
+	if errs != nil {
+		return fmt.Errorf("gc completed with errors: %w", errs)
 	}
 
 	return nil

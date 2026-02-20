@@ -41,7 +41,7 @@ func convertOCI(ctx context.Context, mountPath, outputPath, diskSize string) err
 	}
 
 	// 1. Create empty qcow2 image.
-	createCmd := exec.CommandContext(ctx, "qemu-img", "create", "-f", "qcow2", outputPath, diskSize) //nolint:gosec // args are controlled internal paths
+	createCmd := utils.CommandContextWithGroup(ctx, "qemu-img", "create", "-f", "qcow2", outputPath, diskSize) //nolint:gosec // args are controlled internal paths
 	if out, err := createCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("qemu-img create: %s: %w", strings.TrimSpace(string(out)), err)
 	}
@@ -81,7 +81,7 @@ umount-all
 `, outputPath, rootfsTarPath)
 
 	// 5. Run guestfish with the script via stdin.
-	gfCmd := exec.CommandContext(ctx, "guestfish") //nolint:gosec // guestfish script uses validated internal paths
+	gfCmd := utils.CommandContextWithGroup(ctx, "guestfish") //nolint:gosec // guestfish script uses validated internal paths
 	gfCmd.Stdin = strings.NewReader(script)
 	if out, err := gfCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("guestfish: %s: %w", strings.TrimSpace(string(out)), err)
@@ -113,7 +113,7 @@ func ensureGRUBConfig(ctx context.Context, imagePath string) error {
 	cmdlineUpdate := "[ -f /etc/default/grub ] && (grep -q 'console=ttyS0,115200n8' /etc/default/grub || echo 'GRUB_CMDLINE_LINUX=\"$GRUB_CMDLINE_LINUX console=ttyS0,115200n8\"' >> /etc/default/grub) || true"
 	regenerate := fmt.Sprintf("if command -v grub-mkconfig >/dev/null 2>&1; then grub-mkconfig -o %s; elif command -v grub2-mkconfig >/dev/null 2>&1; then grub2-mkconfig -o /boot/grub2/grub.cfg; fi", grubPath)
 
-	customizeCmd := exec.CommandContext(ctx, "virt-customize", "-a", imagePath, "--run-command", cmdlineUpdate, "--run-command", regenerate) //nolint:gosec // args are fixed literals and validated paths
+	customizeCmd := utils.CommandContextWithGroup(ctx, "virt-customize", "-a", imagePath, "--run-command", cmdlineUpdate, "--run-command", regenerate) //nolint:gosec // args are fixed literals and validated paths
 	if out, err := customizeCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("virt-customize grub update: %s: %w", strings.TrimSpace(string(out)), err)
 	}

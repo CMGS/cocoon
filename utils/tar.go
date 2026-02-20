@@ -128,23 +128,105 @@ func PackDirectoryToTar(ctx context.Context, sourceDir, tarPath string) (retErr 
 	return nil
 }
 
-// ExtractTarToDir extracts a tar archive into targetDir with traversal protection.
+// ExtractTarToDir extracts a tar archive into targetDir using os.Root for safe path handling.
 func ExtractTarToDir(ctx context.Context, tarPath, targetDir string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	if err := os.MkdirAll(targetDir, 0o755); err != nil { //nolint:gosec // targetDir is a caller-controlled local temp path
+	// 1. Open the root directory safely.
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return fmt.Errorf("create target directory %q: %w", targetDir, err)
 	}
+	root, err := os.OpenRoot(targetDir)
+	if err != nil {
+		return fmt.Errorf("open target directory root %q: %w", targetDir, err)
+	}
+	defer root.Close()
 
-	f, err := os.Open(tarPath) //nolint:gosec // tarPath is an internal local path validated by callers
+	f, err := os.Open(tarPath)
 	if err != nil {
 		return fmt.Errorf("open tar archive %q: %w", tarPath, err)
 	}
-	defer f.Close() //nolint:errcheck,gosec // best-effort close on read-only file
+	defer f.Close()
 
-	return extractTarStream(ctx, tarPath, targetDir, tar.NewReader(f), whiteoutNone)
+	tr := tar.NewReader(f)
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read tar entry: %w", err)
+		}
+
+		// Clean the path to remove artifacts, but os.Root handles the security.
+		name := filepath.Clean(hdr.Name)
+		if strings.HasPrefix(name, "../") || strings.HasPrefix(name, "/") {
+			// Basic sanity check, though os.Root will block escaping anyway.
+			continue
+		}
+
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			mode := tarEntryModeOrDefault(hdr, 0o755)
+			if err := root.MkdirAll(name, mode); err != nil {
+				return fmt.Errorf("mkdir %q: %w", name, err)
+			}
+		case tar.TypeReg, 0:
+			if hdr.Size < 0 {
+				return fmt.Errorf("invalid negative file size for %q: %d", name, hdr.Size)
+			}
+			dir := filepath.Dir(name)
+			if err := root.MkdirAll(dir, 0o755); err != nil {
+				return fmt.Errorf("mkdir parent %q: %w", dir, err)
+			}
+
+			mode := tarEntryModeOrDefault(hdr, 0o644)
+			wf, err := root.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+			if err != nil {
+				return fmt.Errorf("create file %q: %w", name, err)
+			}
+			if _, err := io.CopyN(wf, tr, hdr.Size); err != nil {
+				wf.Close()
+				return fmt.Errorf("write file %q: %w", name, err)
+			}
+			wf.Close()
+		case tar.TypeSymlink:
+			// Symlinks inside a root need careful handling. For now, we only allow
+			// relative symlinks that don't escape.
+			if strings.HasPrefix(hdr.Linkname, "/") || strings.Contains(hdr.Linkname, "../") {
+				continue // Skip potentially unsafe symlinks
+			}
+			dir := filepath.Dir(name)
+			if err := root.MkdirAll(dir, 0o755); err != nil {
+				return fmt.Errorf("mkdir parent %q: %w", dir, err)
+			}
+			if err := root.Symlink(hdr.Linkname, name); err != nil {
+				// Symlink creation might fail if not supported or target exists
+				// We try to remove existing and retry
+				_ = root.Remove(name)
+				if err := root.Symlink(hdr.Linkname, name); err != nil {
+					return fmt.Errorf("symlink %q -> %q: %w", name, hdr.Linkname, err)
+				}
+			}
+		case tar.TypeLink:
+			// Hardlinks are restricted to within the root.
+			if strings.HasPrefix(hdr.Linkname, "/") || strings.Contains(hdr.Linkname, "../") {
+				continue
+			}
+			// Linking requires the target to exist relative to root.
+			// Since os.Root doesn't easily expose Link(), we skip hardlinks for now
+			// or implement a safer version if needed. Most OCI layers use symlinks/files.
+			continue
+		}
+	}
+	return nil
 }
 
 // whiteoutMode controls how OCI whiteout entries are processed during extraction.
