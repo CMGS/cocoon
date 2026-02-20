@@ -344,6 +344,13 @@ func (m *manager) attemptBoot(ctx context.Context, vmID string, vmCfg *types.VMC
 		cfgCopy.BootStrategy = types.BootStrategyDirect
 	}
 
+	// Truncate the serial log before launching CH so that waitForBoot
+	// only reads output from this boot attempt, not stale content from
+	// a previous run.
+	if cfgCopy.SerialLog != "" {
+		_ = os.Truncate(cfgCopy.SerialLog, 0)
+	}
+
 	// Step 1: Launch Cloud Hypervisor process.
 	pid, err := m.hyper.Launch(ctx, vmID, &cfgCopy)
 	if err != nil {
@@ -1264,8 +1271,10 @@ func buildCHVMConfig(vmCfg *types.VMConfig) *hypervisor.CHVMConfig {
 	}
 	if strings.TrimSpace(vmCfg.OverlayPath) != "" {
 		cfg.Disks = append(cfg.Disks, hypervisor.CHDiskConfig{
-			Path:     vmCfg.OverlayPath,
-			ReadOnly: false,
+			Path:         vmCfg.OverlayPath,
+			ReadOnly:     false,
+			ImageType:    "Qcow2",
+			BackingFiles: true,
 		})
 	}
 

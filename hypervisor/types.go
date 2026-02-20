@@ -47,8 +47,10 @@ type CHMemoryConfig struct {
 
 // CHDiskConfig describes a single block device attached to the VM.
 type CHDiskConfig struct {
-	Path     string `json:"path"`
-	ReadOnly bool   `json:"readonly,omitempty"`
+	Path         string `json:"path"`
+	ReadOnly     bool   `json:"readonly,omitempty"`
+	ImageType    string `json:"image_type,omitempty"`    // "Qcow2", "Raw", "FixedVhd", "Vhdx"
+	BackingFiles bool   `json:"backing_files,omitempty"` // Allow qcow2 backing file chain (CH defaults to false)
 }
 
 // CHFsConfig describes a single virtio-fs shared filesystem.
