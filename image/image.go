@@ -11,7 +11,10 @@
 // docs/01-boot-contract.md for bootability requirements.
 package image
 
-import "context"
+import (
+	"context"
+	"iter"
+)
 
 // Manager is the interface for image operations.
 // Implementations coordinate pulling, converting, caching, and verifying
@@ -54,8 +57,12 @@ type Manager interface {
 	// Direct kernel boot will be added in Phase 2 for OCI VM images.
 	VerifyBootability(ctx context.Context, imagePath string) (*BootCheckResult, error)
 
-	// ListCached returns all cached base images in the image cache directory.
-	ListCached(ctx context.Context) ([]*CachedImage, error)
+	// ListCached returns an iterator over all cached base images in the image
+	// cache directory.
+	//
+	// This uses Go 1.23+ iterators (iter.Seq2) to stream results, avoiding
+	// large slice allocations for caches with many images.
+	ListCached(ctx context.Context) iter.Seq2[*CachedImage, error]
 
 	// RemoveCached removes a cached base image identified by its base_key
 	// ({checksum_16}_{arch}). Callers should ensure no VMs reference the image

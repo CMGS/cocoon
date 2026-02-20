@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"log"
 	"net"
 	"net/http"
@@ -534,61 +535,65 @@ func evaluateDeepVerification(result *image.BootCheckResult) {
 	result.Bootable = len(result.Errors) == 0
 }
 
-// ListCached returns all cached base images found in the image cache directory.
+// ListCached returns an iterator over all cached base images found in the image cache directory.
 // Each cached image is identified by its filename pattern: {checksum_16}_{arch}.qcow2.
-func (m *manager) ListCached(ctx context.Context) ([]*image.CachedImage, error) {
-	cacheDir := m.cfg.ImageCacheDir()
+func (m *manager) ListCached(ctx context.Context) iter.Seq2[*image.CachedImage, error] {
+	return func(yield func(*image.CachedImage, error) bool) {
+		cacheDir := m.cfg.ImageCacheDir()
 
-	entries, err := os.ReadDir(cacheDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read cache directory: %w", err)
-	}
-
-	var images []*image.CachedImage
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if !strings.HasSuffix(name, ".qcow2") {
-			continue
-		}
-
-		// Extract base_key from filename by removing .qcow2 suffix.
-		baseKey := strings.TrimSuffix(name, ".qcow2")
-
-		// Validate base_key format.
-		if _, _, err := types.ParseBaseKey(baseKey); err != nil {
-			log.Printf("warning: skipping invalid cache entry: %s (%v)", name, err)
-			continue
-		}
-
-		info, err := entry.Info()
+		entries, err := os.ReadDir(cacheDir)
 		if err != nil {
-			log.Printf("warning: cannot stat cache entry %s: %v", name, err)
-			continue
+			if os.IsNotExist(err) {
+				return
+			}
+			yield(nil, fmt.Errorf("read cache directory: %w", err))
+			return
 		}
 
-		refCount := 0
-		if m.refCtr != nil {
-			if refs, refErr := m.refCtr.GetReferences(baseKey); refErr == nil {
-				refCount = len(refs)
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			name := entry.Name()
+			if !strings.HasSuffix(name, ".qcow2") {
+				continue
+			}
+
+			// Extract base_key from filename by removing .qcow2 suffix.
+			baseKey := strings.TrimSuffix(name, ".qcow2")
+
+			// Validate base_key format.
+			if _, _, err := types.ParseBaseKey(baseKey); err != nil {
+				log.Printf("warning: skipping invalid cache entry: %s (%v)", name, err)
+				continue
+			}
+
+			info, err := entry.Info()
+			if err != nil {
+				log.Printf("warning: cannot stat cache entry %s: %v", name, err)
+				continue
+			}
+
+			refCount := 0
+			if m.refCtr != nil {
+				if refs, refErr := m.refCtr.GetReferences(baseKey); refErr == nil {
+					refCount = len(refs)
+				}
+			}
+
+			img := &image.CachedImage{
+				BaseKey:   baseKey,
+				Path:      filepath.Join(cacheDir, name),
+				Size:      info.Size(),
+				CreatedAt: info.ModTime(),
+				RefCount:  refCount,
+			}
+
+			if !yield(img, nil) {
+				return
 			}
 		}
-
-		images = append(images, &image.CachedImage{
-			BaseKey:   baseKey,
-			Path:      filepath.Join(cacheDir, name),
-			Size:      info.Size(),
-			CreatedAt: info.ModTime(),
-			RefCount:  refCount,
-		})
 	}
-
-	return images, nil
 }
 
 // RemoveCached removes a cached base image identified by its base_key.

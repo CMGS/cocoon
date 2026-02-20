@@ -116,11 +116,10 @@ func imagesAction(c *cli.Context) error {
 	var rows []unifiedImageRow
 
 	// 1. Cloud images.
-	images, err := app.imgMgr.ListCached(c.Context)
-	if err != nil {
-		return fmt.Errorf("list cached images: %w", err)
-	}
-	for _, img := range images {
+	for img, err := range app.imgMgr.ListCached(c.Context) {
+		if err != nil {
+			return fmt.Errorf("list cached images: %w", err)
+		}
 		sourceRefs, _, refsErr := refcache.RefsForBaseKey(app.cfg, img.BaseKey)
 		if refsErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: read manifest cache for %s: %v\n", img.BaseKey, refsErr)
@@ -500,12 +499,11 @@ func inspectOCIImage(tag, layoutPath string) error {
 }
 
 func inspectCloudImage(c *cli.Context, app *appContext, baseKey string) error {
-	images, err := app.imgMgr.ListCached(c.Context)
-	if err != nil {
-		return fmt.Errorf("list cached images: %w", err)
-	}
+	for img, err := range app.imgMgr.ListCached(c.Context) {
+		if err != nil {
+			return fmt.Errorf("list cached images: %w", err)
+		}
 
-	for _, img := range images {
 		if img.BaseKey == baseKey {
 			refs, refErr := app.refCtr.GetReferences(baseKey)
 			refCount := img.RefCount
@@ -764,21 +762,28 @@ func removeOneImage(c *cli.Context, app *appContext, ref string) error {
 // It never triggers a pull or conversion — making it safe for read-only
 // operations like inspect and remove.
 func resolveBaseKeyFromCache(c *cli.Context, app *appContext, ref string) (string, error) {
-	images, err := app.imgMgr.ListCached(c.Context)
-	if err != nil {
-		return "", fmt.Errorf("list cached images: %w", err)
-	}
-	for _, img := range images {
+	// First pass: check direct base_key match.
+	for img, err := range app.imgMgr.ListCached(c.Context) {
+		if err != nil {
+			return "", fmt.Errorf("list cached images: %w", err)
+		}
 		if img.BaseKey == ref {
 			return ref, nil
 		}
 	}
+
+	// Second pass: check alias resolution.
 	baseKey, ok, err := refcache.ResolveBaseKey(app.cfg, ref)
 	if err != nil {
 		return "", fmt.Errorf("resolve image ref from manifest cache %q: %w", ref, err)
 	}
 	if ok {
-		for _, img := range images {
+		// Verify the resolved base key actually exists in the cache.
+		// We iterate again because ListCached is the source of truth for physical existence.
+		for img, err := range app.imgMgr.ListCached(c.Context) {
+			if err != nil {
+				return "", fmt.Errorf("list cached images: %w", err)
+			}
 			if img.BaseKey == baseKey {
 				return baseKey, nil
 			}
