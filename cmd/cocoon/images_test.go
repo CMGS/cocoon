@@ -146,6 +146,68 @@ func TestEvaluateOCILayoutBootability_MissingKernelLayer(t *testing.T) {
 	}
 }
 
+func TestCheckInitramfsVirtiofs_NoKernelLayer(t *testing.T) {
+	t.Parallel()
+
+	// When there is no kernel layer, checkInitramfsVirtiofs should be a no-op.
+	info := &oci.LayoutInfo{
+		Layers: []oci.LayerInfo{
+			{MediaType: oci.MediaTypeRootfsLayer},
+		},
+		Config: &oci.VMImageConfig{},
+	}
+	result := evaluateOCILayoutBootability(info)
+	checkInitramfsVirtiofs(result, info, "/nonexistent")
+
+	if result.VirtiofsChecked {
+		t.Fatal("VirtiofsChecked should be false when no kernel layer present")
+	}
+	if result.VirtiofsFound {
+		t.Fatal("VirtiofsFound should be false when no kernel layer present")
+	}
+}
+
+func TestCheckInitramfsVirtiofs_NilInfo(t *testing.T) {
+	t.Parallel()
+
+	result := &image.BootCheckResult{
+		Warnings: []string{},
+	}
+	// Should not panic on nil info.
+	checkInitramfsVirtiofs(result, nil, "/nonexistent")
+	if result.VirtiofsChecked || result.VirtiofsFound {
+		t.Fatal("virtiofs fields should remain false for nil info")
+	}
+}
+
+func TestCheckInitramfsVirtiofs_BadBlobPath(t *testing.T) {
+	t.Parallel()
+
+	info := &oci.LayoutInfo{
+		Layers: []oci.LayerInfo{
+			{MediaType: oci.MediaTypeKernelLayer, Digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"},
+		},
+		Config: &oci.VMImageConfig{},
+	}
+	result := evaluateOCILayoutBootability(info)
+	// layoutPath does not exist, so the blob cannot be found.
+	checkInitramfsVirtiofs(result, info, "/nonexistent-layout-path")
+
+	if result.VirtiofsChecked {
+		t.Fatal("VirtiofsChecked should be false when blob cannot be read")
+	}
+	foundWarning := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "virtiofs check") {
+			foundWarning = true
+			break
+		}
+	}
+	if !foundWarning {
+		t.Fatalf("expected a virtiofs warning, got warnings: %v", result.Warnings)
+	}
+}
+
 func TestEnsureLatestTag(t *testing.T) {
 	t.Parallel()
 
