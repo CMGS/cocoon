@@ -144,16 +144,41 @@ func ExtractTarToDir(ctx context.Context, tarPath, targetDir string) error {
 	}
 	defer f.Close() //nolint:errcheck,gosec // best-effort close on read-only file
 
-	return extractTarStream(ctx, tarPath, targetDir, tar.NewReader(f), false)
+	return extractTarStream(ctx, tarPath, targetDir, tar.NewReader(f), whiteoutNone)
 }
+
+// whiteoutMode controls how OCI whiteout entries are processed during extraction.
+type whiteoutMode int
+
+const (
+	whiteoutNone    whiteoutMode = iota // no whiteout processing
+	whiteoutApply                       // apply/consume: delete files (flatten)
+	whiteoutOverlay                     // materialize as overlayfs-native format (stack)
+)
 
 // ExtractOCILayerTarToDir extracts an OCI diff layer into targetDir while
 // applying OCI whiteout semantics:
 //   - .wh.<name>: remove <name> from lower layers
 //   - .wh..wh..opq: mark directory opaque (remove all lower entries)
 //
-// Whiteout marker files are not materialized to disk.
+// Whiteout marker files are not materialized to disk. Use this for flattened
+// extraction where all layers merge into a single directory.
 func ExtractOCILayerTarToDir(ctx context.Context, tarPath, targetDir string) error {
+	return extractOCILayer(ctx, tarPath, targetDir, whiteoutApply)
+}
+
+// ExtractOCILayerTarForOverlayDir extracts an OCI diff layer into targetDir
+// while converting OCI whiteout entries to overlayfs-native format:
+//   - .wh.<name>: create character device 0/0 at <name> (overlayfs whiteout)
+//   - .wh..wh..opq: set trusted.overlay.opaque=y xattr on parent directory
+//
+// Use this for per-layer extraction where layers are stacked via overlayfs
+// multi-lowerdir. Requires CAP_MKNOD (Linux only).
+func ExtractOCILayerTarForOverlayDir(ctx context.Context, tarPath, targetDir string) error {
+	return extractOCILayer(ctx, tarPath, targetDir, whiteoutOverlay)
+}
+
+func extractOCILayer(ctx context.Context, tarPath, targetDir string, mode whiteoutMode) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -168,10 +193,10 @@ func ExtractOCILayerTarToDir(ctx context.Context, tarPath, targetDir string) err
 	}
 	defer f.Close() //nolint:errcheck,gosec // best-effort close on read-only file
 
-	return extractTarStream(ctx, tarPath, targetDir, tar.NewReader(f), true)
+	return extractTarStream(ctx, tarPath, targetDir, tar.NewReader(f), mode)
 }
 
-func extractTarStream(ctx context.Context, tarPath, targetDir string, tr *tar.Reader, applyWhiteouts bool) error {
+func extractTarStream(ctx context.Context, tarPath, targetDir string, tr *tar.Reader, mode whiteoutMode) error {
 	pendingHardlinks := make([]tar.Header, 0, 8)
 	for {
 		if err := ctx.Err(); err != nil {
@@ -186,14 +211,25 @@ func extractTarStream(ctx context.Context, tarPath, targetDir string, tr *tar.Re
 			return fmt.Errorf("read tar entry from %q: %w", tarPath, err)
 		}
 
-		if applyWhiteouts {
-			handledWhiteout, whiteoutErr := applyOCIWhiteout(targetDir, hdr.Name)
+		switch mode {
+		case whiteoutApply:
+			handled, whiteoutErr := applyOCIWhiteout(targetDir, hdr.Name)
 			if whiteoutErr != nil {
 				return whiteoutErr
 			}
-			if handledWhiteout {
+			if handled {
 				continue
 			}
+		case whiteoutOverlay:
+			handled, whiteoutErr := materializeOverlayWhiteout(targetDir, hdr.Name)
+			if whiteoutErr != nil {
+				return whiteoutErr
+			}
+			if handled {
+				continue
+			}
+		case whiteoutNone:
+			// No whiteout processing.
 		}
 
 		deferred, entryErr := extractTarEntry(tr, hdr, targetDir)
@@ -287,6 +323,58 @@ func applyOCIWhiteout(targetDir, entryName string) (bool, error) {
 	rmErr := os.RemoveAll(victimPath)
 	if rmErr != nil {
 		return false, fmt.Errorf("apply whiteout remove %q: %w", victimPath, rmErr)
+	}
+	return true, nil
+}
+
+// materializeOverlayWhiteout converts an OCI whiteout tar entry to
+// overlayfs-native format for per-layer stacking via multi-lowerdir:
+//   - .wh.<name>  → character device 0/0 at <parent>/<name>
+//   - .wh..wh..opq → trusted.overlay.opaque=y xattr on parent directory
+//
+// Returns (true, nil) when the entry was a whiteout and was materialized,
+// (false, nil) when it was not a whiteout entry.
+func materializeOverlayWhiteout(targetDir, entryName string) (bool, error) {
+	clean := path.Clean(entryName)
+	base := path.Base(clean)
+	parent := path.Dir(clean)
+
+	// OCI opaque whiteout → overlayfs opaque xattr on parent directory.
+	if base == ".wh..wh..opq" {
+		parentPath, resolveErr := resolveTarEntryPath(targetDir, parent)
+		if resolveErr != nil {
+			return false, fmt.Errorf("invalid opaque whiteout parent %q: %w", parent, resolveErr)
+		}
+		if mkErr := os.MkdirAll(parentPath, 0o755); mkErr != nil { //nolint:gosec // path is validated under targetDir
+			return false, fmt.Errorf("create opaque whiteout parent %q: %w", parentPath, mkErr)
+		}
+		if err := setOverlayOpaqueXattr(parentPath); err != nil {
+			return false, fmt.Errorf("set overlay opaque xattr on %q: %w", parentPath, err)
+		}
+		return true, nil
+	}
+
+	// OCI file whiteout → overlayfs character device 0/0.
+	victimBase, isWhiteout := strings.CutPrefix(base, ".wh.")
+	if !isWhiteout {
+		return false, nil
+	}
+	victimRel := victimBase
+	if parent != "." {
+		victimRel = path.Join(parent, victimBase)
+	}
+	victimPath, resolveErr := resolveTarEntryPath(targetDir, victimRel)
+	if resolveErr != nil {
+		return false, fmt.Errorf("invalid whiteout target %q: %w", victimRel, resolveErr)
+	}
+	if mkErr := os.MkdirAll(filepath.Dir(victimPath), 0o755); mkErr != nil { //nolint:gosec // path is validated under targetDir
+		return false, fmt.Errorf("create whiteout parent dir for %q: %w", victimPath, mkErr)
+	}
+	if rmErr := os.RemoveAll(victimPath); rmErr != nil {
+		return false, fmt.Errorf("clear existing entry at whiteout path %q: %w", victimPath, rmErr)
+	}
+	if err := createOverlayWhiteoutDevice(victimPath); err != nil {
+		return false, fmt.Errorf("create overlay whiteout device at %q: %w", victimPath, err)
 	}
 	return true, nil
 }

@@ -129,9 +129,13 @@ func materializeOCIRuntimeCache(ctx context.Context, cfg *config.CocoonConfig, r
 		return fmt.Errorf("inspect OCI layout: empty metadata")
 	}
 
-	// Fast path: if entry metadata already exists, layers are cached.
-	if oci.EntryMetaExists(cfg.OCIRuntimeEntryMetaPath(runtimeKey)) {
-		return nil
+	// Fast path: if entry metadata exists and all referenced layer dirs are
+	// present, the runtime is fully materialized. If the meta exists but
+	// some layers are missing/corrupt, fall through to re-extract them.
+	if meta, readErr := oci.ReadEntryMeta(cfg.OCIRuntimeEntryMetaPath(runtimeKey)); readErr == nil {
+		if validateOCIRuntimeLayerDirs(cfg, meta) {
+			return nil
+		}
 	}
 
 	kernelLayer, rootfsLayers, err := locateOCIRuntimeLayers(info)
@@ -271,7 +275,11 @@ func extractRootfsLayer(ctx context.Context, workDir, blobPath, digest string) e
 	if err := os.MkdirAll(rootfsDir, 0o755); err != nil { //nolint:gosec // cocoon-managed cache dir
 		return fmt.Errorf("create rootfs extract dir: %w", err)
 	}
-	if err := utils.ExtractOCILayerTarToDir(ctx, blobPath, rootfsDir); err != nil {
+	// Use overlay-aware extraction: OCI whiteout entries (.wh.<name>,
+	// .wh..wh..opq) are converted to overlayfs-native format (character
+	// device 0/0, trusted.overlay.opaque xattr) so that deletion semantics
+	// are preserved when layers are stacked via multi-lowerdir.
+	if err := utils.ExtractOCILayerTarForOverlayDir(ctx, blobPath, rootfsDir); err != nil {
 		return fmt.Errorf("extract OCI rootfs layer %s: %w", digest, err)
 	}
 	return nil
@@ -408,6 +416,20 @@ func validateOCIRuntimeInitramfsVirtiofs(initramfsPath string) error {
 		)
 	}
 	return nil
+}
+
+// validateOCIRuntimeLayerDirs checks that all layer directories referenced by
+// the entry metadata exist on disk (kernel/rootfs subdirs).
+func validateOCIRuntimeLayerDirs(cfg *config.CocoonConfig, meta *oci.OCIRuntimeEntryMeta) bool {
+	if !statPathExists(filepath.Join(cfg.OCIRuntimeLayerDir(meta.KernelLayerDigest), "kernel")) {
+		return false
+	}
+	for _, digest := range meta.RootfsLayerDigests {
+		if !statPathExists(filepath.Join(cfg.OCIRuntimeLayerDir(digest), "rootfs")) {
+			return false
+		}
+	}
+	return true
 }
 
 func statPathExists(path string) bool {
