@@ -66,7 +66,7 @@ func RemoveBlobRefs(cfg *config.CocoonConfig, manifestDigest string) ([]string, 
 		// Note: deleting from a map during range iteration is safe in Go.
 		// See https://go.dev/doc/effective_go#for
 		for digest, entry := range idx.Blobs {
-			entry.ManifestDigests = removeString(entry.ManifestDigests, manifestDigest)
+			entry.ManifestDigests = slices.DeleteFunc(entry.ManifestDigests, func(s string) bool { return s == manifestDigest })
 			if len(entry.ManifestDigests) == 0 {
 				zeroRef = append(zeroRef, digest)
 				delete(idx.Blobs, digest)
@@ -158,14 +158,4 @@ func withLayerRefsLock(cfg *config.CocoonConfig, fn func(*LayerRefsIndex) error)
 		return err
 	}
 	return fn(idx)
-}
-
-func removeString(slice []string, s string) []string {
-	result := make([]string, 0, len(slice))
-	for _, v := range slice {
-		if v != s {
-			result = append(result, v)
-		}
-	}
-	return result
 }

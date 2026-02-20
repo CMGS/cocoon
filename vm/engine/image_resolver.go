@@ -88,7 +88,7 @@ func resolveRuntimeImageRefWithProbe(
 	}
 
 	store := oci.NewStore(cfg)
-	resolvedOCITag, ociExists, err := resolveLocalOCITagRef(store, ref)
+	resolvedOCITag, ociExists, err := oci.ResolveLocalTagRef(store, ref)
 	if err != nil {
 		return nil, fmt.Errorf("check local OCI tag %q: %w", ref, err)
 	}
@@ -258,6 +258,3 @@ func resolveLocalPathRef(ref string) (*resolvedRuntimeImage, error) {
 func isExplicitLocalPath(ref string) bool {
 	return strings.HasPrefix(ref, "/") || strings.HasPrefix(ref, "./") || strings.HasPrefix(ref, "../")
 }
-
-// resolveLocalOCITagRef delegates to oci.ResolveLocalTagRef.
-var resolveLocalOCITagRef = oci.ResolveLocalTagRef

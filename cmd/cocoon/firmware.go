@@ -18,7 +18,6 @@ func firmwareCommand() *cli.Command {
 			firmwareListCommand(),
 			firmwareVerifyCommand(),
 			firmwareInstallCommand(),
-			firmwareUpdateCommand(),
 		},
 	}
 }
@@ -122,26 +121,9 @@ func firmwareVerifyAction(c *cli.Context) error {
 
 func firmwareInstallCommand() *cli.Command {
 	return &cli.Command{
-		Name:  "install",
-		Usage: "Download and install firmware files",
-		Flags: []cli.Flag{
-			&cli.StringFlag{
-				Name:  "uefi-url",
-				Usage: "download UEFI firmware (CLOUDHV.fd) from `URL` (default: latest edk2 release)",
-			},
-			&cli.BoolFlag{
-				Name:  "force",
-				Usage: "re-download even if firmware files already exist",
-			},
-		},
-		Action: firmwareInstallAction,
-	}
-}
-
-func firmwareUpdateCommand() *cli.Command {
-	return &cli.Command{
-		Name:  "update",
-		Usage: "Update firmware files (alias for install)",
+		Name:    "install",
+		Aliases: []string{"update"},
+		Usage:   "Download and install firmware files",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "uefi-url",

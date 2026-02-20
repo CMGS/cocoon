@@ -315,7 +315,7 @@ func DeleteByBaseKey(cfg *config.CocoonConfig, baseKey string) error {
 	return withLock(cfg, func(idx indexFile) error {
 		changed := false
 		for ref, entry := range idx {
-			keys := removeString(entry.resolvedBaseKeys(), baseKey)
+			keys := slices.DeleteFunc(entry.resolvedBaseKeys(), func(s string) bool { return s == baseKey })
 			switch len(keys) {
 			case 0:
 				delete(idx, ref)
@@ -353,7 +353,7 @@ func PurgeBaseKey(cfg *config.CocoonConfig, baseKey string) error {
 			if !containsString(keys, baseKey) {
 				continue
 			}
-			keys = removeString(keys, baseKey)
+			keys = slices.DeleteFunc(keys, func(s string) bool { return s == baseKey })
 			if len(keys) == 0 {
 				delete(idx, ref)
 			} else {
@@ -497,17 +497,6 @@ func setResolvedBaseKeys(e *Entry, keys []string) {
 
 func containsString(items []string, target string) bool {
 	return slices.Contains(items, target)
-}
-
-func removeString(items []string, target string) []string {
-	out := make([]string, 0, len(items))
-	for _, item := range items {
-		if item == target {
-			continue
-		}
-		out = append(out, item)
-	}
-	return out
 }
 
 func sortedStringSet(set map[string]struct{}) []string {

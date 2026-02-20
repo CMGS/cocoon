@@ -337,9 +337,6 @@ func previewOrphanedOverlayCandidates(app *appContext) ([]string, error) {
 	return candidates, nil
 }
 
-// ociGCGracePeriod is an alias for the canonical constant in the storage package.
-const ociGCGracePeriod = storage.OCIGCGracePeriod
-
 func previewOrphanedOCILayoutCandidates(app *appContext) ([]string, error) {
 	layoutsDir := app.cfg.OCILayoutDir()
 	entries, err := os.ReadDir(layoutsDir)
@@ -362,7 +359,7 @@ func previewOrphanedOCILayoutCandidates(app *appContext) ([]string, error) {
 		knownLayouts[t.LayoutPath] = true
 	}
 
-	cutoff := time.Now().Add(-ociGCGracePeriod)
+	cutoff := time.Now().Add(-storage.OCIGCGracePeriod)
 
 	var candidates []string
 	for _, entry := range entries {
@@ -466,7 +463,7 @@ func previewUnreferencedOCIBlobCandidates(app *appContext) ([]string, error) {
 		trackedSet[d] = true
 	}
 
-	cutoff := time.Now().Add(-ociGCGracePeriod)
+	cutoff := time.Now().Add(-storage.OCIGCGracePeriod)
 
 	var candidates []string
 	for _, entry := range entries {
@@ -510,7 +507,7 @@ func previewUnreferencedOCIRuntimeCacheCandidates(app *appContext) ([]string, er
 		pinned[runtimeKey] = struct{}{}
 	}
 
-	cutoff := time.Now().Add(-ociGCGracePeriod)
+	cutoff := time.Now().Add(-storage.OCIGCGracePeriod)
 	candidates := make([]string, 0)
 	for _, entry := range entries {
 		if !entry.IsDir() {

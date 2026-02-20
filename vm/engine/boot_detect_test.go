@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 )
@@ -173,10 +174,10 @@ func TestWaitForBoot_FailurePatternMatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for failure pattern, got nil")
 	}
-	if got := err.Error(); !contains(got, "boot failure detected") {
+	if got := err.Error(); !strings.Contains(got, "boot failure detected") {
 		t.Fatalf("expected error containing 'boot failure detected', got %q", got)
 	}
-	if got := err.Error(); !contains(got, "Kernel panic") {
+	if got := err.Error(); !strings.Contains(got, "Kernel panic") {
 		t.Fatalf("expected error mentioning 'Kernel panic', got %q", got)
 	}
 }
@@ -197,7 +198,7 @@ func TestWaitForBoot_Timeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error, got nil")
 	}
-	if got := err.Error(); !contains(got, "boot timeout") {
+	if got := err.Error(); !strings.Contains(got, "boot timeout") {
 		t.Fatalf("expected error containing 'boot timeout', got %q", got)
 	}
 }
@@ -239,7 +240,7 @@ func TestWaitForBoot_InvalidSuccessRegex(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid regex, got nil")
 	}
-	if got := err.Error(); !contains(got, "compile success patterns") {
+	if got := err.Error(); !strings.Contains(got, "compile success patterns") {
 		t.Fatalf("expected error mentioning 'compile success patterns', got %q", got)
 	}
 }
@@ -259,7 +260,7 @@ func TestWaitForBoot_InvalidFailureRegex(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid failure regex, got nil")
 	}
-	if got := err.Error(); !contains(got, "compile failure patterns") {
+	if got := err.Error(); !strings.Contains(got, "compile failure patterns") {
 		t.Fatalf("expected error mentioning 'compile failure patterns', got %q", got)
 	}
 }
@@ -303,7 +304,7 @@ func TestWaitForBoot_PartialLineDoesNotMatchFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error, got nil")
 	}
-	if got := err.Error(); !contains(got, "boot timeout") {
+	if got := err.Error(); !strings.Contains(got, "boot timeout") {
 		t.Fatalf("expected 'boot timeout' (not a false failure match), got %q", got)
 	}
 }
@@ -326,7 +327,7 @@ func TestWaitForBoot_ContextCancelled(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on cancelled context, got nil")
 	}
-	if got := err.Error(); !contains(got, "boot timeout") {
+	if got := err.Error(); !strings.Contains(got, "boot timeout") {
 		t.Fatalf("expected error containing 'boot timeout', got %q", got)
 	}
 }
@@ -347,7 +348,7 @@ func TestWaitForBoot_FailureBeforeSuccess(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when failure appears before success, got nil")
 	}
-	if got := err.Error(); !contains(got, "boot failure detected") {
+	if got := err.Error(); !strings.Contains(got, "boot failure detected") {
 		t.Fatalf("expected 'boot failure detected', got %q", got)
 	}
 }
@@ -400,25 +401,7 @@ func TestWaitForFile_Timeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error, got nil")
 	}
-	if got := err.Error(); !contains(got, "did not appear") {
+	if got := err.Error(); !strings.Contains(got, "did not appear") {
 		t.Fatalf("expected 'did not appear' in error, got %q", got)
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Helper: string contains check
-// ---------------------------------------------------------------------------
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) > 0 && len(substr) > 0 && containsStr(s, substr)))
-}
-
-func containsStr(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }

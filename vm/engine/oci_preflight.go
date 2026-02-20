@@ -20,8 +20,8 @@ type ociRuntimePreflightDeps struct {
 	runFn      func(ctx context.Context, binary string, args ...string) ([]byte, error)
 }
 
-func defaultOCIRuntimePreflightDeps() ociRuntimePreflightDeps {
-	return ociRuntimePreflightDeps{
+func (m *manager) ensureOCIRuntimePreflight(ctx context.Context) error {
+	return checkOCIRuntimePreflight(ctx, m.cfg, ociRuntimePreflightDeps{
 		goos:       runtime.GOOS,
 		readFileFn: os.ReadFile,
 		lookPathFn: exec.LookPath,
@@ -29,11 +29,7 @@ func defaultOCIRuntimePreflightDeps() ociRuntimePreflightDeps {
 			cmd := exec.CommandContext(ctx, binary, args...) //nolint:gosec // binary path is trusted from config/PATH
 			return cmd.CombinedOutput()
 		},
-	}
-}
-
-func (m *manager) ensureOCIRuntimePreflight(ctx context.Context) error {
-	return checkOCIRuntimePreflight(ctx, m.cfg, defaultOCIRuntimePreflightDeps())
+	})
 }
 
 func checkOCIRuntimePreflight(ctx context.Context, cfg *config.CocoonConfig, deps ociRuntimePreflightDeps) error {

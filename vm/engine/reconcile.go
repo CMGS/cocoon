@@ -943,7 +943,7 @@ func (m *manager) cleanupOCIRuntimeAfterStateMismatch(vmID string) error {
 	if vmCfg.ImageType != types.VMImageTypeOCIVM {
 		return nil
 	}
-	return m.cleanupOCIRuntimeByMetadata(vmID)
+	return m.cleanupOCIRuntime(vmID, nil)
 }
 
 // ---------------------------------------------------------------------------

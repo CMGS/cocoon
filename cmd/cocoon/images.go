@@ -284,20 +284,18 @@ func imagePullAction(c *cli.Context) error {
 
 	switch classifyPullRef(ref) {
 	case pullRefShortName:
-		return pullShortNameImage(c, app, ref)
+		return pullOCIRoutedImage(c, app, ref, true)
 	case pullRefDomainRef:
-		return pullDomainRefImage(c, app, ref)
+		return pullOCIRoutedImage(c, app, ref, false)
 	default:
 		return pullCloudPipelineImage(c, app, ref)
 	}
 }
 
-// pullShortNameImage handles short-name refs (no domain in first segment).
-// Short names are routed through the OCI pipeline (go-containerregistry)
-// which auto-resolves them to Docker Hub. If the image is a Cocoon VM
-// image, it is stored in the OCI store. If it is a standard OCI image,
-// it falls back to the cloud image pipeline with a normalized domain ref.
-func pullShortNameImage(c *cli.Context, app *appContext, ref string) error {
+// pullOCIRoutedImage handles OCI-routed pull refs (short names and domain refs).
+// When normalizeForCloud is true (short names), the ref is normalized to a
+// Docker Hub domain ref before falling back to the cloud pipeline.
+func pullOCIRoutedImage(c *cli.Context, app *appContext, ref string, normalizeForCloud bool) error {
 	// Check for a local OCI tag first — supports repull/update semantics.
 	store := oci.NewStore(app.cfg)
 	_, exists, tagErr := resolveLocalOCITagRef(store, ref)
@@ -305,36 +303,17 @@ func pullShortNameImage(c *cli.Context, app *appContext, ref string) error {
 		return pullOCIVMImage(c, app, ref)
 	}
 
-	// Probe the remote registry using the go-containerregistry default
-	// resolution (short names auto-resolve to index.docker.io).
+	// Probe the remote registry for Cocoon VM media types.
 	if probeRegistryVMImage(app, c.Context, ref) {
 		return pullOCIVMImage(c, app, ref)
 	}
 
-	// Not a Cocoon VM image — fall back to cloud pipeline with a
-	// Docker-normalized domain ref so buildah/skopeo can resolve it.
-	normalizedRef := normalizeDockerLikeOCIRef(ref)
-	return pullCloudPipelineImage(c, app, normalizedRef)
-}
-
-// pullDomainRefImage handles domain-prefixed refs. It probes for a Cocoon
-// VM image first (local OCI tag or remote manifest), then falls back to
-// the cloud pipeline.
-func pullDomainRefImage(c *cli.Context, app *appContext, ref string) error {
-	// Check for a local OCI tag first.
-	store := oci.NewStore(app.cfg)
-	_, exists, tagErr := resolveLocalOCITagRef(store, ref)
-	if tagErr == nil && exists {
-		return pullOCIVMImage(c, app, ref)
+	// Not a Cocoon VM image — fall back to the cloud pipeline.
+	cloudRef := ref
+	if normalizeForCloud {
+		cloudRef = normalizeDockerLikeOCIRef(ref)
 	}
-
-	// Probe registry for Cocoon VM media types.
-	if probeRegistryVMImage(app, c.Context, ref) {
-		return pullOCIVMImage(c, app, ref)
-	}
-
-	// Not a Cocoon VM image — use the cloud image pipeline.
-	return pullCloudPipelineImage(c, app, ref)
+	return pullCloudPipelineImage(c, app, cloudRef)
 }
 
 // pullCloudPipelineImage runs the existing cloud image pipeline (Prepare)
@@ -1004,8 +983,7 @@ func evaluateOCILayoutBootability(info *oci.LayoutInfo) *image.BootCheckResult {
 		result.BootModes = append(result.BootModes, string(types.BootModeDirect))
 		result.KernelChecked = true
 		result.KernelFound = true
-	}
-	if !hasKernelLayer {
+	} else {
 		result.Errors = append(result.Errors, "kernel layer not found in OCI manifest")
 	}
 	if !hasRootfsLayer {
@@ -1256,7 +1234,7 @@ func materializeOCITagForBuild(ctx context.Context, app *appContext, store *oci.
 			cleanup()
 			return "", nil, fmt.Errorf("resolve rootfs layer %s: %w", layer.Digest, layerErr)
 		}
-		if layerErr = extractTarLayer(ctx, layerPath, rootfsDir); layerErr != nil {
+		if layerErr = utils.ExtractOCILayerTarToDir(ctx, layerPath, rootfsDir); layerErr != nil {
 			cleanup()
 			return "", nil, fmt.Errorf("extract rootfs layer %s: %w", layer.Digest, layerErr)
 		}
@@ -1272,7 +1250,7 @@ func materializeOCITagForBuild(ctx context.Context, app *appContext, store *oci.
 		cleanup()
 		return "", nil, fmt.Errorf("resolve kernel layer %s: %w", kernelLayer.Digest, err)
 	}
-	if err := extractTarLayer(ctx, kernelLayerPath, kernelDir); err != nil {
+	if err := utils.ExtractOCILayerTarToDir(ctx, kernelLayerPath, kernelDir); err != nil {
 		cleanup()
 		return "", nil, fmt.Errorf("extract kernel layer %s: %w", kernelLayer.Digest, err)
 	}
@@ -1338,13 +1316,6 @@ func locateLayerDescriptors(info *oci.LayoutInfo) (oci.LayerInfo, []oci.LayerInf
 		return oci.LayerInfo{}, nil, fmt.Errorf("rootfs layer not found")
 	}
 	return kernelLayer, rootfsLayers, nil
-}
-
-func extractTarLayer(ctx context.Context, layerPath, targetDir string) error {
-	if err := utils.ExtractOCILayerTarToDir(ctx, layerPath, targetDir); err != nil {
-		return fmt.Errorf("extract tar %s: %w", layerPath, err)
-	}
-	return nil
 }
 
 func installKernelArtifacts(kernelDir, bootDir string, cfg *oci.VMImageConfig) error {
