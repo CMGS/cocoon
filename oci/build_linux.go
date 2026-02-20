@@ -462,20 +462,21 @@ func createLayoutWorkDir(cfg *config.CocoonConfig) (string, error) {
 // bootExcludePaths returns paths to exclude from the rootfs layer. It covers
 // the selected kernel+initrd and all vmlinuz*, initrd*, initramfs* in /boot.
 func bootExcludePaths(ki *KernelInfo, bootFiles []string) []string {
-	paths := []string{
-		strings.TrimPrefix(ki.KernelPath, "/"),
-		strings.TrimPrefix(ki.InitrdPath, "/"),
-	}
+	// Use a map for O(1) deduplication.
+	excludeSet := make(map[string]struct{})
+	
+	// Always exclude the selected kernel and initrd.
+	excludeSet[strings.TrimPrefix(ki.KernelPath, "/")] = struct{}{}
+	excludeSet[strings.TrimPrefix(ki.InitrdPath, "/")] = struct{}{}
+
 	for _, bf := range bootFiles {
 		base := filepath.Base(bf)
 		if strings.HasPrefix(base, "vmlinuz") || strings.HasPrefix(base, "initrd") || strings.HasPrefix(base, "initramfs") {
-			p := strings.TrimPrefix(bf, "/")
-			if !slices.Contains(paths, p) {
-				paths = append(paths, p)
-			}
+			excludeSet[strings.TrimPrefix(bf, "/")] = struct{}{}
 		}
 	}
-	return paths
+	
+	return slices.Collect(maps.Keys(excludeSet))
 }
 
 // applyCocoonfileSteps prepares a writable copy of the base image (if needed)
