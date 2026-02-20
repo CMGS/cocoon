@@ -97,11 +97,15 @@ func resolveRuntimeImageRefWithProbe(
 		}, nil
 	}
 
-	// Bare filename fallback: if ref exists as a file on disk (e.g.
-	// "ubuntu.qcow2" in CWD), treat it as a local path before hitting
-	// the network. This matches image/pipeline/manager.go:classifyRef.
-	if _, statErr := os.Stat(ref); statErr == nil {
-		return resolveLocalPathRef(ref)
+	// Bare filename fallback: if ref is a simple filename (no path
+	// separators) that exists as a regular file on disk (e.g. "ubuntu.qcow2"
+	// in CWD), treat it as a local path before hitting the network.
+	// Refs containing "/" (e.g. "user/repo") are left for registry probe
+	// to avoid shadowing valid registry references with local directories.
+	if !strings.Contains(ref, "/") {
+		if fi, statErr := os.Stat(ref); statErr == nil && fi.Mode().IsRegular() {
+			return resolveLocalPathRef(ref)
+		}
 	}
 
 	if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
