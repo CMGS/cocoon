@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -66,6 +67,10 @@ func setupTestManager(t *testing.T) *testDeps {
 	refCounter := &storemocks.MockReferenceCounter{}
 	cowMgr := &storemocks.MockCOWManager{}
 	imgMgr := &imgmocks.MockManager{}
+	// Stub ListCachedFunc to return empty iterator by default
+	imgMgr.ListCachedFunc = func(ctx context.Context) iter.Seq2[*image.CachedImage, error] {
+		return func(yield func(*image.CachedImage, error) bool) {}
+	}
 
 	mgr := New(cfg, hyper, refCounter, cowMgr, imgMgr)
 	concreteMgr, ok := mgr.(*manager)
@@ -347,10 +352,10 @@ func TestCreate_DefaultSkipVerifyOnCacheHit(t *testing.T) {
 	if err := refcache.MarkVerified(td.cfg, identity.BaseKey()); err != nil {
 		t.Fatalf("MarkVerified: %v", err)
 	}
-	td.imgMgr.ListCachedFunc = func(_ context.Context) ([]*image.CachedImage, error) {
-		return []*image.CachedImage{
-			{BaseKey: identity.BaseKey(), Path: basePath},
-		}, nil
+	td.imgMgr.ListCachedFunc = func(_ context.Context) iter.Seq2[*image.CachedImage, error] {
+		return func(yield func(*image.CachedImage, error) bool) {
+			yield(&image.CachedImage{BaseKey: identity.BaseKey(), Path: basePath}, nil)
+		}
 	}
 	td.imgMgr.PrepareFunc = func(_ context.Context, _ string) (*image.ImageIdentity, string, error) {
 		return identity, basePath, nil
@@ -384,10 +389,10 @@ func TestCreate_CacheHitWithoutVerifiedStateRunsVerify(t *testing.T) {
 
 	identity := defaultMockIdentity()
 	basePath := filepath.Join(td.cfg.ImageCacheDir(), identity.BaseKey()+".qcow2")
-	td.imgMgr.ListCachedFunc = func(_ context.Context) ([]*image.CachedImage, error) {
-		return []*image.CachedImage{
-			{BaseKey: identity.BaseKey(), Path: basePath},
-		}, nil
+	td.imgMgr.ListCachedFunc = func(_ context.Context) iter.Seq2[*image.CachedImage, error] {
+		return func(yield func(*image.CachedImage, error) bool) {
+			yield(&image.CachedImage{BaseKey: identity.BaseKey(), Path: basePath}, nil)
+		}
 	}
 	td.imgMgr.PrepareFunc = func(_ context.Context, _ string) (*image.ImageIdentity, string, error) {
 		return identity, basePath, nil
@@ -420,8 +425,8 @@ func TestCreate_DefaultVerifyOnCacheMiss(t *testing.T) {
 	td := setupTestManager(t)
 
 	identity := defaultMockIdentity()
-	td.imgMgr.ListCachedFunc = func(_ context.Context) ([]*image.CachedImage, error) {
-		return nil, nil
+	td.imgMgr.ListCachedFunc = func(_ context.Context) iter.Seq2[*image.CachedImage, error] {
+		return func(yield func(*image.CachedImage, error) bool) {}
 	}
 	td.imgMgr.PrepareFunc = func(_ context.Context, _ string) (*image.ImageIdentity, string, error) {
 		return identity, filepath.Join(td.cfg.ImageCacheDir(), identity.BaseKey()+".qcow2"), nil

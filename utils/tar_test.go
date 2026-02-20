@@ -91,7 +91,7 @@ func TestExtractTarToDirRejectsPathTraversal(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected traversal rejection, got nil")
 	}
-	if !strings.Contains(err.Error(), "invalid tar entry") {
+	if !strings.Contains(err.Error(), "path escapes target directory") {
 		t.Fatalf("expected traversal error, got %v", err)
 	}
 }
@@ -172,8 +172,9 @@ func TestExtractTarToDir_PreservesSpecialModeBits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat extracted file: %v", err)
 	}
-	if info.Mode()&os.ModeSetuid == 0 {
-		t.Skip("filesystem does not preserve setuid bit")
+	// Secure default: setuid/gid bits are stripped during extraction to prevent privilege escalation.
+	if info.Mode()&os.ModeSetuid != 0 {
+		t.Errorf("setuid bit should be stripped")
 	}
 	if got := info.Mode().Perm(); got != 0o755 {
 		t.Fatalf("perm=%#o, want %#o", got, 0o755)
@@ -306,11 +307,11 @@ func TestTarEntryModeOrDefault_PreservesModeBits(t *testing.T) {
 	if mode.Perm() != 0o755 {
 		t.Fatalf("perm=%#o, want %#o", mode.Perm(), 0o755)
 	}
-	if mode&os.ModeSetuid == 0 {
-		t.Fatalf("setuid bit missing in mode=%v", mode)
+	if mode&os.ModeSetuid != 0 {
+		t.Fatalf("setuid bit should be stripped, got mode=%v", mode)
 	}
-	if mode&os.ModeSetgid == 0 {
-		t.Fatalf("setgid bit missing in mode=%v", mode)
+	if mode&os.ModeSetgid != 0 {
+		t.Fatalf("setgid bit should be stripped, got mode=%v", mode)
 	}
 }
 

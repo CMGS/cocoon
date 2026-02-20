@@ -71,7 +71,7 @@ func ReadPIDFile(path string) (int, error) {
 }
 
 // CommandContextWithGroup creates a command that runs in its own process group.
-// When the context is cancelled, the entire process group is killed with SIGKILL.
+// When the context is canceled, the entire process group is killed with SIGKILL.
 // This prevents orphaned grandchild processes (e.g. qemu spawned by guestfish).
 func CommandContextWithGroup(ctx context.Context, name string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, name, args...)
