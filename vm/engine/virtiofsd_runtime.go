@@ -140,10 +140,13 @@ func buildVirtiofsdArgs(sharedDir, socketPath string) []string {
 	}
 }
 
-func launchVirtiofsdProcess(ctx context.Context, binary string, args []string, logPath string) (int, error) {
+func launchVirtiofsdProcess(_ context.Context, binary string, args []string, logPath string) (int, error) {
 	// virtiofsd is a long-lived daemon serving the VM rootfs via virtio-fs;
-	// it must outlive the CLI command that started it.
-	cmd := exec.CommandContext(ctx, binary, args...) //nolint:gosec // binary comes from trusted config
+	// it must outlive the CLI command that started it. We use exec.Command
+	// (not CommandContext) because the process is Release()'d below —
+	// CommandContext's cancel goroutine cannot kill a released process and
+	// would leak a goroutine. Lifecycle is managed via PID and stopFn.
+	cmd := exec.Command(binary, args...) //nolint:gosec // binary comes from trusted config
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	logFile, logErr := os.Create(logPath) //nolint:gosec // path is cocoon-managed

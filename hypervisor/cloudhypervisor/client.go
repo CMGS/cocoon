@@ -91,7 +91,7 @@ func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (
 	// before CH so the socket is ready for --tpm).
 	swtpmStarted := false
 	if cfg.TPMSocketPath != "" {
-		if err := c.startSwtpm(ctx, vmID, cfg.TPMSocketPath); err != nil {
+		if err := c.startSwtpm(vmID, cfg.TPMSocketPath); err != nil {
 			return 0, fmt.Errorf("start swtpm for %s: %w", vmID, err)
 		}
 		swtpmStarted = true
@@ -112,10 +112,12 @@ func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (
 	// flags and the REST API.
 	args := buildLaunchArgs(socketPath)
 
-	// CH is a long-lived daemon whose
-	// lifetime must exceed the CLI invocation that started it. The caller's
-	// ctx is only used below for socket-ready polling and REST API calls.
-	cmd := exec.CommandContext(ctx, c.cfg.CHBinary, args...) //nolint:gosec // CHBinary is a trusted config value, not user input
+	// CH is a long-lived daemon whose lifetime must exceed the CLI invocation
+	// that started it. We use exec.Command (not CommandContext) because the
+	// process is Release()'d after socket readiness — CommandContext's cancel
+	// goroutine cannot kill a released process and would leak a goroutine.
+	// Context cancellation is handled manually in the polling loop below.
+	cmd := exec.Command(c.cfg.CHBinary, args...) //nolint:gosec // CHBinary is a trusted config value, not user input
 
 	// Detach the CH process from the parent process group so it survives
 	// if cocoon exits unexpectedly.
@@ -270,6 +272,12 @@ func (c *client) isVMProcessStopped(vmID string) (bool, error) {
 // It validates the PID identity before killing to prevent sending signals
 // to an unrelated process if the PID was reused by the OS.
 func (c *client) ForceKill(vmID string) error {
+	// Always clean up companion processes (swtpm) and stale runtime files,
+	// regardless of whether the CH kill succeeds. This prevents swtpm leaks
+	// when ForceKill encounters an error (e.g., PID file missing, SIGKILL
+	// timeout). cleanupRuntimeFiles is idempotent and best-effort.
+	defer c.cleanupRuntimeFiles(vmID)
+
 	pidPath := c.cfg.VMPIDPath(vmID)
 	pid, err := utils.ReadPIDFile(pidPath)
 	if err != nil {
@@ -282,14 +290,12 @@ func (c *client) ForceKill(vmID string) error {
 			// process. Don't kill, but preserve PID file for diagnostics.
 			return fmt.Errorf("PID %d for %s is not %s (PID reused by another process)", pid, vmID, expectedProc)
 		}
-		// Process is gone. Clean up stale runtime files.
-		c.cleanupRuntimeFiles(vmID)
+		// Process is gone. Cleanup handled by deferred cleanupRuntimeFiles.
 		return nil
 	}
 	if err := utils.ForceKillProcess(pid); err != nil {
 		return fmt.Errorf("force kill %s (pid %d): %w", vmID, pid, err)
 	}
-	c.cleanupRuntimeFiles(vmID)
 	return nil
 }
 
@@ -316,7 +322,7 @@ func (c *client) cleanupRuntimeFiles(vmID string) {
 // startSwtpm launches a swtpm process for TPM 2.0 emulation.
 // The swtpm process must be running before the CH process is started so the
 // TPM socket is ready for CH's --tpm flag.
-func (c *client) startSwtpm(ctx context.Context, vmID string, tpmSocketPath string) error {
+func (c *client) startSwtpm(vmID string, tpmSocketPath string) error {
 	tpmStateDir := c.cfg.VMTPMStateDir(vmID)
 	if err := os.MkdirAll(tpmStateDir, 0o700); err != nil { //nolint:gosec // G301: restricted to owner — TPM state
 		return fmt.Errorf("create TPM state dir %s: %w", tpmStateDir, err)
@@ -334,8 +340,11 @@ func (c *client) startSwtpm(ctx context.Context, vmID string, tpmSocketPath stri
 	}
 
 	// swtpm is a long-lived daemon that must outlive the CLI command that
-	// started it. The caller's ctx is only used below for socket-ready polling.
-	cmd := exec.CommandContext(ctx, "swtpm", args...) //nolint:gosec // args are constructed from trusted config paths
+	// started it. We use exec.Command (not CommandContext) because the
+	// process is Release()'d below — CommandContext's cancel goroutine
+	// cannot kill a released process and would leak a goroutine.
+	// Lifecycle is managed explicitly via PID file and stopSwtpm().
+	cmd := exec.Command("swtpm", args...) //nolint:gosec // args are constructed from trusted config paths
 	configureCHProcess(cmd)
 
 	// Write swtpm stderr to a log file for diagnostics on failure.
