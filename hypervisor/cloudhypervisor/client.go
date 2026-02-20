@@ -112,11 +112,10 @@ func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (
 	// flags and the REST API.
 	args := buildLaunchArgs(socketPath)
 
-	// Use context.Background() so the CH process is NOT tied to the caller's
-	// context (e.g. a CLI command context). CH is a long-lived daemon whose
+	// CH is a long-lived daemon whose
 	// lifetime must exceed the CLI invocation that started it. The caller's
 	// ctx is only used below for socket-ready polling and REST API calls.
-	cmd := exec.CommandContext(context.Background(), c.cfg.CHBinary, args...) //nolint:gosec // CHBinary is a trusted config value, not user input
+	cmd := exec.CommandContext(ctx, c.cfg.CHBinary, args...) //nolint:gosec // CHBinary is a trusted config value, not user input
 
 	// Detach the CH process from the parent process group so it survives
 	// if cocoon exits unexpectedly.
@@ -317,7 +316,7 @@ func (c *client) cleanupRuntimeFiles(vmID string) {
 // startSwtpm launches a swtpm process for TPM 2.0 emulation.
 // The swtpm process must be running before the CH process is started so the
 // TPM socket is ready for CH's --tpm flag.
-func (c *client) startSwtpm(_ context.Context, vmID string, tpmSocketPath string) error {
+func (c *client) startSwtpm(ctx context.Context, vmID string, tpmSocketPath string) error {
 	tpmStateDir := c.cfg.VMTPMStateDir(vmID)
 	if err := os.MkdirAll(tpmStateDir, 0o700); err != nil { //nolint:gosec // G301: restricted to owner — TPM state
 		return fmt.Errorf("create TPM state dir %s: %w", tpmStateDir, err)
@@ -334,10 +333,9 @@ func (c *client) startSwtpm(_ context.Context, vmID string, tpmSocketPath string
 		"--tpm2",
 	}
 
-	// Use context.Background() so swtpm is NOT tied to the caller's context.
 	// swtpm is a long-lived daemon that must outlive the CLI command that
 	// started it. The caller's ctx is only used below for socket-ready polling.
-	cmd := exec.CommandContext(context.Background(), "swtpm", args...) //nolint:gosec // args are constructed from trusted config paths
+	cmd := exec.CommandContext(ctx, "swtpm", args...) //nolint:gosec // args are constructed from trusted config paths
 	configureCHProcess(cmd)
 
 	// Write swtpm stderr to a log file for diagnostics on failure.
