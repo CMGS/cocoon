@@ -73,7 +73,9 @@ func (m *overlayRuntimeManager) MountVM(vmID string, lowerDirs []string) error {
 		return nil
 	}
 
-	if err := m.mountFn("overlay", m.cfg.VMOCIMergedDir(vmID), "overlay", overlayMountFlags(), data); err != nil {
+	target := m.cfg.VMOCIMergedDir(vmID)
+	log.Printf("mount -t overlay overlay -o %s %s", data, target)
+	if err := m.mountFn("overlay", target, "overlay", overlayMountFlags(), data); err != nil {
 		return fmt.Errorf("mount overlay for %s: %w", vmID, err)
 	}
 	return nil
