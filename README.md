@@ -131,7 +131,6 @@ cocoon image push myorg/ubuntu-vm:latest
 | `--root-dir` | `COCOON_ROOT_DIR` | (from config) | Root directory for persistent data |
 | `--runtime-dir` | `COCOON_RUNTIME_DIR` | (from config) | Runtime directory for sockets and PIDs |
 | `--log-dir` | `COCOON_LOG_DIR` | (from config) | Log directory for VM serial logs |
-| `--log-level` | `COCOON_LOG_LEVEL` | `info` | Log level: debug, info, warn, error |
 
 ## Development on macOS
 
