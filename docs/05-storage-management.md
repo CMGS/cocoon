@@ -470,6 +470,36 @@ is created when the first networked VM is provisioned. Per-VM directories
 `vms/{vmID}/merged`, network namespace bind mounts, virtiofsd sockets)
 are created on demand during VM or checkpoint setup rather than at startup.
 
+### Directory Permission Matrix
+
+All directories are created by `EnsureDirs()` at startup or on-demand during
+VM operations. Permissions follow the principle of least privilege:
+
+| Path Category | Example Path | Mode | Rationale |
+|---|---|---|---|
+| **Persistent state (DB)** | `RootDir/db/` | `0700` | Lock files and JSON indexes — owner-only |
+| **VM persistent data** | `RootDir/vms/{vmID}/` | `0700` | Per-VM config, metadata, overlay — owner-only |
+| **Conversion locks** | `RootDir/cache/locks/` | `0700` | Flock files for image conversion — owner-only |
+| **Temp workspace** | `RootDir/temp/` | `0700` | Scratch files during downloads/conversions — owner-only |
+| **Runtime state** | `RuntimeDir/vms/` | `0700` | PID files, API sockets, TPM state — owner-only |
+| **Runtime per-VM** | `RuntimeDir/vms/{vmID}/` | `0700` | CH socket, virtiofsd socket — owner-only |
+| **TPM state** | `RuntimeDir/vms/{vmID}/tpm/` | `0700` | Sensitive TPM emulator state — owner-only |
+| **Image cache** | `RootDir/cache/images/` | `0755` | Shared read-only base images — world-readable |
+| **Manifest cache** | `RootDir/cache/manifests/` | `0755` | Cached registry manifests — world-readable |
+| **OCI blob store** | `RootDir/cache/oci/blobs/sha256/` | `0755` | Shared OCI layer blobs — world-readable |
+| **OCI layouts** | `RootDir/cache/oci/layouts/` | `0755` | OCI image layouts — world-readable |
+| **OCI runtime layers** | `RootDir/cache/oci/runtime/layers/` | `0755` | Extracted rootfs layers — world-readable |
+| **OCI runtime entries** | `RootDir/cache/oci/runtime/entries/` | `0755` | Runtime cache metadata — world-readable |
+| **Firmware** | `RootDir/firmware/` | `0755` | UEFI firmware files — world-readable |
+| **Logs** | `LogDir/` | `0755` | Serial logs, CH logs — world-readable for diagnostics |
+
+**Design rationale**: Runtime directories (`/run/cocoon/vms/`) and
+persistent state directories (`db/`, `vms/`, `temp/`) use `0700` because
+they contain security-sensitive data (API sockets, PID files, TPM state,
+VM configuration). Cache and firmware directories use `0755` because they
+hold immutable, shared, read-only content that VM processes may need to
+access.
+
 ## Copy-on-Write (COW) Strategy
 
 ### qcow2 Backing Files

@@ -91,7 +91,7 @@ func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (
 	// before CH so the socket is ready for --tpm).
 	swtpmStarted := false
 	if cfg.TPMSocketPath != "" {
-		if err := c.startSwtpm(vmID, cfg.TPMSocketPath); err != nil {
+		if err := c.startSwtpm(ctx, vmID, cfg.TPMSocketPath); err != nil {
 			return 0, fmt.Errorf("start swtpm for %s: %w", vmID, err)
 		}
 		swtpmStarted = true
@@ -312,7 +312,7 @@ func (c *client) cleanupRuntimeFiles(vmID string) {
 // startSwtpm launches a swtpm process for TPM 2.0 emulation.
 // The swtpm process must be running before the CH process is started so the
 // TPM socket is ready for CH's --tpm flag.
-func (c *client) startSwtpm(vmID string, tpmSocketPath string) error {
+func (c *client) startSwtpm(ctx context.Context, vmID string, tpmSocketPath string) error {
 	tpmStateDir := c.cfg.VMTPMStateDir(vmID)
 	if err := os.MkdirAll(tpmStateDir, 0o700); err != nil { //nolint:gosec // G301: restricted to owner — TPM state
 		return fmt.Errorf("create TPM state dir %s: %w", tpmStateDir, err)
@@ -329,7 +329,7 @@ func (c *client) startSwtpm(vmID string, tpmSocketPath string) error {
 		"--tpm2",
 	}
 
-	cmd := exec.Command("swtpm", args...) //nolint:gosec // args are constructed from trusted config paths
+	cmd := exec.CommandContext(ctx, "swtpm", args...) //nolint:gosec // args are constructed from trusted config paths
 	configureCHProcess(cmd)
 
 	// Write swtpm stderr to a log file for diagnostics on failure.

@@ -78,7 +78,7 @@ const (
 	packageManagerDNF = "dnf"
 )
 
-func checkBinaryWithMinVersion(name, binary string, args []string, min utils.SemVersion, purpose string) checkResult {
+func checkBinaryWithMinVersion(ctx context.Context, name, binary string, args []string, min utils.SemVersion, purpose string) checkResult {
 	path, err := exec.LookPath(binary)
 	if err != nil {
 		return checkResult{
@@ -88,7 +88,7 @@ func checkBinaryWithMinVersion(name, binary string, args []string, min utils.Sem
 		}
 	}
 
-	cmd := exec.Command(path, args...) //nolint:gosec // binary path is resolved from PATH; args are fixed literals
+	cmd := exec.CommandContext(ctx, path, args...) //nolint:gosec // binary path is resolved from PATH; args are fixed literals
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return checkResult{
@@ -123,11 +123,11 @@ func checkBinaryWithMinVersion(name, binary string, args []string, min utils.Sem
 }
 
 // runDependencyChecks verifies system dependencies required by Cocoon.
-func runDependencyChecks(app *appContext) []checkResult {
+func runDependencyChecks(ctx context.Context, app *appContext) []checkResult {
 	var results []checkResult
 
 	// 1. Check cloud-hypervisor binary.
-	results = append(results, checkBinaryWithMinVersion(
+	results = append(results, checkBinaryWithMinVersion(ctx,
 		"cloud-hypervisor",
 		app.cfg.CHBinary,
 		[]string{"--version"},
@@ -147,7 +147,7 @@ func runDependencyChecks(app *appContext) []checkResult {
 	}
 
 	// 4. Check qemu-img binary + minimum version.
-	results = append(results, checkBinaryWithMinVersion(
+	results = append(results, checkBinaryWithMinVersion(ctx,
 		"qemu-img",
 		"qemu-img",
 		[]string{"--version"},
@@ -156,7 +156,7 @@ func runDependencyChecks(app *appContext) []checkResult {
 	))
 
 	// 4b. Check ch-remote binary + minimum version.
-	results = append(results, checkBinaryWithMinVersion(
+	results = append(results, checkBinaryWithMinVersion(ctx,
 		"ch-remote",
 		"ch-remote",
 		[]string{"--version"},
@@ -165,7 +165,7 @@ func runDependencyChecks(app *appContext) []checkResult {
 	))
 
 	// 4c. Check guestfish binary + minimum version.
-	results = append(results, checkBinaryWithMinVersion(
+	results = append(results, checkBinaryWithMinVersion(ctx,
 		"guestfish",
 		"guestfish",
 		[]string{"--version"},
@@ -174,10 +174,10 @@ func runDependencyChecks(app *appContext) []checkResult {
 	))
 
 	// 4d. Check swtpm binary (TPM emulator).
-	results = append(results, checkSwtpm())
+	results = append(results, checkSwtpm(ctx))
 
 	// 4e. Check virt-customize binary (optional — required for Cocoonfile builds).
-	results = append(results, checkOptionalBinary(
+	results = append(results, checkOptionalBinary(ctx,
 		"virt-customize",
 		"virt-customize",
 		[]string{"--version"},
@@ -253,7 +253,7 @@ func checkOCIBlobRefCleanupHealth() checkResult {
 }
 
 // checkSwtpm checks that the swtpm binary is available and reports its version.
-func checkSwtpm() checkResult {
+func checkSwtpm(ctx context.Context) checkResult {
 	path, err := exec.LookPath("swtpm")
 	if err != nil {
 		return checkResult{
@@ -264,7 +264,7 @@ func checkSwtpm() checkResult {
 	}
 
 	// swtpm --version writes to stderr and exits 0.
-	cmd := exec.Command(path, "--version") //nolint:gosec // binary path is resolved from PATH
+	cmd := exec.CommandContext(ctx, path, "--version") //nolint:gosec // binary path is resolved from PATH
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		// Binary found but version query failed — still usable.
@@ -532,7 +532,7 @@ func tryFixVirtiofsdDependency(ctx context.Context, configuredBinary string, che
 
 // checkOptionalBinary checks if a binary exists and reports its version.
 // Unlike checkBinaryWithMinVersion, missing binaries are reported as "warn" not "fail".
-func checkOptionalBinary(name, binary string, args []string, purpose string) checkResult {
+func checkOptionalBinary(ctx context.Context, name, binary string, args []string, purpose string) checkResult {
 	path, err := exec.LookPath(binary)
 	if err != nil {
 		return checkResult{
@@ -542,7 +542,7 @@ func checkOptionalBinary(name, binary string, args []string, purpose string) che
 		}
 	}
 
-	cmd := exec.Command(path, args...) //nolint:gosec // binary path is resolved from PATH; args are fixed literals
+	cmd := exec.CommandContext(ctx, path, args...) //nolint:gosec // binary path is resolved from PATH; args are fixed literals
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return checkResult{
@@ -644,7 +644,7 @@ func doctorAction(c *cli.Context) error {
 	}
 
 	// Phase 1: Dependency checks.
-	checks := runDependencyChecks(app)
+	checks := runDependencyChecks(c.Context, app)
 	if fix {
 		checks = tryFixVirtiofsdDependency(c.Context, app.cfg.VirtiofsdBinary, checks)
 	}

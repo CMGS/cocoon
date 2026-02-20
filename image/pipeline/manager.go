@@ -202,7 +202,7 @@ func (m *manager) convertOCIImage(ctx context.Context, identity *image.ImageIden
 	tmpPath := basePath + ".tmp"
 	defer func() { _ = os.Remove(tmpPath) }()
 
-	diskSize := "10G" // Default size for OCI conversion
+	diskSize := m.cfg.DefaultDiskSize
 	if err := convertOCI(ctx, identity.TempPath, tmpPath, diskSize); err != nil {
 		return types.NewPermanentError(fmt.Errorf("convert OCI %s: %w", baseKey, err))
 	}
@@ -374,7 +374,7 @@ func (m *manager) prepareOCI(ctx context.Context, ref string) (*image.ImageIdent
 	tmpPath := basePath + ".tmp"
 	defer func() { _ = os.Remove(tmpPath) }()
 
-	diskSize := "10G" // Default size for OCI conversion
+	diskSize := m.cfg.DefaultDiskSize
 	if err := convertOCI(ctx, rootfsDir, tmpPath, diskSize); err != nil {
 		return nil, "", types.NewPermanentError(fmt.Errorf("convert OCI %s: %w", baseKey, err))
 	}

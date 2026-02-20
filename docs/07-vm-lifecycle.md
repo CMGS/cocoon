@@ -1872,7 +1872,6 @@ The `Reconcile` method on `*manager` performs the following checks:
 - [x] Add idempotency checks to `start` (RUNNING → no-op) (`vm/engine/manager.go`)
 - [x] Add idempotency checks to `stop` (STOPPED → no-op) (`vm/engine/manager.go`)
 - [x] Add idempotency checks to `delete` (non-existent → no-op) (`cmd/cocoon/rm.go`)
-- [ ] Add tests for all idempotency scenarios (validation, not code)
 
 ### 10.4 Phase 4: Reconciliation (P1)
 
@@ -1884,12 +1883,11 @@ The `Reconcile` method on `*manager` performs the following checks:
 - [x] Implement `detectOrphanedProcesses()` for cloud-hypervisor and swtpm (`vm/engine/reconcile.go`)
 - [x] Implement `detectDanglingReferenceIssues()` and `detectNameIndexIssues()` (`vm/engine/reconcile.go`)
 - [x] Add dry-run mode (default) (`cmd/cocoon/doctor.go`)
-- [ ] Add reconciliation on startup (Phase 2 — daemon mode not yet implemented; currently runs on-demand via `cocoon doctor`)
 
 ### 10.5 Testing Checklist
 
-> **Note**: Items below track validation and test coverage, not code implementation.
-> Code for all features above is implemented; these items track remaining verification tasks.
+> **Note**: All state machine tests have passing implementations.
+> Items in the "Future Validation" section track additional test coverage beyond the core tests.
 
 **State Machine Tests**:
 - [x] Valid transitions succeed (`types/state_test.go`)
@@ -1897,30 +1895,12 @@ The `Reconcile` method on `*manager` performs the following checks:
 - [x] Error transitions from any state (`types/state_test.go`)
 - [x] DELETED is terminal (`types/state_test.go`)
 
-**Idempotency Tests**:
-- [ ] start RUNNING VM → no-op (validation, not code)
-- [ ] stop STOPPED VM → no-op (validation, not code)
-- [ ] delete deleted VM → no-op (validation, not code)
-- [ ] create existing VM → error (validation, not code)
+### Future Work (Phase 2)
 
-**Concurrency Tests**:
-- [ ] Concurrent metadata updates (lock contention) (validation, not code)
-- [ ] Concurrent state transitions (validation, not code)
-- [ ] Atomic rename guarantees (validation, not code)
+> The items below are planned for future phases and are not yet implemented.
 
-**Reconciliation Tests**:
-- [ ] Detect RUNNING VM with dead process (validation, not code)
-- [ ] Detect STOPPED VM with running process (validation, not code)
-- [ ] Detect stuck STARTING VM (validation, not code)
-- [ ] Detect orphaned Cloud Hypervisor processes (validation, not code)
-- [ ] Fix inconsistencies with --fix (validation, not code)
-
-**Error Handling Tests**:
-- [ ] Boot timeout → ERROR state (validation, not code)
-- [ ] Kernel panic → ERROR state (validation, not code)
-- [ ] Cloud Hypervisor crash → ERROR state (validation, not code)
-- [ ] Can recover from ERROR via kill (ERROR -> STOPPED) then start (STOPPED -> RUNNING) (validation, not code)
-- [ ] Can delete from ERROR state (validation, not code)
+- **Startup reconciliation**: Add reconciliation on startup (daemon mode not yet implemented; currently runs on-demand via `cocoon doctor`).
+- **Additional test coverage**: Idempotency tests (start/stop/delete no-ops), concurrency tests (lock contention, atomic rename), reconciliation tests (zombie detection, orphaned processes), error handling tests (boot timeout, kernel panic, CH crash recovery).
 
 ---
 

@@ -292,6 +292,33 @@ func (m *manager) verifyPreparedBaseImage(ctx context.Context, imageRef, baseIma
 	return nil
 }
 
+// validateBootFiles checks that the required boot files exist before launching
+// the hypervisor. Returns an actionable error when a required file is missing.
+func validateBootFiles(vmCfg *types.VMConfig) error {
+	switch vmCfg.BootStrategy {
+	case types.BootStrategyUEFI:
+		if vmCfg.FirmwarePath == "" {
+			return fmt.Errorf("UEFI firmware path is not configured")
+		}
+		if _, err := os.Stat(vmCfg.FirmwarePath); err != nil {
+			return fmt.Errorf("UEFI firmware not found at %s: %w", vmCfg.FirmwarePath, err)
+		}
+	case types.BootStrategyDirect:
+		if vmCfg.KernelPath == "" {
+			return fmt.Errorf("kernel path is not configured for direct boot")
+		}
+		if _, err := os.Stat(vmCfg.KernelPath); err != nil {
+			return fmt.Errorf("kernel not found at %s: %w", vmCfg.KernelPath, err)
+		}
+		if vmCfg.InitramfsPath != "" {
+			if _, err := os.Stat(vmCfg.InitramfsPath); err != nil {
+				return fmt.Errorf("initramfs not found at %s: %w", vmCfg.InitramfsPath, err)
+			}
+		}
+	}
+	return nil
+}
+
 // bootResult holds the outcome of a successful boot attempt.
 type bootResult struct {
 	pid          int
@@ -402,7 +429,9 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 
 	ociRuntime, err := m.setupOCIRuntimeForStart(ctx, vmID, vmCfg)
 	if err != nil {
-		_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("start OCI runtime failed: %v", err))
+		if transErr := m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("start OCI runtime failed: %v", err)); transErr != nil {
+			log.Printf("warning: failed to transition %s to ERROR after OCI runtime failure: %v", vmID, transErr)
+		}
 		return fmt.Errorf("start OCI runtime for %s: %w", vmID, err)
 	}
 
@@ -442,6 +471,15 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 		return res, nil
 	}
 
+	// Pre-boot validation: verify required boot files exist before launching CH.
+	if validationErr := validateBootFiles(vmCfg); validationErr != nil {
+		rollbackOCIRuntimeOnFailure("pre-boot validation failure", validationErr)
+		if transErr := m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("pre-boot validation failed: %v", validationErr)); transErr != nil {
+			log.Printf("warning: failed to transition %s to ERROR after pre-boot validation failure: %v", vmID, transErr)
+		}
+		return fmt.Errorf("pre-boot validation for %s failed (run 'cocoon doctor' to check dependencies): %w", vmID, validationErr)
+	}
+
 	// Attempt boot with the configured strategy (no fallback).
 	var result *bootResult
 	var bootErr error
@@ -459,7 +497,9 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 
 	if bootErr != nil {
 		rollbackOCIRuntimeOnFailure("boot failure", bootErr)
-		_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("boot failed: %v", bootErr))
+		if transErr := m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("boot failed: %v", bootErr)); transErr != nil {
+			log.Printf("warning: failed to transition %s to ERROR after boot failure: %v", vmID, transErr)
+		}
 		return fmt.Errorf("boot VM %s: %w", vmID, bootErr)
 	}
 
@@ -479,9 +519,13 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 		}
 	}); err != nil {
 		// Transition failed but VM is running; force kill and go to ERROR.
-		_ = m.hyper.ForceKill(vmID)
+		if killErr := m.hyper.ForceKill(vmID); killErr != nil {
+			log.Printf("warning: force kill %s after transition failure: %v", vmID, killErr)
+		}
 		rollbackOCIRuntimeOnFailure("run transition failure", err)
-		_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("start transition failed: %v", err))
+		if transErr := m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("start transition failed: %v", err)); transErr != nil {
+			log.Printf("warning: failed to transition %s to ERROR after run transition failure: %v", vmID, transErr)
+		}
 		return fmt.Errorf("transition to RUNNING for %s: %w", vmID, err)
 	}
 
@@ -595,7 +639,9 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 	if err := m.hyper.Shutdown(ctx, vmID, timeout); err != nil {
 		// Shutdown failed (timeout or error); transition to ERROR.
 		// LastError and ErrorCount are auto-tracked by TransitionState.
-		_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("graceful stop failed: %v", err))
+		if transErr := m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("graceful stop failed: %v", err)); transErr != nil {
+			log.Printf("warning: failed to transition %s to ERROR after stop failure: %v", vmID, transErr)
+		}
 		return fmt.Errorf("shutdown VM %s: %w", vmID, err)
 	}
 
@@ -605,7 +651,9 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 		md.StoppedAt = now
 		md.ProcessPID = 0
 	}); err != nil {
-		_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("stop transition failed: %v", err))
+		if transErr := m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("stop transition failed: %v", err)); transErr != nil {
+			log.Printf("warning: failed to transition %s to ERROR after stop transition failure: %v", vmID, transErr)
+		}
 		return err
 	}
 
@@ -704,7 +752,9 @@ func (m *manager) Kill(ctx context.Context, vmID string) error {
 	var transErr error
 	switch state {
 	case types.VMStateRunning:
-		_ = m.TransitionState(vmID, types.VMStateStopping, "force killed")
+		if transErr2 := m.TransitionState(vmID, types.VMStateStopping, "force killed"); transErr2 != nil {
+			log.Printf("warning: failed to transition %s to STOPPING during kill: %v", vmID, transErr2)
+		}
 		transErr = m.transitionStateWithUpdate(vmID, types.VMStateStopped, "force killed", func(md *types.VMMetadataFile) {
 			md.StoppedAt = now
 			md.ProcessPID = 0
@@ -835,8 +885,12 @@ func (m *manager) Delete(ctx context.Context, vmID string, force bool) error {
 	// Remove VM directories.
 	vmDir := m.cfg.VMPersistDir(vmID)
 	runtimeDir := m.cfg.VMRuntimeDir(vmID)
-	_ = os.RemoveAll(vmDir)
-	_ = os.RemoveAll(runtimeDir)
+	if err := os.RemoveAll(vmDir); err != nil {
+		log.Printf("warning: remove VM persist dir %s: %v", vmDir, err)
+	}
+	if err := os.RemoveAll(runtimeDir); err != nil {
+		log.Printf("warning: remove VM runtime dir %s: %v", runtimeDir, err)
+	}
 
 	// Remove logs (live outside vmDir, under LogDir).
 	_ = os.Remove(m.cfg.VMSerialLogPath(vmID))
@@ -861,8 +915,12 @@ func (m *manager) ensureDeletePreconditions(ctx context.Context, vmID string, fo
 		}
 		// Attempt graceful stop first; force kill on failure.
 		if stopErr := m.Stop(ctx, vmID, time.Duration(m.cfg.StopTimeoutSeconds)*time.Second); stopErr != nil {
-			_ = m.hyper.ForceKill(vmID)
-			_ = m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("force stop failed: %v", stopErr))
+			if killErr := m.hyper.ForceKill(vmID); killErr != nil {
+				log.Printf("warning: force kill %s during delete: %v", vmID, killErr)
+			}
+			if transErr := m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("force stop failed: %v", stopErr)); transErr != nil {
+				log.Printf("warning: failed to transition %s to ERROR during delete: %v", vmID, transErr)
+			}
 		}
 
 	case types.VMStateStarting, types.VMStateStopping:
@@ -871,25 +929,37 @@ func (m *manager) ensureDeletePreconditions(ctx context.Context, vmID string, fo
 		}
 		// Force kill any live process and move to STOPPED so the subsequent
 		// STOPPED -> DELETED transition goes through normal validation.
-		_ = m.hyper.ForceKill(vmID)
+		if killErr := m.hyper.ForceKill(vmID); killErr != nil {
+			log.Printf("warning: force kill %s during delete (STARTING/STOPPING): %v", vmID, killErr)
+		}
 		if meta.ProcessPID > 0 && utils.ValidateProcess(meta.ProcessPID, meta.HypervisorProcessName(m.cfg.CHBinary)) {
-			_ = utils.ForceKillProcess(meta.ProcessPID)
+			if killErr := utils.ForceKillProcess(meta.ProcessPID); killErr != nil {
+				log.Printf("warning: force kill PID %d for %s during delete: %v", meta.ProcessPID, vmID, killErr)
+			}
 		}
 		now := nowRFC3339()
-		_ = m.transitionStateWithUpdate(vmID, types.VMStateStopped, "force killed for delete", func(md *types.VMMetadataFile) {
+		if transErr := m.transitionStateWithUpdate(vmID, types.VMStateStopped, "force killed for delete", func(md *types.VMMetadataFile) {
 			md.StoppedAt = now
 			md.ProcessPID = 0
-		})
+		}); transErr != nil {
+			log.Printf("warning: failed to transition %s to STOPPED during force delete: %v", vmID, transErr)
+		}
 
 	case types.VMStateError:
 		// Error state with a live process: force kill it.
-		if m.hyper.IsAlive(vmID) || (meta.ProcessPID > 0 && utils.ValidateProcess(meta.ProcessPID, meta.HypervisorProcessName(m.cfg.CHBinary))) {
-			if !force {
-				return fmt.Errorf("%w: VM is in ERROR state with a live process, use --force to delete", types.ErrInvalidTransition)
+		hasLiveProcess := m.hyper.IsAlive(vmID) ||
+			(meta.ProcessPID > 0 && utils.ValidateProcess(meta.ProcessPID, meta.HypervisorProcessName(m.cfg.CHBinary)))
+		if hasLiveProcess && !force {
+			return fmt.Errorf("%w: VM is in ERROR state with a live process, use --force to delete", types.ErrInvalidTransition)
+		}
+		if hasLiveProcess {
+			if killErr := m.hyper.ForceKill(vmID); killErr != nil {
+				log.Printf("warning: force kill %s in ERROR state during delete: %v", vmID, killErr)
 			}
-			_ = m.hyper.ForceKill(vmID)
 			if meta.ProcessPID > 0 {
-				_ = utils.ForceKillProcess(meta.ProcessPID)
+				if killErr := utils.ForceKillProcess(meta.ProcessPID); killErr != nil {
+					log.Printf("warning: force kill PID %d for %s in ERROR state: %v", meta.ProcessPID, vmID, killErr)
+				}
 			}
 		}
 		// ERROR -> DELETED is a valid transition, so no state change needed here.

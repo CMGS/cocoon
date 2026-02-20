@@ -1,6 +1,7 @@
 package local
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -94,7 +95,7 @@ func (m *fileCOWManager) CreateBaseImage(srcPath, baseKey string) error {
 // `qemu-img create -f qcow2 -F qcow2 -b <backing>`.
 //
 // No global lock is required because each VM directory is unique.
-func (m *fileCOWManager) CreateOverlay(baseKey, vmID, diskSize string) (string, error) {
+func (m *fileCOWManager) CreateOverlay(ctx context.Context, baseKey, vmID, diskSize string) (string, error) {
 	basePath := m.cfg.BaseImagePath(baseKey)
 	if _, err := os.Stat(basePath); err != nil {
 		return "", fmt.Errorf("base image not found for key %s: %w", baseKey, err)
@@ -108,7 +109,7 @@ func (m *fileCOWManager) CreateOverlay(baseKey, vmID, diskSize string) (string, 
 	overlayPath := m.cfg.VMOverlayPath(vmID)
 
 	// qemu-img create -f qcow2 -F qcow2 -b <backing> <overlay>
-	cmd := exec.Command( //nolint:gosec // G204: args are controlled internal paths, not user input
+	cmd := exec.CommandContext(ctx, //nolint:gosec // G204: args are controlled internal paths, not user input
 		"qemu-img", "create",
 		"-f", "qcow2",
 		"-F", "qcow2",
@@ -122,7 +123,7 @@ func (m *fileCOWManager) CreateOverlay(baseKey, vmID, diskSize string) (string, 
 
 	// Optionally resize the overlay to the requested disk size.
 	if diskSize != "" {
-		resizeCmd := exec.Command("qemu-img", "resize", overlayPath, diskSize) //nolint:gosec // G204: args are controlled internal values, not user input
+		resizeCmd := exec.CommandContext(ctx, "qemu-img", "resize", overlayPath, diskSize) //nolint:gosec // G204: args are controlled internal values, not user input
 		resizeOut, resizeErr := resizeCmd.CombinedOutput()
 		if resizeErr != nil {
 			_ = os.Remove(overlayPath)
@@ -147,7 +148,7 @@ func (m *fileCOWManager) RemoveOverlay(vmID string) error {
 
 // GetOverlayInfo returns metadata about an existing overlay by running
 // `qemu-img info --output=json` and combining it with filesystem stat data.
-func (m *fileCOWManager) GetOverlayInfo(vmID string) (*storage.OverlayInfo, error) {
+func (m *fileCOWManager) GetOverlayInfo(ctx context.Context, vmID string) (*storage.OverlayInfo, error) {
 	overlayPath := m.cfg.VMOverlayPath(vmID)
 
 	fi, err := os.Stat(overlayPath)
@@ -156,7 +157,7 @@ func (m *fileCOWManager) GetOverlayInfo(vmID string) (*storage.OverlayInfo, erro
 	}
 
 	// Run qemu-img info to get backing file and size details.
-	cmd := exec.Command("qemu-img", "info", "--output=json", overlayPath) //nolint:gosec // G204: overlayPath is a controlled internal path
+	cmd := exec.CommandContext(ctx, "qemu-img", "info", "--output=json", overlayPath) //nolint:gosec // G204: overlayPath is a controlled internal path
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("qemu-img info: %w", err)

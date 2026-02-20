@@ -39,7 +39,7 @@ type imagePreparation struct {
 	// postPin runs after pinning — verify + refcache for qcow2; no-op for OCI VM.
 	postPin func(ctx context.Context) error
 	// setupStorage creates the overlay (qcow2) or workspace (OCI VM).
-	setupStorage func(vmID, diskSize string) error
+	setupStorage func(ctx context.Context, vmID, diskSize string) error
 	// cleanupStorage removes storage artifacts on rollback.
 	cleanupStorage func(vmID string)
 }
@@ -246,7 +246,7 @@ func (m *manager) provisionVM(
 		}
 	}()
 
-	if storageErr := prep.setupStorage(vmID, diskSize); storageErr != nil {
+	if storageErr := prep.setupStorage(ctx, vmID, diskSize); storageErr != nil {
 		return nil, storageErr
 	}
 	storageCreated = true
@@ -313,8 +313,8 @@ func (m *manager) prepareQCOW2Image(
 			}
 			return nil
 		},
-		setupStorage: func(vmID, diskSize string) error {
-			if _, err := m.cowMgr.CreateOverlay(baseKey, vmID, diskSize); err != nil {
+		setupStorage: func(ctx context.Context, vmID, diskSize string) error {
+			if _, err := m.cowMgr.CreateOverlay(ctx, baseKey, vmID, diskSize); err != nil {
 				return fmt.Errorf("create overlay for %s: %w", vmID, err)
 			}
 			return nil
@@ -369,7 +369,7 @@ func (m *manager) prepareOCIVMImage(
 		postPin: func(_ context.Context) error {
 			return nil // OCI VM images have no post-pin verification.
 		},
-		setupStorage: func(vmID, _ string) error {
+		setupStorage: func(_ context.Context, vmID, _ string) error {
 			if err := m.overlayMgr.EnsureWorkspace(vmID); err != nil {
 				return fmt.Errorf("create OCI runtime workspace for %s: %w", vmID, err)
 			}
