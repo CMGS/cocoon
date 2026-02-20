@@ -220,8 +220,8 @@ func TestBootFailurePatternsOrDefault(t *testing.T) {
 	// Default patterns.
 	cfg := DefaultConfig()
 	patterns := cfg.BootFailurePatternsOrDefault()
-	if len(patterns) != 4 {
-		t.Errorf("expected 4 default failure patterns, got %d", len(patterns))
+	if len(patterns) != 6 {
+		t.Errorf("expected 6 default failure patterns, got %d", len(patterns))
 	}
 
 	// Custom patterns.

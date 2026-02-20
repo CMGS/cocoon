@@ -594,12 +594,11 @@ func (m *manager) setupOCIRuntimeForStart(
 	}
 
 	vmCfg.VirtioFSSock = runtimeInfo.SocketPath
-	if strings.TrimSpace(vmCfg.VirtioFSTag) == "" {
-		vmCfg.VirtioFSTag = defaultOCIRuntimeVirtioFSTag
-	}
-	if strings.TrimSpace(vmCfg.Cmdline) == "" {
-		vmCfg.Cmdline = normalizeVirtiofsKernelCmdline("", vmCfg.VirtioFSTag)
-	}
+	// Always override VirtioFSTag with the canonical constant so that
+	// stale values from existing OCI runtime entries or VM configs on disk
+	// (e.g., "/dev/root" from before the rename) are corrected at boot time.
+	vmCfg.VirtioFSTag = defaultOCIRuntimeVirtioFSTag
+	vmCfg.Cmdline = normalizeVirtiofsKernelCmdline(vmCfg.Cmdline, vmCfg.VirtioFSTag)
 
 	if mdErr := m.updateMetadata(vmID, func(md *types.VMMetadataFile) {
 		md.VirtiofsdPID = runtimeInfo.PID
@@ -1248,7 +1247,7 @@ func buildCHVMConfig(vmCfg *types.VMConfig) *hypervisor.CHVMConfig {
 	cmdline := vmCfg.Cmdline
 	virtiofsTag := ""
 	if virtiofsEnabled {
-		virtiofsTag = vmCfg.VirtioFSTag
+		virtiofsTag = defaultOCIRuntimeVirtioFSTag
 		cmdline = normalizeVirtiofsKernelCmdline(cmdline, virtiofsTag)
 	}
 
