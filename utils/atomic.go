@@ -46,7 +46,7 @@ func AtomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	if err = os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("rename temp to target: %w", err)
 	}
-	if err = syncParentDir(dir); err != nil {
+	if err = SyncParentDir(dir); err != nil {
 		return fmt.Errorf("sync parent dir: %w", err)
 	}
 	return nil
@@ -71,7 +71,8 @@ func ReadJSON(path string, v any) error {
 	return json.Unmarshal(data, v)
 }
 
-func syncParentDir(dir string) error {
+// SyncParentDir fsyncs the directory containing the file to ensure the directory entry is persisted.
+func SyncParentDir(dir string) error {
 	parent, err := os.Open(dir) //nolint:gosec // directory is derived from cocoon-managed target path
 	if err != nil {
 		return err

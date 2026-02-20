@@ -1,8 +1,10 @@
 package utils
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
@@ -66,6 +68,27 @@ func ReadPIDFile(path string) (int, error) {
 		return 0, err
 	}
 	return strconv.Atoi(strings.TrimSpace(string(data)))
+}
+
+// CommandContextWithGroup creates a command that runs in its own process group.
+// When the context is cancelled, the entire process group is killed with SIGKILL.
+// This prevents orphaned grandchild processes (e.g. qemu spawned by guestfish).
+func CommandContextWithGroup(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	// We can't use cmd.Cancel because it only signals the process, not the group.
+	// Instead, we rely on a goroutine to wait for context done and kill the group.
+	// Note: exec.CommandContext already sets up a killer, but it's for the process only.
+	// We override the Cancel function to handle the group.
+	cmd.Cancel = func() error {
+		// Send SIGKILL to the process group (negative PID).
+		if cmd.Process != nil {
+			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return nil
+	}
+	return cmd
 }
 
 // processNameMatches checks whether actual process name matches expected.
