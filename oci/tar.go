@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 )
@@ -97,8 +97,8 @@ func rewriteDeterministicTar(srcTar, dstTar string, excludePaths []string) (stri
 	}
 
 	// Sort by path (byte-order UTF-8).
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].header.Name < entries[j].header.Name
+	slices.SortFunc(entries, func(a, b tarEntry) int {
+		return strings.Compare(a.header.Name, b.header.Name)
 	})
 
 	// Write sorted entries to destination tar, computing digest as we go.

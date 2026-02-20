@@ -3,7 +3,7 @@ package oci
 import (
 	"fmt"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -51,8 +51,8 @@ func DetectKernel(bootFiles []string) (*KernelInfo, error) {
 	}
 
 	// Sort by version descending (highest first).
-	sort.Slice(candidates, func(i, j int) bool {
-		return compareVersions(candidates[i].version, candidates[j].version) > 0
+	slices.SortFunc(candidates, func(a, b kernelCandidate) int {
+		return compareVersions(b.version, a.version)
 	})
 
 	best := candidates[0]
