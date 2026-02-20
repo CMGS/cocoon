@@ -57,7 +57,7 @@ This document specifies the pipeline for converting OCI container images into bo
 |-----------|----------------|------|
 | **Image Identifier** | Compute content-addressed identity from OCI manifest | `go-containerregistry` |
 | **Image Puller** | Download layers and config | `go-containerregistry` |
-| **Rootfs Materializer** | Flatten layers, handle whiteouts, protect paths | `utils/tar.go` (`os.OpenRoot`) |
+| **Rootfs Materializer** | Flatten layers, handle whiteouts, protect paths | `utils/tar.go` (validated path resolution) |
 | **qcow2 Converter** | Create disk image with partitions, copy rootfs | `qemu-img`, `guestfish` |
 | **Process Manager** | Manage external tool lifecycles (kill groups) | `utils.CommandContextWithGroup` |
 | **Cache Manager** | Deduplicate and cache base images | `image/pipeline/manager.go` |
@@ -91,7 +91,7 @@ The pipeline supports both single Manifests and Manifest Lists (OCI Indexes).
 3. **Check Cache**: If exists, unlock and return.
 4. **Pull (Expensive)**: Download all layers using the library.
 5. **Materialize**: Extract layers to a temporary directory (`0700` permissions).
-   - Uses `utils/tar.go` with `os.OpenRoot` (Go 1.25) to strictly confine extraction to the target directory, preventing path traversal attacks.
+   - Uses `utils/tar.go` with validated path resolution (`resolveTarEntryPath`) to strictly confine extraction to the target directory, preventing path traversal attacks.
    - Applies OCI whiteouts (flattening).
 
 ---
@@ -134,7 +134,7 @@ Materialized Rootfs (Temp Dir)
 ## 5. Security & Durability
 
 ### 5.1 Path Safety
-- **Extraction**: Uses `os.OpenRoot` to enforce chroot-like containment during layer extraction.
+- **Extraction**: Uses validated path resolution (`resolveTarEntryPath`) to enforce containment during layer extraction, rejecting absolute paths and directory traversal attempts.
 - **Ref Classification**: Local files must be prefixed with `./`, `../`, or `/` to avoid shadowing remote registry references (e.g., `ubuntu:latest`).
 
 ### 5.2 Process Management

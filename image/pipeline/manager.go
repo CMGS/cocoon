@@ -662,12 +662,14 @@ func classifyRef(ref string) image.ImageType {
 		return image.ImageTypeURL
 	}
 
-	// Local file: MUST start with explicit path prefix to avoid shadowing remote refs.
+	// Local file: check if path exists on disk.
 	if strings.HasPrefix(ref, "/") || strings.HasPrefix(ref, "./") || strings.HasPrefix(ref, "../") {
-		// Only treat as local file if it actually exists.
-		if _, err := os.Stat(ref); err == nil {
-			return image.ImageTypeLocalFile
-		}
+		return image.ImageTypeLocalFile
+	}
+
+	// If the reference has no scheme and exists as a file, treat it as local.
+	if _, err := os.Stat(ref); err == nil {
+		return image.ImageTypeLocalFile
 	}
 
 	// Default: treat as OCI registry reference.

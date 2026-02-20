@@ -1,72 +1,744 @@
-# Boot Contract & VM Lifecycle
+# Boot Contract Specification
 
-**Version**: 1.1
+**Version**: 2.0
 **Status**: Implemented
 **Phase**: Phase 1
-**Last Updated**: 2026-02-20
+**Last Updated**: 2026-02-19
 
 ## Executive Summary
 
-Cocoon defines a strict **Boot Contract** that all VM images must satisfy. This contract ensures that VMs can be booted, configured, and managed uniformly regardless of their origin (cloud image or OCI conversion).
+This document defines the **Boot Contract** - the core specification for how Cocoon boots virtual machines using Cloud Hypervisor. The contract establishes:
+
+1. **Boot mode strategy**: UEFI (default for cloud images) + Direct kernel boot (for OCI VM images; resolver auto-detect with registry auto-pull runtime path implemented)
+2. **Guest initialization**: systemd (guest image setup is user responsibility)
+3. **I/O mechanisms**: Serial console, future vsock/virtiofs
+4. **Lifecycle semantics**: Start, stop, delete, crash recovery
+5. **Image requirements**: What constitutes a bootable image
+
+## Table of Contents
+
+1. [Boot Mode Strategy](#1-boot-mode-strategy)
+2. [Guest Init Model](#2-guest-init-model)
+3. [I/O Mechanisms](#3-io-mechanisms)
+4. [Lifecycle Semantics](#4-lifecycle-semantics)
+5. [VM Configuration Schema](#5-vm-configuration-schema)
+6. [Image Requirements](#6-image-requirements)
+7. [Implementation Checklist](#7-implementation-checklist)
 
 ---
 
-## 1. Boot Requirements
+## 1. Boot Mode Strategy
 
-### 1.1 Boot Mode
-- **Phase 1**: Only **UEFI** boot is supported.
-- **Legacy BIOS**: Not supported.
-- **Direct Kernel Boot**: Not supported in Phase 1 (Planned for Phase 2).
+### 1.1 Default Boot Mode: UEFI + CLOUDHV.fd (Phase 1 — Implemented)
 
-### 1.2 Disk Layout
-- **Partition Table**: GPT (GUID Partition Table) is required.
-- **ESP**: A standard EFI System Partition (ESP) must exist.
-- **Root Filesystem**: Must be on a partition (not raw disk) discoverable by the bootloader.
+**Selected Approach**: **UEFI boot with CLOUDHV.fd** (Cloud Hypervisor's edk2 firmware) as the default boot method.
 
-### 1.3 Bootloader
-- **Requirement**: A valid UEFI bootloader (e.g., GRUB2, systemd-boot) must be installed in the ESP.
-- **Config**: A valid configuration file (e.g., `grub.cfg`) must exist.
+**Rationale**:
+- ✅ **Broadest compatibility**: Works with all Linux distributions and cloud images
+- ✅ **CH recommended**: CLOUDHV.fd is the Cloud Hypervisor project's own edk2 build
+- ✅ **Secure boot ready**: UEFI supports secure boot for production workloads
+- ✅ **Standard cloud images**: Works with Ubuntu Cloud, Fedora Cloud, Debian Cloud, etc.
+- ✅ **Reliable**: No kernel layout assumptions — UEFI boot path is well-tested
+
+**How it works** (all config via REST `vm.create` payload, CLI only passes `--api-socket`):
+```json
+{
+  "payload": {"firmware": "/var/lib/cocoon/firmware/CLOUDHV.fd"},
+  "cpus": {"boot_vcpus": 2, "max_vcpus": 2},
+  "memory": {"size": 2147483648},
+  "disks": [{"path": "/var/lib/cocoon/vms/vm-123/overlay.qcow2"}],
+  "serial": {"mode": "File", "file": "/var/log/cocoon/vm-123-serial.log"},
+  "console": {"mode": "Pty"}
+}
+```
+
+**Firmware Management** (see [docs/09-cli-design.md](./09-cli-design.md) for authoritative CLI behavior):
+- `cocoon init` creates the directory structure and configuration but does **not** automatically download firmware
+- Install firmware via `cocoon firmware install` (recommended) or `cocoon init --with-uefi-firmware <URL>`
+- Firmware binary: `CLOUDHV.fd` from the [cloud-hypervisor/edk2 releases](https://github.com/cloud-hypervisor/edk2/releases)
+- Installed to: `/var/lib/cocoon/firmware/CLOUDHV.fd`
+
+### 1.2 Alternative Boot Mode: Direct Kernel Boot (OCI VM Images)
+
+> **Implementation status**: Direct kernel boot is implemented for resolver-classified OCI VM refs. Registry OCI VM refs are auto-pulled before runtime materialization when needed.
+
+**Direct kernel boot** will be used automatically when the runtime resolver classifies an image as OCI VM. Instead of loading a UEFI firmware binary, Cocoon will pass the kernel, initramfs, and cmdline directly to Cloud Hypervisor.
+
+**When Direct kernel boot is used**:
+- OCI VM images where the kernel and initramfs are extracted from the image
+- Eliminates the need for a firmware binary entirely
+- Provides fast, deterministic boot for purpose-built VM images
+
+**How it works**:
+1. Cocoon extracts the kernel and initramfs from the OCI VM image during conversion
+2. Cloud Hypervisor is configured with `payload.kernel`, `payload.initramfs`, and `payload.cmdline` (no `payload.firmware`)
+3. The kernel boots directly with the provided command line
+
+**Cloud Hypervisor REST payload** (Direct kernel boot):
+```json
+{
+  "payload": {
+    "kernel": "/var/lib/cocoon/cache/oci/runtime/{runtime-key}/kernel/vmlinuz",
+    "initramfs": "/var/lib/cocoon/cache/oci/runtime/{runtime-key}/kernel/initrd.img",
+    "cmdline": "console=hvc0 root=/dev/root rootfstype=virtiofs rw"
+  },
+  "fs": [{"tag": "/dev/root", "socket": "/run/cocoon/vms/vm-123/virtiofsd.sock"}],
+  "cpus": {"boot_vcpus": 2, "max_vcpus": 2},
+  "memory": {"size": 2147483648},
+  "serial": {"mode": "File", "file": "/var/log/cocoon/vm-123-serial.log"},
+  "console": {"mode": "Pty"}
+}
+```
+
+**Kernel cmdline format**:
+```
+root=/dev/root rootfstype=virtiofs rw [console=...]
+```
+
+**Boot detection**: The same serial log pattern matching is used for both UEFI and Direct kernel boot (systemd target patterns, login prompt fallback patterns).
+
+**Firmware Location**:
+```
+/var/lib/cocoon/firmware/
+├── CLOUDHV.fd            # UEFI firmware (default for cloud images)
+└── (checksum metadata is optional; Cocoon Phase 1 does not read/manage it)
+```
+
+**Architecture Support**:
+| Arch | Firmware | Status |
+|------|----------|--------|
+| x86_64 | CLOUDHV.fd (UEFI) | Phase 1 |
+| x86_64 | Direct kernel boot (OCI) | Implemented |
+| aarch64 | CLOUDHV.fd (UEFI) | Phase 2 |
 
 ---
 
-## 2. Image Verification
+### 1.3 Boot Mode Selection Logic
 
-Cocoon provides tools to verify if an image meets the boot contract.
+Cocoon selects the boot mode automatically based on the image type:
 
-### 2.1 Verification Tiers
+- **Non-OCI images** (cloud images, local qcow2 files, URLs): **UEFI boot** with CLOUDHV.fd firmware via `payload.firmware` **(Phase 1 — Implemented)**
+- **OCI VM images** (resolver-classified): **Direct kernel boot** via `payload.kernel` + `payload.initramfs` + `payload.cmdline` (implemented; registry refs auto-pulled before runtime materialization)
 
-1.  **Basic (Always Run)**:
-    - Checks file format (`qcow2`) and integrity (`qemu-img check`).
-    - **Fatal**: Failures here prevent VM creation.
+The boot strategy is determined at VM creation time and stored immutably in `config.json`.
 
-2.  **Deep (Optional)**:
-    - Inspects internal partitions for Kernel, Initrd, Systemd, and Bootloader.
-    - **Tooling**: Requires `guestfish` (`libguestfs-tools`).
-    - **Behavior**:
-        - If `guestfish` is installed: Runs verification. Failures are reported as errors/warnings.
-        - If `guestfish` is missing: **Skips** verification silently (logs warning).
+```go
+// From types/boot.go:
 
-### 2.2 Conversion vs. Verification Dependency
+type BootStrategy string
 
-It is critical to distinguish between the **Conversion** pipeline and the **Verification** step:
+const (
+    // BootStrategyUEFI boots with UEFI firmware (CLOUDHV.fd) via REST payload.firmware.
+    // This is the default boot strategy for non-OCI images.
+    BootStrategyUEFI   BootStrategy = "uefi"
+    // BootStrategyDirect boots with kernel + initramfs + cmdline via REST payload.
+    // Used automatically for OCI VM images.
+    BootStrategyDirect BootStrategy = "direct"
+)
 
-| Feature | Scenario | Guestfish Requirement | Failure Behavior |
-| :--- | :--- | :--- | :--- |
-| **OCI Conversion** | `cocoon image pull <oci>` | **Mandatory** | **Fails** if missing. Cannot convert OCI to qcow2 without guestfish. |
-| **Verification** | `cocoon image verify` | **Optional** | Skips if missing. Optimistically assumes valid. |
-| **VM Creation** | `cocoon create` | **Optional** | Skips if missing. |
+// DefaultBootStrategy is the default boot strategy for new VMs (non-OCI images).
+const DefaultBootStrategy = BootStrategyUEFI
+```
 
-> **Note**: Users on macOS (Darwin) cannot run OCI conversion because `guestfish` is not available. They can, however, use `cocoon create` with pre-converted cloud images (qcow2).
+**Boot mode matrix**:
+
+| Image Type | Boot Strategy | Payload Fields | Firmware | Status |
+|------------|---------------|----------------|----------|--------|
+| Cloud images (qcow2, URL) | UEFI | `payload.firmware` | CLOUDHV.fd | Phase 1 (Implemented) |
+| OCI VM images (auto-detected) | Direct | `payload.kernel` + `payload.initramfs` + `payload.cmdline` | None | Implemented |
+
+**No automatic fallback**: Cocoon boots using the strategy determined by the image type. If the boot fails (e.g., firmware missing, kernel not found), the boot fails with an error.
+
+---
+
+## 2. Guest Init Model
+
+### 2.1 Init System: systemd
+
+**Required**: All bootable images MUST use systemd as init system.
+
+**Why systemd**:
+- ✅ Universal: Ubuntu, Fedora, Debian, RHEL all use systemd
+- ✅ Service orchestration: Native service dependency management
+- ✅ Service management: Easy to inject and monitor agent tasks
+- ✅ Logging: journald provides structured logging
+
+**Verification**:
+```bash
+# Check if image has systemd
+ls -la /sbin/init  # Should be symlink to systemd
+```
 
 ---
 
-## 3. Kernel Command Line
+### 2.2 Guest Initialization (User Responsibility)
 
-Cocoon manages the kernel command line to inject configuration.
+**Cocoon does NOT perform guest initialization.** Users are responsible for preparing their own images with the desired configuration baked in.
 
-### 3.1 Serial Console
-- Cocoon expects console output on `ttyS0`.
-- **OCI Conversion**: The conversion pipeline attempts to inject `console=ttyS0` into `grub.cfg` using `virt-customize` (if available).
-- **Cloud Images**: Users should ensure their images are configured for serial console access.
+**What "guest initialization" means**: Setting up SSH keys, root/user passwords, hostname, network configuration, and any other first-boot customization.
+
+**User responsibilities**:
+- Bake SSH keys, user accounts, and passwords into cloud images or OCI images before use
+- Configure hostname, network settings, and any other guest-level setup in the image
+- Use whatever initialization tooling they prefer (cloud-init, ignition, custom scripts, etc.)
+
+**Cloud-init in guest images**: Cloud-init may be present in guest images (e.g., standard Ubuntu Cloud or Fedora Cloud images ship with it). This is the user's choice. Cocoon does not depend on cloud-init, does not interact with it, and does not inject any datasource or seed disk. If cloud-init runs inside the guest, it operates independently of Cocoon.
+
+**Recommended approaches for image preparation**:
+- Pre-configure images using `virt-customize`, `guestfish`, or similar tools
+- Build custom OCI VM images with all configuration baked in
+- Use Packer or similar tooling to produce ready-to-boot images
 
 ---
+
+### 2.3 VM Boot Sequence
+
+```
+1. Cocoon launches VM with Cloud Hypervisor
+
+2. Firmware/bootloader loads kernel
+   └─ UEFI: CLOUDHV.fd → GRUB → vmlinuz (Phase 1)
+   └─ Direct: kernel + initramfs passed directly (OCI runtime path)
+
+3. systemd initializes services
+   └─ Mounts filesystems, starts networking, reaches multi-user target
+
+4. Login prompt appears (boot complete)
+   └─ Cocoon detects boot completion via serial log pattern matching
+```
+
+---
+
+## 3. I/O Mechanisms
+
+### 3.1 Serial Console (Boot and Debug Logs)
+
+**Purpose**:
+- Boot messages capture
+- Kernel/systemd logs
+- Error diagnostics and debugging
+
+**Configuration**:
+```bash
+cloud-hypervisor \
+  --serial file=/var/log/cocoon/vm-123-serial.log \
+  --console pty
+```
+
+**Serial Log Format**:
+```
+[    0.123456] Linux version 5.15.0-87-generic ...
+[    0.234567] Command line: BOOT_IMAGE=/vmlinuz root=/dev/vda1 ...
+[    1.456789] systemd[1]: Started Journal Service.
+[    2.567890] systemd[1]: Reached target Network.
+[    3.678901] systemd[1]: Reached target Multi-User System.
+[    4.789012] systemd[1]: Startup finished in 4.5s.
+[    5.890123] ubuntu login:
+```
+
+**Boot Completion Detection**:
+
+Cocoon uses single-pass pattern detection with configurable success and failure patterns to ensure robust boot detection across different Linux distributions and configurations.
+
+**Detection Strategy**:
+1. **Success patterns**: Login prompts, systemd target markers, systemd running messages
+2. **Failure patterns**: Kernel panic, missing init, not syncing (fail-fast)
+3. **Future enhancement**: cocoon-ready.service (Phase 2, baked into images)
+
+**Implementation**:
+```go
+// CocoonConfig fields for boot detection (config/config.go):
+//   BootSuccessPatterns []string `json:"boot_success_patterns,omitempty"`
+//   BootFailurePatterns []string `json:"boot_failure_patterns,omitempty"`
+
+// BootSuccessPatternsOrDefault returns the configured boot success patterns,
+// or sensible defaults if none are configured.
+func (c *CocoonConfig) BootSuccessPatternsOrDefault() []string {
+    if len(c.BootSuccessPatterns) > 0 {
+        return c.BootSuccessPatterns
+    }
+    return []string{
+        `login:`,                  // Login prompt (most universal)
+        `Reached target.*Login`,   // systemd login target
+        `systemd .* running`,      // systemd running message
+    }
+}
+
+// BootFailurePatternsOrDefault returns the configured boot failure patterns,
+// or sensible defaults if none are configured.
+func (c *CocoonConfig) BootFailurePatternsOrDefault() []string {
+    if len(c.BootFailurePatterns) > 0 {
+        return c.BootFailurePatterns
+    }
+    return []string{
+        `Kernel panic`,            // Kernel panic
+        `not syncing`,             // Kernel not syncing
+        `No working init found`,   // Missing init binary
+        `Failed to execute /init`, // Init execution failure
+    }
+}
+
+// waitForBoot tails the serial log file, scanning for boot success or failure
+// patterns in a single pass. Returns nil when a success pattern matches, or an
+// error if a failure pattern matches or the timeout expires.
+func waitForBoot(ctx context.Context, serialLogPath string, timeout time.Duration,
+    successPatterns, failurePatterns []string,
+) error {
+    // Compile all patterns as regexps upfront.
+    successREs, err := compilePatterns(successPatterns)
+    failureREs, err := compilePatterns(failurePatterns)
+
+    ctx, cancel := context.WithTimeout(ctx, timeout)
+    defer cancel()
+
+    // Wait for the serial log file to appear.
+    waitForFile(ctx, serialLogPath)
+
+    f, _ := os.Open(serialLogPath)
+    defer f.Close()
+
+    reader := bufio.NewReader(f)
+    var partial string
+
+    ticker := time.NewTicker(250 * time.Millisecond)
+    defer ticker.Stop()
+
+    for {
+        for {
+            line, readErr := reader.ReadString('\n')
+            if len(line) > 0 {
+                if readErr == io.EOF && line[len(line)-1] != '\n' {
+                    partial += line  // Incomplete line: buffer for next poll
+                    break
+                }
+                fullLine := partial + line
+                partial = ""
+
+                // Check failure patterns first (fail-fast).
+                if pat, matched := matchesAny(fullLine, failureREs, failurePatterns); matched {
+                    return fmt.Errorf("boot failure detected: matched pattern %q", pat)
+                }
+                // Check success patterns.
+                if _, matched := matchesAny(fullLine, successREs, successPatterns); matched {
+                    return nil
+                }
+            }
+            if readErr != nil {
+                break // No more data; wait for next poll.
+            }
+        }
+
+        // Check partial lines against success patterns only (e.g., "login: "
+        // prompts that never get a trailing newline).
+        if partial != "" {
+            if _, matched := matchesAny(partial, successREs, successPatterns); matched {
+                return nil
+            }
+        }
+
+        select {
+        case <-ctx.Done():
+            return fmt.Errorf("boot timeout: no boot completion detected within %s", timeout)
+        case <-ticker.C:
+            // Continue reading.
+        }
+    }
+}
+```
+
+---
+
+### 3.2 cocoon-ready.service: Definitive Boot Signal (Phase 2)
+
+**Purpose**: A custom systemd service that provides a definitive "VM is ready" signal, independent of distribution-specific boot messages.
+
+**Phase 2 concept**: `cocoon-ready.service` is NOT injected at runtime by Cocoon. Instead, it will be:
+- **Baked into OCI images** at build time (as part of the image build process)
+- **Injected via virtiofs shared directories** (when virtiofs support is added in Phase 3)
+
+Cocoon does not modify guest images at boot time. The service must be pre-installed in the image by the user.
+
+**Service definition** (to be baked into images):
+```ini
+[Unit]
+Description=Cocoon Boot Completion Marker
+After=multi-user.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'echo "COCOON_READY" > /dev/ttyS0'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**Enhanced boot detection with cocoon-ready**:
+```go
+// BootDetectionConfig with cocoon-ready support
+type BootDetectionConfig struct {
+    // ... existing patterns ...
+
+    // Cocoon-ready service pattern (highest priority)
+    CocoonReadyPattern string
+
+    // Whether to use cocoon-ready service
+    UseCocoonReady bool
+}
+
+func DefaultBootDetectionConfig() BootDetectionConfig {
+    return BootDetectionConfig{
+        // Cocoon-ready pattern (definitive signal)
+        CocoonReadyPattern: "COCOON_READY",
+        UseCocoonReady:     true, // Enable by default in Phase 2
+
+        // ... existing patterns ...
+    }
+}
+
+func WaitForBootCompletion(vmID string, config BootDetectionConfig) error {
+    logPath := fmt.Sprintf("/var/log/cocoon/%s-serial.log", vmID)
+
+    ctx, cancel := context.WithTimeout(context.Background(), config.Timeout)
+    defer cancel()
+
+    state := &BootCompletionState{}
+
+    for line := range tailFile(ctx, logPath) {
+        // Priority 1: Check for COCOON_READY marker (most reliable)
+        if config.UseCocoonReady && strings.Contains(line, config.CocoonReadyPattern) {
+            log.Info("VM %s: Cocoon-ready service completed", vmID)
+            state.BootCompleteTime = time.Now()
+            return nil
+        }
+
+        // Priority 2: Check systemd patterns (fallback)
+        // ... existing pattern detection logic ...
+    }
+
+    return fmt.Errorf("boot timeout exceeded")
+}
+```
+
+**Benefits**:
+- Distribution-agnostic: Works across Ubuntu, Fedora, Debian, etc.
+- Reliable: Explicit signal instead of inferring from log messages
+- Deterministic: Runs after all critical services (network, multi-user)
+- Backward compatible: Falls back to pattern matching if service is not present
+
+**Rollout Strategy**:
+- **Phase 1 (current)**: Use multi-pattern detection (systemd + login prompt patterns)
+- **Phase 2**: Users bake cocoon-ready.service into images; Cocoon detects COCOON_READY as primary signal
+- **Phase 3**: virtiofs injection as an alternative delivery mechanism
+
+---
+
+### 3.3 Future I/O Mechanisms (Phase 3)
+
+**vsock** (VM sockets):
+- Low-latency host-guest communication
+- No network configuration needed
+- Ideal for streaming large outputs
+
+**virtiofs** (Shared filesystem):
+- Mount host directories into guest
+- Direct file I/O without copying
+- Large dataset access
+
+---
+
+## 4. Lifecycle Semantics
+
+### 4.1 VM States
+
+```
+CREATING → CREATED → STARTING → RUNNING → STOPPING → STOPPED
+                                     ↓
+                                  ERROR
+```
+
+See `docs/07-vm-lifecycle.md` for complete state machine.
+
+---
+
+### 4.2 Graceful Shutdown
+
+**Step 1: ACPI Power Button**
+
+Cloud Hypervisor's ACPI support:
+```bash
+# Send ACPI power button event via API
+curl -X PUT http://localhost/api/v1/vm.power-button \
+  --unix-socket /run/cocoon/vms/vm-123/api.sock
+```
+
+systemd receives ACPI event → triggers `systemd poweroff`
+
+**Step 2: Timeout + Force Kill**
+
+If VM doesn't shutdown within 30 seconds:
+```go
+func StopVM(vmID string) error {
+    // Step 1: ACPI shutdown
+    client.PowerButton()
+
+    // Step 2: Wait with timeout
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+
+    select {
+    case <-waitForExit(vmID):
+        return nil  // Graceful shutdown succeeded
+    case <-ctx.Done():
+        // Step 3: Force kill
+        return killCHProcess(vmID)
+    }
+}
+```
+
+---
+
+### 4.3 Cleanup
+
+**On normal shutdown**:
+```bash
+1. Send ACPI shutdown to VM
+2. Wait for CH process exit
+3. Clean up socket and PID files
+```
+
+**On crash**:
+```bash
+1. Detect crashed VM (PID not alive, state=RUNNING)
+2. Clean up stale sockets
+3. Mark state=ERROR in metadata
+4. Preserve serial log for debugging
+```
+
+---
+
+## 5. VM Configuration Schema
+
+The canonical definition is in `types/config.go`. VMConfig is immutable after creation:
+
+```go
+type VMConfig struct {
+    // Identity
+    VMID string `json:"vm_id"`
+    Name string `json:"name"`
+
+    // Image provenance
+    ImageRef       string      `json:"image_ref"`
+    BaseKey        string      `json:"base_key"`                  // {checksum_16}_{arch}
+    BaseDigestFull string      `json:"base_digest_full"`          // Full SHA-256 (64 hex chars)
+    Arch           string      `json:"arch"`
+    ImageType      VMImageType `json:"image_type,omitempty"`      // "qcow2" (default) or "oci-vm"
+
+    // Boot configuration
+    BootStrategy  BootStrategy `json:"boot_strategy"`             // "uefi" (default), "direct" (OCI)
+    FirmwarePath  string       `json:"firmware_path"`
+    KernelPath    string       `json:"kernel_path,omitempty"`     // Extracted vmlinuz (OCI direct boot)
+    InitramfsPath string       `json:"initramfs_path,omitempty"`  // Extracted initrd (OCI direct boot)
+    Cmdline       string       `json:"cmdline,omitempty"`         // Kernel command line (OCI direct boot)
+    VirtioFSTag   string       `json:"virtiofs_tag,omitempty"`    // virtiofs rootfs tag (canonical: /dev/root)
+    VirtioFSSock  string       `json:"virtiofs_sock,omitempty"`   // virtiofsd socket path (OCI VM)
+    TPMSocketPath string       `json:"tpm_socket_path,omitempty"` // swtpm socket (if TPM enabled)
+
+    // Resources
+    CPUs     int    `json:"cpus"`
+    MemoryMB int64  `json:"memory_mb"`   // In megabytes
+    DiskSize string `json:"disk_size"`   // e.g., "10G"
+
+    // Storage paths (derived, stored for fast lookup)
+    BaseImagePath string `json:"base_image_path"`
+    OverlayPath   string `json:"overlay_path"`
+    SerialLog     string `json:"serial_log"`
+    SocketPath    string `json:"socket_path"`
+
+    // Timestamps
+    CreatedAt string `json:"created_at"` // RFC 3339
+
+    // Schema version for migration
+    SchemaVersion int `json:"schema_version"`
+}
+```
+
+**Example Configuration** (`config.json`, written once at VM creation):
+```json
+{
+  "vm_id": "vm-01HXYZ5A3B7C8D9E0F1G2H3J4K",
+  "name": "ubuntu-vm-1",
+  "image_ref": "ubuntu-22.04-cloudimg",
+  "base_key": "ef015678abcd1234_amd64",
+  "base_digest_full": "ef015678abcd1234567890abcdef1234567890abcdef1234567890abcdef1234",
+  "arch": "amd64",
+  "boot_strategy": "uefi",
+  "firmware_path": "/var/lib/cocoon/firmware/CLOUDHV.fd",
+  "cpus": 2,
+  "memory_mb": 2048,
+  "disk_size": "10G",
+  "base_image_path": "/var/lib/cocoon/cache/images/ef015678abcd1234_amd64.qcow2",
+  "overlay_path": "/var/lib/cocoon/vms/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K/overlay.qcow2",
+  "serial_log": "/var/log/cocoon/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K-serial.log",
+  "socket_path": "/run/cocoon/vms/vm-01HXYZ5A3B7C8D9E0F1G2H3J4K/api.sock",
+  "created_at": "2026-02-11T10:30:00Z",
+  "schema_version": 1
+}
+```
+
+---
+
+## 6. Image Requirements
+
+### 6.1 Bootable Image Contract
+
+An image is **bootable** if it satisfies these requirements:
+
+**MUST Have (Mandatory)**:
+1. ✅ **Kernel**: `/boot/vmlinuz*` (Linux kernel image)
+2. ✅ **Initrd**: `/boot/initrd*` or `/boot/initramfs*` (initial ramdisk)
+3. ✅ **Init System**: `/sbin/init` → systemd (not sysvinit)
+4. ✅ **Bootloader**: GRUB2 in ESP (EFI System Partition)
+   - **Path semantics**:
+     - **ESP internal path**: `/EFI/BOOT/BOOTX64.EFI` (what bootloader sees)
+     - **Mounted path**: `/boot/efi/EFI/BOOT/BOOTX64.EFI` (what rootfs sees after ESP mounted to /boot/efi)
+5. ✅ **GPT + ESP**: EFI System Partition with FAT32 filesystem
+
+> **Phase 1 implementation note**: `VerifyBootability()` performs a two-tier check. The basic tier (qcow2 integrity) is always available. The deep tier (guestfish) checks each component independently and sets `KernelFound`, `InitrdFound`, `SystemdFound`, `BootloaderFound` booleans. When deep verification runs, the function evaluates results: missing MUST components are added to `Errors` and `Bootable` is set to `false`. However, `VerifyBootability()` never returns a Go `error` for missing components — it returns the `BootCheckResult` struct and callers decide whether to proceed (e.g. `--skip-verify` bypasses the check entirely). Caller-side enforcement is implemented: `Create()` and `image pull` reject non-bootable images by default (`--skip-verify` opts out).
+
+**Guest Initialization (User Responsibility)**:
+- Guest-level setup (SSH keys, users, passwords, hostname, network) is the user's responsibility
+- Users should bake this configuration into their images before booting with Cocoon
+- Cocoon does not inject or manage any guest initialization tooling
+
+**Path Hierarchy Clarification**:
+```
+/dev/vda                         # Virtual disk
+├── /dev/vda1 → ESP (FAT32)     # EFI System Partition
+│   └── /EFI/BOOT/BOOTX64.EFI   # Bootloader (ESP internal path)
+└── /dev/vda2 → / (ext4)        # Root filesystem
+    └── /boot/efi/              # ESP mount point
+        └── /EFI/BOOT/BOOTX64.EFI  # Same bootloader (mounted path)
+```
+
+**Validation Function** (Mandatory checks only):
+```go
+func ValidateBootability(rootfs string) error {
+    // MUST checks
+    checks := []struct {
+        path    string
+        message string
+    }{
+        {"/boot/vmlinuz*", "kernel not found"},
+        {"/boot/initrd* or /boot/initramfs*", "initrd/initramfs not found"},
+        {"/sbin/init", "init system not found"},
+        {"/boot/efi/EFI", "EFI bootloader not found (no ESP partition)"},
+    }
+
+    for _, check := range checks {
+        if !pathExists(filepath.Join(rootfs, check.path)) {
+            return fmt.Errorf("bootability check failed: %s", check.message)
+        }
+    }
+
+    // Verify init is systemd (mandatory for Cocoon)
+    initTarget, _ := os.Readlink(filepath.Join(rootfs, "/sbin/init"))
+    if !strings.Contains(initTarget, "systemd") {
+        return fmt.Errorf("init system must be systemd, got: %s", initTarget)
+    }
+
+    return nil
+}
+```
+
+---
+
+### 6.2 Architecture-Specific Requirements
+
+#### x86_64
+
+**Firmware**:
+- UEFI: CLOUDHV.fd from `/var/lib/cocoon/firmware/CLOUDHV.fd` (deprecated fallback: `/usr/share/OVMF/OVMF_CODE.fd`) — Phase 1 (Implemented)
+- Direct kernel boot: No firmware needed (kernel + initramfs passed directly) — Implemented
+
+**Bootloader**:
+- ESP location: `/boot/efi/EFI/BOOT/BOOTX64.EFI`
+- GRUB target: `x86_64-efi`
+
+#### aarch64 (Phase 2)
+
+**Firmware**:
+- UEFI: AAVMF from `/usr/share/AAVMF/AAVMF_CODE.fd`
+
+**Bootloader**:
+- ESP location: `/boot/efi/EFI/BOOT/BOOTAA64.EFI`
+- GRUB target: `arm64-efi`
+
+**Package Differences**:
+| Component | x86_64 Package | aarch64 Package |
+|-----------|----------------|-----------------|
+| UEFI Firmware | `ovmf` | `edk2-aarch64` |
+| GRUB | `grub2-efi-x64` | `grub2-efi-aa64` |
+| Kernel | `linux-image-generic` | `linux-image-generic` |
+
+---
+
+## 7. Implementation Checklist
+
+### Phase 1: Core Boot (P0)
+
+- [x] **Firmware Management** (`cmd/cocoon/firmware.go`):
+  - [x] Download CLOUDHV.fd on install (default URL: edk2 latest release)
+  - [x] Store in `/var/lib/cocoon/firmware/`
+  - [x] Implement `cocoon firmware` commands (list, verify, install, update)
+  - [x] Version management and updates (`firmware install --force`)
+
+- [x] **UEFI Boot** (`vm/engine/manager.go`, `hypervisor/cloudhypervisor/client.go`):
+  - [x] Locate UEFI firmware: primary `/var/lib/cocoon/firmware/CLOUDHV.fd`, deprecated fallback `/usr/share/OVMF/OVMF_CODE.fd`
+  - [x] Launch CH with UEFI firmware via REST `payload.firmware` (default boot strategy for non-OCI images)
+
+- [x] **Direct Kernel Boot** (OCI VM images) — implemented (resolver auto-detect + registry auto-pull runtime path):
+  - [x] Extract kernel and initramfs from OCI VM images
+  - [x] Launch CH with `payload.kernel` + `payload.initramfs` + `payload.cmdline`
+  - [x] Build kernel cmdline with `root=/dev/root rootfstype=virtiofs rw` (+ console entries)
+
+- [x] **Image Conversion** (`image/pipeline/manager.go`, `image/pipeline/convert_linux.go`):
+  - [x] Regenerate GRUB config (if needed for console settings)
+
+- [x] **Boot Detection** (`vm/engine/boot_detect.go`):
+  - [x] Monitor serial log for boot completion
+  - [x] Implement multi-pattern boot detection:
+    - [x] Login prompt patterns
+    - [x] Systemd target patterns (login target, running message)
+    - [x] Failure patterns (kernel panic, missing init)
+  - [x] Timeout handling with detailed error reporting
+
+### Future Work (Phase 2)
+
+> The items below are planned for future phases and are not yet implemented.
+
+- **cocoon-ready.service Boot Marker**: Document cocoon-ready.service for users to bake into images; update WaitForBootCompletion to check for COCOON_READY pattern; add priority-based pattern matching; test across distributions; maintain backward compatibility.
+- **Architecture Support**: aarch64 UEFI firmware (AAVMF), ARM64-specific GRUB config.
+- **Alternative I/O**: vsock for task output streaming, virtiofs for large file access.
+
+---
+
+## Summary
+
+**Boot Contract v2.0** establishes:
+
+1. **Boot strategy**: UEFI (cloud images, Phase 1) + Direct kernel boot (OCI VM images, implemented)
+2. **Guest initialization**: User responsibility (Cocoon does not perform guest init)
+3. **Image requirements**: kernel + bootloader + systemd
+4. **Graceful lifecycle**: ACPI shutdown with timeout
+5. **Production ready**: Works with standard cloud images (Phase 1) and OCI VM direct boot, including registry refs via auto-pull + local runtime materialization
+
+**Next Steps**:
+- Read `docs/03-hypervisor-integration.md` for CH API details
+- Read `docs/04-oci-conversion.md` for image conversion pipeline
+- Read `docs/07-vm-lifecycle.md` for state machine specification
+
+---
+
+**End of Boot Contract v2.0**
