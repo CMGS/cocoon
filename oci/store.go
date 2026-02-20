@@ -258,7 +258,7 @@ func (s *Store) save(idx *TagIndex) error {
 }
 
 func (s *Store) withLock(fn func(*TagIndex) error) error {
-	if err := os.MkdirAll(s.cfg.DBDir(), 0o755); err != nil { //nolint:gosec // G301: cocoon db dirs are shared runtime state
+	if err := os.MkdirAll(s.cfg.DBDir(), 0o700); err != nil {
 		return fmt.Errorf("create db dir: %w", err)
 	}
 	fl := flock.New(s.cfg.OCIBuildTagLock())
@@ -275,7 +275,7 @@ func (s *Store) withLock(fn func(*TagIndex) error) error {
 }
 
 func (s *Store) withTxnLock(fn func() error) error {
-	if err := os.MkdirAll(s.cfg.DBDir(), 0o755); err != nil { //nolint:gosec // G301: cocoon db dirs are shared runtime state
+	if err := os.MkdirAll(s.cfg.DBDir(), 0o700); err != nil {
 		return fmt.Errorf("create db dir: %w", err)
 	}
 	fl := flock.New(s.cfg.OCIBuildTxnLock())

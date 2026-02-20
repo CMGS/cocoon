@@ -137,7 +137,7 @@ func LoadRuntimeRefsSnapshot(cfg *config.CocoonConfig) (RuntimeRefsIndex, error)
 }
 
 func withRuntimeRefsLock(cfg *config.CocoonConfig, fn func(*RuntimeRefsIndex) error) error {
-	if err := os.MkdirAll(cfg.DBDir(), 0o755); err != nil { //nolint:gosec // cocoon-managed state dir
+	if err := os.MkdirAll(cfg.DBDir(), 0o700); err != nil {
 		return fmt.Errorf("create db dir: %w", err)
 	}
 	fl := flock.New(cfg.OCIRuntimeRefsLock())
