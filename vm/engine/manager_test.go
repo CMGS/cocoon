@@ -116,7 +116,7 @@ func setupTestOCIEntryMeta(t *testing.T, cfg *config.CocoonConfig, runtimeKey st
 		KernelLayerDigest:  testRootfsDigest,
 		RootfsLayerDigests: []string{testRootfsDigest},
 		Arch:               "amd64",
-		VirtioFSTag:        "/dev/root",
+		VirtioFSTag:        "cocoon-rootfs",
 	}
 	if err := oci.WriteEntryMeta(cfg.OCIRuntimeEntryMetaPath(runtimeKey), meta); err != nil {
 		t.Fatalf("write entry meta: %v", err)
@@ -1449,7 +1449,7 @@ func TestStart_OCIRuntimeMetadataWiring(t *testing.T) {
 
 	v.ImageType = types.VMImageTypeOCIVM
 	v.BaseImagePath = td.cfg.OCIRuntimeEntryDir(v.BaseKey)
-	v.VirtioFSTag = "/dev/root"
+	v.VirtioFSTag = "cocoon-rootfs"
 	v.VirtioFSSock = td.cfg.VMOCIRootfsVirtioFSSocketPath(v.VMID)
 	setupTestOCIEntryMeta(t, td.cfg, v.BaseKey)
 	if err := utils.AtomicWriteJSON(td.cfg.VMConfigPath(v.VMID), v); err != nil {
@@ -1529,7 +1529,7 @@ func TestStart_OCIRuntimeCleanupOnBootFailure(t *testing.T) {
 
 	v.ImageType = types.VMImageTypeOCIVM
 	v.BaseImagePath = td.cfg.OCIRuntimeEntryDir(v.BaseKey)
-	v.VirtioFSTag = "/dev/root"
+	v.VirtioFSTag = "cocoon-rootfs"
 	v.VirtioFSSock = td.cfg.VMOCIRootfsVirtioFSSocketPath(v.VMID)
 	setupTestOCIEntryMeta(t, td.cfg, v.BaseKey)
 	if err := utils.AtomicWriteJSON(td.cfg.VMConfigPath(v.VMID), v); err != nil {
@@ -1597,7 +1597,7 @@ func TestStop_CleansOCIRuntimeMetadata(t *testing.T) {
 	})
 
 	v.ImageType = types.VMImageTypeOCIVM
-	v.VirtioFSTag = "/dev/root"
+	v.VirtioFSTag = "cocoon-rootfs"
 	v.VirtioFSSock = td.cfg.VMOCIRootfsVirtioFSSocketPath(v.VMID)
 	if err := utils.AtomicWriteJSON(td.cfg.VMConfigPath(v.VMID), v); err != nil {
 		t.Fatalf("write config.json: %v", err)
@@ -1671,7 +1671,7 @@ func TestStop_StoppingStateCleansOCIRuntimeMetadata(t *testing.T) {
 	})
 
 	v.ImageType = types.VMImageTypeOCIVM
-	v.VirtioFSTag = "/dev/root"
+	v.VirtioFSTag = "cocoon-rootfs"
 	v.VirtioFSSock = td.cfg.VMOCIRootfsVirtioFSSocketPath(v.VMID)
 	if err := utils.AtomicWriteJSON(td.cfg.VMConfigPath(v.VMID), v); err != nil {
 		t.Fatalf("write config.json: %v", err)
@@ -1841,8 +1841,8 @@ func TestBuildCHVMConfig_DirectKernelBootWithVirtioFS(t *testing.T) {
 		BootStrategy:  types.BootStrategyDirect,
 		KernelPath:    "/boot/vmlinuz",
 		InitramfsPath: "/boot/initrd.img",
-		Cmdline:       "root=/dev/root rootfstype=virtiofs rw",
-		VirtioFSTag:   "/dev/root",
+		Cmdline:       "root=cocoon-rootfs rootfstype=virtiofs rw",
+		VirtioFSTag:   "cocoon-rootfs",
 		VirtioFSSock:  "/var/lib/cocoon/vms/vm-test/virtiofsd.sock",
 	}
 
@@ -1850,14 +1850,14 @@ func TestBuildCHVMConfig_DirectKernelBootWithVirtioFS(t *testing.T) {
 	if len(chCfg.Fs) != 1 {
 		t.Fatalf("fs entries = %d, want 1", len(chCfg.Fs))
 	}
-	if chCfg.Fs[0].Tag != "/dev/root" {
-		t.Fatalf("fs[0].tag = %q, want /dev/root", chCfg.Fs[0].Tag)
+	if chCfg.Fs[0].Tag != "cocoon-rootfs" {
+		t.Fatalf("fs[0].tag = %q, want cocoon-rootfs", chCfg.Fs[0].Tag)
 	}
 	if chCfg.Fs[0].Socket != "/var/lib/cocoon/vms/vm-test/virtiofsd.sock" {
 		t.Fatalf("fs[0].socket = %q, want /var/lib/cocoon/vms/vm-test/virtiofsd.sock", chCfg.Fs[0].Socket)
 	}
-	if chCfg.Payload.Cmdline != "console=ttyS0 console=hvc0 root=/dev/root rootfstype=virtiofs rw" {
-		t.Fatalf("payload.cmdline = %q, want console=ttyS0 console=hvc0 root=/dev/root rootfstype=virtiofs rw", chCfg.Payload.Cmdline)
+	if chCfg.Payload.Cmdline != "console=ttyS0 console=hvc0 root=cocoon-rootfs rootfstype=virtiofs rw" {
+		t.Fatalf("payload.cmdline = %q, want console=ttyS0 console=hvc0 root=cocoon-rootfs rootfstype=virtiofs rw", chCfg.Payload.Cmdline)
 	}
 	if !chCfg.Memory.Shared {
 		t.Fatal("memory.shared should be true when virtiofs is configured")

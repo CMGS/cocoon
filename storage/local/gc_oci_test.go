@@ -129,7 +129,7 @@ func writeRuntimeEntryMeta(t *testing.T, cfg *config.CocoonConfig, runtimeKey st
 		KernelLayerDigest:  kernelDigest,
 		RootfsLayerDigests: []string{rootfsDigest},
 		Arch:               "amd64",
-		VirtioFSTag:        "/dev/root",
+		VirtioFSTag:        "cocoon-rootfs",
 	}
 	if err := oci.WriteEntryMeta(cfg.OCIRuntimeEntryMetaPath(runtimeKey), meta); err != nil {
 		t.Fatalf("write entry meta: %v", err)
@@ -797,7 +797,7 @@ func TestOCIGC_CollectUnreferencedOCIRuntimeCaches_LayerMarkAndSweep(t *testing.
 		KernelLayerDigest:  kernelLayer,
 		RootfsLayerDigests: []string{referencedLayer},
 		Arch:               "amd64",
-		VirtioFSTag:        "/dev/root",
+		VirtioFSTag:        "cocoon-rootfs",
 	}
 	if err := oci.WriteEntryMeta(cfg.OCIRuntimeEntryMetaPath("pinned-key"), meta); err != nil {
 		t.Fatalf("write entry meta: %v", err)

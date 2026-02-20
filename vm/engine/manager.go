@@ -1248,7 +1248,7 @@ func buildCHVMConfig(vmCfg *types.VMConfig) *hypervisor.CHVMConfig {
 	cmdline := vmCfg.Cmdline
 	virtiofsTag := ""
 	if virtiofsEnabled {
-		virtiofsTag = defaultOCIRuntimeVirtioFSTag
+		virtiofsTag = vmCfg.VirtioFSTag
 		cmdline = normalizeVirtiofsKernelCmdline(cmdline, virtiofsTag)
 	}
 
