@@ -464,7 +464,7 @@ func createLayoutWorkDir(cfg *config.CocoonConfig) (string, error) {
 func bootExcludePaths(ki *KernelInfo, bootFiles []string) []string {
 	// Use a map for O(1) deduplication.
 	excludeSet := make(map[string]struct{})
-	
+
 	// Always exclude the selected kernel and initrd.
 	excludeSet[strings.TrimPrefix(ki.KernelPath, "/")] = struct{}{}
 	excludeSet[strings.TrimPrefix(ki.InitrdPath, "/")] = struct{}{}
@@ -475,7 +475,7 @@ func bootExcludePaths(ki *KernelInfo, bootFiles []string) []string {
 			excludeSet[strings.TrimPrefix(bf, "/")] = struct{}{}
 		}
 	}
-	
+
 	return slices.Collect(maps.Keys(excludeSet))
 }
 
