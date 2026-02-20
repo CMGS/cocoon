@@ -172,6 +172,8 @@ func (c *CocoonConfig) BootFailurePatternsOrDefault() []string {
 		`not syncing`,
 		`No working init found`,
 		`Failed to execute /init`,
+		`No init found`,
+		`can't execute '/sbin/init'`,
 	}
 }
 

@@ -9,7 +9,9 @@
 #   3) http(s) cloud-image URL
 #   4) OCI reference (Docker-like normalization)
 
-FROM noble-server-cloudimg-amd64.img
+FROM https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+
+RUN echo 'virtiofs' >> /etc/initramfs-tools/modules && update-initramfs -u -k all
 
 # Demo-only password setup for local testing. Use SSH keys in production.
 RUN echo 'root:eruCocoon' | chpasswd
