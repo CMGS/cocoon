@@ -12,7 +12,7 @@
 #   make setup-ch
 #
 # Environment variables:
-#   CH_VERSION              Cloud Hypervisor version (default: v50.0)
+#   CH_VERSION              Cloud Hypervisor version (default: v51.0)
 #   COCOON_ROOT             Root data directory (default: /var/lib/cocoon)
 #   COCOON_RUN              Runtime directory (default: /run/cocoon)
 #   COCOON_LOG              Log directory (default: /var/log/cocoon)

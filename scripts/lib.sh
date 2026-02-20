@@ -14,7 +14,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 fi
 
 # ----- Version defaults (env-overridable) -----
-CH_VERSION="${CH_VERSION:-v50.0}"
+CH_VERSION="${CH_VERSION:-v51.0}"
 EDK2_CH_VERSION="${EDK2_CH_VERSION:-a54f262b09}"
 
 # ----- Path defaults (env-overridable) -----
@@ -264,7 +264,6 @@ COCOON_DIRS=(
     "cache/locks"
     "vms"
     "temp"
-    "trash"
     "firmware"
 )
 
