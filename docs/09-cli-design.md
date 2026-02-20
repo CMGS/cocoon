@@ -134,7 +134,7 @@ cocoon/
 │   └── builder.go            # image.Builder adapter (delegates to package functions)
 ├── storage/
 │   ├── storage.go            # ReferenceCounter, COWManager, GarbageCollector interfaces
-│   ├── types.go              # OverlayInfo, GCResult
+│   ├── types.go              # OverlayInfo
 │   ├── local/
 │   │   ├── refcount.go       # ReferenceCounter impl (references.json + flock)
 │   │   ├── cow.go            # COWManager impl (qemu-img create/resize)
@@ -465,7 +465,6 @@ var (
     rootDir    string
     runtimeDir string
     logDir     string
-    logLevel   string
 )
 
 func main() {
@@ -502,13 +501,6 @@ func main() {
             Usage:       "log directory for VM serial logs (overrides config)",
             Destination: &logDir,
             EnvVars:     []string{"COCOON_LOG_DIR"},
-        },
-        &cli.StringFlag{
-            Name:        "log-level",
-            Value:       "info",
-            Usage:       "log level (debug, info, warn, error)",
-            Destination: &logLevel,
-            EnvVars:     []string{"COCOON_LOG_LEVEL"},
         },
     }
 
@@ -2240,7 +2232,7 @@ This CLI design implements the Boot Contract specification:
 - [x] **CLI Framework** (`cmd/cocoon/main.go`, `cmd/cocoon/app.go`):
   - [x] Setup urfave/cli/v2 application structure
   - [x] Implement version command (`cmd/cocoon/version.go`)
-  - [x] Implement global flags (--config, --root-dir, --runtime-dir, --log-dir, --log-level)
+  - [x] Implement global flags (--config, --root-dir, --runtime-dir, --log-dir)
 
 - [x] **VM Lifecycle**:
   - [x] `cocoon run` command with full flow (`cmd/cocoon/run.go`)
