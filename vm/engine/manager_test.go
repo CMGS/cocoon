@@ -96,6 +96,33 @@ func defaultMockIdentity() *image.ImageIdentity {
 	}
 }
 
+// setupTestOCIEntryMeta creates the entry dir, meta.json, and layer dirs
+// needed by setupOCIRuntimeForStart when a test configures ImageType=OCI.
+func setupTestOCIEntryMeta(t *testing.T, cfg *config.CocoonConfig, runtimeKey string) {
+	t.Helper()
+	const testRootfsDigest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	entryDir := cfg.OCIRuntimeEntryDir(runtimeKey)
+	if err := os.MkdirAll(entryDir, 0o755); err != nil {
+		t.Fatalf("create entry dir: %v", err)
+	}
+	meta := &oci.OCIRuntimeEntryMeta{
+		ManifestDigest:     "sha256:" + testRootfsDigest,
+		KernelLayerDigest:  testRootfsDigest,
+		RootfsLayerDigests: []string{testRootfsDigest},
+		Arch:               "amd64",
+		VirtioFSTag:        "/dev/root",
+	}
+	if err := oci.WriteEntryMeta(cfg.OCIRuntimeEntryMetaPath(runtimeKey), meta); err != nil {
+		t.Fatalf("write entry meta: %v", err)
+	}
+	// Create referenced layer dir so overlay mount path resolves.
+	rootfsLayerDir := filepath.Join(cfg.OCIRuntimeLayerDir(testRootfsDigest), "rootfs")
+	if err := os.MkdirAll(rootfsLayerDir, 0o755); err != nil {
+		t.Fatalf("create layer dir: %v", err)
+	}
+}
+
 // createTestVM is a convenience helper that provisions a VM through Create
 // using standard mock wiring and returns the VMConfig.
 func createTestVM(t *testing.T, td *testDeps, opts *vm.CreateOptions) *types.VMConfig {
@@ -1416,8 +1443,10 @@ func TestStart_OCIRuntimeMetadataWiring(t *testing.T) {
 	})
 
 	v.ImageType = types.VMImageTypeOCIVM
+	v.BaseImagePath = td.cfg.OCIRuntimeEntryDir(v.BaseKey)
 	v.VirtioFSTag = "/dev/root"
 	v.VirtioFSSock = td.cfg.VMOCIRootfsVirtioFSSocketPath(v.VMID)
+	setupTestOCIEntryMeta(t, td.cfg, v.BaseKey)
 	if err := utils.AtomicWriteJSON(td.cfg.VMConfigPath(v.VMID), v); err != nil {
 		t.Fatalf("write config.json: %v", err)
 	}
@@ -1494,8 +1523,10 @@ func TestStart_OCIRuntimeCleanupOnBootFailure(t *testing.T) {
 	})
 
 	v.ImageType = types.VMImageTypeOCIVM
+	v.BaseImagePath = td.cfg.OCIRuntimeEntryDir(v.BaseKey)
 	v.VirtioFSTag = "/dev/root"
 	v.VirtioFSSock = td.cfg.VMOCIRootfsVirtioFSSocketPath(v.VMID)
+	setupTestOCIEntryMeta(t, td.cfg, v.BaseKey)
 	if err := utils.AtomicWriteJSON(td.cfg.VMConfigPath(v.VMID), v); err != nil {
 		t.Fatalf("write config.json: %v", err)
 	}
