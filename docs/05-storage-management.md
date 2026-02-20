@@ -55,7 +55,6 @@ Lock file paths are additionally documented in [06-concurrency.md](./06-concurre
 │           └── entries/
 │               └── {runtimeKey}/
 │                   └── meta.json         # Entry metadata: layer digests, arch, cmdline
-├── buildah/                              # Buildah storage root
 ├── vms/
 │   ├── {vm-id}/                          # e.g., vm-01HXYZ.../
 │   │   ├── config.json                   # Immutable VM configuration
@@ -369,7 +368,6 @@ type CocoonConfig struct {
     CHBinary         string `json:"ch_binary"`           // Cloud Hypervisor binary
     VirtiofsdBinary  string `json:"virtiofsd_binary"`    // virtiofsd binary (OCI runtime path)
     UEFIFirmwarePath string `json:"uefi_firmware_path"`  // UEFI firmware path
-    BuildahRoot      string `json:"buildah_root"`        // Buildah storage root
 
     // Default VM resources
     DefaultCPUs     int    `json:"default_cpus"`       // Default: 2
@@ -411,7 +409,7 @@ func (c *CocoonConfig) OCILayerRefsLock() string   // RootDir/db/oci-layer-refs.
 
 // EnsureDirs creates all required directories (db, cache/images,
 // cache/manifests, cache/locks, cache/oci/blobs/sha256, cache/oci/layouts,
-// cache/oci/runtime, vms, temp, firmware, buildah, RuntimeDir/vms, LogDir).
+// cache/oci/runtime, vms, temp, firmware, RuntimeDir/vms, LogDir).
 func (c *CocoonConfig) EnsureDirs() error { ... }
 ```
 

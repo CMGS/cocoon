@@ -122,26 +122,6 @@ func checkBinaryWithMinVersion(name, binary string, args []string, min utils.Sem
 	}
 }
 
-func checkBuildahBinary() checkResult {
-	return checkBinaryWithMinVersion(
-		"buildah",
-		"buildah",
-		[]string{"version"},
-		utils.SemVersion{Major: 1, Minor: 35, Patch: 0},
-		"required for OCI image operations",
-	)
-}
-
-func checkSkopeoBinary() checkResult {
-	return checkBinaryWithMinVersion(
-		"skopeo",
-		"skopeo",
-		[]string{"--version"},
-		utils.SemVersion{Major: 1, Minor: 14, Patch: 0},
-		"required for OCI manifest inspection",
-	)
-}
-
 // runDependencyChecks verifies system dependencies required by Cocoon.
 func runDependencyChecks(app *appContext) []checkResult {
 	var results []checkResult
@@ -184,13 +164,7 @@ func runDependencyChecks(app *appContext) []checkResult {
 		"required for Cloud Hypervisor API interactions",
 	))
 
-	// 4c. Check buildah binary + minimum version.
-	results = append(results, checkBuildahBinary())
-
-	// 4d. Check skopeo binary + minimum version.
-	results = append(results, checkSkopeoBinary())
-
-	// 4e. Check guestfish binary + minimum version.
+	// 4c. Check guestfish binary + minimum version.
 	results = append(results, checkBinaryWithMinVersion(
 		"guestfish",
 		"guestfish",
@@ -199,10 +173,10 @@ func runDependencyChecks(app *appContext) []checkResult {
 		"required for OCI-to-qcow2 conversion",
 	))
 
-	// 4f. Check swtpm binary (TPM emulator).
+	// 4d. Check swtpm binary (TPM emulator).
 	results = append(results, checkSwtpm())
 
-	// 4g. Check virt-customize binary (optional — required for Cocoonfile builds).
+	// 4e. Check virt-customize binary (optional — required for Cocoonfile builds).
 	results = append(results, checkOptionalBinary(
 		"virt-customize",
 		"virt-customize",
@@ -233,7 +207,6 @@ func runDependencyChecks(app *appContext) []checkResult {
 		"db-dir":       app.cfg.DBDir(),
 		"vm-dir":       app.cfg.VMDir(),
 		"cache-dir":    app.cfg.CacheDir(),
-		"buildah-dir":  app.cfg.BuildahRoot,
 		"firmware-dir": app.cfg.FirmwareDir(),
 	}
 	for name, dir := range dirs {
@@ -483,39 +456,6 @@ func ensureVirtiofsdCommandLink(configuredBinary, target string) error {
 	return nil
 }
 
-func remediatePackageDependencies(ctx context.Context, packages []string) error {
-	if len(packages) == 0 {
-		return nil
-	}
-
-	pkgManager, err := detectDoctorPackageManager()
-	if err != nil {
-		return err
-	}
-
-	switch pkgManager {
-	case packageManagerAPT:
-		if _, err := doctorRunCommand(ctx, "apt-get", "update", "-qq"); err != nil {
-			return fmt.Errorf("apt-get update: %w", err)
-		}
-		args := []string{"install", "-y", "-qq"}
-		args = append(args, packages...)
-		if _, err := doctorRunCommand(ctx, "apt-get", args...); err != nil {
-			return fmt.Errorf("apt-get install %s: %w", strings.Join(packages, " "), err)
-		}
-	case packageManagerDNF:
-		args := []string{"install", "-y", "-q"}
-		args = append(args, packages...)
-		if _, err := doctorRunCommand(ctx, "dnf", args...); err != nil {
-			return fmt.Errorf("dnf install %s: %w", strings.Join(packages, " "), err)
-		}
-	default:
-		return fmt.Errorf("unsupported package manager: %s", pkgManager)
-	}
-
-	return nil
-}
-
 func tryLinkVirtiofsdFallback(configuredBinary string) {
 	fallback, ok := findVirtiofsdFallbackBinary()
 	if !ok {
@@ -588,46 +528,6 @@ func tryFixVirtiofsdDependency(ctx context.Context, configuredBinary string, che
 		updated.Detail = fmt.Sprintf("%s; auto-fix applied", updated.Detail)
 	}
 	return replaceCheckResult(checks, updated)
-}
-
-func tryFixBuildToolsDependencies(ctx context.Context, checks []checkResult) []checkResult {
-	packages := make([]string, 0, 2)
-	if hasFailedCheck(checks, "buildah") {
-		packages = append(packages, "buildah")
-	}
-	if hasFailedCheck(checks, "skopeo") {
-		packages = append(packages, "skopeo")
-	}
-	if len(packages) == 0 {
-		return checks
-	}
-
-	fixErr := remediatePackageDependencies(ctx, packages)
-
-	for _, dep := range packages {
-		var updated checkResult
-		switch dep {
-		case "buildah":
-			updated = checkBuildahBinary()
-		case "skopeo":
-			updated = checkSkopeoBinary()
-		default:
-			continue
-		}
-
-		if fixErr != nil {
-			if updated.Status == checkStatusPass {
-				updated.Status = checkStatusWarn
-			}
-			updated.Detail = fmt.Sprintf("%s; auto-fix error: %v", updated.Detail, fixErr)
-		} else if updated.Status == checkStatusPass {
-			updated.Detail = fmt.Sprintf("%s; auto-fix applied", updated.Detail)
-		}
-
-		checks = replaceCheckResult(checks, updated)
-	}
-
-	return checks
 }
 
 // checkOptionalBinary checks if a binary exists and reports its version.
@@ -746,7 +646,6 @@ func doctorAction(c *cli.Context) error {
 	// Phase 1: Dependency checks.
 	checks := runDependencyChecks(app)
 	if fix {
-		checks = tryFixBuildToolsDependencies(c.Context, checks)
 		checks = tryFixVirtiofsdDependency(c.Context, app.cfg.VirtiofsdBinary, checks)
 	}
 

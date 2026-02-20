@@ -765,12 +765,12 @@ func TestShouldFallbackToOCIVMPull(t *testing.T) {
 		},
 		{
 			name: "artifact operation mismatch for cocoon vm artifact",
-			err:  errors.New(`buildah pull: unsupported image-specific operation on artifact with type "application/vnd.cocoon.vm.image.v1"`),
+			err:  errors.New(`pull image: unsupported image-specific operation on artifact with type "application/vnd.cocoon.vm.image.v1"`),
 			want: true,
 		},
 		{
 			name: "artifact operation mismatch for other artifact",
-			err:  errors.New(`buildah pull: unsupported image-specific operation on artifact with type "application/vnd.example.other.v1"`),
+			err:  errors.New(`pull image: unsupported image-specific operation on artifact with type "application/vnd.example.other.v1"`),
 			want: false,
 		},
 		{

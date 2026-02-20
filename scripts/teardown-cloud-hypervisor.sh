@@ -82,7 +82,7 @@ run_check_only() {
     fi
 
     echo ""
-    info "System packages (qemu-utils, buildah, skopeo, libguestfs-tools) are NOT removed."
+    info "System packages (qemu-utils, libguestfs-tools, swtpm, virtiofsd) are NOT removed."
     info "They may be used by other software. Remove manually if needed."
     echo ""
     exit 0
@@ -135,7 +135,7 @@ main() {
     fi
 
     echo ""
-    info "System packages (qemu-utils, buildah, skopeo, libguestfs-tools) are NOT removed."
+    info "System packages (qemu-utils, libguestfs-tools, swtpm, virtiofsd) are NOT removed."
     echo ""
     echo -e "${BOLD}Teardown complete.${NC}"
     echo ""

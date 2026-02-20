@@ -107,7 +107,7 @@ func TestClassifyError(t *testing.T) {
 		// OCI conversion
 		{
 			name:   "OCI conversion failure",
-			reason: "prepare image: oci conversion failed: buildah push: exit code 1",
+			reason: "prepare image: oci conversion failed: conversion pipeline exited with status 1",
 			want:   types.ErrorOCIConversion,
 		},
 

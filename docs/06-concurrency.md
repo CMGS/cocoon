@@ -164,8 +164,8 @@ The `Prepare()` function has **two distinct concurrency paths** depending on ima
 ```go
 // Simplified view of image/pipeline/manager.go prepareOCI().
 func (m *manager) prepareOCI(ctx context.Context, ref string) (*ImageIdentity, string, error) {
-    // 1. Identify (skopeo inspect) — cheap, no lock needed.
-    identity, err := identifyOCIPlatform(ctx, ref)
+    // 1. Identify (go-containerregistry manifest fetch) — cheap, no lock needed.
+    identity, err := identifyOCIRemote(ctx, ref)
     baseKey := identity.BaseKey()
     basePath := m.cfg.BaseImagePath(baseKey)
 
@@ -185,9 +185,9 @@ func (m *manager) prepareOCI(ctx context.Context, ref string) (*ImageIdentity, s
         return identity, basePath, nil
     }
 
-    // 5. Pull (buildah) + mount + convert — ALL inside lock.
-    //    Only one process pulls and converts per unique image.
-    pullOCIImage(ctx, identity)
+    // 5. Pull + materialize rootfs + convert — ALL inside lock.
+    //    Only one process materializes and converts per unique image.
+    pullAndMaterializeOCI(ctx, ref, identity)
     convertOCIImage(ctx, identity, basePath, baseKey) // rename + chmod 0444
 
     return identity, basePath, nil

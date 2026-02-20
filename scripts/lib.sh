@@ -266,7 +266,6 @@ COCOON_DIRS=(
     "temp"
     "trash"
     "firmware"
-    "buildah"
 )
 
 create_cocoon_directories() {
@@ -388,7 +387,7 @@ install_system_packages() {
     case "$PKG_MANAGER" in
         apt)
             apt-get update -qq
-            local packages=(qemu-utils buildah skopeo libguestfs-tools swtpm swtpm-tools virtiofsd)
+            local packages=(qemu-utils libguestfs-tools swtpm swtpm-tools virtiofsd)
             for pkg in "${packages[@]}"; do
                 if dpkg -l "$pkg" 2>/dev/null | grep -q "^ii"; then
                     ok "$pkg already installed"
@@ -403,7 +402,7 @@ install_system_packages() {
             done
             ;;
         dnf)
-            local packages=(qemu-img buildah skopeo libguestfs-tools swtpm swtpm-tools virtiofsd)
+            local packages=(qemu-img libguestfs-tools swtpm swtpm-tools virtiofsd)
             for pkg in "${packages[@]}"; do
                 if rpm -q "$pkg" &>/dev/null; then
                     ok "$pkg already installed"
@@ -478,8 +477,6 @@ check_ch_runtime() {
     echo ""
     echo -e "${BOLD}--- System tools ---${NC}"
     check_tool "qemu-img" "qemu-img" "required for overlay creation"
-    check_tool "buildah" "buildah" "OCI image pull"
-    check_tool "skopeo" "skopeo" "OCI image inspection"
     check_tool "guestfish" "guestfish" "OCI conversion and boot verification"
     check_virtiofsd_tool
     check_tool "swtpm" "swtpm" "TPM 2.0 emulator for VM TPM support"

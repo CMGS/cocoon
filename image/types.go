@@ -64,8 +64,8 @@ type ImageIdentity struct {
 	// stored before conversion. It is not persisted to JSON.
 	TempPath string `json:"-"`
 
-	// ContainerID is a legacy field (formerly used for buildah container cleanup).
-	// Retained for backward compatibility but no longer set by the pipeline.
+	// ContainerID is a legacy field retained for backward compatibility.
+	// It is no longer set by the current pipeline.
 	ContainerID string `json:"-"`
 }
 

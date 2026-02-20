@@ -340,7 +340,7 @@ For quick evaluation:
 1. **Install dependencies** (5 min):
    ```bash
    # Ubuntu
-   sudo apt-get install -y cloud-hypervisor buildah skopeo qemu-utils ovmf
+   sudo apt-get install -y cloud-hypervisor qemu-utils libguestfs-tools ovmf swtpm swtpm-tools
 
    # Add your user to kvm group
    sudo usermod -aG kvm $USER

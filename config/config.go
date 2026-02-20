@@ -34,9 +34,6 @@ type CocoonConfig struct {
 	// Firmware paths.
 	UEFIFirmwarePath string `json:"uefi_firmware_path"`
 
-	// Buildah storage root (for OCI operations).
-	BuildahRoot string `json:"buildah_root"`
-
 	// Default VM resource values.
 	DefaultCPUs     int    `json:"default_cpus"`
 	DefaultMemoryMB int64  `json:"default_memory_mb"`
@@ -69,7 +66,6 @@ func DefaultConfig() *CocoonConfig {
 		CHBinary:         "cloud-hypervisor",
 		VirtiofsdBinary:  "virtiofsd",
 		UEFIFirmwarePath: "/var/lib/cocoon/firmware/CLOUDHV.fd",
-		BuildahRoot:      "/var/lib/cocoon/buildah",
 
 		DefaultCPUs:     2,
 		DefaultMemoryMB: 2048,
@@ -149,7 +145,6 @@ func (c *CocoonConfig) RebaseRootDir(newRoot string) {
 		return path
 	}
 
-	c.BuildahRoot = rebase(c.BuildahRoot)
 	c.UEFIFirmwarePath = rebase(c.UEFIFirmwarePath)
 }
 
@@ -425,7 +420,6 @@ func (c *CocoonConfig) EnsureDirs() error {
 		c.VMDir(),
 		c.TempDir(),
 		c.FirmwareDir(),
-		c.BuildahRoot,
 		filepath.Join(c.RuntimeDir, "vms"),
 		c.LogDir,
 	}
