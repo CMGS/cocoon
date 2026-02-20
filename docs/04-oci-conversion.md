@@ -161,7 +161,7 @@ Cache keys are content-addressable based on the **resolved** OCI configuration a
 |---------|--------|----------------|
 | Native OCI Pull | **Done** | `go-containerregistry` |
 | Manifest Lists | **Done** | Recursive resolution |
-| Path Safety | **Done** | `os.OpenRoot` |
+| Path Safety | **Done** | `resolveTarEntryPath` |
 | Atomic Durability | **Done** | `SyncParentDir` |
 | Process Cleanup | **Done** | `CommandContextWithGroup` |
 | Sparse File Support | *Deferred* | Planned for Phase 2 |
