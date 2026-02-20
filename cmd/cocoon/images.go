@@ -1268,7 +1268,7 @@ func materializeOCITagForBuild(ctx context.Context, app *appContext, store *oci.
 	}
 
 	baseImagePath := filepath.Join(workDir, "base.qcow2")
-	if err := buildQcow2FromRootfs(ctx, rootfsDir, baseImagePath); err != nil {
+	if err := buildQcow2FromRootfs(ctx, rootfsDir, baseImagePath, app.cfg.DefaultDiskSize); err != nil {
 		cleanup()
 		return "", nil, fmt.Errorf("materialize qcow2 from local OCI tag %q: %w", tag, err)
 	}
@@ -1349,7 +1349,7 @@ func installKernelArtifacts(kernelDir, bootDir string, cfg *oci.VMImageConfig) e
 	return nil
 }
 
-func buildQcow2FromRootfs(ctx context.Context, rootfsPath, outputPath string) error {
+func buildQcow2FromRootfs(ctx context.Context, rootfsPath, outputPath, diskSize string) error {
 	if err := validateSafeBuildPath(rootfsPath); err != nil {
 		return fmt.Errorf("invalid rootfs path: %w", err)
 	}
@@ -1357,7 +1357,7 @@ func buildQcow2FromRootfs(ctx context.Context, rootfsPath, outputPath string) er
 		return fmt.Errorf("invalid output path: %w", err)
 	}
 
-	createCmd := exec.CommandContext(ctx, "qemu-img", "create", "-f", "qcow2", outputPath, "10G") //nolint:gosec // internal command invocation with validated local paths
+	createCmd := exec.CommandContext(ctx, "qemu-img", "create", "-f", "qcow2", outputPath, diskSize) //nolint:gosec // internal command invocation with validated local paths
 	if out, err := createCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("qemu-img create: %s: %w", strings.TrimSpace(string(out)), err)
 	}

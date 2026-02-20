@@ -2259,23 +2259,13 @@ This CLI design implements the Boot Contract specification:
   - [x] Reference counter integration (`storage/local/refcount.go`)
   - [x] `cocoon gc` command (`cmd/cocoon/gc.go`, `storage/local/gc.go`)
 
-### Phase 2: Advanced Features (P1)
+### Future Work (Phase 2)
 
-- [ ] **I/O Enhancements**:
-  - [ ] vsock support (future)
-  - [ ] virtiofs support (future)
-  - [ ] Structured output protocol parsing
+> The items below are planned for future phases and are not yet implemented.
 
-- [ ] **Monitoring**:
-  - [ ] VM metrics collection
-  - [ ] Boot time tracking
-  - [ ] Resource usage reporting
-
-- [ ] **Testing**:
-  - [ ] Unit tests for all interfaces
-  - [ ] Integration tests with real Cloud Hypervisor
-  - [ ] CLI command parsing tests
-  - [ ] End-to-end workflow tests
+- **I/O Enhancements**: vsock support, structured output protocol parsing.
+- **Monitoring**: VM metrics collection, boot time tracking, resource usage reporting.
+- **Testing**: Unit tests for all interfaces, integration tests with real Cloud Hypervisor, CLI command parsing tests, end-to-end workflow tests.
 
 ---
 

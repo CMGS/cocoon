@@ -8,7 +8,10 @@
 //   - Pin pattern: AddReference immediately (short lock hold), then slow I/O outside lock.
 package storage
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // OCIGCGracePeriod is the defense-in-depth grace period for OCI GC operations.
 // OCI layouts and blobs younger than this are skipped to prevent races with
@@ -62,14 +65,14 @@ type COWManager interface {
 	// CreateOverlay creates a thin COW overlay backed by the base image
 	// identified by baseKey.  Returns the absolute overlay path
 	// (/var/lib/cocoon/vms/{vmID}/overlay.qcow2).
-	CreateOverlay(baseKey, vmID, diskSize string) (overlayPath string, err error)
+	CreateOverlay(ctx context.Context, baseKey, vmID, diskSize string) (overlayPath string, err error)
 
 	// RemoveOverlay removes the VM overlay disk file for vmID.
 	// It does not remove the VM directory or config/metadata files.
 	RemoveOverlay(vmID string) error
 
 	// GetOverlayInfo returns metadata about an existing overlay.
-	GetOverlayInfo(vmID string) (*OverlayInfo, error)
+	GetOverlayInfo(ctx context.Context, vmID string) (*OverlayInfo, error)
 }
 
 // GarbageCollector reclaims unreferenced storage resources.

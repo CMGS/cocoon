@@ -1,6 +1,7 @@
 package oci
 
 import (
+	"archive/tar"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -9,8 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"archive/tar"
 )
 
 // buildTestOCILayout creates a minimal OCI layout directory with the given

@@ -135,7 +135,7 @@ func createTestVM(t *testing.T, td *testDeps, opts *vm.CreateOptions) *types.VMC
 	td.imgMgr.VerifyBootabilityFunc = func(_ context.Context, _ string) (*image.BootCheckResult, error) {
 		return &image.BootCheckResult{Bootable: true}, nil
 	}
-	td.cowMgr.CreateOverlayFunc = func(baseKey, vmID, diskSize string) (string, error) {
+	td.cowMgr.CreateOverlayFunc = func(_ context.Context, baseKey, vmID, diskSize string) (string, error) {
 		return filepath.Join(td.cfg.RootDir, "vms", vmID, "overlay.qcow2"), nil
 	}
 
@@ -319,7 +319,7 @@ func TestCreate_SkipVerify(t *testing.T) {
 		verifyCallCount++
 		return &image.BootCheckResult{Bootable: false, Errors: []string{"boom"}}, nil
 	}
-	td.cowMgr.CreateOverlayFunc = func(baseKey, vmID, diskSize string) (string, error) {
+	td.cowMgr.CreateOverlayFunc = func(_ context.Context, baseKey, vmID, diskSize string) (string, error) {
 		return filepath.Join(td.cfg.RootDir, "vms", vmID, "overlay.qcow2"), nil
 	}
 
@@ -360,7 +360,7 @@ func TestCreate_DefaultSkipVerifyOnCacheHit(t *testing.T) {
 		verifyCallCount++
 		return &image.BootCheckResult{Bootable: true}, nil
 	}
-	td.cowMgr.CreateOverlayFunc = func(baseKey, vmID, diskSize string) (string, error) {
+	td.cowMgr.CreateOverlayFunc = func(_ context.Context, baseKey, vmID, diskSize string) (string, error) {
 		return filepath.Join(td.cfg.RootDir, "vms", vmID, "overlay.qcow2"), nil
 	}
 
@@ -397,7 +397,7 @@ func TestCreate_CacheHitWithoutVerifiedStateRunsVerify(t *testing.T) {
 		verifyCallCount++
 		return &image.BootCheckResult{Bootable: true}, nil
 	}
-	td.cowMgr.CreateOverlayFunc = func(baseKey, vmID, diskSize string) (string, error) {
+	td.cowMgr.CreateOverlayFunc = func(_ context.Context, baseKey, vmID, diskSize string) (string, error) {
 		return filepath.Join(td.cfg.RootDir, "vms", vmID, "overlay.qcow2"), nil
 	}
 
@@ -431,7 +431,7 @@ func TestCreate_DefaultVerifyOnCacheMiss(t *testing.T) {
 		verifyCallCount++
 		return &image.BootCheckResult{Bootable: true}, nil
 	}
-	td.cowMgr.CreateOverlayFunc = func(baseKey, vmID, diskSize string) (string, error) {
+	td.cowMgr.CreateOverlayFunc = func(_ context.Context, baseKey, vmID, diskSize string) (string, error) {
 		return filepath.Join(td.cfg.RootDir, "vms", vmID, "overlay.qcow2"), nil
 	}
 

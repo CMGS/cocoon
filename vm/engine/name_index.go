@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/CMGS/cocoon/config"
@@ -112,6 +113,9 @@ func RebuildNameIndex(cfg *config.CocoonConfig) (vm.NameIndex, error) {
 			continue
 		}
 		if vmCfg.Name != "" {
+			if existing, ok := index[vmCfg.Name]; ok {
+				log.Printf("WARNING: duplicate VM name %q: vm_id=%s overwritten by vm_id=%s", vmCfg.Name, existing, vmID)
+			}
 			index[vmCfg.Name] = vmID
 		}
 	}

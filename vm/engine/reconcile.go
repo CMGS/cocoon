@@ -798,7 +798,9 @@ func (m *manager) applyFixZombieProcess(inc *vm.Inconsistency, force bool) error
 		return nil
 	}
 	if utils.ValidateProcess(meta.ProcessPID, meta.HypervisorProcessName(m.cfg.CHBinary)) {
-		_ = syscall.Kill(meta.ProcessPID, syscall.SIGKILL)
+		if killErr := syscall.Kill(meta.ProcessPID, syscall.SIGKILL); killErr != nil {
+			log.Printf("warning: kill PID %d during reconcile: %v", meta.ProcessPID, killErr)
+		}
 	}
 	meta.ProcessPID = 0
 	return m.SaveMetadata(meta)
@@ -828,9 +830,13 @@ func (m *manager) applyFixOCIRuntimeMismatch(inc *vm.Inconsistency, force bool) 
 	}
 
 	if state == types.VMStateRunning {
-		_ = m.hyper.ForceKill(inc.VMID)
+		if killErr := m.hyper.ForceKill(inc.VMID); killErr != nil {
+			log.Printf("warning: force kill %s during OCI runtime mismatch reconcile: %v", inc.VMID, killErr)
+		}
 		if meta.ProcessPID > 0 && utils.ValidateProcess(meta.ProcessPID, meta.HypervisorProcessName(m.cfg.CHBinary)) {
-			_ = syscall.Kill(meta.ProcessPID, syscall.SIGKILL)
+			if killErr := syscall.Kill(meta.ProcessPID, syscall.SIGKILL); killErr != nil {
+				log.Printf("warning: kill PID %d during OCI runtime mismatch reconcile: %v", meta.ProcessPID, killErr)
+			}
 		}
 	}
 
@@ -939,8 +945,12 @@ func (m *manager) applyFixMetadataCorrupt(_ *vm.Inconsistency, _ bool) error {
 }
 
 func (m *manager) cleanupDeletedVMArtifacts(vmID string) error {
-	_ = os.RemoveAll(m.cfg.VMPersistDir(vmID))
-	_ = os.RemoveAll(m.cfg.VMRuntimeDir(vmID))
+	if err := os.RemoveAll(m.cfg.VMPersistDir(vmID)); err != nil {
+		log.Printf("warning: remove VM persist dir for %s during reconcile: %v", vmID, err)
+	}
+	if err := os.RemoveAll(m.cfg.VMRuntimeDir(vmID)); err != nil {
+		log.Printf("warning: remove VM runtime dir for %s during reconcile: %v", vmID, err)
+	}
 	_ = os.Remove(m.cfg.VMSerialLogPath(vmID))
 	_ = os.Remove(m.cfg.VMCHLogPath(vmID))
 	_ = os.Remove(m.cfg.VMSwtpmLogPath(vmID))
@@ -955,12 +965,16 @@ func (m *manager) fixOrphanedOverlay(vmID string) error {
 	}
 
 	// Permanently delete the VM directory and all associated files.
-	_ = os.RemoveAll(m.cfg.VMPersistDir(vmID))
-	_ = os.RemoveAll(m.cfg.VMRuntimeDir(vmID))
-	_ = os.Remove(m.cfg.VMSerialLogPath(vmID))
-	_ = os.Remove(m.cfg.VMCHLogPath(vmID))
-	_ = os.Remove(m.cfg.VMSwtpmLogPath(vmID))
-	_ = os.Remove(m.cfg.VMVirtiofsdLogPath(vmID))
+	if err := os.RemoveAll(m.cfg.VMPersistDir(vmID)); err != nil {
+		log.Printf("warning: remove orphaned VM persist dir for %s: %v", vmID, err)
+	}
+	if err := os.RemoveAll(m.cfg.VMRuntimeDir(vmID)); err != nil {
+		log.Printf("warning: remove orphaned VM runtime dir for %s: %v", vmID, err)
+	}
+	_ = os.Remove(m.cfg.VMSerialLogPath(vmID))    // best-effort log cleanup
+	_ = os.Remove(m.cfg.VMCHLogPath(vmID))        // best-effort log cleanup
+	_ = os.Remove(m.cfg.VMSwtpmLogPath(vmID))     // best-effort log cleanup
+	_ = os.Remove(m.cfg.VMVirtiofsdLogPath(vmID)) // best-effort log cleanup
 	return nil
 }
 
@@ -986,7 +1000,9 @@ func (m *manager) fixStateMismatch(inc *vm.Inconsistency, force bool) error {
 		if force && meta.ProcessPID > 0 && utils.IsProcessAlive(meta.ProcessPID) {
 			// Only kill if it is actually the hypervisor.
 			if utils.ValidateProcess(meta.ProcessPID, meta.HypervisorProcessName(m.cfg.CHBinary)) {
-				_ = syscall.Kill(meta.ProcessPID, syscall.SIGKILL)
+				if killErr := syscall.Kill(meta.ProcessPID, syscall.SIGKILL); killErr != nil {
+					log.Printf("warning: kill PID %d during force reconcile: %v", meta.ProcessPID, killErr)
+				}
 			}
 		}
 		meta.ProcessPID = 0

@@ -714,22 +714,13 @@ func ValidateBootability(rootfs string) error {
     - [x] Failure patterns (kernel panic, missing init)
   - [x] Timeout handling with detailed error reporting
 
-### Phase 2: Advanced Features (P1)
+### Future Work (Phase 2)
 
-- [ ] **cocoon-ready.service Boot Marker**:
-  - [ ] Document cocoon-ready.service for users to bake into images
-  - [ ] Update WaitForBootCompletion to check for COCOON_READY pattern
-  - [ ] Add priority-based pattern matching (cocoon-ready → systemd → fallback)
-  - [ ] Test across Ubuntu, Fedora, Debian distributions
-  - [ ] Maintain backward compatibility with pattern-only detection
+> The items below are planned for future phases and are not yet implemented.
 
-- [ ] **Architecture Support**:
-  - [ ] aarch64 UEFI firmware (AAVMF)
-  - [ ] ARM64-specific GRUB config
-
-- [ ] **Alternative I/O**:
-  - [ ] vsock for task output streaming
-  - [ ] virtiofs for large file access
+- **cocoon-ready.service Boot Marker**: Document cocoon-ready.service for users to bake into images; update WaitForBootCompletion to check for COCOON_READY pattern; add priority-based pattern matching; test across distributions; maintain backward compatibility.
+- **Architecture Support**: aarch64 UEFI firmware (AAVMF), ARM64-specific GRUB config.
+- **Alternative I/O**: vsock for task output streaming, virtiofs for large file access.
 
 ---
 

@@ -6,38 +6,38 @@ This directory contains design documents, specifications, and RFCs for Cocoon. T
 
 ### Phase 1: Core VM Management (docs/00-10)
 
-| Doc | Title | Status | Description |
-|-----|-------|--------|-------------|
-| [00-overview.md](./00-overview.md) | Project Overview | Implemented | High-level architecture, supported image contract, and deployment strategy |
-| [01-boot-contract.md](./01-boot-contract.md) | Boot Contract Specification | Implemented | Defines boot modes (UEFI/direct kernel boot), guest initialization, I/O mechanisms, and image requirements |
-| [02-installation.md](./02-installation.md) | Installation | Implemented | Cloud Hypervisor installation, KVM setup, and host prerequisites |
-| [03-hypervisor-integration.md](./03-hypervisor-integration.md) | Cloud Hypervisor Integration | Implemented | Process model, socket management, HTTP API integration, and crash recovery |
-| [04-oci-conversion.md](./04-oci-conversion.md) | OCI to qcow2 Conversion | Implemented | Pipeline for converting OCI images into bootable qcow2 disk images |
-| [05-storage-management.md](./05-storage-management.md) | Storage Management | Implemented | Directory layout, copy-on-write optimization, reference counting, and garbage collection |
-| [06-concurrency.md](./06-concurrency.md) | Concurrency Design | Implemented | Lock hierarchy, atomic operations, crash consistency, and deadlock prevention |
-| [07-vm-lifecycle.md](./07-vm-lifecycle.md) | VM Lifecycle Management | Implemented | State machine, identifier rules, metadata schema, idempotency, and reconciliation |
-| [08-dependencies.md](./08-dependencies.md) | Dependencies and Requirements | Implemented | External tools, version requirements, installation instructions, and permissions |
-| [09-cli-design.md](./09-cli-design.md) | CLI Design and Commands | Implemented | Command structure, flags, output formats, and supported image types |
-| [10-implementation-roadmap.md](./10-implementation-roadmap.md) | Implementation Roadmap | Historical | Phase 1 development plan, critical path, testing strategy, and validation milestones |
+| Doc | Title | Status | Completeness | Description |
+|-----|-------|--------|--------------|-------------|
+| [00-overview.md](./00-overview.md) | Project Overview | Implemented | Core | High-level architecture, supported image contract, and deployment strategy |
+| [01-boot-contract.md](./01-boot-contract.md) | Boot Contract Specification | Implemented | Core | Defines boot modes (UEFI/direct kernel boot), guest initialization, I/O mechanisms, and image requirements |
+| [02-installation.md](./02-installation.md) | Installation | Implemented | Core | Cloud Hypervisor installation, KVM setup, and host prerequisites |
+| [03-hypervisor-integration.md](./03-hypervisor-integration.md) | Cloud Hypervisor Integration | Implemented | Core | Process model, socket management, HTTP API integration, and crash recovery |
+| [04-oci-conversion.md](./04-oci-conversion.md) | OCI to qcow2 Conversion | Implemented | Core | Pipeline for converting OCI images into bootable qcow2 disk images |
+| [05-storage-management.md](./05-storage-management.md) | Storage Management | Implemented | Core | Directory layout, copy-on-write optimization, reference counting, and garbage collection |
+| [06-concurrency.md](./06-concurrency.md) | Concurrency Design | Implemented | Core | Lock hierarchy, atomic operations, crash consistency, and deadlock prevention |
+| [07-vm-lifecycle.md](./07-vm-lifecycle.md) | VM Lifecycle Management | Implemented | Core | State machine, identifier rules, metadata schema, idempotency, and reconciliation |
+| [08-dependencies.md](./08-dependencies.md) | Dependencies and Requirements | Implemented | Core | External tools, version requirements, installation instructions, and permissions |
+| [09-cli-design.md](./09-cli-design.md) | CLI Design and Commands | Implemented | Core | Command structure, flags, output formats, and supported image types |
+| [10-implementation-roadmap.md](./10-implementation-roadmap.md) | Implementation Roadmap | Historical | Core | Phase 1 development plan, critical path, testing strategy, and validation milestones |
 
 ### Phase 2: Advanced Features (docs/04.1, 11-13, 15-17)
 
-| Doc | Title | Status | Description |
-|-----|-------|--------|-------------|
-| [04.1-oci-vm-images.md](./04.1-oci-vm-images.md) | OCI VM Image Format | Implemented | Build/push/login/tag/inspect/verify/list/remove/pull and OCI direct runtime (`create`/`run` auto-detect + registry auto-pull) are implemented |
-| [11-bootable-oci-build.md](./11-bootable-oci-build.md) | Building Bootable OCI Images | Planned | Guidance on building custom OCI images that satisfy the Boot Contract |
-| [12-console.md](./12-console.md) | VM Console | Implemented | Interactive bidirectional console via PTY, escape sequence handling, and terminal raw mode |
-| [13-pause-resume.md](./13-pause-resume.md) | VM Pause and Resume | Planned | PAUSED state machine extension, vCPU freeze/unfreeze via CH API, and reconciliation |
-| [15-warm-start.md](./15-warm-start.md) | VM Warm Start | Planned | Checkpoint/restore for sub-second VM creation, golden checkpoint workflow, and snapshot management |
-| [16-networking.md](./16-networking.md) | CNI Networking | Planned | CNI plugin integration, bridge networking, control plane for VM network attachment |
-| [17-volume-passthrough.md](./17-volume-passthrough.md) | Volume Passthrough | Planned | Host-to-guest directory sharing via virtio-fs, virtiofsd lifecycle management |
-| [18-garbage-collection.md](./18-garbage-collection.md) | Garbage Collection | Implemented | GC phases, permanent deletion, OCI tag/manifest/blob cleanup, locking |
+| Doc | Title | Status | Completeness | Description |
+|-----|-------|--------|--------------|-------------|
+| [04.1-oci-vm-images.md](./04.1-oci-vm-images.md) | OCI VM Image Format | Implemented | Core | Build/push/login/tag/inspect/verify/list/remove/pull and OCI direct runtime (`create`/`run` auto-detect + registry auto-pull) are implemented |
+| [11-bootable-oci-build.md](./11-bootable-oci-build.md) | Building Bootable OCI Images | Planned | Planned | Guidance on building custom OCI images that satisfy the Boot Contract |
+| [12-console.md](./12-console.md) | VM Console | Implemented | Core | Interactive bidirectional console via PTY, escape sequence handling, and terminal raw mode |
+| [13-pause-resume.md](./13-pause-resume.md) | VM Pause and Resume | Planned | Planned | PAUSED state machine extension, vCPU freeze/unfreeze via CH API, and reconciliation |
+| [15-warm-start.md](./15-warm-start.md) | VM Warm Start | Planned | Planned | Checkpoint/restore for sub-second VM creation, golden checkpoint workflow, and snapshot management |
+| [16-networking.md](./16-networking.md) | CNI Networking | Planned | Planned | CNI plugin integration, bridge networking, control plane for VM network attachment |
+| [17-volume-passthrough.md](./17-volume-passthrough.md) | Volume Passthrough | Planned | Planned | Host-to-guest directory sharing via virtio-fs, virtiofsd lifecycle management |
+| [18-garbage-collection.md](./18-garbage-collection.md) | Garbage Collection | Implemented | Core | GC phases, permanent deletion, OCI tag/manifest/blob cleanup, locking |
 
 ### Phase 3: Hardware and Ecosystem (docs/14)
 
-| Doc | Title | Status | Description |
-|-----|-------|--------|-------------|
-| [14-device-passthrough.md](./14-device-passthrough.md) | PCI Device Passthrough | Planned | VFIO bind/unbind automation, IOMMU group validation, GPU convenience, and hotplug support |
+| Doc | Title | Status | Completeness | Description |
+|-----|-------|--------|--------------|-------------|
+| [14-device-passthrough.md](./14-device-passthrough.md) | PCI Device Passthrough | Planned | Planned | VFIO bind/unbind automation, IOMMU group validation, GPU convenience, and hotplug support |
 
 ## Future Feature Requests
 

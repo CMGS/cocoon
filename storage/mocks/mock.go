@@ -3,6 +3,7 @@
 package mocks
 
 import (
+	"context"
 	"time"
 
 	"github.com/CMGS/cocoon/storage"
@@ -70,9 +71,9 @@ func (m *MockReferenceCounter) GetUnreferencedImages() ([]string, error) {
 // If a Func field is nil, the method returns zero values.
 type MockCOWManager struct {
 	CreateBaseImageFunc func(srcPath, baseKey string) error
-	CreateOverlayFunc   func(baseKey, vmID, diskSize string) (string, error)
+	CreateOverlayFunc   func(ctx context.Context, baseKey, vmID, diskSize string) (string, error)
 	RemoveOverlayFunc   func(vmID string) error
-	GetOverlayInfoFunc  func(vmID string) (*storage.OverlayInfo, error)
+	GetOverlayInfoFunc  func(ctx context.Context, vmID string) (*storage.OverlayInfo, error)
 }
 
 // Compile-time check that MockCOWManager implements storage.COWManager.
@@ -85,9 +86,9 @@ func (m *MockCOWManager) CreateBaseImage(srcPath, baseKey string) error {
 	return nil
 }
 
-func (m *MockCOWManager) CreateOverlay(baseKey, vmID, diskSize string) (string, error) {
+func (m *MockCOWManager) CreateOverlay(ctx context.Context, baseKey, vmID, diskSize string) (string, error) {
 	if m.CreateOverlayFunc != nil {
-		return m.CreateOverlayFunc(baseKey, vmID, diskSize)
+		return m.CreateOverlayFunc(ctx, baseKey, vmID, diskSize)
 	}
 	return "", nil
 }
@@ -99,9 +100,9 @@ func (m *MockCOWManager) RemoveOverlay(vmID string) error {
 	return nil
 }
 
-func (m *MockCOWManager) GetOverlayInfo(vmID string) (*storage.OverlayInfo, error) {
+func (m *MockCOWManager) GetOverlayInfo(ctx context.Context, vmID string) (*storage.OverlayInfo, error) {
 	if m.GetOverlayInfoFunc != nil {
-		return m.GetOverlayInfoFunc(vmID)
+		return m.GetOverlayInfoFunc(ctx, vmID)
 	}
 	return nil, nil
 }
