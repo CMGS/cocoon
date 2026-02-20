@@ -57,7 +57,8 @@ func MaterializeRootfs(ctx context.Context, layoutPath, targetDir string, info *
 
 // isCompressedLayer returns true if the media type indicates gzip compression.
 func isCompressedLayer(mediaType string) bool {
-	return strings.Contains(mediaType, "+gzip")
+	normalized := strings.ToLower(strings.TrimSpace(mediaType))
+	return strings.Contains(normalized, "+gzip") || strings.HasSuffix(normalized, ".gzip")
 }
 
 // extractCompressedLayerToDir decompresses a gzip-compressed tar layer and

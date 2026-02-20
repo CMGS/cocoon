@@ -10,8 +10,8 @@
 This document specifies the pipeline for converting OCI container images into bootable qcow2 disk images for Cloud Hypervisor VMs. The conversion process must produce images that satisfy the [Boot Contract](01-boot-contract.md) while maintaining efficiency through caching and deduplication.
 
 **Key Requirements**:
-1. Pull OCI images from registries using Buildah (with `--root` flag for custom storage)
-2. Extract container rootfs to disk via Buildah mount
+1. Pull OCI images from registries using go-containerregistry
+2. Materialize container rootfs from OCI layers (whiteout-aware flattening)
 3. Convert rootfs to qcow2 format with proper partitioning (guestfish + tar-in)
 4. Validate GRUB config presence post-conversion (fail if missing)
 5. Cache images based on content checksums (atomic rename into cache)
@@ -1225,17 +1225,17 @@ The following pipeline stages MUST pass for every PR:
 
 **Ubuntu/Debian**:
 ```bash
-apt-get install buildah qemu-utils libguestfs-tools skopeo
+apt-get install qemu-utils libguestfs-tools
 ```
 
 **Fedora/RHEL**:
 ```bash
-dnf install buildah qemu-img guestfs-tools skopeo
+dnf install qemu-img guestfs-tools
 ```
 
 **Arch Linux**:
 ```bash
-pacman -S buildah qemu libguestfs skopeo
+pacman -S qemu libguestfs
 ```
 
 ---
