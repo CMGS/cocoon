@@ -363,24 +363,24 @@ func (c *CocoonConfig) OCIRuntimeCacheDir() string {
 	return filepath.Join(c.RootDir, "cache", "oci", "runtime")
 }
 
+func (c *CocoonConfig) OCIRuntimeLayersDir() string {
+	return filepath.Join(c.OCIRuntimeCacheDir(), "layers")
+}
+
+func (c *CocoonConfig) OCIRuntimeLayerDir(hexDigest string) string {
+	return filepath.Join(c.OCIRuntimeLayersDir(), hexDigest)
+}
+
+func (c *CocoonConfig) OCIRuntimeEntriesDir() string {
+	return filepath.Join(c.OCIRuntimeCacheDir(), "entries")
+}
+
 func (c *CocoonConfig) OCIRuntimeEntryDir(runtimeKey string) string {
-	return filepath.Join(c.OCIRuntimeCacheDir(), runtimeKey)
+	return filepath.Join(c.OCIRuntimeEntriesDir(), runtimeKey)
 }
 
-func (c *CocoonConfig) OCIRuntimeRootfsDir(runtimeKey string) string {
-	return filepath.Join(c.OCIRuntimeEntryDir(runtimeKey), "rootfs")
-}
-
-func (c *CocoonConfig) OCIRuntimeKernelDir(runtimeKey string) string {
-	return filepath.Join(c.OCIRuntimeEntryDir(runtimeKey), "kernel")
-}
-
-func (c *CocoonConfig) OCIRuntimeKernelPath(runtimeKey string) string {
-	return filepath.Join(c.OCIRuntimeKernelDir(runtimeKey), "vmlinuz")
-}
-
-func (c *CocoonConfig) OCIRuntimeInitrdPath(runtimeKey string) string {
-	return filepath.Join(c.OCIRuntimeKernelDir(runtimeKey), "initrd.img")
+func (c *CocoonConfig) OCIRuntimeEntryMetaPath(runtimeKey string) string {
+	return filepath.Join(c.OCIRuntimeEntryDir(runtimeKey), "meta.json")
 }
 
 func (c *CocoonConfig) OCILayerRefsFile() string {
@@ -420,7 +420,8 @@ func (c *CocoonConfig) EnsureDirs() error {
 		c.ConversionLockDir(),
 		c.OCIBlobDir(),
 		c.OCILayoutDir(),
-		c.OCIRuntimeCacheDir(),
+		c.OCIRuntimeLayersDir(),
+		c.OCIRuntimeEntriesDir(),
 		c.VMDir(),
 		c.TempDir(),
 		c.FirmwareDir(),

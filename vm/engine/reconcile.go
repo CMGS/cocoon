@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -290,14 +291,6 @@ func (m *manager) detectOCIRuntimePinIssues(vmConfigs map[string]*types.VMConfig
 }
 
 func (m *manager) detectOrphanedOCIRuntimeCacheIssues(vmConfigs map[string]*types.VMConfig, runtimeRefs oci.RuntimeRefsIndex) ([]vm.Inconsistency, error) {
-	entries, err := os.ReadDir(m.cfg.OCIRuntimeCacheDir())
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-
 	pinned := make(map[string]struct{}, len(runtimeRefs.Runtimes))
 	for runtimeKey, entry := range runtimeRefs.Runtimes {
 		for _, vmID := range entry.Refs {
@@ -313,21 +306,58 @@ func (m *manager) detectOrphanedOCIRuntimeCacheIssues(vmConfigs map[string]*type
 	}
 
 	issues := make([]vm.Inconsistency, 0)
+
+	// Check for orphaned entry dirs.
+	entries, err := os.ReadDir(m.cfg.OCIRuntimeEntriesDir())
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	referencedLayers := make(map[string]struct{})
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
 		runtimeKey := entry.Name()
-		if _, ok := pinned[runtimeKey]; ok {
+		if _, ok := pinned[runtimeKey]; !ok {
+			issues = append(issues, vm.Inconsistency{
+				Type:     vm.InconsistencyOrphanedOCIRuntime,
+				Severity: vm.SeverityWarning,
+				Details:  fmt.Sprintf("OCI runtime entry dir %s has no active pins", m.cfg.OCIRuntimeEntryDir(runtimeKey)),
+				BaseKey:  runtimeKey,
+			})
 			continue
 		}
-		issues = append(issues, vm.Inconsistency{
-			Type:     vm.InconsistencyOrphanedOCIRuntime,
-			Severity: vm.SeverityWarning,
-			Details:  fmt.Sprintf("OCI runtime cache dir %s has no active pins", m.cfg.OCIRuntimeEntryDir(runtimeKey)),
-			BaseKey:  runtimeKey,
-		})
+		// Collect referenced layers from pinned entries for layer orphan check.
+		metaPath := m.cfg.OCIRuntimeEntryMetaPath(runtimeKey)
+		meta, readErr := oci.ReadEntryMeta(metaPath)
+		if readErr != nil {
+			continue
+		}
+		referencedLayers[meta.KernelLayerDigest] = struct{}{}
+		for _, digest := range meta.RootfsLayerDigests {
+			referencedLayers[digest] = struct{}{}
+		}
 	}
+
+	// Check for orphaned layer dirs.
+	layers, err := os.ReadDir(m.cfg.OCIRuntimeLayersDir())
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	for _, layer := range layers {
+		if !layer.IsDir() {
+			continue
+		}
+		hexDigest := layer.Name()
+		if _, ok := referencedLayers[hexDigest]; !ok {
+			issues = append(issues, vm.Inconsistency{
+				Type:     vm.InconsistencyOrphanedOCIRuntime,
+				Severity: vm.SeverityWarning,
+				Details:  fmt.Sprintf("OCI runtime layer dir %s is not referenced by any entry", m.cfg.OCIRuntimeLayerDir(hexDigest)),
+			})
+		}
+	}
+
 	return issues, nil
 }
 
@@ -565,22 +595,7 @@ func (m *manager) detectOCIRuntimeIssues(vmID string, vmCfg *types.VMConfig, met
 
 	issues := make([]vm.Inconsistency, 0)
 
-	rootfsLowerDir := strings.TrimSpace(vmCfg.BaseImagePath)
-	if rootfsLowerDir == "" {
-		issues = append(issues, vm.Inconsistency{
-			VMID:     vmID,
-			Type:     vm.InconsistencyOCIRuntimeCache,
-			Severity: vm.SeverityCritical,
-			Details:  "OCI runtime rootfs cache path is empty in config.json",
-		})
-	} else if _, err := os.Stat(rootfsLowerDir); os.IsNotExist(err) {
-		issues = append(issues, vm.Inconsistency{
-			VMID:     vmID,
-			Type:     vm.InconsistencyOCIRuntimeCache,
-			Severity: vm.SeverityCritical,
-			Details:  fmt.Sprintf("OCI runtime rootfs cache missing at %s", rootfsLowerDir),
-		})
-	}
+	issues = append(issues, m.checkOCIRuntimeEntryAndLayers(vmID, vmCfg)...)
 
 	overlayMounted, overlayErr := m.overlayMgr.IsMounted(vmID)
 	if overlayErr != nil {
@@ -641,6 +656,80 @@ func (m *manager) detectOCIRuntimeIssues(vmID string, vmCfg *types.VMConfig, met
 				Type:     vm.InconsistencyOCIRuntimeVirtio,
 				Severity: vm.SeverityWarning,
 				Details:  fmt.Sprintf("%s OCI VM should not keep virtiofsd runtime (pid=%d alive=%v)", state, meta.VirtiofsdPID, virtioAlive),
+			})
+		}
+	}
+
+	return issues
+}
+
+func (m *manager) checkOCIRuntimeEntryAndLayers(vmID string, vmCfg *types.VMConfig) []vm.Inconsistency {
+	entryDir := strings.TrimSpace(vmCfg.BaseImagePath)
+	if entryDir == "" {
+		return []vm.Inconsistency{{
+			VMID:     vmID,
+			Type:     vm.InconsistencyOCIRuntimeCache,
+			Severity: vm.SeverityCritical,
+			Details:  "OCI runtime entry path is empty in config.json",
+		}}
+	}
+
+	if _, err := os.Stat(entryDir); os.IsNotExist(err) {
+		return []vm.Inconsistency{{
+			VMID:     vmID,
+			Type:     vm.InconsistencyOCIRuntimeCache,
+			Severity: vm.SeverityCritical,
+			Details:  fmt.Sprintf("OCI runtime entry dir missing at %s", entryDir),
+		}}
+	}
+
+	metaPath := filepath.Join(entryDir, "meta.json")
+	entryMeta, metaErr := oci.ReadEntryMeta(metaPath)
+	if metaErr != nil {
+		return []vm.Inconsistency{{
+			VMID:     vmID,
+			Type:     vm.InconsistencyOCIRuntimeCache,
+			Severity: vm.SeverityCritical,
+			Details:  fmt.Sprintf("OCI runtime entry meta.json invalid: %v", metaErr),
+		}}
+	}
+
+	var issues []vm.Inconsistency
+
+	kernelHex, hexErr := oci.ParseSHA256Digest("sha256:" + entryMeta.KernelLayerDigest)
+	if hexErr != nil {
+		issues = append(issues, vm.Inconsistency{
+			VMID:     vmID,
+			Type:     vm.InconsistencyOCIRuntimeCache,
+			Severity: vm.SeverityCritical,
+			Details:  fmt.Sprintf("OCI runtime entry meta has invalid kernel digest: %v", hexErr),
+		})
+	} else if _, statErr := os.Stat(filepath.Join(m.cfg.OCIRuntimeLayerDir(kernelHex), "kernel")); os.IsNotExist(statErr) {
+		issues = append(issues, vm.Inconsistency{
+			VMID:     vmID,
+			Type:     vm.InconsistencyOCIRuntimeCache,
+			Severity: vm.SeverityCritical,
+			Details:  fmt.Sprintf("OCI runtime kernel layer cache missing: %s", kernelHex),
+		})
+	}
+
+	for _, digest := range entryMeta.RootfsLayerDigests {
+		hex, hErr := oci.ParseSHA256Digest("sha256:" + digest)
+		if hErr != nil {
+			issues = append(issues, vm.Inconsistency{
+				VMID:     vmID,
+				Type:     vm.InconsistencyOCIRuntimeCache,
+				Severity: vm.SeverityCritical,
+				Details:  fmt.Sprintf("OCI runtime entry meta has invalid rootfs digest: %v", hErr),
+			})
+			continue
+		}
+		if _, statErr := os.Stat(filepath.Join(m.cfg.OCIRuntimeLayerDir(hex), "rootfs")); os.IsNotExist(statErr) {
+			issues = append(issues, vm.Inconsistency{
+				VMID:     vmID,
+				Type:     vm.InconsistencyOCIRuntimeCache,
+				Severity: vm.SeverityCritical,
+				Details:  fmt.Sprintf("OCI runtime rootfs layer cache missing: %s", hex),
 			})
 		}
 	}

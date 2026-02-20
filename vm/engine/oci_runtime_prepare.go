@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -25,15 +24,15 @@ const (
 )
 
 type ociRuntimeSpec struct {
-	LocalTag       string
-	ManifestDigest string
-	RuntimeKey     string
-	Arch           string
-	RootfsLowerDir string
-	KernelPath     string
-	InitramfsPath  string
-	Cmdline        string
-	VirtioFSTag    string
+	LocalTag        string
+	ManifestDigest  string
+	RuntimeKey      string
+	Arch            string
+	RootfsLowerDirs []string
+	KernelPath      string
+	InitramfsPath   string
+	Cmdline         string
+	VirtioFSTag     string
 }
 
 func prepareLocalOCIRuntime(ctx context.Context, cfg *config.CocoonConfig, localTag string) (*ociRuntimeSpec, error) {
@@ -71,37 +70,57 @@ func prepareLocalOCIRuntime(ctx context.Context, cfg *config.CocoonConfig, local
 
 	lockPath := filepath.Join(cfg.ConversionLockDir(), "oci-runtime-"+runtimeKey+".lock")
 	runtimeLock := flock.New(lockPath)
-	if err := runtimeLock.Lock(); err != nil {
-		return nil, fmt.Errorf("acquire OCI runtime lock for %s: %w", runtimeKey, err)
+	if lockErr := runtimeLock.Lock(); lockErr != nil {
+		return nil, fmt.Errorf("acquire OCI runtime lock for %s: %w", runtimeKey, lockErr)
 	}
 	defer runtimeLock.Unlock() //nolint:errcheck
 
-	if err := materializeOCIRuntimeCache(ctx, cfg, runtimeKey, entry.LayoutPath, layoutInfo); err != nil {
-		return nil, err
+	if matErr := materializeOCIRuntimeCache(ctx, cfg, runtimeKey, entry.LayoutPath, layoutInfo); matErr != nil {
+		return nil, matErr
 	}
 
-	virtiofsTag := defaultOCIRuntimeVirtioFSTag
-	cmdline := normalizeVirtiofsKernelCmdline("", virtiofsTag)
-	arch := runtime.GOARCH
-	if layoutInfo.Config != nil {
-		if strings.TrimSpace(layoutInfo.Config.KernelCmdline) != "" {
-			cmdline = normalizeVirtiofsKernelCmdline(layoutInfo.Config.KernelCmdline, virtiofsTag)
-		}
-		if strings.TrimSpace(layoutInfo.Config.Arch) != "" {
-			arch = strings.TrimSpace(layoutInfo.Config.Arch)
-		}
+	// Read the entry metadata written by materializeOCIRuntimeCache to
+	// derive lowerdir paths, kernel paths, and runtime config.
+	entryMeta, err := oci.ReadEntryMeta(cfg.OCIRuntimeEntryMetaPath(runtimeKey))
+	if err != nil {
+		return nil, fmt.Errorf("read OCI runtime entry meta for %s: %w", runtimeKey, err)
 	}
+
+	// Build rootfs lowerdir list: OverlayFS lowerdir is leftmost=highest
+	// priority (top layer). OCI layers are stored base-to-top in meta, so
+	// reverse for lowerdir order.
+	rootfsLowerDirs := make([]string, len(entryMeta.RootfsLayerDigests))
+	for i, digest := range entryMeta.RootfsLayerDigests {
+		hex, hexErr := oci.ParseSHA256Digest("sha256:" + digest)
+		if hexErr != nil {
+			return nil, fmt.Errorf("invalid rootfs layer digest in entry meta: %w", hexErr)
+		}
+		rootfsLowerDirs[len(rootfsLowerDirs)-1-i] = filepath.Join(cfg.OCIRuntimeLayerDir(hex), "rootfs")
+	}
+
+	kernelHex, err := oci.ParseSHA256Digest("sha256:" + entryMeta.KernelLayerDigest)
+	if err != nil {
+		return nil, fmt.Errorf("invalid kernel layer digest in entry meta: %w", err)
+	}
+	kernelLayerDir := filepath.Join(cfg.OCIRuntimeLayerDir(kernelHex), "kernel")
+
+	virtiofsTag := entryMeta.VirtioFSTag
+	if strings.TrimSpace(virtiofsTag) == "" {
+		virtiofsTag = defaultOCIRuntimeVirtioFSTag
+	}
+
+	cmdline := normalizeVirtiofsKernelCmdline(entryMeta.KernelCmdline, virtiofsTag)
 
 	return &ociRuntimeSpec{
-		LocalTag:       localTag,
-		ManifestDigest: layoutInfo.ManifestDigest,
-		RuntimeKey:     runtimeKey,
-		Arch:           arch,
-		RootfsLowerDir: cfg.OCIRuntimeRootfsDir(runtimeKey),
-		KernelPath:     cfg.OCIRuntimeKernelPath(runtimeKey),
-		InitramfsPath:  cfg.OCIRuntimeInitrdPath(runtimeKey),
-		Cmdline:        cmdline,
-		VirtioFSTag:    virtiofsTag,
+		LocalTag:        localTag,
+		ManifestDigest:  layoutInfo.ManifestDigest,
+		RuntimeKey:      runtimeKey,
+		Arch:            entryMeta.Arch,
+		RootfsLowerDirs: rootfsLowerDirs,
+		KernelPath:      filepath.Join(kernelLayerDir, "vmlinuz"),
+		InitramfsPath:   filepath.Join(kernelLayerDir, "initrd.img"),
+		Cmdline:         cmdline,
+		VirtioFSTag:     virtiofsTag,
 	}, nil
 }
 
@@ -110,10 +129,8 @@ func materializeOCIRuntimeCache(ctx context.Context, cfg *config.CocoonConfig, r
 		return fmt.Errorf("inspect OCI layout: empty metadata")
 	}
 
-	rootfsDir := cfg.OCIRuntimeRootfsDir(runtimeKey)
-	kernelPath := cfg.OCIRuntimeKernelPath(runtimeKey)
-	initrdPath := cfg.OCIRuntimeInitrdPath(runtimeKey)
-	if statPathExists(rootfsDir) && statPathExists(kernelPath) && statPathExists(initrdPath) {
+	// Fast path: if entry metadata already exists, layers are cached.
+	if oci.EntryMetaExists(cfg.OCIRuntimeEntryMetaPath(runtimeKey)) {
 		return nil
 	}
 
@@ -122,90 +139,140 @@ func materializeOCIRuntimeCache(ctx context.Context, cfg *config.CocoonConfig, r
 		return err
 	}
 
-	if err = os.MkdirAll(cfg.OCIRuntimeCacheDir(), 0o755); err != nil { //nolint:gosec // cocoon-managed cache dir
-		return fmt.Errorf("create OCI runtime cache dir: %w", err)
-	}
-	// Build the workspace under OCIRuntimeCacheDir so directory promotions stay
-	// on the same filesystem and os.Rename remains atomic.
-	workDir, err := os.MkdirTemp(cfg.OCIRuntimeCacheDir(), runtimeKey+"-work-*")
+	// Extract kernel layer.
+	kernelHex, err := oci.ParseSHA256Digest(kernelLayer.Digest)
 	if err != nil {
-		return fmt.Errorf("create OCI runtime temp dir: %w", err)
+		return fmt.Errorf("parse kernel layer digest: %w", err)
 	}
-	defer os.RemoveAll(workDir) //nolint:errcheck,gosec // best-effort cleanup
-
-	workRootfs := filepath.Join(workDir, "rootfs")
-	workKernel := filepath.Join(workDir, "kernel")
-	if err = os.MkdirAll(workRootfs, 0o755); err != nil { //nolint:gosec // cocoon-managed temp dir
-		return fmt.Errorf("create OCI runtime rootfs workspace: %w", err)
-	}
-	if err = os.MkdirAll(workKernel, 0o755); err != nil { //nolint:gosec // cocoon-managed temp dir
-		return fmt.Errorf("create OCI runtime kernel workspace: %w", err)
-	}
-
-	for _, layer := range rootfsLayers {
-		layerPath, layerErr := oci.LayoutBlobPath(layoutPath, layer.Digest)
-		if layerErr != nil {
-			return fmt.Errorf("resolve OCI rootfs layer %s: %w", layer.Digest, layerErr)
-		}
-		if layerErr = utils.ExtractOCILayerTarToDir(ctx, layerPath, workRootfs); layerErr != nil {
-			return fmt.Errorf("extract OCI rootfs layer %s: %w", layer.Digest, layerErr)
-		}
-	}
-
-	kernelLayerPath, err := oci.LayoutBlobPath(layoutPath, kernelLayer.Digest)
-	if err != nil {
-		return fmt.Errorf("resolve OCI kernel layer %s: %w", kernelLayer.Digest, err)
-	}
-	if err = utils.ExtractOCILayerTarToDir(ctx, kernelLayerPath, workKernel); err != nil {
-		return fmt.Errorf("extract OCI kernel layer %s: %w", kernelLayer.Digest, err)
-	}
-	if err = installOCIRuntimeKernelArtifacts(workKernel, info.Config); err != nil {
+	if err := extractLayerToCache(ctx, cfg, kernelHex, layoutPath, kernelLayer, true, info.Config); err != nil {
 		return err
 	}
-	if err = validateOCIRuntimeInitramfsVirtiofs(filepath.Join(workKernel, "initrd.img")); err != nil {
-		return fmt.Errorf("OCI runtime initramfs check failed for %s: %w", runtimeKey, err)
+
+	// Extract rootfs layers.
+	rootfsDigests := make([]string, 0, len(rootfsLayers))
+	for _, layer := range rootfsLayers {
+		hex, hexErr := oci.ParseSHA256Digest(layer.Digest)
+		if hexErr != nil {
+			return fmt.Errorf("parse rootfs layer digest: %w", hexErr)
+		}
+		if hexErr = extractLayerToCache(ctx, cfg, hex, layoutPath, layer, false, nil); hexErr != nil {
+			return hexErr
+		}
+		rootfsDigests = append(rootfsDigests, hex)
 	}
 
-	if err := promoteOCIRuntimeCacheDir(workDir, cfg.OCIRuntimeEntryDir(runtimeKey)); err != nil {
-		return fmt.Errorf("promote OCI runtime cache %s: %w", runtimeKey, err)
+	// Determine arch and cmdline from layout config.
+	arch := runtime.GOARCH
+	var kernelCmdline string
+	if info.Config != nil {
+		if strings.TrimSpace(info.Config.Arch) != "" {
+			arch = strings.TrimSpace(info.Config.Arch)
+		}
+		if strings.TrimSpace(info.Config.KernelCmdline) != "" {
+			kernelCmdline = strings.TrimSpace(info.Config.KernelCmdline)
+		}
+	}
+
+	// Write entry metadata.
+	entryMeta := &oci.OCIRuntimeEntryMeta{
+		ManifestDigest:     info.ManifestDigest,
+		KernelLayerDigest:  kernelHex,
+		RootfsLayerDigests: rootfsDigests,
+		Arch:               arch,
+		KernelCmdline:      kernelCmdline,
+		VirtioFSTag:        defaultOCIRuntimeVirtioFSTag,
+	}
+
+	entryDir := cfg.OCIRuntimeEntryDir(runtimeKey)
+	if err := os.MkdirAll(entryDir, 0o755); err != nil { //nolint:gosec // cocoon-managed cache dir
+		return fmt.Errorf("create OCI runtime entry dir: %w", err)
+	}
+	if err := oci.WriteEntryMeta(cfg.OCIRuntimeEntryMetaPath(runtimeKey), entryMeta); err != nil {
+		return fmt.Errorf("write OCI runtime entry meta for %s: %w", runtimeKey, err)
 	}
 	return nil
 }
 
-func promoteOCIRuntimeCacheDir(workDir, finalDir string) error {
-	finalDir = filepath.Clean(finalDir)
-	newDir := finalDir + ".new"
-	oldDir := finalDir + ".old"
-
-	// Best-effort cleanup from a prior interrupted promotion.
-	_ = os.RemoveAll(newDir)
-	_ = os.RemoveAll(oldDir)
-
-	if err := os.Rename(workDir, newDir); err != nil {
-		return fmt.Errorf("stage new OCI runtime cache: %w", err)
+// extractLayerToCache extracts a single OCI layer into the shared layer cache
+// at layers/{hexDigest}/. Uses a per-layer flock for concurrent dedup.
+func extractLayerToCache(ctx context.Context, cfg *config.CocoonConfig, hexDigest, layoutPath string, layer oci.LayerInfo, isKernel bool, vmCfg *oci.VMImageConfig) error {
+	layerDir := cfg.OCIRuntimeLayerDir(hexDigest)
+	if statPathExists(layerDir) {
+		return nil // already cached
 	}
 
-	hadOld := false
-	if err := os.Rename(finalDir, oldDir); err == nil {
-		hadOld = true
-	} else if !os.IsNotExist(err) {
-		_ = os.RemoveAll(newDir)
-		return fmt.Errorf("rotate existing OCI runtime cache: %w", err)
+	// Per-layer flock to prevent concurrent duplicate extraction.
+	lockPath := filepath.Join(cfg.ConversionLockDir(), "oci-layer-"+hexDigest+".lock")
+	layerLock := flock.New(lockPath)
+	if err := layerLock.Lock(); err != nil {
+		return fmt.Errorf("acquire OCI layer lock for %s: %w", hexDigest, err)
+	}
+	defer layerLock.Unlock() //nolint:errcheck
+
+	// Double-check after acquiring lock.
+	if statPathExists(layerDir) {
+		return nil
 	}
 
-	if err := os.Rename(newDir, finalDir); err != nil {
-		// Best-effort rollback to keep the previous runtime cache available.
-		if hadOld {
-			if rollbackErr := os.Rename(oldDir, finalDir); rollbackErr != nil {
-				log.Printf("warning: rollback OCI runtime cache promotion failed (%s -> %s): %v", oldDir, finalDir, rollbackErr)
-			}
+	layersDir := cfg.OCIRuntimeLayersDir()
+	if err := os.MkdirAll(layersDir, 0o755); err != nil { //nolint:gosec // cocoon-managed cache dir
+		return fmt.Errorf("create OCI runtime layers dir: %w", err)
+	}
+
+	// Build workspace under layers dir so os.Rename is atomic (same filesystem).
+	workDir, err := os.MkdirTemp(layersDir, hexDigest+"-work-*")
+	if err != nil {
+		return fmt.Errorf("create OCI layer temp dir: %w", err)
+	}
+	defer os.RemoveAll(workDir) //nolint:errcheck,gosec // best-effort cleanup
+
+	blobPath, err := oci.LayoutBlobPath(layoutPath, layer.Digest)
+	if err != nil {
+		return fmt.Errorf("resolve OCI layer blob %s: %w", layer.Digest, err)
+	}
+
+	if isKernel {
+		if err := extractKernelLayer(ctx, workDir, blobPath, layer.Digest, hexDigest, vmCfg); err != nil {
+			return err
 		}
-		return fmt.Errorf("activate new OCI runtime cache: %w", err)
+	} else {
+		if err := extractRootfsLayer(ctx, workDir, blobPath, layer.Digest); err != nil {
+			return err
+		}
 	}
 
-	// Best-effort cleanup; stale .old directories are harmless and can be GC'd.
-	if hadOld {
-		_ = os.RemoveAll(oldDir)
+	// Atomic promotion: rename work dir to final layer dir.
+	if err := os.Rename(workDir, layerDir); err != nil {
+		return fmt.Errorf("promote OCI layer cache %s: %w", hexDigest, err)
+	}
+	return nil
+}
+
+func extractKernelLayer(ctx context.Context, workDir, blobPath, digest, hexDigest string, vmCfg *oci.VMImageConfig) error {
+	kernelDir := filepath.Join(workDir, "kernel")
+	if err := os.MkdirAll(kernelDir, 0o755); err != nil { //nolint:gosec // cocoon-managed cache dir
+		return fmt.Errorf("create kernel extract dir: %w", err)
+	}
+	if err := utils.ExtractOCILayerTarToDir(ctx, blobPath, kernelDir); err != nil {
+		return fmt.Errorf("extract OCI kernel layer %s: %w", digest, err)
+	}
+	if err := installOCIRuntimeKernelArtifacts(kernelDir, vmCfg); err != nil {
+		return err
+	}
+	initrdPath := filepath.Join(kernelDir, "initrd.img")
+	if err := validateOCIRuntimeInitramfsVirtiofs(initrdPath); err != nil {
+		return fmt.Errorf("OCI runtime kernel layer %s: %w", hexDigest, err)
+	}
+	return nil
+}
+
+func extractRootfsLayer(ctx context.Context, workDir, blobPath, digest string) error {
+	rootfsDir := filepath.Join(workDir, "rootfs")
+	if err := os.MkdirAll(rootfsDir, 0o755); err != nil { //nolint:gosec // cocoon-managed cache dir
+		return fmt.Errorf("create rootfs extract dir: %w", err)
+	}
+	if err := utils.ExtractOCILayerTarToDir(ctx, blobPath, rootfsDir); err != nil {
+		return fmt.Errorf("extract OCI rootfs layer %s: %w", digest, err)
 	}
 	return nil
 }

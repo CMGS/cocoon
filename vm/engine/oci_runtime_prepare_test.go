@@ -12,73 +12,6 @@ import (
 	"github.com/CMGS/cocoon/oci"
 )
 
-func TestPromoteOCIRuntimeCacheDir_NewEntry(t *testing.T) {
-	t.Parallel()
-
-	baseDir := t.TempDir()
-	finalDir := filepath.Join(baseDir, "runtime", "abc123")
-	workDir := filepath.Join(baseDir, "work-new")
-	if err := os.MkdirAll(filepath.Join(workDir, "rootfs"), 0o755); err != nil { //nolint:gosec // test workspace
-		t.Fatalf("mkdir work rootfs: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(workDir, "rootfs", "marker"), []byte("new"), 0o644); err != nil {
-		t.Fatalf("write marker: %v", err)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(finalDir), 0o755); err != nil { //nolint:gosec // test workspace
-		t.Fatalf("mkdir final parent: %v", err)
-	}
-	if err := promoteOCIRuntimeCacheDir(workDir, finalDir); err != nil {
-		t.Fatalf("promoteOCIRuntimeCacheDir: %v", err)
-	}
-
-	if _, err := os.Stat(filepath.Join(finalDir, "rootfs", "marker")); err != nil {
-		t.Fatalf("expected promoted rootfs marker: %v", err)
-	}
-	if _, err := os.Stat(finalDir + ".new"); !os.IsNotExist(err) {
-		t.Fatalf("expected no .new dir, err=%v", err)
-	}
-	if _, err := os.Stat(finalDir + ".old"); !os.IsNotExist(err) {
-		t.Fatalf("expected no .old dir, err=%v", err)
-	}
-}
-
-func TestPromoteOCIRuntimeCacheDir_RotatesExistingEntry(t *testing.T) {
-	t.Parallel()
-
-	baseDir := t.TempDir()
-	finalDir := filepath.Join(baseDir, "runtime", "abc123")
-	if err := os.MkdirAll(filepath.Join(finalDir, "rootfs"), 0o755); err != nil { //nolint:gosec // test workspace
-		t.Fatalf("mkdir final rootfs: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(finalDir, "rootfs", "marker"), []byte("old"), 0o644); err != nil {
-		t.Fatalf("write old marker: %v", err)
-	}
-
-	workDir := filepath.Join(baseDir, "work-new")
-	if err := os.MkdirAll(filepath.Join(workDir, "rootfs"), 0o755); err != nil { //nolint:gosec // test workspace
-		t.Fatalf("mkdir work rootfs: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(workDir, "rootfs", "marker"), []byte("new"), 0o644); err != nil {
-		t.Fatalf("write new marker: %v", err)
-	}
-
-	if err := promoteOCIRuntimeCacheDir(workDir, finalDir); err != nil {
-		t.Fatalf("promoteOCIRuntimeCacheDir: %v", err)
-	}
-
-	got, err := os.ReadFile(filepath.Join(finalDir, "rootfs", "marker"))
-	if err != nil {
-		t.Fatalf("read promoted marker: %v", err)
-	}
-	if string(got) != "new" {
-		t.Fatalf("marker=%q, want %q", string(got), "new")
-	}
-	if _, err := os.Stat(finalDir + ".old"); !os.IsNotExist(err) {
-		t.Fatalf("expected no .old dir, err=%v", err)
-	}
-}
-
 func TestNormalizeVirtiofsKernelCmdline_EnforcesSerialAndVirtioConsoles(t *testing.T) {
 	t.Parallel()
 
@@ -155,20 +88,73 @@ func TestMaterializeOCIRuntimeCache_BadInitramfsNotPromoted(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected materializeOCIRuntimeCache error, got nil")
 	}
-	if !strings.Contains(err.Error(), "OCI runtime initramfs check failed") {
+	if !strings.Contains(err.Error(), "virtiofs module detection failed") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if _, statErr := os.Stat(cfg.OCIRuntimeEntryDir(runtimeKey)); !os.IsNotExist(statErr) {
-		t.Fatalf("runtime cache entry should not be promoted, stat err=%v", statErr)
+	// Entry metadata should NOT be written when kernel layer extraction fails.
+	if _, statErr := os.Stat(cfg.OCIRuntimeEntryMetaPath(runtimeKey)); !os.IsNotExist(statErr) {
+		t.Fatalf("runtime entry meta should not exist, stat err=%v", statErr)
 	}
 
-	workDirs, globErr := filepath.Glob(filepath.Join(cfg.OCIRuntimeCacheDir(), runtimeKey+"-work-*"))
+	// Kernel layer dir should NOT be promoted (failed validation).
+	if _, statErr := os.Stat(cfg.OCIRuntimeLayerDir(kernelHex)); !os.IsNotExist(statErr) {
+		t.Fatalf("kernel layer cache should not exist, stat err=%v", statErr)
+	}
+
+	// Leftover work dirs should be cleaned up.
+	workDirs, globErr := filepath.Glob(filepath.Join(cfg.OCIRuntimeLayersDir(), kernelHex+"-work-*"))
 	if globErr != nil {
 		t.Fatalf("glob work dirs: %v", globErr)
 	}
 	if len(workDirs) != 0 {
 		t.Fatalf("expected no leftover work dirs, got %v", workDirs)
+	}
+}
+
+func TestExtractLayerToCache_Idempotent(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.DefaultConfig()
+	cfg.RebaseRootDir(t.TempDir())
+	cfg.RuntimeDir = t.TempDir()
+	cfg.LogDir = t.TempDir()
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+
+	layoutPath := t.TempDir()
+	blobDir := filepath.Join(layoutPath, "blobs", "sha256")
+	if err := os.MkdirAll(blobDir, 0o755); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("mkdir blob dir: %v", err)
+	}
+
+	const rootfsHex = "4444444444444444444444444444444444444444444444444444444444444444"
+
+	rootfsTar := buildLayerTarForTest(t, map[string][]byte{
+		"etc/hostname": []byte("cocoon-test\n"),
+	})
+	if err := os.WriteFile(filepath.Join(blobDir, rootfsHex), rootfsTar, 0o644); err != nil {
+		t.Fatalf("write rootfs blob: %v", err)
+	}
+
+	layer := oci.LayerInfo{
+		MediaType: oci.MediaTypeRootfsLayer,
+		Digest:    "sha256:" + rootfsHex,
+	}
+
+	// First extraction.
+	if err := extractLayerToCache(t.Context(), cfg, rootfsHex, layoutPath, layer, false, nil); err != nil {
+		t.Fatalf("first extraction: %v", err)
+	}
+	layerDir := cfg.OCIRuntimeLayerDir(rootfsHex)
+	if _, err := os.Stat(filepath.Join(layerDir, "rootfs", "etc", "hostname")); err != nil {
+		t.Fatalf("expected extracted file: %v", err)
+	}
+
+	// Second extraction should be a no-op.
+	if err := extractLayerToCache(t.Context(), cfg, rootfsHex, layoutPath, layer, false, nil); err != nil {
+		t.Fatalf("second extraction (idempotent): %v", err)
 	}
 }
 

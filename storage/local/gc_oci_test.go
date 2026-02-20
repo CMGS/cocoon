@@ -656,19 +656,19 @@ func TestOCIGC_CollectUnreferencedOCIRuntimeCaches_RemovesUnpinned(t *testing.T)
 		t.Fatal("type assertion to *fileGarbageCollector failed")
 	}
 
-	cacheDir := cfg.OCIRuntimeCacheDir()
 	oldTime := time.Now().Add(-10 * time.Minute)
 
-	pinned := filepath.Join(cacheDir, "1111222233334444")
-	unpinned := filepath.Join(cacheDir, "aaaa2222bbbb3333")
-	if err := os.MkdirAll(filepath.Join(pinned, "rootfs"), 0o755); err != nil {
-		t.Fatalf("mkdir pinned runtime: %v", err)
+	// Create entry dirs under entries/.
+	pinnedEntry := cfg.OCIRuntimeEntryDir("1111222233334444")
+	unpinnedEntry := cfg.OCIRuntimeEntryDir("aaaa2222bbbb3333")
+	if err := os.MkdirAll(pinnedEntry, 0o755); err != nil {
+		t.Fatalf("mkdir pinned entry: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Join(unpinned, "rootfs"), 0o755); err != nil {
-		t.Fatalf("mkdir unpinned runtime: %v", err)
+	if err := os.MkdirAll(unpinnedEntry, 0o755); err != nil {
+		t.Fatalf("mkdir unpinned entry: %v", err)
 	}
-	_ = os.Chtimes(pinned, oldTime, oldTime)
-	_ = os.Chtimes(unpinned, oldTime, oldTime)
+	_ = os.Chtimes(pinnedEntry, oldTime, oldTime)
+	_ = os.Chtimes(unpinnedEntry, oldTime, oldTime)
 
 	tc := testableConfig{cfg: cfg}
 	writeRuntimeRefs(t, tc, map[string][]string{
@@ -679,14 +679,14 @@ func TestOCIGC_CollectUnreferencedOCIRuntimeCaches_RemovesUnpinned(t *testing.T)
 	if err != nil {
 		t.Fatalf("CollectUnreferencedOCIRuntimeCaches: %v", err)
 	}
-	if len(collected) != 1 || collected[0] != "aaaa2222bbbb3333" {
-		t.Fatalf("collected=%v, want [aaaa2222bbbb3333]", collected)
+	if len(collected) != 1 || collected[0] != "entry:aaaa2222bbbb3333" {
+		t.Fatalf("collected=%v, want [entry:aaaa2222bbbb3333]", collected)
 	}
-	if _, err := os.Stat(unpinned); !os.IsNotExist(err) {
-		t.Fatalf("unpinned runtime dir should be removed, stat err=%v", err)
+	if _, err := os.Stat(unpinnedEntry); !os.IsNotExist(err) {
+		t.Fatalf("unpinned entry dir should be removed, stat err=%v", err)
 	}
-	if _, err := os.Stat(pinned); err != nil {
-		t.Fatalf("pinned runtime dir should remain: %v", err)
+	if _, err := os.Stat(pinnedEntry); err != nil {
+		t.Fatalf("pinned entry dir should remain: %v", err)
 	}
 }
 
@@ -697,10 +697,9 @@ func TestOCIGC_CollectUnreferencedOCIRuntimeCaches_GracePeriod(t *testing.T) {
 		t.Fatal("type assertion to *fileGarbageCollector failed")
 	}
 
-	cacheDir := cfg.OCIRuntimeCacheDir()
-	recent := filepath.Join(cacheDir, "abcdabcdabcdabcd")
-	if err := os.MkdirAll(filepath.Join(recent, "rootfs"), 0o755); err != nil {
-		t.Fatalf("mkdir recent runtime: %v", err)
+	recent := cfg.OCIRuntimeEntryDir("abcdabcdabcdabcd")
+	if err := os.MkdirAll(recent, 0o755); err != nil {
+		t.Fatalf("mkdir recent entry: %v", err)
 	}
 
 	collected, err := gc.CollectUnreferencedOCIRuntimeCaches()
@@ -711,7 +710,7 @@ func TestOCIGC_CollectUnreferencedOCIRuntimeCaches_GracePeriod(t *testing.T) {
 		t.Fatalf("expected 0 collected due to grace period, got %v", collected)
 	}
 	if _, err := os.Stat(recent); err != nil {
-		t.Fatalf("recent runtime dir should remain: %v", err)
+		t.Fatalf("recent entry dir should remain: %v", err)
 	}
 }
 
@@ -745,5 +744,78 @@ func TestOCIGC_CollectUnreferencedOCIRuntimeCaches_CleansStaleZeroRefEntry(t *te
 	}
 	if _, exists := refs.Runtimes["deadbeefdeadbeef"]; exists {
 		t.Fatalf("expected stale zero-ref runtime entry to be removed")
+	}
+}
+
+func TestOCIGC_CollectUnreferencedOCIRuntimeCaches_LayerMarkAndSweep(t *testing.T) {
+	cfg := newTestConfig(t)
+	gc, ok := NewGarbageCollector(cfg).(*fileGarbageCollector)
+	if !ok {
+		t.Fatal("type assertion to *fileGarbageCollector failed")
+	}
+
+	oldTime := time.Now().Add(-10 * time.Minute)
+
+	// Create a pinned entry that references layer "aaa...".
+	const (
+		referencedLayer   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		unreferencedLayer = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		kernelLayer       = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	)
+	entryDir := cfg.OCIRuntimeEntryDir("pinned-key")
+	if err := os.MkdirAll(entryDir, 0o755); err != nil {
+		t.Fatalf("mkdir entry dir: %v", err)
+	}
+	meta := &oci.OCIRuntimeEntryMeta{
+		ManifestDigest:     "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		KernelLayerDigest:  kernelLayer,
+		RootfsLayerDigests: []string{referencedLayer},
+		Arch:               "amd64",
+		VirtioFSTag:        "/dev/root",
+	}
+	if err := oci.WriteEntryMeta(cfg.OCIRuntimeEntryMetaPath("pinned-key"), meta); err != nil {
+		t.Fatalf("write entry meta: %v", err)
+	}
+
+	tc := testableConfig{cfg: cfg}
+	writeRuntimeRefs(t, tc, map[string][]string{
+		"pinned-key": {"vm-PINNED"},
+	})
+
+	// Create layer dirs.
+	for _, hex := range []string{referencedLayer, unreferencedLayer, kernelLayer} {
+		layerDir := cfg.OCIRuntimeLayerDir(hex)
+		if err := os.MkdirAll(layerDir, 0o755); err != nil {
+			t.Fatalf("mkdir layer %s: %v", hex, err)
+		}
+		_ = os.Chtimes(layerDir, oldTime, oldTime)
+	}
+
+	collected, err := gc.CollectUnreferencedOCIRuntimeCaches()
+	if err != nil {
+		t.Fatalf("CollectUnreferencedOCIRuntimeCaches: %v", err)
+	}
+
+	// Only unreferenced layer should be collected.
+	foundUnreferenced := false
+	for _, c := range collected {
+		if c == "layer:"+unreferencedLayer {
+			foundUnreferenced = true
+		}
+	}
+	if !foundUnreferenced {
+		t.Fatalf("expected layer:%s in collected, got %v", unreferencedLayer, collected)
+	}
+
+	// Referenced layers should still exist.
+	if _, err := os.Stat(cfg.OCIRuntimeLayerDir(referencedLayer)); err != nil {
+		t.Fatalf("referenced layer should remain: %v", err)
+	}
+	if _, err := os.Stat(cfg.OCIRuntimeLayerDir(kernelLayer)); err != nil {
+		t.Fatalf("kernel layer should remain: %v", err)
+	}
+	// Unreferenced layer should be gone.
+	if _, err := os.Stat(cfg.OCIRuntimeLayerDir(unreferencedLayer)); !os.IsNotExist(err) {
+		t.Fatalf("unreferenced layer should be removed, stat err=%v", err)
 	}
 }

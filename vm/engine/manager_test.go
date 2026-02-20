@@ -1711,10 +1711,10 @@ func TestDelete_OCIRuntimeUnpinsRuntimeCache(t *testing.T) {
 	runtimeKey := "runtime-pin-delete"
 	v.ImageType = types.VMImageTypeOCIVM
 	v.BaseKey = runtimeKey
-	v.BaseImagePath = td.cfg.OCIRuntimeRootfsDir(runtimeKey)
+	v.BaseImagePath = td.cfg.OCIRuntimeEntryDir(runtimeKey)
 	v.OverlayPath = ""
 	if err := os.MkdirAll(v.BaseImagePath, 0o755); err != nil {
-		t.Fatalf("mkdir runtime rootfs: %v", err)
+		t.Fatalf("mkdir runtime entry dir: %v", err)
 	}
 	if err := utils.AtomicWriteJSON(td.cfg.VMConfigPath(v.VMID), v); err != nil {
 		t.Fatalf("write config.json: %v", err)
