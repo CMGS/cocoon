@@ -77,7 +77,7 @@ func Push(ctx context.Context, cfg *config.CocoonConfig, ref string) (*PushResul
 	); err != nil {
 		close(progressDone)
 		progressWG.Wait()
-		return nil, classifyRegistryError("push", err)
+		return nil, ClassifyRegistryError("push", err)
 	}
 	close(progressDone)
 	progressWG.Wait()

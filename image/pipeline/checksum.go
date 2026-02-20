@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"strings"
 )
 
 const (
@@ -52,4 +53,20 @@ func goarchToOCI(goarch string) string {
 // defaultArch returns the OCI architecture string for the current platform.
 func defaultArch() string {
 	return goarchToOCI(runtime.GOARCH)
+}
+
+// computeOCIChecksum computes a content-addressed checksum for an OCI image
+// from its config digest, layer digests, and target architecture.
+func computeOCIChecksum(configDigest string, layerDigests []string, arch string) (fullDigest string, checksum string) {
+	var sb strings.Builder
+	sb.WriteString(configDigest)
+	sb.WriteString("\n")
+	sb.WriteString(strings.Join(layerDigests, "\n"))
+	sb.WriteString("\n")
+	sb.WriteString("linux/" + arch)
+
+	hash := sha256.Sum256([]byte(sb.String()))
+	fullDigest = hex.EncodeToString(hash[:])
+	checksum = fullDigest[:checksumHexLen]
+	return fullDigest, checksum
 }

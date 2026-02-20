@@ -10,9 +10,9 @@ import (
 	"github.com/CMGS/cocoon/types"
 )
 
-// classifyRegistryError categorizes a registry error (from push or pull) as
+// ClassifyRegistryError categorizes a registry error (from push or pull) as
 // transient or permanent. op should be "push" or "pull" for the error prefix.
-func classifyRegistryError(op string, err error) error {
+func ClassifyRegistryError(op string, err error) error {
 	errStr := err.Error()
 
 	// Permanent errors: authentication, authorization, not found.

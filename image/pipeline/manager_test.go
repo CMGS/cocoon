@@ -60,7 +60,7 @@ func (fakeReferenceCounter) GetUnreferencedImages() ([]string, error) { return n
 
 // TestPrepare_CachesResult verifies that Prepare returns a cache hit on the
 // second call without repeating Pull+Convert. We use a local file reference
-// so the test runs on any platform (no skopeo/buildah required).
+// so the test runs on any platform (no external tools required).
 func TestPrepare_CachesResult(t *testing.T) {
 	cfg := newTestConfig(t)
 	mgr := New(cfg, fakeReferenceCounter{}).(*manager)
@@ -196,11 +196,11 @@ func TestConvert_ConcurrentDedup(t *testing.T) {
 // the others should hit the cache (either before or after acquiring the lock).
 //
 // Since this test runs on both Darwin and Linux, and the OCI platform
-// functions require real tools (skopeo, buildah), we test the concurrency
+// functions require network access (go-containerregistry), we test the concurrency
 // mechanism by directly invoking the lock+cache pattern that prepareOCI uses.
 // We replicate the exact flow:
 //
-//	Phase 1: identifyOCIPlatform (simulated)
+//	Phase 1: identifyOCIRemote (simulated)
 //	Phase 2: Fast-path cache check
 //	Phase 3-6: Lock -> double-check cache -> pull+convert -> unlock
 //
