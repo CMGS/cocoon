@@ -74,6 +74,7 @@ type MockCOWManager struct {
 	CreateOverlayFunc   func(ctx context.Context, baseKey, vmID, diskSize string) (string, error)
 	RemoveOverlayFunc   func(vmID string) error
 	GetOverlayInfoFunc  func(ctx context.Context, vmID string) (*storage.OverlayInfo, error)
+	RepairOverlayFunc   func(ctx context.Context, vmID string) error
 }
 
 // Compile-time check that MockCOWManager implements storage.COWManager.
@@ -105,6 +106,13 @@ func (m *MockCOWManager) GetOverlayInfo(ctx context.Context, vmID string) (*stor
 		return m.GetOverlayInfoFunc(ctx, vmID)
 	}
 	return nil, nil
+}
+
+func (m *MockCOWManager) RepairOverlay(ctx context.Context, vmID string) error {
+	if m.RepairOverlayFunc != nil {
+		return m.RepairOverlayFunc(ctx, vmID)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
