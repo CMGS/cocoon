@@ -4,13 +4,13 @@
 #
 # Usage:
 #   sudo bash scripts/update-cloud-hypervisor.sh                            # Update to default version
-#   sudo CH_VERSION=v50.0 bash scripts/update-cloud-hypervisor.sh           # Specific CH version
+#   sudo CH_VERSION=v51.0 bash scripts/update-cloud-hypervisor.sh           # Specific CH version
 #   bash scripts/update-cloud-hypervisor.sh --check-only                     # Show current vs target
 #   # or via Makefile:
 #   make update-ch
 #
 # Environment variables:
-#   CH_VERSION              Target Cloud Hypervisor version (default: v50.0)
+#   CH_VERSION              Target Cloud Hypervisor version (default: v51.0)
 #   COCOON_ROOT             Root data directory (default: /var/lib/cocoon)
 #   INSTALL_DIR             Binary install directory (default: /usr/local/bin)
 #

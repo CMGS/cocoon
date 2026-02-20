@@ -10,7 +10,7 @@
 #   make update-dev
 #
 # Environment variables:
-#   CH_VERSION              Target Cloud Hypervisor version (default: v50.0)
+#   CH_VERSION              Target Cloud Hypervisor version (default: v51.0)
 #   COCOON_ROOT             Root data directory (default: /var/lib/cocoon)
 #   INSTALL_DIR             Binary install directory (default: /usr/local/bin)
 #
