@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"cmp"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -47,25 +48,13 @@ func ParseSemVersion(out string) (SemVersion, error) {
 // CompareSemVersion compares two semantic versions.
 // Returns -1 if a<b, 0 if a==b, and 1 if a>b.
 func CompareSemVersion(a, b SemVersion) int {
-	switch {
-	case a.Major != b.Major:
-		if a.Major < b.Major {
-			return -1
-		}
-		return 1
-	case a.Minor != b.Minor:
-		if a.Minor < b.Minor {
-			return -1
-		}
-		return 1
-	case a.Patch != b.Patch:
-		if a.Patch < b.Patch {
-			return -1
-		}
-		return 1
-	default:
-		return 0
+	if n := cmp.Compare(a.Major, b.Major); n != 0 {
+		return n
 	}
+	if n := cmp.Compare(a.Minor, b.Minor); n != 0 {
+		return n
+	}
+	return cmp.Compare(a.Patch, b.Patch)
 }
 
 func (v SemVersion) String() string {

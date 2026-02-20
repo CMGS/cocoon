@@ -10,9 +10,10 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"syscall"
 )
@@ -71,8 +72,8 @@ func generateDeltaLayerTar(baseRootfsDir, modifiedRootfsDir, outTarPath string) 
 		return "", 0, 0, nil
 	}
 
-	sort.Slice(all, func(i, j int) bool {
-		return all[i].Name < all[j].Name
+	slices.SortFunc(all, func(a, b deltaTarEntry) int {
+		return strings.Compare(a.Name, b.Name)
 	})
 
 	df, err := os.Create(outTarPath) //nolint:gosec // outTarPath is a caller-created temp path
@@ -191,11 +192,8 @@ func buildDeltaHeader(entry deltaTarEntry) (*tar.Header, error) {
 }
 
 func planUpdates(baseEntries, modifiedEntries map[string]fileEntry) ([]deltaTarEntry, error) {
-	paths := make([]string, 0, len(modifiedEntries))
-	for path := range modifiedEntries {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
+	paths := slices.Collect(maps.Keys(modifiedEntries))
+	slices.Sort(paths)
 
 	out := make([]deltaTarEntry, 0)
 	for _, path := range paths {
@@ -248,13 +246,13 @@ func planDeletions(baseEntries, modifiedEntries map[string]fileEntry) []deltaTar
 		}
 	}
 
-	sort.Slice(candidates, func(i, j int) bool {
-		di := strings.Count(candidates[i].path, "/")
-		dj := strings.Count(candidates[j].path, "/")
-		if di != dj {
-			return di < dj
+	slices.SortFunc(candidates, func(a, b deletionCandidate) int {
+		da := strings.Count(a.path, "/")
+		db := strings.Count(b.path, "/")
+		if da != db {
+			return da - db
 		}
-		return candidates[i].path < candidates[j].path
+		return strings.Compare(a.path, b.path)
 	})
 
 	removedDirs := make(map[string]struct{})

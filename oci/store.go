@@ -4,9 +4,10 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -161,16 +162,14 @@ func (s *Store) ResolveTag(tag string) (string, error) {
 func (s *Store) ListTags() ([]TagEntry, error) {
 	var result []TagEntry
 	err := s.withLock(func(idx *TagIndex) error {
-		for _, entry := range idx.Tags {
-			result = append(result, entry)
-		}
+		result = slices.Collect(maps.Values(idx.Tags))
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].CreatedAt.After(result[j].CreatedAt)
+	slices.SortFunc(result, func(a, b TagEntry) int {
+		return b.CreatedAt.Compare(a.CreatedAt)
 	})
 	return result, nil
 }

@@ -8,7 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -93,13 +93,14 @@ func imageListCommand() *cli.Command {
 
 // unifiedImageRow is the CLI view model for the unified image list output.
 type unifiedImageRow struct {
-	Type      string `json:"type"`
-	Ref       string `json:"ref"`
-	Digest    string `json:"digest"`
-	Size      int64  `json:"size"`
-	SizeHuman string `json:"size_human"`
-	Source    string `json:"source"`
-	CreatedAt string `json:"created_at"`
+	Type         string    `json:"type"`
+	Ref          string    `json:"ref"`
+	Digest       string    `json:"digest"`
+	Size         int64     `json:"size"`
+	SizeHuman    string    `json:"size_human"`
+	Source       string    `json:"source"`
+	CreatedAt    string    `json:"created_at"`
+	rawCreatedAt time.Time // for sorting
 }
 
 func imagesAction(c *cli.Context) error {
@@ -126,13 +127,14 @@ func imagesAction(c *cli.Context) error {
 		}
 		source := summarizeSourceRefs(sourceRefs)
 		rows = append(rows, unifiedImageRow{
-			Type:      "cloudimg",
-			Ref:       img.BaseKey,
-			Digest:    "", // cloud images don't have OCI digests
-			Size:      img.Size,
-			SizeHuman: humanBytes(img.Size),
-			Source:    source,
-			CreatedAt: img.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			Type:         "cloudimg",
+			Ref:          img.BaseKey,
+			Digest:       "", // cloud images don't have OCI digests
+			Size:         img.Size,
+			SizeHuman:    humanBytes(img.Size),
+			Source:       source,
+			CreatedAt:    img.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			rawCreatedAt: img.CreatedAt,
 		})
 	}
 
@@ -148,21 +150,20 @@ func imagesAction(c *cli.Context) error {
 			digest = "sha256:" + digest
 		}
 		rows = append(rows, unifiedImageRow{
-			Type:      "oci",
-			Ref:       entry.Tag,
-			Digest:    digest,
-			Size:      size,
-			SizeHuman: humanBytes(size),
-			Source:    "local",
-			CreatedAt: entry.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			Type:         "oci",
+			Ref:          entry.Tag,
+			Digest:       digest,
+			Size:         size,
+			SizeHuman:    humanBytes(size),
+			Source:       "local",
+			CreatedAt:    entry.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			rawCreatedAt: entry.CreatedAt,
 		})
 	}
 
 	// Sort by creation time, newest first.
-	sort.Slice(rows, func(i, j int) bool {
-		ti, _ := time.Parse("2006-01-02T15:04:05Z", rows[i].CreatedAt)
-		tj, _ := time.Parse("2006-01-02T15:04:05Z", rows[j].CreatedAt)
-		return ti.After(tj)
+	slices.SortFunc(rows, func(a, b unifiedImageRow) int {
+		return b.rawCreatedAt.Compare(a.rawCreatedAt)
 	})
 
 	// JSON output.
