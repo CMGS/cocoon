@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"iter"
 	"os"
 	"path/filepath"
 	"strings"
@@ -546,8 +547,8 @@ func TestPullDomainRefRouting(t *testing.T) {
 				// ListCached returns the image so resolveBaseKeyFromCache can
 				// detect that the image was not cached before pull but is cached
 				// after, allowing verification/bookkeeping to proceed.
-				ListCachedFunc: func(_ context.Context) ([]*image.CachedImage, error) {
-					return nil, nil
+				ListCachedFunc: func(_ context.Context) iter.Seq2[*image.CachedImage, error] {
+					return func(yield func(*image.CachedImage, error) bool) {}
 				},
 			},
 			probeRegistryVMImage: func(context.Context, *config.CocoonConfig, string) bool {
@@ -634,8 +635,8 @@ func TestPullShortNameRouting(t *testing.T) {
 						FullDigest: strings.Repeat("c", 64),
 					}, cfg.BaseImagePath("1234567890abcdef_amd64"), nil
 				},
-				ListCachedFunc: func(_ context.Context) ([]*image.CachedImage, error) {
-					return nil, nil
+				ListCachedFunc: func(_ context.Context) iter.Seq2[*image.CachedImage, error] {
+					return func(yield func(*image.CachedImage, error) bool) {}
 				},
 			},
 			probeRegistryVMImage: func(context.Context, *config.CocoonConfig, string) bool {
@@ -721,10 +722,10 @@ func TestPullCloudPipelineCacheConsistency(t *testing.T) {
 	app := &appContext{
 		cfg: cfg,
 		imgMgr: &imgmocks.MockManager{
-			ListCachedFunc: func(_ context.Context) ([]*image.CachedImage, error) {
-				return []*image.CachedImage{
-					{BaseKey: baseKey, Path: basePath, Size: 10},
-				}, nil
+			ListCachedFunc: func(_ context.Context) iter.Seq2[*image.CachedImage, error] {
+				return func(yield func(*image.CachedImage, error) bool) {
+					yield(&image.CachedImage{BaseKey: baseKey, Path: basePath, Size: 10}, nil)
+				}
 			},
 		},
 	}

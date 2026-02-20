@@ -135,20 +135,20 @@ func ExtractTarToDir(ctx context.Context, tarPath, targetDir string) error {
 	}
 
 	// 1. Open the root directory safely.
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+	if err := os.MkdirAll(targetDir, 0o750); err != nil {
 		return fmt.Errorf("create target directory %q: %w", targetDir, err)
 	}
 	root, err := os.OpenRoot(targetDir)
 	if err != nil {
 		return fmt.Errorf("open target directory root %q: %w", targetDir, err)
 	}
-	defer root.Close()
+	defer root.Close() //nolint:errcheck
 
-	f, err := os.Open(tarPath)
+	f, err := os.Open(tarPath) //nolint:gosec // tarPath is an internal local path validated by callers
 	if err != nil {
 		return fmt.Errorf("open tar archive %q: %w", tarPath, err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 
 	tr := tar.NewReader(f)
 
@@ -168,8 +168,8 @@ func ExtractTarToDir(ctx context.Context, tarPath, targetDir string) error {
 		// Clean the path to remove artifacts, but os.Root handles the security.
 		name := filepath.Clean(hdr.Name)
 		if strings.HasPrefix(name, "../") || strings.HasPrefix(name, "/") {
-			// Basic sanity check, though os.Root will block escaping anyway.
-			continue
+			// Explicitly reject paths attempting to escape root, matching legacy behavior for security tests.
+			return fmt.Errorf("path escapes target directory: %q", name)
 		}
 
 		switch hdr.Typeflag {
@@ -188,27 +188,21 @@ func ExtractTarToDir(ctx context.Context, tarPath, targetDir string) error {
 			}
 
 			mode := tarEntryModeOrDefault(hdr, 0o644)
-			wf, err := root.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+			wf, err := root.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 			if err != nil {
 				return fmt.Errorf("create file %q: %w", name, err)
 			}
-
-			// Handle sparse files efficiently by seeking over holes.
-			// Go's tar.Reader handles the sparse map logic internally and presents
-			// a stream of data (zeros for holes). However, simply CopyNing that stream
-			// writes real zeros to disk, inflating the file.
-			// To truly preserve sparseness, we must detect zero blocks and seek.
-			//
-			// Optimization: use a simple heuristic for now. If it's explicitly marked sparse,
-			// we could use io.ReadFull + check for zeros + Seek, but Go's tar.Reader
-			// doesn't expose the holes map directly in a way that aligns with the stream easily.
-			// For P2, we'll stick to standard copy but ensure TypeGNUSparse is handled.
-			// (Future optimization: implement zero-block detection copy).
 			if _, err := io.CopyN(wf, tr, hdr.Size); err != nil {
-				wf.Close()
+				_ = wf.Close()
 				return fmt.Errorf("write file %q: %w", name, err)
 			}
-			wf.Close()
+			if err := wf.Chmod(mode); err != nil {
+				_ = wf.Close()
+				return fmt.Errorf("chmod file %q: %w", name, err)
+			}
+			if err := wf.Close(); err != nil {
+				return fmt.Errorf("close file %q: %w", name, err)
+			}
 		case tar.TypeSymlink:
 			// Symlinks inside a root need careful handling. For now, we only allow
 			// relative symlinks that don't escape.
@@ -629,13 +623,10 @@ func resolveTarEntryPath(baseDir, entryName string) (string, error) {
 
 func tarEntryModeOrDefault(hdr *tar.Header, fallback os.FileMode) os.FileMode {
 	mode := hdr.FileInfo().Mode()
-	out := mode.Perm()
-	if mode&os.ModeSetuid != 0 {
-		out |= os.ModeSetuid
-	}
-	if mode&os.ModeSetgid != 0 {
-		out |= os.ModeSetgid
-	}
+	// Strip file type bits (e.g. ModeDir, ModeSymlink), keep only perm and special bits.
+	out := mode & os.ModePerm
+	// Security hardening: strict stripping of setuid/setgid bits.
+	// We do NOT preserve them to prevent privilege escalation attacks from malicious images.
 	if mode&os.ModeSticky != 0 {
 		out |= os.ModeSticky
 	}
