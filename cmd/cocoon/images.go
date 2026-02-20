@@ -926,7 +926,12 @@ func verifyOCILayoutBootability(layoutPath string) (*image.BootCheckResult, erro
 	if err != nil {
 		return nil, fmt.Errorf("inspect OCI layout: %w", err)
 	}
-	return evaluateOCILayoutBootability(info), nil
+	result := evaluateOCILayoutBootability(info)
+
+	// Check initramfs for virtiofs module support.
+	checkInitramfsVirtiofs(result, info, layoutPath)
+
+	return result, nil
 }
 
 func evaluateOCILayoutBootability(info *oci.LayoutInfo) *image.BootCheckResult {
@@ -986,6 +991,47 @@ func validateOCIVMConfig(result *image.BootCheckResult, cfg *oci.VMImageConfig) 
 	}
 	if strings.TrimSpace(cfg.KernelCmdline) == "" {
 		result.Warnings = append(result.Warnings, "config.kernel_cmdline is empty")
+	}
+}
+
+// checkInitramfsVirtiofs locates the kernel layer blob and scans its initramfs
+// for the virtiofs kernel module. Results are recorded in the BootCheckResult
+// as a non-blocking warning.
+func checkInitramfsVirtiofs(result *image.BootCheckResult, info *oci.LayoutInfo, layoutPath string) {
+	if info == nil {
+		return
+	}
+
+	// Find the kernel layer digest.
+	var kernelDigest string
+	for _, layer := range info.Layers {
+		if layer.MediaType == oci.MediaTypeKernelLayer {
+			kernelDigest = layer.Digest
+			break
+		}
+	}
+	if kernelDigest == "" {
+		return // no kernel layer — already reported as an error elsewhere
+	}
+
+	blobPath, err := oci.LayoutBlobPath(layoutPath, kernelDigest)
+	if err != nil {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("virtiofs check: resolve kernel blob path: %v", err))
+		return
+	}
+
+	found, err := oci.CheckInitramfsVirtiofs(blobPath)
+	if err != nil {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("virtiofs check: %v", err))
+		return
+	}
+
+	result.VirtiofsChecked = true
+	result.VirtiofsFound = found
+
+	if !found {
+		result.Warnings = append(result.Warnings,
+			"virtiofs module not found in initramfs \u2014 OCI VM direct boot may fail")
 	}
 }
 

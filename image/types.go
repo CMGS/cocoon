@@ -120,6 +120,12 @@ type BootCheckResult struct {
 	BootloaderFound bool `json:"bootloader_found"`
 	// BootloaderChecked indicates the bootloader check completed.
 	BootloaderChecked bool `json:"bootloader_checked"`
+
+	// VirtiofsFound indicates whether a virtiofs kernel module was detected
+	// in the initramfs of the kernel layer.
+	VirtiofsFound bool `json:"virtiofs_found"`
+	// VirtiofsChecked indicates the virtiofs module check completed.
+	VirtiofsChecked bool `json:"virtiofs_checked"`
 }
 
 // CachedImage describes a base image stored in the image cache.
