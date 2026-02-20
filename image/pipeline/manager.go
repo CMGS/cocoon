@@ -141,20 +141,13 @@ func (m *manager) Convert(ctx context.Context, identity *image.ImageIdentity) (s
 	tmpPath := basePath + ".tmp"
 	defer func() { _ = os.Remove(tmpPath) }() // clean up on any error path
 
+	// Always convert to qcow2 v3 (compat=1.1) regardless of source format.
+	// This normalizes all base images to a consistent format that Cloud
+	// Hypervisor handles reliably with backing file chains.
 	switch format {
-	case "qcow2":
-		// Already qcow2: atomic copy (temp + fsync + rename).
-		log.Printf("image %s: source is qcow2, performing atomic copy to cache", baseKey)
-		// Use utils.CopyFile which provides fsync guarantees, then rename into place.
-		// We use 0600 for the temp file initially.
-		if err := utils.CopyFile(srcPath, tmpPath, 0o600); err != nil {
-			return "", types.NewPermanentError(fmt.Errorf("convert %s: copy qcow2 to cache: %w", baseKey, err))
-		}
-
-	case "raw":
-		// Convert raw to qcow2 using qemu-img.
-		log.Printf("image %s: converting raw -> qcow2", baseKey)
-		cmd := utils.CommandContextWithGroup(ctx, "qemu-img", "convert", "-f", "raw", "-O", "qcow2", srcPath, tmpPath) //nolint:gosec // args are controlled internal paths
+	case "qcow2", "raw":
+		log.Printf("image %s: converting %s -> qcow2 (compat=1.1)", baseKey, format)
+		cmd := utils.CommandContextWithGroup(ctx, "qemu-img", "convert", "-f", format, "-O", "qcow2", "-o", "compat=1.1", srcPath, tmpPath) //nolint:gosec // G204: args are controlled internal paths
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return "", types.NewPermanentError(fmt.Errorf("convert %s: qemu-img convert: %s: %w", baseKey, string(out), err))
 		}
