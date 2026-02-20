@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"slices"
 	"strings"
 )
@@ -24,7 +25,7 @@ var initrdEntryNames = []string{
 
 // CheckInitramfsVirtiofs opens the kernel layer tar at layerBlobPath, locates
 // the initramfs entry, decompresses it (gzip or uncompressed cpio), and scans
-// the cpio archive for any entry whose path contains "virtiofs.ko".
+// the cpio archive for a virtiofs module filename.
 //
 // It returns (found, error). When the initramfs cannot be located or read,
 // it returns (false, err) so the caller can decide whether to treat the
@@ -61,6 +62,19 @@ func CheckInitramfsVirtiofs(layerBlobPath string) (bool, error) {
 		strings.Join(initrdEntryNames, ", "))
 }
 
+// CheckInitramfsVirtiofsFromInitrdPath reads an extracted initramfs file and
+// scans the contained cpio archive for a virtiofs module filename.
+//
+// This is used by the OCI runtime create/run path to fail fast when the
+// image initramfs is not suitable for virtiofs-root boot.
+func CheckInitramfsVirtiofsFromInitrdPath(initrdPath string) (bool, error) {
+	data, err := os.ReadFile(initrdPath) //nolint:gosec // G304: path is from cocoon-managed runtime cache
+	if err != nil {
+		return false, fmt.Errorf("read initramfs %s: %w", initrdPath, err)
+	}
+	return scanCPIOForVirtiofs(data)
+}
+
 // isInitrdEntry checks whether a tar header name matches one of the known
 // initramfs filenames (with or without a leading "./" or "/" prefix).
 func isInitrdEntry(name string) bool {
@@ -70,8 +84,7 @@ func isInitrdEntry(name string) bool {
 }
 
 // scanCPIOForVirtiofs decompresses the initramfs data (detecting gzip by magic
-// bytes) and scans the resulting cpio archive for any entry path containing
-// "virtiofs.ko".
+// bytes) and scans the resulting cpio archive for a virtiofs module filename.
 //
 // The cpio format is intentionally parsed with a minimal hand-rolled reader
 // rather than importing a full cpio library, keeping dependencies lean.
@@ -135,7 +148,7 @@ func decompressGzip(data []byte) ([]byte, error) {
 }
 
 // cpioContainsVirtiofs scans raw cpio bytes (newc format) for any entry whose
-// filename path contains "virtiofs.ko". It uses a minimal cpio newc parser.
+// filename is a virtiofs module. It uses a minimal cpio newc parser.
 //
 // newc format (per man 5 cpio):
 //
@@ -187,7 +200,7 @@ func cpioContainsVirtiofs(data []byte) bool {
 			return false
 		}
 
-		// Check if this entry path contains virtiofs.ko (with or without
+		// Check if this entry is a virtiofs module (with or without
 		// compression extension).
 		if containsVirtiofsModule(name) {
 			return true
@@ -204,20 +217,18 @@ func cpioContainsVirtiofs(data []byte) bool {
 
 // containsVirtiofsModule returns true if the path contains a virtiofs kernel
 // module filename (virtiofs.ko, virtiofs.ko.xz, virtiofs.ko.zst, virtiofs.ko.gz).
-func containsVirtiofsModule(path string) bool {
-	// Match by checking if any path segment ends with a virtiofs module name.
-	suffixes := []string{
+func containsVirtiofsModule(modulePath string) bool {
+	base := path.Base(strings.TrimSpace(modulePath))
+	if base == "" {
+		return false
+	}
+	names := []string{
 		"virtiofs.ko",
 		"virtiofs.ko.xz",
 		"virtiofs.ko.zst",
 		"virtiofs.ko.gz",
 	}
-	for _, suffix := range suffixes {
-		if strings.HasSuffix(path, suffix) {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(names, base)
 }
 
 // parseHex8 parses an 8-byte ASCII hex string into a uint32.
