@@ -283,6 +283,49 @@ func TestResolveRuntimeImageRef_BareFilenameResolvedAsLocal(t *testing.T) {
 	}
 }
 
+func TestResolveRuntimeImageRef_BareFilenameSkipsDirectoriesAndPaths(t *testing.T) {
+	cfg := testResolverConfig(t)
+
+	tmpDir := t.TempDir()
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if chdirErr := os.Chdir(tmpDir); chdirErr != nil {
+		t.Fatalf("chdir temp dir: %v", chdirErr)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldWD)
+	})
+
+	// Create a directory with a registry-like name (user/repo).
+	regLikeDir := filepath.Join(tmpDir, "cmgs", "test-u2404")
+	if err := os.MkdirAll(regLikeDir, 0o755); err != nil {
+		t.Fatalf("mkdir registry-like path: %v", err)
+	}
+
+	// A ref with "/" must NOT be caught by bare filename fallback.
+	got, err := resolveRuntimeImageRefForTest(t.Context(), cfg, "cmgs/test-u2404")
+	if err != nil {
+		t.Fatalf("resolveRuntimeImageRef: %v", err)
+	}
+	if got.Source != runtimeImageSourceRegistry {
+		t.Fatalf("Source = %q, want %q (ref with / should go to registry)", got.Source, runtimeImageSourceRegistry)
+	}
+
+	// Create a bare directory in CWD — must NOT match (not a regular file).
+	if err := os.Mkdir(filepath.Join(tmpDir, "mydir"), 0o755); err != nil {
+		t.Fatalf("mkdir bare dir: %v", err)
+	}
+	gotDir, err := resolveRuntimeImageRefForTest(t.Context(), cfg, "mydir")
+	if err != nil {
+		t.Fatalf("resolveRuntimeImageRef: %v", err)
+	}
+	if gotDir.Source != runtimeImageSourceRegistry {
+		t.Fatalf("Source = %q, want %q (directories should not match bare filename fallback)", gotDir.Source, runtimeImageSourceRegistry)
+	}
+}
+
 func TestResolveRuntimeImageRef_NonExplicitLocalFileDoesNotShadowOCITag(t *testing.T) {
 	cfg := testResolverConfig(t)
 	store := oci.NewStore(cfg)
