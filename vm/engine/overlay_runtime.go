@@ -179,7 +179,7 @@ func buildOverlayMountData(lowerDirs []string, upperDir, workDir string) (string
 }
 
 func ensureOverlayDir(path string) error {
-	if err := os.MkdirAll(path, 0o755); err != nil { //nolint:gosec // directories are VM runtime state
+	if err := os.MkdirAll(path, 0o700); err != nil { //nolint:gosec // G301: restricted to owner — VM runtime state
 		return fmt.Errorf("create overlay directory %s: %w", path, err)
 	}
 	return nil

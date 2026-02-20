@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/CMGS/cocoon/config"
 	"github.com/CMGS/cocoon/image"
@@ -23,6 +24,14 @@ import (
 	"github.com/CMGS/cocoon/storage"
 	"github.com/CMGS/cocoon/types"
 	"github.com/CMGS/cocoon/utils"
+)
+
+const (
+	// urlDownloadTimeout is the overall timeout for cloud image URL downloads.
+	urlDownloadTimeout = 30 * time.Minute
+
+	// maxURLDownloadBytes is the maximum allowed download size (20 GiB).
+	maxURLDownloadBytes int64 = 20 << 30
 )
 
 // Compile-time interface check.
@@ -698,7 +707,8 @@ func (m *manager) pullURL(ctx context.Context, ref string) (*image.ImageIdentity
 		return nil, fmt.Errorf("create HTTP request for %s: %w", ref, err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: urlDownloadTimeout}
+	resp, err := client.Do(req)
 	if err != nil {
 		// Classify network-level errors as transient.
 		httpErr := fmt.Errorf("HTTP GET %s: %w", ref, err)
@@ -722,8 +732,10 @@ func (m *manager) pullURL(ctx context.Context, ref string) (*image.ImageIdentity
 	}
 
 	// Stream body to temp file while computing SHA-256 checksum.
+	// LimitReader guards against unbounded downloads from malicious/misconfigured servers.
 	h := sha256.New()
-	reader := io.TeeReader(resp.Body, h)
+	limitedBody := io.LimitReader(resp.Body, maxURLDownloadBytes+1)
+	reader := io.TeeReader(limitedBody, h)
 
 	contentLength := resp.ContentLength
 	var written int64
@@ -753,6 +765,11 @@ func (m *manager) pullURL(ctx context.Context, ref string) (*image.ImageIdentity
 			}
 			return nil, fmt.Errorf("read HTTP response body from %s: %w", ref, readErr)
 		}
+	}
+
+	// Guard against downloads exceeding the size limit.
+	if written > maxURLDownloadBytes {
+		return nil, types.NewPermanentError(fmt.Errorf("download from %s exceeded maximum size limit (%d bytes)", ref, maxURLDownloadBytes))
 	}
 
 	// Flush and sync temp file.

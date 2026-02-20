@@ -75,7 +75,7 @@ func buildLaunchArgs(socketPath string) []string {
 func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (int, error) {
 	// Ensure runtime directory exists.
 	runtimeDir := c.cfg.VMRuntimeDir(vmID)
-	if err := os.MkdirAll(runtimeDir, 0o755); err != nil { //nolint:gosec // G301: VM runtime dir needs to be world-readable for CH process
+	if err := os.MkdirAll(runtimeDir, 0o700); err != nil { //nolint:gosec // G301: restricted to owner — VM runtime state
 		return 0, fmt.Errorf("create runtime dir %s: %w", runtimeDir, err)
 	}
 
@@ -314,7 +314,7 @@ func (c *client) cleanupRuntimeFiles(vmID string) {
 // TPM socket is ready for CH's --tpm flag.
 func (c *client) startSwtpm(vmID string, tpmSocketPath string) error {
 	tpmStateDir := c.cfg.VMTPMStateDir(vmID)
-	if err := os.MkdirAll(tpmStateDir, 0o755); err != nil { //nolint:gosec // G301: TPM state dir needs same access as VM dir
+	if err := os.MkdirAll(tpmStateDir, 0o700); err != nil { //nolint:gosec // G301: restricted to owner — TPM state
 		return fmt.Errorf("create TPM state dir %s: %w", tpmStateDir, err)
 	}
 

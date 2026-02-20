@@ -101,7 +101,7 @@ func (m *fileCOWManager) CreateOverlay(baseKey, vmID, diskSize string) (string, 
 	}
 
 	vmDir := m.cfg.VMPersistDir(vmID)
-	if err := os.MkdirAll(vmDir, 0o755); err != nil { //nolint:gosec // G301: VM directory needs world-readable access for CH process
+	if err := os.MkdirAll(vmDir, 0o700); err != nil { //nolint:gosec // G301: restricted to owner — VM persistent state
 		return "", fmt.Errorf("create VM directory: %w", err)
 	}
 

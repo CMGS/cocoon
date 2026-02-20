@@ -334,6 +334,42 @@ func TestGC_CollectOrphanedOverlays(t *testing.T) {
 	}
 }
 
+func TestGC_CollectOrphanedOverlays_SkipsAliveProcess(t *testing.T) {
+	cfg := newTestConfig(t)
+	gc := NewGarbageCollector(cfg)
+
+	vmID := "vm-alive-process"
+	vmDir := filepath.Join(cfg.VMDir(), vmID)
+	if err := os.MkdirAll(vmDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll vm dir: %v", err)
+	}
+	overlayPath := filepath.Join(vmDir, "overlay.qcow2")
+	if err := os.WriteFile(overlayPath, []byte("overlay"), 0o644); err != nil {
+		t.Fatalf("WriteFile overlay: %v", err)
+	}
+
+	// Write a metadata.json with the current process PID (which is alive).
+	// Set hypervisor_binary to the test binary basename so ValidateProcess matches.
+	procName := filepath.Base(os.Args[0])
+	metaPath := cfg.VMMetadataPath(vmID)
+	metaContent := fmt.Sprintf(`{"vm_id":%q,"state":"running","process_pid":%d,"hypervisor_binary":%q,"schema_version":1}`, vmID, os.Getpid(), procName)
+	if err := os.WriteFile(metaPath, []byte(metaContent), 0o644); err != nil {
+		t.Fatalf("WriteFile metadata: %v", err)
+	}
+
+	collected, err := gc.CollectOrphanedOverlays()
+	if err != nil {
+		t.Fatalf("CollectOrphanedOverlays: %v", err)
+	}
+	if len(collected) != 0 {
+		t.Fatalf("collected=%v, want empty (process is alive)", collected)
+	}
+	// VM directory must still exist.
+	if _, err := os.Stat(vmDir); err != nil {
+		t.Fatalf("VM dir should still exist when process is alive: %v", err)
+	}
+}
+
 func TestGC_CollectTempFiles_RemovesOldDirectories(t *testing.T) {
 	cfg := newTestConfig(t)
 	gc := NewGarbageCollector(cfg)
