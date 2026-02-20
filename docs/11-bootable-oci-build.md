@@ -397,7 +397,7 @@ type BootCheckResult struct {
 In Phase 1, bootable OCI images are consumed through the [OCI Conversion Pipeline](./04-oci-conversion.md):
 
 ```
-OCI Image (rootfs) -> Buildah extraction -> guestfish partitioning -> qcow2
+OCI Image (rootfs) -> OCI rootfs materialization -> guestfish partitioning -> qcow2
                                               |
                                               +-- Create GPT partition table
                                               +-- Create ESP (FAT32)

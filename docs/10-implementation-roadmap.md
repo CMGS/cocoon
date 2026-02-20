@@ -978,7 +978,6 @@ func TestOrphanedSocketCleanup(t *testing.T)
 cocoon doctor
 # Output:
 # ✓ Cloud Hypervisor v38.0 found
-# ✓ Buildah 1.35.0 found
 # ✓ qemu-img 8.0 found
 # ✓ libguestfs tools found
 # ✓ /dev/kvm accessible
@@ -1280,7 +1279,7 @@ qemu-img >= 8.0
 - [x] GC performs permanent deletion of unreferenced images (lock-safe check-and-delete) (`storage/local/gc.go`)
 
 **OCI Conversion**:
-- [x] Buildah pulls images successfully (`image/pipeline/oci_linux.go`)
+- [x] Native OCI identify/pull pipeline works (`image/pipeline/identify.go`)
 - [x] Manifest checksum calculated correctly (`image/pipeline/checksum.go`)
 - [x] Rootfs converted to bootable qcow2 (`image/pipeline/convert_linux.go`)
 - [x] Cache deduplicates identical images (`image/pipeline/manager.go`)
