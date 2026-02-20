@@ -307,11 +307,15 @@ func pullAndMountOCIPlatform(ctx context.Context, cfg *config.CocoonConfig,
     ref := identity.SourceRef
     root := cfg.BuildahRoot
 
-    // 1. Pull image with buildah
-    runCmd(ctx, "buildah", "--root", root, "pull", ref)
+    // 1. Pull image with digest pinning (TOCTOU prevention).
+    //    If ManifestDigest is set (from the identify phase), the pull uses
+    //    ref@sha256:<manifestDigest> to ensure the pulled content matches
+    //    the manifest that was inspected. This prevents a race where the
+    //    tag is updated between inspect and pull.
+    pullRef, _ := pullOCIRef(ctx, root, ref, identity.ManifestDigest)
 
     // 2. Create working container
-    containerOut, _ := runCmd(ctx, "buildah", "--root", root, "from", ref)
+    containerOut, _ := runCmd(ctx, "buildah", "--root", root, "from", pullRef)
     containerID := strings.TrimSpace(string(containerOut))
 
     // 3. Mount container to get rootfs path
@@ -686,13 +690,14 @@ The `ImageIdentity` struct (`image/types.go`):
 
 ```go
 type ImageIdentity struct {
-    Checksum    string    // 16-char hex prefix of SHA-256
-    Arch        string    // "amd64", "arm64", etc.
-    FullDigest  string    // Full 64-char hex SHA-256 (for collision checks)
-    SourceRef   string    // Original image reference
-    ImageType   ImageType // OCI, URL, or LocalFile
-    TempPath    string    // Transient: path to pulled image (not persisted)
-    ContainerID string    // Transient: buildah container ID (not persisted)
+    Checksum       string    // 16-char hex prefix of SHA-256
+    Arch           string    // "amd64", "arm64", etc.
+    FullDigest     string    // Full 64-char hex SHA-256 (for collision checks)
+    ManifestDigest string    // SHA-256 of raw OCI manifest JSON (for digest-pinned pulls)
+    SourceRef      string    // Original image reference
+    ImageType      ImageType // OCI, URL, or LocalFile
+    TempPath       string    // Transient: path to pulled image (not persisted)
+    ContainerID    string    // Transient: buildah container ID (not persisted)
 }
 
 func (id *ImageIdentity) BaseKey() string {
@@ -770,8 +775,9 @@ func (m *manager) prepareOCI(ctx context.Context, ref string) (*image.ImageIdent
     tmpPath := basePath + ".tmp"
     convertOCI(ctx, identity.TempPath, tmpPath, "10G")
 
-    // Atomic rename into cache.
+    // Atomic rename into cache, then mark read-only (immutable for COW overlays).
     os.Rename(tmpPath, basePath)
+    os.Chmod(basePath, 0o444)
 
     // Cleanup buildah container.
     cleanupBuildahContainer(identity.ContainerID, m.cfg)
@@ -903,14 +909,14 @@ func IsTransient(err error) bool {
 ```go
 // Actual implementation (image/pipeline/oci_linux.go)
 func classifySkopeoError(err error) error {
-    msg := err.Error()
-    // Permanent: unauthorized, denied, not found, manifest unknown, NAME_UNKNOWN
+    msg := strings.ToLower(err.Error())
+    // Permanent: unauthorized, denied, not found, manifest unknown, name_unknown
     if strings.Contains(msg, "unauthorized") ||
         strings.Contains(msg, "authentication required") ||
         strings.Contains(msg, "denied") ||
         strings.Contains(msg, "not found") ||
         strings.Contains(msg, "manifest unknown") ||
-        strings.Contains(msg, "NAME_UNKNOWN") {
+        strings.Contains(msg, "name_unknown") {
         return types.NewPermanentError(err)
     }
     // Everything else is transient (network/timeout)

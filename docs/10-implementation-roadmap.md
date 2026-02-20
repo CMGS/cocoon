@@ -3,7 +3,13 @@
 **Version**: 1.0
 **Status**: Historical
 
-> **Note**: Package paths (`pkg/...`) and code skeletons below reflect the original planning structure, not the current implementation. See actual module layout: `config/`, `image/`, `storage/`, `vm/`, `hypervisor/`, `cmd/cocoon/`, `lock/`, `types/`, `utils/`.
+> **IMPORTANT -- Historical Document**: This roadmap was written during initial planning.
+> Package paths throughout this document use a `pkg/` prefix (e.g., `pkg/hypervisor/`,
+> `pkg/storage/`, `pkg/vm/`) which **no longer exists**. The actual packages live at
+> the repository top level: `config/`, `image/`, `storage/`, `vm/`, `hypervisor/`,
+> `cmd/cocoon/`, `lock/`, `types/`, `utils/`, `oci/`. Code skeletons are illustrative
+> of the original plan, not the current implementation.
+>
 > **Historical sync note (2026-02-19, updated)**: OCI direct runtime from `create/run` is implemented for local OCI tags and registry OCI VM refs (registry refs are auto-pulled before runtime materialization). Any earlier note claiming remote runtime materialization as follow-up is superseded.
 **Phase**: Phase 1
 **Last Updated**: 2026-02-19
@@ -86,15 +92,15 @@ These must be implemented correctly from the start:
 
 **Checklist** (ALL must be checked before Phase 0 begins):
 
-- [ ] **config.json schema** finalized (docs/07-vm-lifecycle.md § 5)
+- [x] **config.json schema** finalized (docs/07-vm-lifecycle.md § 5)
   - Immutable fields defined (base_key, boot_strategy), source-of-truth rules documented
-- [ ] **VM identifier rules** finalized (docs/07-vm-lifecycle.md § 1.4)
+- [x] **VM identifier rules** finalized (docs/07-vm-lifecycle.md § 1.4)
   - vm_id format, name uniqueness, CLI resolution, name-index.json
-- [ ] **Canonical filesystem layout** finalized (docs/05-storage-management.md § 2.1)
+- [x] **Canonical filesystem layout** finalized (docs/05-storage-management.md § 2.1)
   - Single source of truth for all paths, overlay naming, references.json key format
-- [ ] **Image checksum identity** finalized (docs/04-oci-conversion.md § 6 + docs/05-storage-management.md)
+- [x] **Image checksum identity** finalized (docs/04-oci-conversion.md § 6 + docs/05-storage-management.md)
   - Precise algorithm, multi-arch strategy, cache filename pattern
-- [ ] **Boot contract** stable (docs/01-boot-contract.md)
+- [x] **Boot contract** stable (docs/01-boot-contract.md)
   - UEFI/direct-kernel-boot parameters, firmware paths, boot detection patterns
 
 **Why This Gate Exists**: Starting implementation before these specs are frozen will result in:
@@ -215,7 +221,6 @@ go run ./cmd/test-client/main.go
    // pkg/storage/gc.go
    func GarbageCollect() error
    func FindOrphanedOverlays() ([]string, error)
-   func CleanupTrash() error
    ```
 
 **Validation**:
@@ -751,13 +756,15 @@ func ValidateTransition(from, to VMState) error {
 
 **Day 1-2: Lock Hierarchy**
 ```go
-// Correct order: Global > Image > VM > References
+// Correct order per docs/06: GC (L1) > Reference (L2) > Image (L3) > VM Metadata (L4)
 func CreateVM(imageRef, vmID string) error {
-    globalLock := AcquireGlobalLock()
-    defer globalLock()
+    // Image lock (Level 3) is acquired internally by PrepareImage.
+    checksum := PrepareImage(imageRef)
 
-    checksum := PrepareImage(imageRef)  // Uses ImageLock internally
+    // Reference lock (Level 2) is acquired internally by AddReference.
+    AddReference(checksum, vmID)
 
+    // VM metadata lock (Level 4) is acquired for metadata writes.
     vmLock := AcquireVMLock(vmID)
     defer vmLock()
 
@@ -1274,7 +1281,7 @@ qemu-img >= 8.0
 - [x] Reference counter maintains accurate counts (`storage/local/refcount.go`)
 - [x] GC removes unused base images (`storage/local/gc.go`)
 - [x] Atomic file operations prevent corruption (`utils/atomic.go`)
-- [x] Trash system protects against accidental deletion (`storage/local/gc.go`)
+- [x] GC performs permanent deletion of unreferenced images (lock-safe check-and-delete) (`storage/local/gc.go`)
 
 **OCI Conversion**:
 - [x] Buildah pulls images successfully (`image/pipeline/oci_linux.go`)

@@ -373,14 +373,18 @@ The verification logic mirrors the `VerifyBootability()` function defined in the
 
 ```go
 type BootCheckResult struct {
-    Bootable        bool     // Overall result
-    BootModes       []string // Supported boot modes ("uefi", "direct")
-    KernelFound     bool     // /boot/vmlinuz* present
-    InitrdFound     bool     // /boot/initrd* or /boot/initramfs* present
-    SystemdFound    bool     // /sbin/init -> systemd
-    BootloaderFound bool     // GRUB EFI packages/modules present
-    Errors          []string // List of failed checks
-    Warnings        []string // Non-fatal issues
+    Bootable          bool     // Overall result
+    BootModes         []string // Supported boot modes ("uefi", "direct")
+    KernelFound       bool     // /boot/vmlinuz* present
+    KernelChecked     bool     // Whether the kernel check was performed
+    InitrdFound       bool     // /boot/initrd* or /boot/initramfs* present
+    InitrdChecked     bool     // Whether the initrd check was performed
+    SystemdFound      bool     // /sbin/init -> systemd
+    SystemdChecked    bool     // Whether the systemd check was performed
+    BootloaderFound   bool     // GRUB EFI packages/modules present
+    BootloaderChecked bool     // Whether the bootloader check was performed
+    Errors            []string // List of failed checks
+    Warnings          []string // Non-fatal issues
 }
 ```
 

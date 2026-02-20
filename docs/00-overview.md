@@ -122,10 +122,11 @@ Modern VM workloads and development environments face a challenging trade-off be
 ## Architecture Overview
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                          Cocoon CLI                               │
-│   create/start/stop/kill/delete/inspect/ps/logs/console/doctor     │
-└───────────────────────────┬──────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                              Cocoon CLI                                    │
+│  run/create/start/stop/kill/delete/inspect/ps/logs/console/doctor/gc       │
+│  image/firmware                                                            │
+└─────────────────────────────────┬────────────────────────────────────────┘
                             │
           ┌─────────────────┼─────────────────────┐
           │                 │                     │
@@ -308,7 +309,7 @@ Cocoon is a general-purpose lightweight VM manager. Common use cases include:
 
 **Core (Phase 1)**:
 - **Hypervisor**: Cloud Hypervisor (Rust-based VMM, production-grade)
-- **Language**: Go 1.25+ (interface-driven, factory pattern)
+- **Language**: Go 1.25.0 (interface-driven, factory pattern)
 - **OCI Tools**: Buildah (daemonless), go-containerregistry (OCI image push/login)
 - **Storage**: qcow2 via qemu-img and libguestfs
 - **Firmware**: OVMF (UEFI via CLOUDHV.fd) for cloud images; OCI VM path uses direct kernel boot (`payload.kernel` + `payload.initramfs`)
@@ -381,7 +382,7 @@ For quick evaluation:
 
 6. **Verify it works** (5 min):
    ```bash
-   cocoon list
+   cocoon ps
    cocoon inspect test-vm
    cocoon logs test-vm --follow
    cocoon stop test-vm

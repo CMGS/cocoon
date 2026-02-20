@@ -77,6 +77,7 @@ Lock file paths are additionally documented in [06-concurrency.md](./06-concurre
 ├── {vm_id}-serial.log                    # Serial console per VM (e.g., vm-01HXYZ...-serial.log)
 ├── {vm_id}-ch.log                        # Cloud Hypervisor log per VM
 ├── {vm_id}-swtpm.log                     # swtpm log per VM (if TPM enabled)
+├── {vm_id}-virtiofsd.log                 # virtiofsd log per VM (OCI runtime VMs only)
 └── cocoon.log                            # Main cocoon log (optional)
 ```
 
@@ -372,8 +373,9 @@ type CocoonConfig struct {
     DefaultDiskSize string `json:"default_disk_size"`   // Default: "10G"
 
     // Timeouts
-    BootTimeoutSeconds int `json:"boot_timeout_seconds"`  // Default: 60
-    StopTimeoutSeconds int `json:"stop_timeout_seconds"`  // Default: 30
+    BootTimeoutSeconds        int `json:"boot_timeout_seconds"`          // Default: 60
+    StopTimeoutSeconds        int `json:"stop_timeout_seconds"`          // Default: 30
+    RegistryHTTPTimeoutSeconds int `json:"registry_http_timeout_seconds"` // Default: 0 (use library default)
 
     // Boot detection patterns (regex; defaults used if empty)
     BootSuccessPatterns []string `json:"boot_success_patterns,omitempty"`
@@ -400,6 +402,9 @@ func (c *CocoonConfig) OCIBuildTagLock() string    // RootDir/db/oci-build-tags.
 func (c *CocoonConfig) OCILayerRefsFile() string   // RootDir/db/oci-layer-refs.json
 func (c *CocoonConfig) OCILayerRefsLock() string   // RootDir/db/oci-layer-refs.lock
 
+// Non-path derived helper (excluded from path helpers above):
+// func (c *CocoonConfig) RegistryHTTPTimeout() time.Duration  // Returns configured registry HTTP timeout (default: 30s)
+
 // EnsureDirs creates all required directories (db, cache/images,
 // cache/manifests, cache/locks, cache/oci/blobs/sha256, cache/oci/layouts,
 // cache/oci/runtime, vms, temp, firmware, buildah, RuntimeDir/vms, LogDir).
@@ -412,7 +417,7 @@ The following path helpers are used by implemented and planned Phase 2
 features. See the Phase 2 tree diagram above for the full directory layout.
 
 ```go
-// Phase 2 — Warm Start (docs/15-warm-start.md)
+// Phase 2 — Warm Start (docs/15-warm-start.md) — Planned, not yet implemented
 func (c *CocoonConfig) CheckpointsDir() string                      // RootDir/checkpoints
 func (c *CocoonConfig) CheckpointDir(ckptID string) string          // RootDir/checkpoints/{ckptID}
 func (c *CocoonConfig) CheckpointIndexPath() string                 // RootDir/checkpoints/checkpoint-index.json
@@ -442,20 +447,20 @@ func (c *CocoonConfig) VMOCIWorkDir(vmID string) string                   // Roo
 func (c *CocoonConfig) VMOCIMergedDir(vmID string) string                 // RootDir/vms/{vmID}/merged
 func (c *CocoonConfig) VMOCIRootfsVirtioFSSocketPath(vmID string) string  // RuntimeDir/vms/{vmID}/virtiofsd.sock
 
-// Phase 2 — Networking (docs/16-networking.md)
+// Phase 2 — Networking (docs/16-networking.md) — Planned, not yet implemented
 func (c *CocoonConfig) DnsmasqStateDir() string                     // RootDir/dnsmasq
 func (c *CocoonConfig) DnsmasqBridgeDir(bridge string) string       // RootDir/dnsmasq/{bridge}
 func (c *CocoonConfig) VMNetNSPath(vmID string) string              // RuntimeDir/vms/{vmID}/netns
 
-// Phase 2 — Volume Passthrough (docs/17-volume-passthrough.md)
+// Phase 2 — Volume Passthrough (docs/17-volume-passthrough.md) — Planned, not yet implemented
 func (c *CocoonConfig) VMVirtiofsSocketPath(vmID, tag string) string // RuntimeDir/vms/{vmID}/virtiofs-{tag}.sock
 func (c *CocoonConfig) VMVirtiofsPIDPath(vmID, tag string) string    // RuntimeDir/vms/{vmID}/virtiofs-{tag}.pid
 func (c *CocoonConfig) SharesDir() string                            // RootDir/shares
 ```
 
 `EnsureDirs()` already creates `RootDir/cache/oci/blobs/sha256` and
-`RootDir/cache/oci/layouts` and `RootDir/cache/oci/runtime` at startup. It will be extended to create
-`RootDir/checkpoints` and `RootDir/shares` at startup. `RootDir/dnsmasq`
+`RootDir/cache/oci/layouts` and `RootDir/cache/oci/runtime` at startup. Creation of
+`RootDir/checkpoints` and `RootDir/shares` is planned but not yet implemented. `RootDir/dnsmasq`
 is created when the first networked VM is provisioned. Per-VM directories
 (`checkpoints/{ckptID}`, `vms/{vmID}/upper`, `vms/{vmID}/work`,
 `vms/{vmID}/merged`, network namespace bind mounts, virtiofsd sockets)
@@ -760,12 +765,18 @@ func (gc *fileGarbageCollector) CollectUnreferencedOCIBlobs() ([]string, error) 
 // CollectUnreferencedOCIRuntimeCaches removes runtime cache entries in
 // cache/oci/runtime/ that have no VM pins in oci-runtime-refs.json.
 // Lock: gc.lock (L1) -> oci-runtime-refs.lock.
+//
+// Note: This is a concrete-type method on fileGarbageCollector, NOT part of
+// the GarbageCollector interface. It is accessed via type assertion in the CLI.
 func (gc *fileGarbageCollector) CollectUnreferencedOCIRuntimeCaches() ([]string, error) { ... }
 
 // CollectStaleConversionLocks removes stale conversion lock files from
 // cache/locks/ where the corresponding base image no longer exists and
 // the lock is not currently held.
 // Lock: gc.lock (L1) only.
+//
+// Note: This is a concrete-type method on fileGarbageCollector, NOT part of
+// the GarbageCollector interface. It is accessed via type assertion in the CLI.
 func (gc *fileGarbageCollector) CollectStaleConversionLocks(maxAge time.Duration) ([]string, error) { ... }
 
 // CollectTempFiles removes files/directories in temp/ older than maxAge.

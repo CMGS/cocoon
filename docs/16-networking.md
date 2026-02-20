@@ -409,12 +409,14 @@ The `CHVMConfig` struct (`hypervisor/types.go`) gains a `Net` field for the `--n
 
 ```go
 type CHVMConfig struct {
-    CPUs    CHCPUConfig     `json:"cpus"`
-    Memory  CHMemoryConfig  `json:"memory"`
-    Disks   []CHDiskConfig  `json:"disks,omitempty"`
-    Net     []CHNetConfig   `json:"net,omitempty"`    // NEW: network devices
-    Serial  CHSerialConfig  `json:"serial"`
-    Console CHConsoleConfig `json:"console"`
+    Payload *CHPayloadConfig `json:"payload,omitempty"`  // Boot firmware or kernel
+    CPUs    CHCPUConfig      `json:"cpus"`
+    Memory  CHMemoryConfig   `json:"memory"`
+    Disks   []CHDiskConfig   `json:"disks,omitempty"`
+    Net     []CHNetConfig    `json:"net,omitempty"`      // NEW: network devices
+    Serial  CHSerialConfig   `json:"serial"`
+    Console CHConsoleConfig  `json:"console"`
+    TPM     *CHTPMConfig     `json:"tpm,omitempty"`      // TPM 2.0 emulation
 }
 
 // CHNetConfig describes a single virtio-net device.

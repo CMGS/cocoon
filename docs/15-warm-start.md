@@ -1732,6 +1732,7 @@ See [13-pause-resume.md](./13-pause-resume.md). Must be completed first.
 
 ```go
 type CHVMConfig struct {
+    Payload *CHPayloadConfig `json:"payload,omitempty"`     // Boot firmware or kernel
     CPUs    CHCPUConfig      `json:"cpus"`
     Memory  CHMemoryConfig   `json:"memory"`
     Disks   []CHDiskConfig   `json:"disks,omitempty"`
@@ -1739,6 +1740,7 @@ type CHVMConfig struct {
     Fs      []CHFsConfig     `json:"fs,omitempty"`         // Volume passthrough (virtio-fs)
     Serial  CHSerialConfig   `json:"serial"`
     Console CHConsoleConfig  `json:"console"`               // Console: mode "Pty"
+    TPM     *CHTPMConfig     `json:"tpm,omitempty"`         // TPM 2.0 emulation (swtpm)
     Devices []CHDeviceConfig `json:"devices,omitempty"`     // Device passthrough (VFIO)
 }
 ```
