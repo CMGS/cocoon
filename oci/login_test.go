@@ -136,7 +136,6 @@ func TestNormalizeRegistry(t *testing.T) {
 		{name: "empty", input: "", wantErr: true},
 	}
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got, err := normalizeRegistry(tc.input)

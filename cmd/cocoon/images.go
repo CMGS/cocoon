@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -1204,7 +1203,7 @@ func materializeOCITagForBuild(ctx context.Context, app *appContext, store *oci.
 	}
 
 	for _, layer := range rootfsLayers {
-		layerPath, layerErr := ociLayoutBlobPath(entry.LayoutPath, layer.Digest)
+		layerPath, layerErr := oci.LayoutBlobPath(entry.LayoutPath, layer.Digest)
 		if layerErr != nil {
 			cleanup()
 			return "", nil, fmt.Errorf("resolve rootfs layer %s: %w", layer.Digest, layerErr)
@@ -1220,7 +1219,7 @@ func materializeOCITagForBuild(ctx context.Context, app *appContext, store *oci.
 		cleanup()
 		return "", nil, fmt.Errorf("create kernel workspace: %w", mkErr)
 	}
-	kernelLayerPath, err := ociLayoutBlobPath(entry.LayoutPath, kernelLayer.Digest)
+	kernelLayerPath, err := oci.LayoutBlobPath(entry.LayoutPath, kernelLayer.Digest)
 	if err != nil {
 		cleanup()
 		return "", nil, fmt.Errorf("resolve kernel layer %s: %w", kernelLayer.Digest, err)
@@ -1293,24 +1292,6 @@ func locateLayerDescriptors(info *oci.LayoutInfo) (oci.LayerInfo, []oci.LayerInf
 	return kernelLayer, rootfsLayers, nil
 }
 
-func ociLayoutBlobPath(layoutPath, digest string) (string, error) {
-	const prefix = "sha256:"
-	if !strings.HasPrefix(digest, prefix) {
-		return "", fmt.Errorf("unsupported digest format %q", digest)
-	}
-	hex := strings.TrimPrefix(digest, prefix)
-	if len(hex) != 64 {
-		return "", fmt.Errorf("invalid digest length for %q", digest)
-	}
-	for _, c := range hex {
-		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
-		if !isHex {
-			return "", fmt.Errorf("invalid digest characters for %q", digest)
-		}
-	}
-	return filepath.Join(layoutPath, "blobs", "sha256", hex), nil
-}
-
 func extractTarLayer(ctx context.Context, layerPath, targetDir string) error {
 	if err := utils.ExtractOCILayerTarToDir(ctx, layerPath, targetDir); err != nil {
 		return fmt.Errorf("extract tar %s: %w", layerPath, err)
@@ -1330,57 +1311,22 @@ func installKernelArtifacts(kernelDir, bootDir string, cfg *oci.VMImageConfig) e
 		}
 	}
 
-	kernelSrc, err := firstExistingPath(kernelDir, kernelCandidates)
+	kernelSrc, err := utils.FirstExistingPath(kernelDir, kernelCandidates)
 	if err != nil {
 		return fmt.Errorf("locate kernel in extracted layer: %w", err)
 	}
-	initrdSrc, err := firstExistingPath(kernelDir, initrdCandidates)
+	initrdSrc, err := utils.FirstExistingPath(kernelDir, initrdCandidates)
 	if err != nil {
 		return fmt.Errorf("locate initrd in extracted layer: %w", err)
 	}
 
-	if err := copyFile(kernelSrc, filepath.Join(bootDir, "vmlinuz"), 0o644); err != nil { //nolint:gosec // host-side temp file
+	if err := utils.CopyFile(kernelSrc, filepath.Join(bootDir, "vmlinuz"), 0o644); err != nil { //nolint:gosec // host-side temp file
 		return fmt.Errorf("copy kernel into /boot: %w", err)
 	}
-	if err := copyFile(initrdSrc, filepath.Join(bootDir, "initrd.img"), 0o644); err != nil { //nolint:gosec // host-side temp file
+	if err := utils.CopyFile(initrdSrc, filepath.Join(bootDir, "initrd.img"), 0o644); err != nil { //nolint:gosec // host-side temp file
 		return fmt.Errorf("copy initrd into /boot: %w", err)
 	}
 	return nil
-}
-
-func firstExistingPath(baseDir string, rels []string) (string, error) {
-	for _, rel := range rels {
-		p := filepath.Join(baseDir, rel)
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
-		}
-	}
-	return "", fmt.Errorf("none of %v found under %s", rels, baseDir)
-}
-
-func copyFile(src, dst string, mode os.FileMode) error {
-	in, err := os.Open(src) //nolint:gosec // src is local path controlled by caller
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = in.Close()
-	}()
-
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode) //nolint:gosec // destination is a controlled local temp path
-	if err != nil {
-		return err
-	}
-
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		return err
-	}
-	if err := out.Sync(); err != nil {
-		_ = out.Close()
-		return err
-	}
-	return out.Close()
 }
 
 func buildQcow2FromRootfs(ctx context.Context, rootfsPath, outputPath string) error {

@@ -2,12 +2,9 @@ package oci
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -80,7 +77,7 @@ func Push(ctx context.Context, cfg *config.CocoonConfig, ref string) (*PushResul
 	); err != nil {
 		close(progressDone)
 		progressWG.Wait()
-		return nil, classifyPushError(err)
+		return nil, classifyRegistryError("push", err)
 	}
 	close(progressDone)
 	progressWG.Wait()
@@ -98,68 +95,6 @@ func Push(ctx context.Context, cfg *config.CocoonConfig, ref string) (*PushResul
 		Ref:            ref,
 		ManifestDigest: manifestDigest.String(),
 	}, nil
-}
-
-// classifyPushError categorizes push errors as transient or permanent.
-func classifyPushError(err error) error {
-	errStr := err.Error()
-
-	// Permanent errors: authentication, authorization, not found.
-	permanentPatterns := []string{
-		"UNAUTHORIZED",
-		"unauthorized",
-		"DENIED",
-		"denied",
-		"FORBIDDEN",
-		"forbidden",
-		"NAME_UNKNOWN",
-		"not found",
-		"invalid reference",
-	}
-	for _, p := range permanentPatterns {
-		if strings.Contains(errStr, p) {
-			return types.NewPermanentError(fmt.Errorf("push %w", err))
-		}
-	}
-
-	// Transient errors: network issues, timeouts, server errors.
-	if isNetworkError(err) {
-		return types.NewTransientError(fmt.Errorf("push %w", err))
-	}
-	transientPatterns := []string{
-		"timeout",
-		"connection refused",
-		"connection reset",
-		"EOF",
-		"INTERNAL_ERROR",
-		"BAD_GATEWAY",
-		"SERVICE_UNAVAILABLE",
-		"TOO_MANY_REQUESTS",
-		"Service Unavailable",
-		"Too Many Requests",
-		"Internal Server Error",
-		"Bad Gateway",
-	}
-	errUpper := strings.ToUpper(errStr)
-	for _, p := range transientPatterns {
-		if strings.Contains(errUpper, strings.ToUpper(p)) {
-			return types.NewTransientError(fmt.Errorf("push %w", err))
-		}
-	}
-
-	// Default to permanent for unknown errors.
-	return types.NewPermanentError(fmt.Errorf("push %w", err))
-}
-
-func isNetworkError(err error) bool {
-	var opErr *net.OpError
-	if errors.As(err, &opErr) {
-		return true
-	}
-	if os.IsTimeout(err) {
-		return true
-	}
-	return false
 }
 
 // renderPushProgress drains push progress updates and periodically renders

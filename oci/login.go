@@ -29,12 +29,13 @@ var registryHTTPClient = &http.Client{
 	Timeout: defaultRegistryHTTPTimeout,
 }
 
-// SetRegistryHTTPTimeout updates the package-level HTTP client timeout.
-// Call this with CocoonConfig.RegistryHTTPTimeout() during initialization
-// to apply user-configured timeout values.
+// SetRegistryHTTPTimeout replaces the package-level HTTP client with a new
+// client that uses the given timeout. This avoids mutating a shared
+// http.Client non-atomically. Call during initialization with
+// CocoonConfig.RegistryHTTPTimeout() to apply user-configured timeout values.
 func SetRegistryHTTPTimeout(timeout time.Duration) {
 	if timeout > 0 {
-		registryHTTPClient.Timeout = timeout
+		registryHTTPClient = &http.Client{Timeout: timeout}
 	}
 }
 
