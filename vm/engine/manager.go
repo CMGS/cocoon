@@ -570,18 +570,27 @@ func (m *manager) setupOCIRuntimeForStart(
 	if err != nil {
 		return nil, fmt.Errorf("read OCI runtime entry metadata for %s: %w", vmCfg.BaseKey, err)
 	}
-	// OverlayFS lowerdir: leftmost = highest priority (top layer).
-	// OCI layers in meta are base-to-top, so reverse for lowerdir order.
-	lowerDirs := make([]string, len(entryMeta.RootfsLayerDigests))
-	for i, digest := range entryMeta.RootfsLayerDigests {
-		hex, hexErr := oci.ParseSHA256Digest("sha256:" + digest)
-		if hexErr != nil {
-			return nil, fmt.Errorf("invalid rootfs layer digest in entry meta: %w", hexErr)
-		}
-		lowerDirs[len(lowerDirs)-1-i] = filepath.Join(m.cfg.OCIRuntimeLayerDir(hex), "rootfs")
+	// Overlay is pre-mounted at create time. If already mounted (normal case
+	// after create, or persistent across stop→start), skip the expensive mount.
+	// Otherwise mount now (e.g., after host reboot where mounts are lost).
+	alreadyMounted, mountCheckErr := m.overlayMgr.IsMounted(vmID)
+	if mountCheckErr != nil {
+		return nil, fmt.Errorf("check overlay mount for %s: %w", vmID, mountCheckErr)
 	}
-	if mountErr := m.overlayMgr.MountVM(vmID, lowerDirs); mountErr != nil {
-		return nil, fmt.Errorf("mount OCI runtime overlay: %w", mountErr)
+	if !alreadyMounted {
+		// OverlayFS lowerdir: leftmost = highest priority (top layer).
+		// OCI layers in meta are base-to-top, so reverse for lowerdir order.
+		lowerDirs := make([]string, len(entryMeta.RootfsLayerDigests))
+		for i, digest := range entryMeta.RootfsLayerDigests {
+			hex, hexErr := oci.ParseSHA256Digest("sha256:" + digest)
+			if hexErr != nil {
+				return nil, fmt.Errorf("invalid rootfs layer digest in entry meta: %w", hexErr)
+			}
+			lowerDirs[len(lowerDirs)-1-i] = filepath.Join(m.cfg.OCIRuntimeLayerDir(hex), "rootfs")
+		}
+		if mountErr := m.overlayMgr.MountVM(vmID, lowerDirs); mountErr != nil {
+			return nil, fmt.Errorf("mount OCI runtime overlay: %w", mountErr)
+		}
 	}
 
 	// Post-mount validation: verify the overlay is actually mounted and the
