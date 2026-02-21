@@ -1460,8 +1460,19 @@ func TestStart_OCIRuntimeMetadataWiring(t *testing.T) {
 	if !ok {
 		t.Fatal("manager implementation type assertion failed")
 	}
-	mgrImpl.overlayMgr.mountFn = func(string, string, string, uintptr, string) error { return nil }
-	mgrImpl.overlayMgr.readMountInfoFn = func() ([]byte, error) { return []byte(""), nil }
+	mergedDir := td.cfg.VMOCIMergedDir(v.VMID)
+	overlayMounted := false
+	mgrImpl.overlayMgr.mountFn = func(_, target, _ string, _ uintptr, _ string) error {
+		overlayMounted = true
+		// Seed the merged dir with a sentinel entry so post-mount validation passes.
+		return os.WriteFile(filepath.Join(target, ".keep"), []byte{}, 0o644)
+	}
+	mgrImpl.overlayMgr.readMountInfoFn = func() ([]byte, error) {
+		if overlayMounted {
+			return []byte(fmt.Sprintf("100 1 0:50 / %s rw,relatime - overlay overlay rw\n", mergedDir)), nil
+		}
+		return []byte(""), nil
+	}
 	vfsMgr := newVirtiofsdRuntimeManager(td.cfg)
 	vfsMgr.resolveBinaryFn = func(string) (string, error) { return "/usr/bin/virtiofsd", nil }
 	vfsMgr.launchFn = func(context.Context, string, []string, string) (int, error) { return 7788, nil }
@@ -1540,8 +1551,18 @@ func TestStart_OCIRuntimeCleanupOnBootFailure(t *testing.T) {
 	if !ok {
 		t.Fatal("manager implementation type assertion failed")
 	}
-	mgrImpl.overlayMgr.mountFn = func(string, string, string, uintptr, string) error { return nil }
-	mgrImpl.overlayMgr.readMountInfoFn = func() ([]byte, error) { return []byte(""), nil }
+	mergedDir2 := td.cfg.VMOCIMergedDir(v.VMID)
+	overlayMounted2 := false
+	mgrImpl.overlayMgr.mountFn = func(_, target, _ string, _ uintptr, _ string) error {
+		overlayMounted2 = true
+		return os.WriteFile(filepath.Join(target, ".keep"), []byte{}, 0o644)
+	}
+	mgrImpl.overlayMgr.readMountInfoFn = func() ([]byte, error) {
+		if overlayMounted2 {
+			return []byte(fmt.Sprintf("100 1 0:50 / %s rw,relatime - overlay overlay rw\n", mergedDir2)), nil
+		}
+		return []byte(""), nil
+	}
 	stopCalled := false
 	vfsMgr := newVirtiofsdRuntimeManager(td.cfg)
 	vfsMgr.resolveBinaryFn = func(string) (string, error) { return "/usr/bin/virtiofsd", nil }

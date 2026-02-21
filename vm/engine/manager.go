@@ -583,6 +583,15 @@ func (m *manager) setupOCIRuntimeForStart(
 	if mountErr := m.overlayMgr.MountVM(vmID, lowerDirs); mountErr != nil {
 		return nil, fmt.Errorf("mount OCI runtime overlay: %w", mountErr)
 	}
+
+	// Post-mount validation: verify the overlay is actually mounted and the
+	// merged directory is non-empty before starting virtiofsd. If virtiofsd
+	// starts on an empty/unmounted directory, the guest VM gets an empty rootfs.
+	if validateErr := m.validateOverlayMount(vmID); validateErr != nil {
+		_ = m.overlayMgr.UnmountVM(vmID)
+		return nil, fmt.Errorf("post-mount overlay validation: %w", validateErr)
+	}
+
 	socketPath := vmCfg.VirtioFSSock
 	if strings.TrimSpace(socketPath) == "" {
 		socketPath = m.cfg.VMOCIRootfsVirtioFSSocketPath(vmID)
@@ -612,6 +621,29 @@ func (m *manager) setupOCIRuntimeForStart(
 	}
 
 	return runtimeInfo, nil
+}
+
+// validateOverlayMount verifies the overlayfs mount for a VM is healthy:
+// the merged directory must be mounted and contain at least one entry.
+// This prevents virtiofsd from serving an empty rootfs to the guest.
+func (m *manager) validateOverlayMount(vmID string) error {
+	mounted, err := m.overlayMgr.IsMounted(vmID)
+	if err != nil {
+		return fmt.Errorf("check overlay mount status for %s: %w", vmID, err)
+	}
+	if !mounted {
+		return fmt.Errorf("overlay for %s is not mounted after MountVM returned success", vmID)
+	}
+
+	mergedDir := m.cfg.VMOCIMergedDir(vmID)
+	entries, err := os.ReadDir(mergedDir)
+	if err != nil {
+		return fmt.Errorf("read merged directory %s: %w", mergedDir, err)
+	}
+	if len(entries) == 0 {
+		return fmt.Errorf("merged directory %s is empty after mount; rootfs layers may be corrupt", mergedDir)
+	}
+	return nil
 }
 
 // Stop sends a shutdown signal to the VM and waits for graceful stop.
