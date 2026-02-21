@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -729,25 +730,50 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 }
 
 // shutdownDirectBoot stops a direct-boot VM by going straight to the
-// vm.shutdown + vm.delete API sequence, skipping the ACPI power-button
-// that the guest kernel likely cannot handle without CONFIG_ACPI=y.
+// vm.shutdown API + SIGTERM, skipping the ACPI power-button that the guest
+// kernel likely cannot handle without CONFIG_ACPI=y.
 //
-// CH state machine: vm.shutdown moves the VM to "Shutdown" state (process
-// stays alive); vm.delete releases all resources and makes the process exit.
+// Sequence: vm.shutdown (stop vCPUs, flush backends) → SIGTERM (graceful
+// CH process exit) → SIGKILL (last resort).
 func (m *manager) shutdownDirectBoot(ctx context.Context, vmID string, timeout time.Duration) error {
 	socketPath := m.cfg.VMSocketPath(vmID)
+
+	// Step 1: vm.shutdown — stop guest vCPUs and flush block backends.
+	// Best-effort; if the API socket is already gone, proceed to signal.
 	if err := m.hyper.ShutdownVM(ctx, socketPath); err != nil {
-		log.Printf("vm.shutdown API failed for direct-boot VM %s: %v; falling back to SIGKILL", vmID, err)
-		return m.hyper.ForceKill(vmID)
+		log.Printf("vm.shutdown API failed for direct-boot VM %s (proceeding to SIGTERM): %v", vmID, err)
 	}
-	if err := m.hyper.DeleteVM(ctx, socketPath); err != nil {
-		log.Printf("vm.delete API failed for direct-boot VM %s: %v; falling back to SIGKILL", vmID, err)
+
+	// Step 2: SIGTERM the CH process. Unlike UEFI VMs where the guest
+	// initiates shutdown via ACPI and CH exits naturally, direct-boot VMs
+	// need an explicit signal to terminate the CH process.
+	pid, pidErr := utils.ReadPIDFile(m.cfg.VMPIDPath(vmID))
+	if pidErr != nil {
+		if os.IsNotExist(pidErr) {
+			return nil
+		}
+		return fmt.Errorf("read CH PID for %s: %w", vmID, pidErr)
+	}
+	if !utils.IsProcessAlive(pid) {
+		return nil
+	}
+
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return fmt.Errorf("find CH process %d for %s: %w", pid, vmID, err)
+	}
+	if sigErr := process.Signal(syscall.SIGTERM); sigErr != nil {
+		if !utils.IsProcessAlive(pid) {
+			return nil
+		}
+		log.Printf("SIGTERM failed for CH pid %d (%s): %v; falling back to SIGKILL", pid, vmID, sigErr)
 		return m.hyper.ForceKill(vmID)
 	}
 
+	// Wait for graceful exit.
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if !m.hyper.IsAlive(vmID) {
+		if !utils.IsProcessAlive(pid) {
 			return nil
 		}
 		select {
@@ -757,7 +783,7 @@ func (m *manager) shutdownDirectBoot(ctx context.Context, vmID string, timeout t
 		}
 	}
 
-	log.Printf("CH process for direct-boot VM %s did not exit after vm.delete; falling back to SIGKILL", vmID)
+	log.Printf("CH pid %d (%s) did not exit after SIGTERM; falling back to SIGKILL", pid, vmID)
 	return m.hyper.ForceKill(vmID)
 }
 
