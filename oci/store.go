@@ -252,6 +252,32 @@ func (s *Store) RemoveTag(tag string) (string, []string, error) {
 	return manifestDigest, zeroRefBlobs, nil
 }
 
+// CheckTagOverwriteSafe checks whether the given tag can be safely overwritten
+// (or created) without conflicting with running VMs. If the tag does not exist,
+// it returns nil (new tag, no conflict). If the tag exists and its current
+// manifest is still referenced by running VMs, it returns an error. This is
+// intended as a fast pre-check before starting an expensive build, so the user
+// learns early that the tag cannot be overwritten. The existing check in
+// SaveTag is kept as a safety net for race conditions.
+func (s *Store) CheckTagOverwriteSafe(tag string) error {
+	var manifestDigest string
+	err := s.withLock(func(idx *TagIndex) error {
+		entry, ok := idx.Tags[tag]
+		if !ok {
+			return nil // new tag, no conflict
+		}
+		manifestDigest = entry.ManifestDigest
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if manifestDigest == "" {
+		return nil
+	}
+	return checkRuntimeRefsForRemoval(s.cfg, tag, manifestDigest)
+}
+
 // checkRuntimeRefsForRemoval returns an error if the given manifest digest
 // has an OCI runtime cache entry that is still pinned by at least one VM.
 func checkRuntimeRefsForRemoval(cfg *config.CocoonConfig, tag, manifestDigest string) error {
