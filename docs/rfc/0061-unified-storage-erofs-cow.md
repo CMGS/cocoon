@@ -638,6 +638,8 @@ IDs are set by Cocoon and are stable regardless of disk ordering.
   (`cocoon-layer0`, `cocoon-cow`) stays within this. Cocoon validates
   serial length before launch and fails fast if exceeded.
 - Character set: `[A-Za-z0-9_-]` only. No spaces or special characters.
+  Serials exceeding the limit are **rejected** (not truncated) — silent
+  truncation would cause guest-visible ID to differ from the expected value.
 - **Interface**: Cocoon configures disks via the CH **REST API** (`PUT
   /api/v1/vm.create` with `DiskConfig` JSON), not CLI flags. This avoids
   CLI syntax drift across CH versions (e.g. v36 changed `--disk` syntax).
@@ -660,8 +662,13 @@ cloudimg.img (download — may be qcow2 or raw)
         1. Filter out partitions by GPT type GUID:
            - ESP: C12A7328-F81F-11D2-BA4B-00A0C93EC93B
            - BIOS boot: 21686148-6449-6E6F-744E-656564454649
-        2. Among remaining "Linux filesystem" (0FC63DAF-...) partitions,
-           pick the largest
+        2. Candidate set = partitions matching any of:
+           - Linux filesystem: 0FC63DAF-8483-4772-8E79-3D69D8477DE4
+           - Linux root (x86-64): 4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709
+           - Linux root (ARM-64): B921B045-1DF0-41C3-AF44-4C6F280D3FAE
+           (systemd discoverable partitions spec — many distro cloudimgs
+           use arch-specific root GUIDs instead of the generic one)
+        3. Among candidates, pick the largest
         3. mount -o ro,loop,offset=<N> (requires root)
         4. Verify /etc/os-release exists in mounted rootfs (else fail fast)
         Non-GPT, LVM, LUKS → PermanentError with descriptive message
@@ -760,11 +767,17 @@ func createCOWDisk(path string, size int64) error {
         "-O", "^metadata_csum_seed,^orphan_file",
         path).Run()
 }
+// Cocoon records `mkfs.ext4` version in COW meta for diagnostics
+// (same pattern as mkfs.erofs version in layer meta.json).
+// If future e2fsprogs versions add new incompatible default features,
+// the version record enables diagnosis and the acceptance gate
+// ("COW ext4 mounts on oldest supported guest kernel") catches it.
+
 ```
 
 Resize: `truncate -s +10G cow.raw` on host, then `resize2fs` on the COW
-device in guest (identified by serial: the device at
-`/sys/block/vd*/serial == "cocoon-cow"`).
+device in guest (identified by serial: scan `/sys/block/vd*/serial` and
+`/sys/block/vd*/device/serial` for `"cocoon-cow"`).
 
 **COW health recovery**: after an unclean VM shutdown (SIGKILL, host crash),
 the ext4 journal should handle recovery automatically on next mount. If the
@@ -916,6 +929,9 @@ During materialize, the Go code must:
 
 Go stdlib has no `archive/cpio` package. Use a third-party library (e.g.
 `github.com/cavaliergopher/cpio`) or implement newc cpio format directly.
+The chosen implementation must support: newc format, hardlinks, device
+nodes (`c 0 0` for whiteouts), uid/gid/mode preservation, and
+deterministic directory traversal order (see Pitfall 6).
 When repacking the initramfs:
 
 - Every injected file's `cpio.Header` must have correct `Mode`, `Uid`,
