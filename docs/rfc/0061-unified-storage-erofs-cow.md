@@ -251,10 +251,13 @@ initrd that builds successfully but fails to boot — the worst kind of bug.
 
 Injected at `/scripts/cocoon` as a **custom boot script**. Cocoon adds
 `boot=cocoon` to the kernel cmdline. The initramfs-tools `/init` script
+(see [Debian source](https://sources.debian.org/src/initramfs-tools/0.140/init/))
 sources `/scripts/${BOOT}` (where `BOOT` defaults to `local`), so with
 `boot=cocoon` it sources `/scripts/cocoon` which defines our `mountroot()`.
-The framework then calls `mountroot()` — this is the official
+The framework then calls `mountroot()` — this is the **official**
 initramfs-tools mechanism for replacing the default root mount logic.
+The same `/init` also performs `mount --move /run ${rootmnt}/run` during
+`switch_root`, ensuring our `/run/cocoon/storage/` mounts survive.
 
 **Why not `/scripts/local-bottom/`?** `local-bottom` runs *after* the
 default root mount. If we place our hook there, initramfs-tools would
@@ -274,6 +277,7 @@ path, potentially panic before ever reaching our hook.
 resolve_disk() {
     local serial="$1"
     local timeout="${COCOON_TIMEOUT:-10}" i=0
+    case "$timeout" in ''|*[!0-9]*) timeout=10 ;; esac
     while [ $i -lt $timeout ]; do
         for sysdev in /sys/block/vd*; do
             [ -d "$sysdev" ] || continue
@@ -377,6 +381,9 @@ without `rootok=1`, it halts before ever reaching mount hooks.
 
 ```sh
 #!/bin/sh
+# Dracut hooks are sourced by init (not executed as subprocesses),
+# so `return` is valid here. See dracut(8) §HOOKS.
+#
 # Tell dracut we will handle root mounting. Both `rootok` and `root`
 # must be set — dracut halts at cmdline stage if either is empty.
 #
@@ -413,6 +420,7 @@ export root rootok fstype rflags
 resolve_disk() {
     local serial="$1"
     local timeout="${COCOON_TIMEOUT:-10}" i=0
+    case "$timeout" in ''|*[!0-9]*) timeout=10 ;; esac
     while [ $i -lt $timeout ]; do
         for sysdev in /sys/block/vd*; do
             [ -d "$sysdev" ] || continue
@@ -617,7 +625,9 @@ IDs are set by Cocoon and are stable regardless of disk ordering.
 
 **CH serial requirements**:
 - Cloud Hypervisor supports `serial` on disk configurations (virtio-blk).
-  Requires CH >= v35. Cocoon must verify CH version at startup.
+  Requires CH >= v35. Cocoon verifies CH version at launch; if the version
+  does not support `serial`, Cocoon **fails fast** with a clear error
+  asking to upgrade CH. There is no fallback to positional device naming.
 - Serial length: **max 20 characters** (virtio spec limit). Cocoon's
   naming convention (`cocoon-layer0`, `cocoon-cow`) stays within this.
 - Character set: `[A-Za-z0-9_-]` only. No spaces or special characters.
@@ -1028,17 +1038,21 @@ motivation is removing virtiofsd.
    Cocoon pins explicit `mkfs.erofs` flags: `-zlz4hc` (compression),
    `-C65536` (cluster size), `-T0` (fixed timestamp), `-Uclear` (zero
    UUID — without this, a random UUID is generated per build, breaking
-   reproducibility). Content-addressing hashes the **output EROFS file**,
-   not the input. Same input + same flags + same `mkfs.erofs` version =
-   same output.
+   reproducibility). `mkfs.erofs` sorts directory entries internally
+   (radix tree), so file ordering is deterministic for a given input tree.
+   Content-addressing hashes the **output EROFS file**, not the input.
+   Same input + same flags + same `mkfs.erofs` version = same output.
    Cocoon records `mkfs.erofs` version in `meta.json` for diagnostics.
    Minimum required version: erofs-utils >= 1.5.
 
-   **Kernel requirement for `-C65536`**: the 64KB pcluster size requires
-   `CONFIG_EROFS_FS_PCLUSTER=y` in the guest kernel (available since
-   Linux 5.13). Without it, EROFS mount fails. Modern distro kernels
-   (5.15+, Ubuntu 22.04+, RHEL 9+) enable this. If supporting older
-   kernels becomes necessary, fall back to `-C4096` (page-size aligned).
+   **Kernel requirements**: the guest kernel must have:
+   - `CONFIG_EROFS_FS_PCLUSTER=y` — required for 64KB pcluster (`-C65536`).
+     Available since Linux 5.13. If supporting older kernels, fall back to
+     `-C4096` (page-size aligned).
+   - `CONFIG_EROFS_FS_XATTR=y` — required for reading `trusted.overlay.opaque`
+     xattrs from EROFS. Without it, opaque directory semantics in multi-layer
+     OCI images break silently (cross-layer deletions are not applied).
+   Modern distro kernels (5.15+, Ubuntu 22.04+, RHEL 9+) enable both.
 
 9. **~~OCI whiteout semantics~~**: resolved. Whiteout handling is defined
    in the OCI Image Materialize Pipeline section. Flatten applies OCI
