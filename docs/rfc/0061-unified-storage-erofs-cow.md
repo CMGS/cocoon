@@ -212,14 +212,15 @@ Source Image (cloudimg.img or OCI layers)
   │       using their basename (e.g., erofs.ko, lz4_compress.ko).
   │       load.order lists basenames. Materialize fails if two modules
   │       in the dependency chain have the same basename (collision).
-  │       **Ordering constraint**: load.order is generated
-  │       deterministically and must ensure virtio transport loads
-  │       before device drivers. Cocoon enforces a stable prefix:
-  │       `virtio, virtio_ring, virtio_pci, virtio_blk` followed
-  │       by filesystem modules (`erofs, overlay, ext4`), even if
-  │       pure `modules.dep` topological sorting would allow a
-  │       different order (symbol deps between virtio subsystem
-  │       modules vary across kernel builds). `resolve_disk` still
+  │       **Ordering constraint**: load.order uses a full topological
+  │       sort over `modules.dep` edges (symbol dependencies). When
+  │       multiple modules have no dependency ordering between them
+  │       (same topological level), ties are broken by stable
+  │       lexicographic order of module basenames. This naturally
+  │       places virtio transport before device drivers and
+  │       filesystem deps (e.g. jbd2, mbcache) before ext4.
+  │       No hard prefix reordering is applied — the dependency
+  │       graph is the single source of truth. `resolve_disk` still
   │       polls with timeout to handle device enumeration latency.
   │
   ├─ mkfs.erofs rootfs.erofs (from mount point, unmodified)
@@ -354,7 +355,7 @@ mountroot() {
             _err=$(insmod "/cocoon-modules/${mod}" 2>&1) || {
                 case "$_err" in
                     *"File exists"*|*EEXIST*) ;;  # already loaded — harmless
-                    *) panic "insmod ${mod} failed: ${_err}" ;;
+                    *) cocoon_fatal "insmod ${mod} failed: ${_err}" ;;
                 esac
             }
         done < /cocoon-modules/load.order
@@ -506,7 +507,7 @@ if [ -d /cocoon-modules ] && [ -f /cocoon-modules/load.order ]; then
         _err=$(insmod "/cocoon-modules/${mod}" 2>&1) || {
             case "$_err" in
                 *"File exists"*|*EEXIST*) ;;  # already loaded — harmless
-                *) die "cocoon: insmod ${mod} failed: ${_err}" ;;
+                *) cocoon_fatal "cocoon: insmod ${mod} failed: ${_err}" ;;
             esac
         }
     done < /cocoon-modules/load.order
