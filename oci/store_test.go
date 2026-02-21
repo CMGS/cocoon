@@ -432,3 +432,74 @@ func TestStoreSaveTag_CleanupFailureCounter(t *testing.T) {
 		t.Fatalf("BlobRefCleanupFailureCount delta=%d, want 1", after-before)
 	}
 }
+
+func TestStoreCheckTagOverwriteSafe(t *testing.T) {
+	t.Parallel()
+
+	t.Run("non-existent tag returns nil", func(t *testing.T) {
+		t.Parallel()
+		cfg := testConfig(t)
+		store := NewStore(cfg)
+
+		if err := store.CheckTagOverwriteSafe("does-not-exist:latest"); err != nil {
+			t.Fatalf("expected nil for non-existent tag, got: %v", err)
+		}
+	})
+
+	t.Run("existing tag with no VM refs returns nil", func(t *testing.T) {
+		t.Parallel()
+		cfg := testConfig(t)
+		store := NewStore(cfg)
+
+		// Use a valid sha256: digest so the runtime-ref lookup path fires.
+		manifestDigest := "sha256:" + testHexDigest(700)
+		layoutDir := store.LayoutDir("safe-tag")
+		if err := os.MkdirAll(layoutDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := store.SaveTag("safe-tag", layoutDir, manifestDigest); err != nil {
+			t.Fatalf("SaveTag: %v", err)
+		}
+
+		if err := store.CheckTagOverwriteSafe("safe-tag"); err != nil {
+			t.Fatalf("expected nil for unreferenced tag, got: %v", err)
+		}
+	})
+
+	t.Run("existing tag with VM refs returns error", func(t *testing.T) {
+		t.Parallel()
+		cfg := testConfig(t)
+		store := NewStore(cfg)
+
+		manifestDigest := "sha256:" + testHexDigest(701)
+		runtimeKey := testHexDigest(701)
+		layoutDir := store.LayoutDir("pinned-tag")
+		if err := os.MkdirAll(layoutDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := store.SaveTag("pinned-tag", layoutDir, manifestDigest); err != nil {
+			t.Fatalf("SaveTag: %v", err)
+		}
+
+		// Pin the runtime key to a VM.
+		if err := AddRuntimeRef(cfg, runtimeKey, "vm-check-safe"); err != nil {
+			t.Fatalf("AddRuntimeRef: %v", err)
+		}
+
+		err := store.CheckTagOverwriteSafe("pinned-tag")
+		if err == nil {
+			t.Fatal("expected error for tag referenced by VM")
+		}
+		if !strings.Contains(err.Error(), "still referenced") {
+			t.Fatalf("expected 'still referenced' in error, got: %v", err)
+		}
+
+		// After removing the VM ref, check should pass.
+		if err := RemoveRuntimeRef(cfg, runtimeKey, "vm-check-safe"); err != nil {
+			t.Fatalf("RemoveRuntimeRef: %v", err)
+		}
+		if err := store.CheckTagOverwriteSafe("pinned-tag"); err != nil {
+			t.Fatalf("expected nil after unpin, got: %v", err)
+		}
+	})
+}

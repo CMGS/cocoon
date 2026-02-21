@@ -3,6 +3,7 @@ package oci
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 
 	"github.com/CMGS/cocoon/config"
@@ -24,6 +25,14 @@ func NewBuilder(cfg *config.CocoonConfig) image.Builder {
 }
 
 func (b *builder) Build(ctx context.Context, imagePath, tag string, cocoonfile string) (*image.BuildResult, error) {
+	// Pre-check: fail fast if the target tag is currently referenced by
+	// running VMs. This avoids wasting minutes of build work only to have
+	// SaveTag reject the overwrite at the very end. The existing SaveTag
+	// check remains as a safety net for TOCTOU races.
+	if err := b.store.CheckTagOverwriteSafe(tag); err != nil {
+		return nil, fmt.Errorf("pre-build check: %w", err)
+	}
+
 	var cf *Cocoonfile
 	if cocoonfile != "" {
 		parsed, err := ParseCocoonfile(cocoonfile)
