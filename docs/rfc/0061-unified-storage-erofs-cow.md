@@ -393,6 +393,9 @@ mountroot() {
         cat /proc/modules >&2 2>/dev/null
         echo "--- /proc/self/status ---" >&2
         cat /proc/self/status >&2 2>/dev/null
+        echo "--- load.order ---" >&2
+        [ -f /cocoon-modules/load.order ] && cat /cocoon-modules/load.order >&2 \
+            || echo "(no load.order)" >&2
         echo "--- sysfs block devices ---" >&2
         for _sb in /sys/block/vd*; do
             [ -d "$_sb" ] || continue
@@ -431,8 +434,8 @@ mountroot() {
         esac
     done
 
-    [ -z "$LAYERS" ] && panic "cocoon.layers= not set"
-    [ -z "$COW" ]    && panic "cocoon.cow= not set"
+    [ -z "$LAYERS" ] && cocoon_fatal "cocoon.layers= not set"
+    [ -z "$COW" ]    && cocoon_fatal "cocoon.cow= not set"
 
     # Mount under /run — initramfs-tools automatically does
     # "mount --move /run ${rootmnt}/run" during switch_root,
@@ -497,10 +500,19 @@ mountroot() {
     #
     # Note: this clears ALL fstab entries, not just root. Data disk mounts
     # must be handled separately by cocoon (e.g. injected systemd mount units).
-    : > "${rootmnt}/etc/fstab"
-    mkdir -p "${rootmnt}/etc/systemd/system"
-    ln -sf /dev/null "${rootmnt}/etc/systemd/system/systemd-fsck-root.service"
-    ln -sf /dev/null "${rootmnt}/etc/systemd/system/systemd-remount-fs.service"
+    #
+    # Every step is checked — failure here means the overlay upper layer
+    # is not writable (broken workdir, fs feature mismatch, etc.), and
+    # systemd would hang for 90s+ with a cryptic job timeout.
+    [ -d "${rootmnt}/etc" ] || cocoon_fatal "/etc missing after overlay mount"
+    : > "${rootmnt}/etc/fstab" \
+        || cocoon_fatal "clear /etc/fstab failed (overlay upper not writable?)"
+    mkdir -p "${rootmnt}/etc/systemd/system" \
+        || cocoon_fatal "mkdir /etc/systemd/system failed"
+    ln -sf /dev/null "${rootmnt}/etc/systemd/system/systemd-fsck-root.service" \
+        || cocoon_fatal "mask systemd-fsck-root.service failed"
+    ln -sf /dev/null "${rootmnt}/etc/systemd/system/systemd-remount-fs.service" \
+        || cocoon_fatal "mask systemd-remount-fs.service failed"
 
     log_success_msg "Cocoon: overlay rootfs ready"
 }
@@ -600,6 +612,9 @@ cocoon_fatal() {
     cat /proc/modules >&2 2>/dev/null
     echo "--- /proc/self/status ---" >&2
     cat /proc/self/status >&2 2>/dev/null
+    echo "--- load.order ---" >&2
+    [ -f /cocoon-modules/load.order ] && cat /cocoon-modules/load.order >&2 \
+        || echo "(no load.order)" >&2
     echo "--- sysfs block devices ---" >&2
     for _sb in /sys/block/vd*; do
         [ -d "$_sb" ] || continue
@@ -634,7 +649,7 @@ for x in $(cat /proc/cmdline); do
 done
 
 if [ -z "$LAYERS" ] || [ -z "$COW" ]; then
-    die "cocoon: cocoon.layers= or cocoon.cow= not set on cmdline"
+    cocoon_fatal "cocoon: cocoon.layers= or cocoon.cow= not set on cmdline"
 fi
 
 # Mount under /run — dracut automatically moves /run during switch_root.
@@ -684,10 +699,16 @@ printf '{"overlay_opts_effective":"%s"}\n' "$_ovl_mode" > /run/cocoon/boot.json
 mkdir -p "$NEWROOT/dev" "$NEWROOT/proc" "$NEWROOT/sys" "$NEWROOT/run"
 
 # --- Systemd compatibility patching ---
-: > "$NEWROOT/etc/fstab"
-mkdir -p "$NEWROOT/etc/systemd/system"
-ln -sf /dev/null "$NEWROOT/etc/systemd/system/systemd-fsck-root.service"
-ln -sf /dev/null "$NEWROOT/etc/systemd/system/systemd-remount-fs.service"
+# Every step is checked — see initramfs-tools hook for full rationale.
+[ -d "$NEWROOT/etc" ] || cocoon_fatal "cocoon: /etc missing after overlay mount"
+: > "$NEWROOT/etc/fstab" \
+    || cocoon_fatal "cocoon: clear /etc/fstab failed (overlay upper not writable?)"
+mkdir -p "$NEWROOT/etc/systemd/system" \
+    || cocoon_fatal "cocoon: mkdir /etc/systemd/system failed"
+ln -sf /dev/null "$NEWROOT/etc/systemd/system/systemd-fsck-root.service" \
+    || cocoon_fatal "cocoon: mask systemd-fsck-root.service failed"
+ln -sf /dev/null "$NEWROOT/etc/systemd/system/systemd-remount-fs.service" \
+    || cocoon_fatal "cocoon: mask systemd-remount-fs.service failed"
 ```
 
 Key differences from initramfs-tools:
