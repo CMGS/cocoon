@@ -57,8 +57,8 @@ func TestVirtiofsdRuntimeStartSuccess(t *testing.T) {
 		if !strings.Contains(joined, "--socket-path "+socketPath) {
 			t.Fatalf("args missing socket-path: %v", args)
 		}
-		if !strings.Contains(joined, "--cache=never") {
-			t.Fatalf("args missing cache=never: %v", args)
+		if !strings.Contains(joined, "--cache=auto") {
+			t.Fatalf("args missing cache=auto: %v", args)
 		}
 		if !strings.Contains(joined, "--sandbox chroot") {
 			t.Fatalf("args missing sandbox=chroot: %v", args)

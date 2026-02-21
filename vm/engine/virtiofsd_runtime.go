@@ -131,11 +131,12 @@ func (m *virtiofsdRuntimeManager) Stop(vmID string, pid int, expectedProc, socke
 func buildVirtiofsdArgs(sharedDir, socketPath string) []string {
 	// Security baseline (docs/04.1 §6.6): keep the rootfs-serving virtiofsd
 	// sandboxed via chroot and avoid weakening this default implicitly.
-	// Explicitly keep cache=never for CH virtio-fs rootfs path.
+	// cache=auto lets the guest kernel use the host page cache for read-heavy
+	// workloads while still invalidating on host-side writes.
 	return []string{
 		"--shared-dir", sharedDir,
 		"--socket-path", socketPath,
-		"--cache=never",
+		"--cache=auto",
 		"--sandbox", "chroot",
 	}
 }
@@ -185,7 +186,7 @@ func launchVirtiofsdProcess(_ context.Context, binary string, args []string, log
 // can exit after a connect/disconnect probe in single-client mode.
 func waitForVirtiofsdSocket(ctx context.Context, socketPath string, pid int, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 
 	for time.Now().Before(deadline) {
