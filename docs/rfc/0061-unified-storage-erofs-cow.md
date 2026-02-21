@@ -212,6 +212,10 @@ Source Image (cloudimg.img or OCI layers)
   │       using their basename (e.g., erofs.ko, lz4_compress.ko).
   │       load.order lists basenames. Materialize fails if two modules
   │       in the dependency chain have the same basename (collision).
+  │       **Ordering constraint**: topological sort guarantees virtio
+  │       drivers load before erofs/overlay/ext4 (since virtio_blk
+  │       depends on virtio_pci → virtio_ring → virtio). This ensures
+  │       `/sys/block/vd*` is populated before resolve_disk runs.
   │
   ├─ mkfs.erofs rootfs.erofs (from mount point, unmodified)
   │
@@ -471,7 +475,7 @@ if [ -d /cocoon-modules ] && [ -f /cocoon-modules/load.order ]; then
         [ -e "/cocoon-modules/${mod}" ] || continue
         _err=$(insmod "/cocoon-modules/${mod}" 2>&1) || {
             case "$_err" in
-                *"File exists"*) ;;  # already loaded — harmless
+                *"File exists"*|*EEXIST*) ;;  # already loaded — harmless
                 *) die "cocoon: insmod ${mod} failed: ${_err}" ;;
             esac
         }
@@ -649,16 +653,15 @@ Optional parameters:
 - `cocoon.timeout=N` — device wait timeout in seconds (default: 10).
   Useful for slow hardware or heavily loaded hosts.
 
-**Hard constraint: virtio-blk only.** All rootfs layers and the COW
+**Hard constraint: virtio-blk only.** Cocoon **chooses** virtio-blk as
+the sole supported backend for rootfs layers and the COW disk, to
+guarantee stable serial→device mapping. All rootfs layers and the COW
 disk **must** be attached as **virtio-blk** devices (`--disk` /
 `DiskConfig`). The initramfs hook scans `/sys/block/vd*` exclusively.
 virtio-scsi (`sdX`) and NVMe (`nvmeXnY`) are **not supported** for
-rootfs/COW — the hook will not discover them. This is an architectural
-decision, not an implementation shortcut: virtio-blk provides the
-simplest serial-based identity model and is the only disk backend
-where CH exposes a `serial` field. Future data disks (non-rootfs,
-non-COW) may use other backends, but they are outside the initramfs
-hook's scope.
+rootfs/COW — the hook will not discover them. Other backends are
+outside this RFC's scope; future data disk support may use different
+backends independently of the rootfs/COW path.
 
 **Why serial IDs instead of `/dev/vdX` names?** Device letter assignment
 (`vda`, `vdb`, ...) depends on `--disk` flag ordering and can shift when
@@ -818,12 +821,11 @@ func createCOWDisk(path string, size int64) error {
 //
 // Host e2fsprogs compatibility: older e2fsprogs may not recognize
 // newer feature names (e.g. `orphan_file` added in e2fsprogs 1.47).
-// Implementation must probe supported features first (e.g. parse
-// `mke2fs -O help` stderr) and only disable features the host
-// toolchain knows about. Unknown features are silently skipped
-// (they won't be enabled by default on that e2fsprogs version anyway).
-// If the host e2fsprogs is too old to produce a safe ext4, fail with
-// PermanentError asking to upgrade.
+// Strategy: try with full disable list first; if mkfs.ext4 fails and
+// stderr contains "invalid/unknown feature", strip the unrecognized
+// feature(s) and retry (max 2 retries). If the host e2fsprogs is too
+// old for any safe feature set, fail with PermanentError asking to
+// upgrade. This is simpler and more robust than parsing help output.
 
 ```
 
@@ -1136,15 +1138,29 @@ motivation is removing virtiofsd.
    22.04+ = 5.15, RHEL 9+ = 5.14, Debian 12+ = 6.1). Debian 11
    (kernel 5.10) reached EOL in 2024 and is excluded.
 
-   **Kernel requirements**: the guest kernel must have:
+   **Kernel config verification (materialize-time hard gate)**:
+   Materialize **must** parse the guest kernel config and verify
+   required options before producing EROFS layers. Config sources
+   (checked in order):
+   1. `/boot/config-<ver>` (most distros ship this)
+   2. `/usr/lib/modules/<ver>/config` (some distros)
+   3. `/proc/config.gz` inside the mounted rootfs (if present)
+   4. If no config found → **fail materialize** with PermanentError
+      (do not guess — an unverifiable kernel is not supportable)
+
+   Required kernel config options:
+   - `CONFIG_EROFS_FS=y|m` — EROFS filesystem support.
    - `CONFIG_EROFS_FS_PCLUSTER=y` — required for 64KB pcluster (`-C65536`).
      Available since Linux 5.13 — exactly the supported floor.
    - `CONFIG_EROFS_FS_XATTR=y` — required for reading `trusted.overlay.opaque`
      xattrs from EROFS. Without it, opaque directory semantics in multi-layer
      OCI images break silently (cross-layer deletions are not applied).
-     This is validated by the Phase 1 acceptance gate: the xattr whiteout
-     test must pass on the oldest supported kernel (5.13).
-   Modern distro kernels (5.15+, Ubuntu 22.04+, RHEL 9+) enable both.
+   - `CONFIG_OVERLAY_FS=y|m` — overlayfs support.
+
+   Any missing or disabled option → **fail materialize** with a clear
+   error listing the missing config options and the kernel version.
+   This ensures failures are caught at build time, not boot time.
+   Modern distro kernels (5.15+, Ubuntu 22.04+, RHEL 9+) pass all checks.
 
 9. **~~OCI whiteout semantics~~**: resolved. Whiteout handling is defined
    in the OCI Image Materialize Pipeline section. Flatten applies OCI
@@ -1241,10 +1257,12 @@ Each phase gate requires passing the following test matrix:
 | GC: delete VM → layer refcount→0 → layer removed | Required | - |
 | Guest sysfs serial matches host-set serial | Required | Required |
 | dracut image boots with `boot=cocoon` (no side effects) | Required | - |
-| Cross-layer whiteout: user layer deletes base file → file invisible | Required | - |
+| Cross-layer whiteout: user layer deletes base file → file invisible | Required | Required |
 | Serial 20-byte edge case: 20-char serial resolves correctly | Required | - |
-| EROFS xattr: `trusted.overlay.opaque` readable on oldest kernel (5.13) | Required | - |
-| Opaque dir: user layer marks dir opaque → base dir contents invisible | Required | - |
+| EROFS xattr: `trusted.overlay.opaque` readable on oldest kernel (5.13) | Required | Required |
+| Opaque dir: user layer marks dir opaque → base dir contents invisible | Required | Required |
+| Kernel config gate: materialize fails if EROFS_FS_PCLUSTER/XATTR missing | Required | Required |
+| EROFS mount smoke: `mount -t erofs` succeeds in initramfs; failure log includes mkfs flags + kernel version + loaded modules | Required | Required |
 
 ### Phase 2 Gate (Cloudimg Path)
 
