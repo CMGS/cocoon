@@ -69,6 +69,13 @@ func (s *Store) saveTagTxnLocked(tag, layoutPath, manifestDigest string) error {
 		if old, exists := idx.Tags[tag]; exists && old.ManifestDigest != manifestDigest {
 			oldManifestDigest = old.ManifestDigest
 		}
+		// Refuse overwrite when running VMs still reference the old image's
+		// OCI runtime cache entry — mirrors the check in RemoveTag.
+		if oldManifestDigest != "" {
+			if err := checkRuntimeRefsForRemoval(s.cfg, tag, oldManifestDigest); err != nil {
+				return err
+			}
+		}
 		idx.Tags[tag] = TagEntry{
 			Tag:            tag,
 			LayoutPath:     layoutPath,

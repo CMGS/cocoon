@@ -344,6 +344,68 @@ func TestStoreRemoveTag_ReferencedByVM(t *testing.T) {
 	}
 }
 
+func TestStoreSaveTag_ReferencedByVM(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(t)
+	store := NewStore(cfg)
+
+	// Use a valid sha256: manifest digest so the runtime-ref check fires.
+	manifestDigest := "sha256:" + testHexDigest(800)
+	runtimeKey := testHexDigest(800)
+
+	layoutDir := store.LayoutDir("save-ref-tag")
+	if err := os.MkdirAll(layoutDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Save the initial tag.
+	if err := store.SaveTag("save-ref-tag", layoutDir, manifestDigest); err != nil {
+		t.Fatalf("SaveTag initial: %v", err)
+	}
+
+	// Pin the runtime key to a VM.
+	if err := AddRuntimeRef(cfg, runtimeKey, "vm-save-pin"); err != nil {
+		t.Fatalf("AddRuntimeRef: %v", err)
+	}
+
+	// Overwriting with a different digest must fail while VM references exist.
+	newDigest := "sha256:" + testHexDigest(801)
+	err := store.SaveTag("save-ref-tag", layoutDir, newDigest)
+	if err == nil {
+		t.Fatal("expected error overwriting tag referenced by VM")
+	}
+	if !strings.Contains(err.Error(), "still referenced") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify the tag still has the original digest (overwrite was rejected).
+	entry, err := store.GetTag("save-ref-tag")
+	if err != nil {
+		t.Fatalf("GetTag after rejected overwrite: %v", err)
+	}
+	if entry.ManifestDigest != manifestDigest {
+		t.Fatalf("digest changed despite rejection: got %s, want %s", entry.ManifestDigest, manifestDigest)
+	}
+
+	// Remove the VM ref, then overwrite should succeed.
+	if err := RemoveRuntimeRef(cfg, runtimeKey, "vm-save-pin"); err != nil {
+		t.Fatalf("RemoveRuntimeRef: %v", err)
+	}
+	if err := store.SaveTag("save-ref-tag", layoutDir, newDigest); err != nil {
+		t.Fatalf("SaveTag after unpin: %v", err)
+	}
+
+	// Verify overwrite succeeded.
+	entry, err = store.GetTag("save-ref-tag")
+	if err != nil {
+		t.Fatalf("GetTag after overwrite: %v", err)
+	}
+	if entry.ManifestDigest != newDigest {
+		t.Fatalf("digest not updated: got %s, want %s", entry.ManifestDigest, newDigest)
+	}
+}
+
 func TestStoreSaveTag_CleanupFailureCounter(t *testing.T) {
 	cfg := testConfig(t)
 	store := NewStore(cfg)
