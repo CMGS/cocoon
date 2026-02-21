@@ -79,7 +79,8 @@ cloud-hypervisor \
   --cmdline "... boot=cocoon cocoon.layers=cocoon-layer0,cocoon-layer1 cocoon.cow=cocoon-cow"
 ```
 
-**Layer ordering**: `cocoon.layers` follows overlayfs lowerdir semantics —
+**Layer ordering**: `cocoon.layers` follows overlayfs `lowerdir=` semantics
+(see `Documentation/filesystems/overlayfs.rst` in the kernel tree) —
 leftmost has the highest priority. For OCI, the custom (user) layer comes
 first so it overrides the base layer. Cocoon constructs the `--disk` flags
 in the same order, and assigns deterministic serial IDs for stable guest
@@ -441,7 +442,7 @@ mountroot() {
     # "mount --move /run ${rootmnt}/run" during switch_root,
     # so our mounts survive the transition.
     COCOON="/run/cocoon/storage"
-    mkdir -p "$COCOON"
+    mkdir -p "$COCOON" || cocoon_fatal "mkdir $COCOON failed"
 
     # Mount read-only layers (resolve serial → /dev/vdX)
     LOWER=""
@@ -449,7 +450,7 @@ mountroot() {
     for serial in $LAYERS; do
         dev=$(resolve_disk "$serial") || cocoon_fatal "device ${serial} not found"
         mnt="${COCOON}/layers/${serial}"
-        mkdir -p "$mnt"
+        mkdir -p "$mnt" || cocoon_fatal "mkdir ${mnt} failed"
         mount -t erofs -o ro "$dev" "$mnt" || cocoon_fatal "mount ${serial} failed"
         [ -n "$LOWER" ] && LOWER="${LOWER}:"
         LOWER="${LOWER}${mnt}"
@@ -458,10 +459,11 @@ mountroot() {
 
     # Mount COW (pre-formatted by cocoon create on host)
     cow_dev=$(resolve_disk "$COW") || cocoon_fatal "COW device ${COW} not found"
-    mkdir -p "${COCOON}/cow"
+    mkdir -p "${COCOON}/cow" || cocoon_fatal "mkdir ${COCOON}/cow failed"
     mount -t ext4 "$cow_dev" "${COCOON}/cow" || cocoon_fatal "mount COW failed"
-    mkdir -p "${COCOON}/cow/upper"
-    rm -rf "${COCOON}/cow/work" && mkdir -p "${COCOON}/cow/work"
+    mkdir -p "${COCOON}/cow/upper" || cocoon_fatal "mkdir cow/upper failed"
+    rm -rf "${COCOON}/cow/work" && mkdir -p "${COCOON}/cow/work" \
+        || cocoon_fatal "prepare cow/work failed"
 
     # Assemble overlay.
     # Explicit options for predictable behavior across kernels:
@@ -489,8 +491,10 @@ mountroot() {
     }
 
     # Write runtime boot results to /run (separate from immutable buildinfo).
-    mkdir -p /run/cocoon
-    printf '{"overlay_opts_effective":"%s"}\n' "$_ovl_mode" > /run/cocoon/boot.json
+    # Acceptance tests depend on this file — hard-fail if write fails.
+    mkdir -p /run/cocoon || cocoon_fatal "mkdir /run/cocoon failed"
+    printf '{"overlay_opts_effective":"%s"}\n' "$_ovl_mode" > /run/cocoon/boot.json \
+        || cocoon_fatal "write /run/cocoon/boot.json failed"
 
     mkdir -p "${rootmnt}/dev" "${rootmnt}/proc" "${rootmnt}/sys" "${rootmnt}/run"
 
@@ -505,12 +509,17 @@ mountroot() {
     # is not writable (broken workdir, fs feature mismatch, etc.), and
     # systemd would hang for 90s+ with a cryptic job timeout.
     [ -d "${rootmnt}/etc" ] || cocoon_fatal "/etc missing after overlay mount"
+    # rm -f first: if /etc/fstab is a symlink (some images), : > would follow
+    # it and modify the target. We want a regular file in the overlay upper.
+    rm -f "${rootmnt}/etc/fstab" || cocoon_fatal "remove /etc/fstab failed"
     : > "${rootmnt}/etc/fstab" \
-        || cocoon_fatal "clear /etc/fstab failed (overlay upper not writable?)"
+        || cocoon_fatal "create empty /etc/fstab failed (overlay upper not writable?)"
     mkdir -p "${rootmnt}/etc/systemd/system" \
         || cocoon_fatal "mkdir /etc/systemd/system failed"
+    rm -f "${rootmnt}/etc/systemd/system/systemd-fsck-root.service" 2>/dev/null
     ln -sf /dev/null "${rootmnt}/etc/systemd/system/systemd-fsck-root.service" \
         || cocoon_fatal "mask systemd-fsck-root.service failed"
+    rm -f "${rootmnt}/etc/systemd/system/systemd-remount-fs.service" 2>/dev/null
     ln -sf /dev/null "${rootmnt}/etc/systemd/system/systemd-remount-fs.service" \
         || cocoon_fatal "mask systemd-remount-fs.service failed"
 
@@ -543,12 +552,17 @@ without `rootok=1`, it halts before ever reaching mount hooks.
 # "cocoon:" scheme, it could pre-empt our mount hook. This scheme is
 # private to Cocoon — no third-party module should attempt to resolve it.
 
-# Only activate if cocoon.layers is present on cmdline.
+# Only activate if cocoon.layers is present and non-empty on cmdline.
 _layers=""
+_layers_seen=0
 for x in $(cat /proc/cmdline); do
-    case $x in cocoon.layers=*) _layers="${x#cocoon.layers=}" ;; esac
+    case $x in cocoon.layers=*) _layers="${x#cocoon.layers=}"; _layers_seen=1 ;; esac
 done
-[ -z "$_layers" ] && return 0
+[ "$_layers_seen" = "0" ] && return 0
+if [ -z "$_layers" ]; then
+    echo "cocoon: warning: cocoon.layers= present but empty, falling back to default root" >&2
+    return 0
+fi
 
 _base="${_layers##*,}"
 root="cocoon:${_base}"
@@ -654,7 +668,7 @@ fi
 
 # Mount under /run — dracut automatically moves /run during switch_root.
 COCOON="/run/cocoon/storage"
-mkdir -p "$COCOON"
+mkdir -p "$COCOON" || cocoon_fatal "cocoon: mkdir $COCOON failed"
 
 # Mount read-only layers (resolve serial → /dev/vdX)
 LOWER=""
@@ -662,7 +676,7 @@ IFS=,
 for serial in $LAYERS; do
     dev=$(resolve_disk "$serial") || cocoon_fatal "cocoon: device ${serial} not found"
     mnt="${COCOON}/layers/${serial}"
-    mkdir -p "$mnt"
+    mkdir -p "$mnt" || cocoon_fatal "cocoon: mkdir ${mnt} failed"
     mount -t erofs -o ro "$dev" "$mnt" || cocoon_fatal "cocoon: mount ${serial} failed"
     [ -n "$LOWER" ] && LOWER="${LOWER}:"
     LOWER="${LOWER}${mnt}"
@@ -671,10 +685,11 @@ unset IFS
 
 # Mount COW (pre-formatted by cocoon create on host)
 cow_dev=$(resolve_disk "$COW") || cocoon_fatal "cocoon: COW device ${COW} not found"
-mkdir -p "${COCOON}/cow"
+mkdir -p "${COCOON}/cow" || cocoon_fatal "cocoon: mkdir ${COCOON}/cow failed"
 mount -t ext4 "$cow_dev" "${COCOON}/cow" || cocoon_fatal "cocoon: mount COW failed"
-mkdir -p "${COCOON}/cow/upper"
-rm -rf "${COCOON}/cow/work" && mkdir -p "${COCOON}/cow/work"
+mkdir -p "${COCOON}/cow/upper" || cocoon_fatal "cocoon: mkdir cow/upper failed"
+rm -rf "${COCOON}/cow/work" && mkdir -p "${COCOON}/cow/work" \
+    || cocoon_fatal "cocoon: prepare cow/work failed"
 
 # Assemble overlay (same EINVAL-only fallback as initramfs-tools hook).
 OVL_OPTS="lowerdir=${LOWER},upperdir=${COCOON}/cow/upper,workdir=${COCOON}/cow/work"
@@ -693,20 +708,24 @@ _ovl_err=$(mount -t overlay overlay -o "$OVL_FULL" "$NEWROOT" 2>&1) || {
 }
 
 # Write runtime boot results to /run (separate from immutable buildinfo).
-mkdir -p /run/cocoon
-printf '{"overlay_opts_effective":"%s"}\n' "$_ovl_mode" > /run/cocoon/boot.json
+mkdir -p /run/cocoon || cocoon_fatal "cocoon: mkdir /run/cocoon failed"
+printf '{"overlay_opts_effective":"%s"}\n' "$_ovl_mode" > /run/cocoon/boot.json \
+    || cocoon_fatal "cocoon: write /run/cocoon/boot.json failed"
 
 mkdir -p "$NEWROOT/dev" "$NEWROOT/proc" "$NEWROOT/sys" "$NEWROOT/run"
 
 # --- Systemd compatibility patching ---
 # Every step is checked — see initramfs-tools hook for full rationale.
 [ -d "$NEWROOT/etc" ] || cocoon_fatal "cocoon: /etc missing after overlay mount"
+rm -f "$NEWROOT/etc/fstab" || cocoon_fatal "cocoon: remove /etc/fstab failed"
 : > "$NEWROOT/etc/fstab" \
-    || cocoon_fatal "cocoon: clear /etc/fstab failed (overlay upper not writable?)"
+    || cocoon_fatal "cocoon: create empty /etc/fstab failed (overlay upper not writable?)"
 mkdir -p "$NEWROOT/etc/systemd/system" \
     || cocoon_fatal "cocoon: mkdir /etc/systemd/system failed"
+rm -f "$NEWROOT/etc/systemd/system/systemd-fsck-root.service" 2>/dev/null
 ln -sf /dev/null "$NEWROOT/etc/systemd/system/systemd-fsck-root.service" \
     || cocoon_fatal "cocoon: mask systemd-fsck-root.service failed"
+rm -f "$NEWROOT/etc/systemd/system/systemd-remount-fs.service" 2>/dev/null
 ln -sf /dev/null "$NEWROOT/etc/systemd/system/systemd-remount-fs.service" \
     || cocoon_fatal "cocoon: mask systemd-remount-fs.service failed"
 ```
