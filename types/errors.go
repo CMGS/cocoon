@@ -8,6 +8,9 @@ import (
 // ErrorType categorizes VM errors for structured error reporting.
 type ErrorType string
 
+// ErrorCategory distinguishes transient (retriable) errors from permanent ones.
+type ErrorCategory string
+
 const (
 	// Creation errors
 	ErrorOCIConversion    ErrorType = "oci_conversion_failed"
@@ -33,6 +36,10 @@ const (
 
 	// Reference errors
 	ErrorChecksumCollision ErrorType = "checksum_collision"
+
+	// Error categories
+	ErrorCategoryTransient ErrorCategory = "transient"
+	ErrorCategoryPermanent ErrorCategory = "permanent"
 )
 
 // Sentinel errors for common failure modes.
@@ -46,18 +53,6 @@ var (
 	ErrImageNotBootable  = errors.New("image is not bootable")
 	ErrCHNotFound        = errors.New("cloud-hypervisor binary not found")
 	ErrFirmwareNotFound  = errors.New("firmware file not found")
-)
-
-// ErrorCategory distinguishes transient (retriable) errors from permanent ones.
-type ErrorCategory string
-
-const (
-	// ErrorCategoryTransient indicates an error that may succeed on retry
-	// (e.g., network timeout, HTTP 429/5xx).
-	ErrorCategoryTransient ErrorCategory = "transient"
-	// ErrorCategoryPermanent indicates an error that will not succeed on retry
-	// (e.g., HTTP 404, invalid image format, missing file).
-	ErrorCategoryPermanent ErrorCategory = "permanent"
 )
 
 // ClassifiedError wraps an error with a category (transient or permanent)

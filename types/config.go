@@ -51,13 +51,11 @@ const (
 	VMImageTypeQCOW2 VMImageType = "qcow2"
 	// VMImageTypeOCIVM is the direct OCI VM runtime path (kernel/initrd/layers).
 	VMImageTypeOCIVM VMImageType = "oci-vm"
-)
 
-// CurrentConfigSchemaVersion is the current config.json schema version.
-const CurrentConfigSchemaVersion = 1
+	// CurrentConfigSchemaVersion is the current config.json schema version.
+	CurrentConfigSchemaVersion = 1
 
-// Default resource values.
-const (
+	// Default resource values.
 	DefaultCPUs     = 2
 	DefaultMemoryMB = 2048
 	DefaultDiskSize = "10G"

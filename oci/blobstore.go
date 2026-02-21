@@ -23,25 +23,6 @@ func NewBlobStore(cfg *config.CocoonConfig) *BlobStore {
 	return &BlobStore{cfg: cfg}
 }
 
-// validateHexDigest checks that digest contains only hexadecimal characters.
-// This prevents path traversal via digest parameters.
-func validateHexDigest(digest string) error {
-	if digest == "" {
-		return fmt.Errorf("empty digest")
-	}
-	for _, c := range digest {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
-			return fmt.Errorf("invalid character %q in digest %q", string(c), digest)
-		}
-	}
-	return nil
-}
-
-// blobPath returns the shared blob path for a hex digest (without "sha256:" prefix).
-func (bs *BlobStore) blobPath(digest string) string {
-	return filepath.Join(bs.cfg.OCIBlobDir(), digest)
-}
-
 // BlobExists checks if a blob exists in the shared store.
 func (bs *BlobStore) BlobExists(digest string) bool {
 	if validateHexDigest(digest) != nil {
@@ -200,4 +181,23 @@ func (bs *BlobStore) RemoveBlob(digest string) error {
 		return err
 	}
 	return os.Remove(bs.blobPath(digest))
+}
+
+// blobPath returns the shared blob path for a hex digest (without "sha256:" prefix).
+func (bs *BlobStore) blobPath(digest string) string {
+	return filepath.Join(bs.cfg.OCIBlobDir(), digest)
+}
+
+// validateHexDigest checks that digest contains only hexadecimal characters.
+// This prevents path traversal via digest parameters.
+func validateHexDigest(digest string) error {
+	if digest == "" {
+		return fmt.Errorf("empty digest")
+	}
+	for _, c := range digest {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return fmt.Errorf("invalid character %q in digest %q", string(c), digest)
+		}
+	}
+	return nil
 }

@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -195,7 +194,7 @@ func TestReconcile_FixMissingReference(t *testing.T) {
 		t.Fatalf("write empty references.json: %v", err)
 	}
 
-	issues, err := mgr.Reconcile(context.Background(), false, false)
+	issues, err := mgr.Reconcile(t.Context(), false, false)
 	if err != nil {
 		t.Fatalf("Reconcile dry-run: %v", err)
 	}
@@ -203,7 +202,7 @@ func TestReconcile_FixMissingReference(t *testing.T) {
 		t.Fatalf("expected %s issue in dry-run", vm.InconsistencyMissingReference)
 	}
 
-	issues, err = mgr.Reconcile(context.Background(), true, false)
+	issues, err = mgr.Reconcile(t.Context(), true, false)
 	if err != nil {
 		t.Fatalf("Reconcile --fix: %v", err)
 	}
@@ -248,7 +247,7 @@ func TestReconcile_FixDanglingReference(t *testing.T) {
 		t.Fatalf("write references.json: %v", err)
 	}
 
-	issues, err := mgr.Reconcile(context.Background(), true, false)
+	issues, err := mgr.Reconcile(t.Context(), true, false)
 	if err != nil {
 		t.Fatalf("Reconcile --fix: %v", err)
 	}
@@ -285,7 +284,7 @@ func TestReconcile_OrphanOverlayFixedByDoctorFix(t *testing.T) {
 		t.Fatalf("write overlay: %v", err)
 	}
 
-	issues, err := mgr.Reconcile(context.Background(), true, false)
+	issues, err := mgr.Reconcile(t.Context(), true, false)
 	if err != nil {
 		t.Fatalf("Reconcile --fix: %v", err)
 	}
@@ -316,7 +315,7 @@ func TestReconcile_NameIndexDryRunDoesNotMutate(t *testing.T) {
 		t.Fatalf("write stale name-index.json: %v", err)
 	}
 
-	issues, err := mgr.Reconcile(context.Background(), false, false)
+	issues, err := mgr.Reconcile(t.Context(), false, false)
 	if err != nil {
 		t.Fatalf("Reconcile dry-run: %v", err)
 	}
@@ -332,7 +331,7 @@ func TestReconcile_NameIndexDryRunDoesNotMutate(t *testing.T) {
 		t.Fatalf("expected dry-run reconcile to keep existing stale index unchanged")
 	}
 
-	if _, err := mgr.Reconcile(context.Background(), true, false); err != nil {
+	if _, err := mgr.Reconcile(t.Context(), true, false); err != nil {
 		t.Fatalf("Reconcile --fix: %v", err)
 	}
 	fixedIndex, err := LoadNameIndex(cfg)
@@ -399,7 +398,7 @@ func TestReconcile_DetectsOCIRuntimeMismatch(t *testing.T) {
 		t.Fatalf("update metadata: %v", err)
 	}
 
-	issues, err := mgr.Reconcile(context.Background(), false, false)
+	issues, err := mgr.Reconcile(t.Context(), false, false)
 	if err != nil {
 		t.Fatalf("Reconcile dry-run: %v", err)
 	}
@@ -435,7 +434,7 @@ func TestReconcile_FixStoppedOCIRuntimeLeak(t *testing.T) {
 		t.Fatalf("update metadata: %v", err)
 	}
 
-	issues, err := mgr.Reconcile(context.Background(), true, false)
+	issues, err := mgr.Reconcile(t.Context(), true, false)
 	if err != nil {
 		t.Fatalf("Reconcile --fix: %v", err)
 	}
@@ -490,7 +489,7 @@ func TestReconcile_FixStateMismatchAlsoCleansOCIRuntimeLeak(t *testing.T) {
 		t.Fatalf("update metadata: %v", err)
 	}
 
-	issues, err := mgr.Reconcile(context.Background(), true, false)
+	issues, err := mgr.Reconcile(t.Context(), true, false)
 	if err != nil {
 		t.Fatalf("Reconcile --fix: %v", err)
 	}
@@ -526,7 +525,7 @@ func TestReconcile_FixMissingOCIRuntimePin(t *testing.T) {
 	vmID := "vm-01HABC9D8E7F6G5H4J3K2M1N0V"
 	writeTestOCIVMArtifacts(t, cfg, vmID, "oci-runtime-pin-missing", types.VMStateCreated)
 
-	issues, err := mgr.Reconcile(context.Background(), true, false)
+	issues, err := mgr.Reconcile(t.Context(), true, false)
 	if err != nil {
 		t.Fatalf("Reconcile --fix: %v", err)
 	}
@@ -568,7 +567,7 @@ func TestReconcile_FixDanglingRuntimePinAndOrphanRuntimeCache(t *testing.T) {
 		t.Fatalf("AddRuntimeRef: %v", err)
 	}
 
-	issues, err := mgr.Reconcile(context.Background(), true, false)
+	issues, err := mgr.Reconcile(t.Context(), true, false)
 	if err != nil {
 		t.Fatalf("Reconcile --fix: %v", err)
 	}

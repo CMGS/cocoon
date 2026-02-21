@@ -23,9 +23,9 @@ import (
 	"github.com/CMGS/cocoon/utils"
 )
 
-var errImageNotFoundInLocalCache = errors.New("image not found in local cache")
-
 const defaultDerivedBuildTag = "image"
+
+var errImageNotFoundInLocalCache = errors.New("image not found in local cache")
 
 func shouldFallbackToPrepare(resolveErr error) bool {
 	return errors.Is(resolveErr, errImageNotFoundInLocalCache)

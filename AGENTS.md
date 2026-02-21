@@ -2,14 +2,25 @@
 
 All agents must read this file during initialization, before analysis or code changes.
 
-## Context Usage
+## Go Development Rules
 
-### Rule
+### File Structure & Declaration Grouping
 
-Context must flow through function parameters, not be created inside functions.
+*   **Order:** `const` blocks must appear before `var` blocks at the top of the file.
+*   **Grouping:** Use a single `const (...)` block and a single `var (...)` block to group all file-level declarations. Do not scatter multiple `const` or `var` declarations throughout the file or use multiple blocks.
+*   **Inside Functions:** The same grouping rule applies. Define all constants and variables at the top of the function using single blocks.
 
-### Tests
+### Visibility Ordering
 
+*   **General Rule:** Public (exported) definitions (Types, Variables, Constants, Functions) must be defined before Private (unexported) ones.
+*   **Struct Methods:** For a given type, define all Public methods before any Private methods.
+*   **Constructor Exception:** The constructor function (e.g., `New...`) for a type must immediately follow the type definition, regardless of whether it is public or private.
+
+### Context Usage
+
+**Rule:** Context must flow through function parameters, not be created inside functions.
+
+**Tests:**
 - Use `t.Context()` as the default context in all test code.
 - Use `context.Background()` only when a fresh root context is explicitly required
   (e.g., testing cancellation behavior where the test context must not interfere).
@@ -34,8 +45,7 @@ func TestFoo(t *testing.T) {
 }
 ```
 
-### Production Code
-
+**Production Code:**
 - Never use `context.Background()` inside business logic. The only allowed
   call site is the application entry point (`main.go`) where the root context
   is created (e.g., `signal.NotifyContext(context.TODO(), ...)`).
@@ -63,11 +73,9 @@ func (m *manager) doWork() {
 }
 ```
 
-## Error Scope Minimization
+### Error Scope Minimization
 
-### Rule
-
-Prefer `if err := fn(); err != nil` over `err := fn()` followed by
+**Rule:** Prefer `if err := fn(); err != nil` over `err := fn()` followed by
 `if err != nil` to minimize the scope of the `err` variable.
 
 This applies **only** when the error is the sole return value, or when

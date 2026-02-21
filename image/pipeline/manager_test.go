@@ -1,7 +1,6 @@
 package pipeline
 
 import (
-	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -72,7 +71,7 @@ func TestPrepare_CachesResult(t *testing.T) {
 		t.Fatalf("write source: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// First call: Pull computes identity, Convert would run.  Because
 	// detectImageFormat calls qemu-img (which may not exist in CI), we
@@ -115,7 +114,7 @@ func TestPrepare_AmbiguousRefcacheRefReturnsError(t *testing.T) {
 		t.Fatalf("Upsert ubuntu:24.04: %v", err)
 	}
 
-	_, _, err := mgr.Prepare(context.Background(), "ubuntu")
+	_, _, err := mgr.Prepare(t.Context(), "ubuntu")
 	if err == nil {
 		t.Fatal("Prepare(ubuntu): expected ambiguous ref error, got nil")
 	}
@@ -169,11 +168,12 @@ func TestConvert_ConcurrentDedup(t *testing.T) {
 	errs := make([]error, N)
 	paths := make([]string, N)
 
+	ctx := t.Context()
 	wg.Add(N)
 	for i := 0; i < N; i++ {
 		go func(idx int) {
 			defer wg.Done()
-			p, err := mgr.Convert(context.Background(), identity)
+			p, err := mgr.Convert(ctx, identity)
 			errs[idx] = err
 			paths[idx] = p
 		}(i)
@@ -291,7 +291,7 @@ func TestRemoveCached_ClearsVerifiedState(t *testing.T) {
 		t.Fatalf("MarkVerified: %v", err)
 	}
 
-	if err := mgr.RemoveCached(context.Background(), baseKey); err != nil {
+	if err := mgr.RemoveCached(t.Context(), baseKey); err != nil {
 		t.Fatalf("RemoveCached: %v", err)
 	}
 	if _, err := os.Stat(basePath); !os.IsNotExist(err) {

@@ -141,7 +141,7 @@ func TestRelayStdinToPTY(t *testing.T) {
 			stdin := bytes.NewReader(tt.input)
 			ptyBuf := &bytes.Buffer{}
 
-			err := relayStdinToPTY(context.Background(), stdin, ptyBuf, tt.escapeChar)
+			err := relayStdinToPTY(t.Context(), stdin, ptyBuf, tt.escapeChar)
 
 			if tt.wantExit {
 				if err != nil {
@@ -198,7 +198,7 @@ func TestRelayStdinToPTY_ContextCancellation(t *testing.T) {
 	defer pw.Close() //nolint:errcheck
 
 	ptyBuf := &bytes.Buffer{}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 
 	done := make(chan error, 1)
 	go func() {
@@ -270,7 +270,7 @@ func TestRelayStdinToPTY_ControlCharEscape(t *testing.T) {
 			t.Parallel()
 			stdin := bytes.NewReader(tt.input)
 			ptyBuf := &bytes.Buffer{}
-			err := relayStdinToPTY(context.Background(), stdin, ptyBuf, tt.escapeChar)
+			err := relayStdinToPTY(t.Context(), stdin, ptyBuf, tt.escapeChar)
 			if tt.wantExit {
 				if err != nil {
 					t.Errorf("expected clean exit, got: %v", err)
@@ -387,7 +387,7 @@ func TestRelayStdinToPTY_WriteError(t *testing.T) {
 	stdin := bytes.NewReader([]byte("hello"))
 	pty := &errWriter{err: wantErr}
 
-	err := relayStdinToPTY(context.Background(), stdin, pty, '~')
+	err := relayStdinToPTY(t.Context(), stdin, pty, '~')
 	if err == nil {
 		t.Fatal("expected write error, got nil")
 	}
