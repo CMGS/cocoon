@@ -729,12 +729,19 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 }
 
 // shutdownDirectBoot stops a direct-boot VM by going straight to the
-// vm.shutdown API (VMM-level shutdown), skipping the ACPI power-button
+// vm.shutdown + vm.delete API sequence, skipping the ACPI power-button
 // that the guest kernel likely cannot handle without CONFIG_ACPI=y.
+//
+// CH state machine: vm.shutdown moves the VM to "Shutdown" state (process
+// stays alive); vm.delete releases all resources and makes the process exit.
 func (m *manager) shutdownDirectBoot(ctx context.Context, vmID string, timeout time.Duration) error {
 	socketPath := m.cfg.VMSocketPath(vmID)
 	if err := m.hyper.ShutdownVM(ctx, socketPath); err != nil {
 		log.Printf("vm.shutdown API failed for direct-boot VM %s: %v; falling back to SIGKILL", vmID, err)
+		return m.hyper.ForceKill(vmID)
+	}
+	if err := m.hyper.DeleteVM(ctx, socketPath); err != nil {
+		log.Printf("vm.delete API failed for direct-boot VM %s: %v; falling back to SIGKILL", vmID, err)
 		return m.hyper.ForceKill(vmID)
 	}
 
@@ -750,7 +757,7 @@ func (m *manager) shutdownDirectBoot(ctx context.Context, vmID string, timeout t
 		}
 	}
 
-	log.Printf("CH process for direct-boot VM %s did not exit after vm.shutdown; falling back to SIGKILL", vmID)
+	log.Printf("CH process for direct-boot VM %s did not exit after vm.delete; falling back to SIGKILL", vmID)
 	return m.hyper.ForceKill(vmID)
 }
 

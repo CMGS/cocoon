@@ -256,24 +256,31 @@ func (c *client) Shutdown(ctx context.Context, vmID string, timeout time.Duratio
 	}
 }
 
-// shutdownWithFallback tries the CH vm.shutdown API (which flushes block
-// backends) and waits briefly for the process to exit. Falls back to
-// ForceKill if vm.shutdown fails or the process does not exit in time.
+// shutdownWithFallback tries the CH vm.shutdown + vm.delete API sequence
+// and waits briefly for the process to exit. Falls back to ForceKill if
+// the APIs fail or the process does not exit in time.
+//
+// CH state machine: vm.shutdown moves the VM to "Shutdown" state (process
+// stays alive); vm.delete releases all resources and makes the process exit.
 func (c *client) shutdownWithFallback(ctx context.Context, vmID, socketPath string) error {
-	// Try vm.shutdown API — this tells CH to shut down at the VMM level,
-	// flushing dirty qcow2 pages to disk before the process exits.
 	if err := c.ShutdownVM(ctx, socketPath); err != nil {
 		log.Printf("vm.shutdown API failed for %s: %v; falling back to SIGKILL", vmID, err)
 		return c.ForceKill(vmID)
 	}
+	// vm.shutdown only transitions the VM to "Shutdown" state; the CH
+	// process stays alive. Call vm.delete to release resources and exit.
+	if err := c.DeleteVM(ctx, socketPath); err != nil {
+		log.Printf("vm.delete API failed for %s after shutdown: %v; falling back to SIGKILL", vmID, err)
+		return c.ForceKill(vmID)
+	}
 
-	// Give CH a few seconds to flush and exit after vm.shutdown.
+	// Give CH a few seconds to exit after vm.delete.
 	const vmmShutdownWait = 5 * time.Second
 	waitDeadline := time.Now().Add(vmmShutdownWait)
 	for time.Now().Before(waitDeadline) {
 		stopped, probeErr := c.isVMProcessStopped(vmID)
 		if probeErr != nil {
-			return fmt.Errorf("probe VM %s after vm.shutdown: %w", vmID, probeErr)
+			return fmt.Errorf("probe VM %s after vm.delete: %w", vmID, probeErr)
 		}
 		if stopped {
 			c.cleanupRuntimeFiles(vmID)
@@ -282,8 +289,8 @@ func (c *client) shutdownWithFallback(ctx context.Context, vmID, socketPath stri
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	// vm.shutdown succeeded but process lingered; force kill.
-	log.Printf("CH process for %s did not exit after vm.shutdown; falling back to SIGKILL", vmID)
+	// vm.delete succeeded but process lingered; force kill.
+	log.Printf("CH process for %s did not exit after vm.delete; falling back to SIGKILL", vmID)
 	return c.ForceKill(vmID)
 }
 
