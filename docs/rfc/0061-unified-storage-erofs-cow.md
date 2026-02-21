@@ -338,7 +338,8 @@ path, potentially panic before ever reaching our hook.
 # with configurable timeout (default 10s, override via cocoon.timeout=).
 # Note: mknod fallback requires CAP_MKNOD (standard in initramfs root
 # context). If a hardened initrd restricts this, devtmpfs/udev must
-# provide /dev nodes — mknod failure is silently ignored (2>/dev/null).
+# provide /dev nodes — mknod failure is silently ignored (|| true
+# guards against set -e environments).
 resolve_disk() {
     local serial="$1"
     local timeout="${COCOON_TIMEOUT:-10}" i=0
@@ -370,7 +371,7 @@ resolve_disk() {
                 # create it from /sys/block/vdX/dev (major:minor).
                 if [ ! -e "$devname" ] && [ -f "$sysdev/dev" ]; then
                     local majmin=$(cat "$sysdev/dev")
-                    mknod "$devname" b "${majmin%%:*}" "${majmin##*:}" 2>/dev/null
+                    mknod "$devname" b "${majmin%%:*}" "${majmin##*:}" 2>/dev/null || true
                 fi
                 echo "$devname"
                 return 0
@@ -386,24 +387,23 @@ mountroot() {
     log_begin_msg "Cocoon: mounting overlay rootfs"
 
     # Diagnostic helper: dump buildinfo + kernel state before fatal exit.
+    # All diagnostic commands use || true to survive set -e environments.
     cocoon_fatal() {
         echo "COCOON FATAL: $1" >&2
         echo "--- buildinfo ---" >&2
-        [ -f /cocoon-buildinfo.json ] && cat /cocoon-buildinfo.json >&2
+        cat /cocoon-buildinfo.json >&2 2>/dev/null || true
         echo "--- kernel: $(uname -r) ---" >&2
-        cat /proc/modules >&2 2>/dev/null
+        cat /proc/modules >&2 2>/dev/null || true
         echo "--- /proc/self/status ---" >&2
-        cat /proc/self/status >&2 2>/dev/null
+        cat /proc/self/status >&2 2>/dev/null || true
         echo "--- load.order ---" >&2
-        [ -f /cocoon-modules/load.order ] && cat /cocoon-modules/load.order >&2 \
-            || echo "(no load.order)" >&2
+        cat /cocoon-modules/load.order >&2 2>/dev/null || echo "(no load.order)" >&2
         echo "--- sysfs block devices ---" >&2
         for _sb in /sys/block/vd*; do
             [ -d "$_sb" ] || continue
             _sd=""
-            [ -f "$_sb/serial" ] && _sd=$(cat "$_sb/serial" 2>/dev/null)
-            [ -z "$_sd" ] && [ -f "$_sb/device/serial" ] && _sd=$(cat "$_sb/device/serial" 2>/dev/null)
-            echo "$_sb: dev=$(cat "$_sb/dev" 2>/dev/null) serial=${_sd}" >&2
+            _sd=$(cat "$_sb/serial" 2>/dev/null || cat "$_sb/device/serial" 2>/dev/null) || true
+            echo "$_sb: dev=$(cat "$_sb/dev" 2>/dev/null || true) serial=${_sd}" >&2
         done
         panic "$1"
     }
@@ -560,8 +560,9 @@ for x in $(cat /proc/cmdline); do
 done
 [ "$_layers_seen" = "0" ] && return 0
 if [ -z "$_layers" ]; then
-    echo "cocoon: warning: cocoon.layers= present but empty, falling back to default root" >&2
-    return 0
+    echo "cocoon: error: cocoon.layers= present but empty" >&2
+    # Do not set rootok — dracut will halt at cmdline stage.
+    return 1
 fi
 
 _base="${_layers##*,}"
@@ -605,7 +606,7 @@ resolve_disk() {
                 local devname="/dev/${sysdev##*/}"
                 if [ ! -e "$devname" ] && [ -f "$sysdev/dev" ]; then
                     local majmin=$(cat "$sysdev/dev")
-                    mknod "$devname" b "${majmin%%:*}" "${majmin##*:}" 2>/dev/null
+                    mknod "$devname" b "${majmin%%:*}" "${majmin##*:}" 2>/dev/null || true
                 fi
                 echo "$devname"
                 return 0
@@ -618,24 +619,23 @@ resolve_disk() {
 }
 
 # Diagnostic helper: dump buildinfo + kernel state before fatal exit.
+# All diagnostic commands use || true to survive set -e environments.
 cocoon_fatal() {
     echo "COCOON FATAL: $1" >&2
     echo "--- buildinfo ---" >&2
-    [ -f /cocoon-buildinfo.json ] && cat /cocoon-buildinfo.json >&2
+    cat /cocoon-buildinfo.json >&2 2>/dev/null || true
     echo "--- kernel: $(uname -r) ---" >&2
-    cat /proc/modules >&2 2>/dev/null
+    cat /proc/modules >&2 2>/dev/null || true
     echo "--- /proc/self/status ---" >&2
-    cat /proc/self/status >&2 2>/dev/null
+    cat /proc/self/status >&2 2>/dev/null || true
     echo "--- load.order ---" >&2
-    [ -f /cocoon-modules/load.order ] && cat /cocoon-modules/load.order >&2 \
-        || echo "(no load.order)" >&2
+    cat /cocoon-modules/load.order >&2 2>/dev/null || echo "(no load.order)" >&2
     echo "--- sysfs block devices ---" >&2
     for _sb in /sys/block/vd*; do
         [ -d "$_sb" ] || continue
         _sd=""
-        [ -f "$_sb/serial" ] && _sd=$(cat "$_sb/serial" 2>/dev/null)
-        [ -z "$_sd" ] && [ -f "$_sb/device/serial" ] && _sd=$(cat "$_sb/device/serial" 2>/dev/null)
-        echo "$_sb: dev=$(cat "$_sb/dev" 2>/dev/null) serial=${_sd}" >&2
+        _sd=$(cat "$_sb/serial" 2>/dev/null || cat "$_sb/device/serial" 2>/dev/null) || true
+        echo "$_sb: dev=$(cat "$_sb/dev" 2>/dev/null || true) serial=${_sd}" >&2
     done
     die "$1"
 }
