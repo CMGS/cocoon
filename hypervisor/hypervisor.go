@@ -34,11 +34,18 @@ type Client interface {
 	// the PID file. On success it returns the CH process PID.
 	Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (pid int, err error)
 
-	// Shutdown performs a graceful shutdown sequence:
+	// Shutdown performs a graceful shutdown sequence for UEFI-boot VMs:
 	//   1. Send ACPI power-button event via the CH API.
 	//   2. Poll until the CH process exits or the timeout expires.
-	//   3. If the process is still alive after the timeout, send SIGKILL.
+	//   3. Fallback: vm.shutdown API + SIGTERM + SIGKILL.
 	Shutdown(ctx context.Context, vmID string, timeout time.Duration) error
+
+	// ShutdownDirect stops a VM without ACPI (for direct kernel boot VMs
+	// whose guest kernel may lack ACPI support). Sequence:
+	//   1. vm.shutdown API (stop vCPUs, flush backends).
+	//   2. SIGTERM the CH process.
+	//   3. SIGKILL as last resort.
+	ShutdownDirect(ctx context.Context, vmID string) error
 
 	// ForceKill sends SIGKILL to the CH process for the given VM.
 	// It is a best-effort operation; if the process has already exited

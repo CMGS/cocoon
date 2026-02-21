@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -697,7 +696,7 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 	var shutdownErr error
 	vmCfg, cfgErr := m.LoadConfig(vmID)
 	if cfgErr == nil && vmCfg.BootStrategy == types.BootStrategyDirect {
-		shutdownErr = m.shutdownDirectBoot(ctx, vmID, timeout)
+		shutdownErr = m.shutdownDirectBoot(ctx, vmID)
 	} else {
 		shutdownErr = m.hyper.Shutdown(ctx, vmID, timeout)
 	}
@@ -729,62 +728,11 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 	return nil
 }
 
-// shutdownDirectBoot stops a direct-boot VM by going straight to the
-// vm.shutdown API + SIGTERM, skipping the ACPI power-button that the guest
-// kernel likely cannot handle without CONFIG_ACPI=y.
-//
-// Sequence: vm.shutdown (stop vCPUs, flush backends) → SIGTERM (graceful
-// CH process exit) → SIGKILL (last resort).
-func (m *manager) shutdownDirectBoot(ctx context.Context, vmID string, timeout time.Duration) error {
-	socketPath := m.cfg.VMSocketPath(vmID)
-
-	// Step 1: vm.shutdown — stop guest vCPUs and flush block backends.
-	// Best-effort; if the API socket is already gone, proceed to signal.
-	if err := m.hyper.ShutdownVM(ctx, socketPath); err != nil {
-		log.Printf("vm.shutdown API failed for direct-boot VM %s (proceeding to SIGTERM): %v", vmID, err)
-	}
-
-	// Step 2: SIGTERM the CH process. Unlike UEFI VMs where the guest
-	// initiates shutdown via ACPI and CH exits naturally, direct-boot VMs
-	// need an explicit signal to terminate the CH process.
-	pid, pidErr := utils.ReadPIDFile(m.cfg.VMPIDPath(vmID))
-	if pidErr != nil {
-		if os.IsNotExist(pidErr) {
-			return nil
-		}
-		return fmt.Errorf("read CH PID for %s: %w", vmID, pidErr)
-	}
-	if !utils.IsProcessAlive(pid) {
-		return nil
-	}
-
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return fmt.Errorf("find CH process %d for %s: %w", pid, vmID, err)
-	}
-	if sigErr := process.Signal(syscall.SIGTERM); sigErr != nil {
-		if !utils.IsProcessAlive(pid) {
-			return nil
-		}
-		log.Printf("SIGTERM failed for CH pid %d (%s): %v; falling back to SIGKILL", pid, vmID, sigErr)
-		return m.hyper.ForceKill(vmID)
-	}
-
-	// Wait for graceful exit.
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if !utils.IsProcessAlive(pid) {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("shutdown canceled for %s: %w", vmID, ctx.Err())
-		case <-time.After(200 * time.Millisecond):
-		}
-	}
-
-	log.Printf("CH pid %d (%s) did not exit after SIGTERM; falling back to SIGKILL", pid, vmID)
-	return m.hyper.ForceKill(vmID)
+// shutdownDirectBoot delegates to the hypervisor's ShutdownDirect method,
+// which skips the ACPI power-button and goes straight to vm.shutdown +
+// SIGTERM. Direct-boot VMs typically lack CONFIG_ACPI=y in the guest kernel.
+func (m *manager) shutdownDirectBoot(ctx context.Context, vmID string) error {
+	return m.hyper.ShutdownDirect(ctx, vmID)
 }
 
 func (m *manager) waitForStoppingVM(ctx context.Context, vmID string, timeout time.Duration) error {

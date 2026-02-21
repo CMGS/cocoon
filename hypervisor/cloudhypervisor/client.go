@@ -257,6 +257,13 @@ func (c *client) Shutdown(ctx context.Context, vmID string, timeout time.Duratio
 	}
 }
 
+// ShutdownDirect stops a VM without sending an ACPI power-button.
+// Used for direct kernel boot VMs whose guest kernel may lack ACPI support.
+func (c *client) ShutdownDirect(ctx context.Context, vmID string) error {
+	socketPath := c.cfg.VMSocketPath(vmID)
+	return c.shutdownWithFallback(ctx, vmID, socketPath)
+}
+
 // shutdownWithFallback stops the CH process when the guest did not respond
 // to an ACPI power-button (or was never sent one).
 //
