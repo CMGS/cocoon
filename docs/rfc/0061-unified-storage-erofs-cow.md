@@ -199,6 +199,10 @@ Source Image (cloudimg.img or OCI layers)
   │   ├─ Extract all .ko/.ko.xz/.ko.zst files in dependency chain
   │   │   (decompress .ko.xz/.ko.zst → .ko during extraction)
   │   └─ Generate load.order (topological sort of dependency chain)
+  │       Layout: all .ko files are placed flat in /cocoon-modules/
+  │       using their basename (e.g., erofs.ko, lz4_compress.ko).
+  │       load.order lists basenames. Materialize fails if two modules
+  │       in the dependency chain have the same basename (collision).
   │
   ├─ mkfs.erofs rootfs.erofs (from mount point, unmodified)
   │
@@ -628,8 +632,11 @@ IDs are set by Cocoon and are stable regardless of disk ordering.
   Requires CH >= v35. Cocoon verifies CH version at launch; if the version
   does not support `serial`, Cocoon **fails fast** with a clear error
   asking to upgrade CH. There is no fallback to positional device naming.
-- Serial length: **max 20 characters** (virtio spec limit). Cocoon's
-  naming convention (`cocoon-layer0`, `cocoon-cow`) stays within this.
+- Serial length: **max 20 bytes** — this is a virtio-blk protocol
+  constraint (the `VIRTIO_BLK_ID_BYTES` field in `GET_ID` is fixed at
+  20 bytes per the virtio spec). Cocoon's naming convention
+  (`cocoon-layer0`, `cocoon-cow`) stays within this. Cocoon validates
+  serial length before launch and fails fast if exceeded.
 - Character set: `[A-Za-z0-9_-]` only. No spaces or special characters.
 - **Interface**: Cocoon configures disks via the CH **REST API** (`PUT
   /api/v1/vm.create` with `DiskConfig` JSON), not CLI flags. This avoids
@@ -650,10 +657,14 @@ cloudimg.img (download — may be qcow2 or raw)
   → If qcow2: qemu-img convert -f qcow2 -O raw → cloudimg.raw
   → Parse GPT in Go → select rootfs partition → compute offset
       Selection rule:
-        1. Filter out ESP (EFI System) and BIOS boot partitions by GPT type GUID
-        2. Among remaining "Linux filesystem" partitions, pick the largest
+        1. Filter out partitions by GPT type GUID:
+           - ESP: C12A7328-F81F-11D2-BA4B-00A0C93EC93B
+           - BIOS boot: 21686148-6449-6E6F-744E-656564454649
+        2. Among remaining "Linux filesystem" (0FC63DAF-...) partitions,
+           pick the largest
         3. mount -o ro,loop,offset=<N> (requires root)
         4. Verify /etc/os-release exists in mounted rootfs (else fail fast)
+        Non-GPT, LVM, LUKS → PermanentError with descriptive message
   → Extract: vmlinuz, initrd.img, kernel modules (erofs/overlay dep chain)
   → mkfs.erofs rootfs.erofs (from mount point, no guest modification)
   → Unmount
@@ -741,8 +752,13 @@ func createCOWDisk(path string, size int64) error {
     f, _ := os.Create(path)
     f.Truncate(size)
     f.Close()
-    // Format ext4 (host-side, not guest-side)
-    return exec.Command("mkfs.ext4", "-F", "-m", "0", "-q", path).Run()
+    // Format ext4 with conservative features (host-side, not guest-side).
+    // Modern e2fsprogs enables features (metadata_csum_seed, orphan_file)
+    // that older guest kernels reject at mount time. Pin to ext4 baseline
+    // features to ensure compatibility across all supported guest kernels.
+    return exec.Command("mkfs.ext4", "-F", "-m", "0", "-q",
+        "-O", "^metadata_csum_seed,^orphan_file",
+        path).Run()
 }
 ```
 
@@ -1038,10 +1054,10 @@ motivation is removing virtiofsd.
    Cocoon pins explicit `mkfs.erofs` flags: `-zlz4hc` (compression),
    `-C65536` (cluster size), `-T0` (fixed timestamp), `-Uclear` (zero
    UUID — without this, a random UUID is generated per build, breaking
-   reproducibility). `mkfs.erofs` sorts directory entries internally
-   (radix tree), so file ordering is deterministic for a given input tree.
-   Content-addressing hashes the **output EROFS file**, not the input.
-   Same input + same flags + same `mkfs.erofs` version = same output.
+   reproducibility). Content-addressing hashes the **output EROFS file**,
+   not the input. Same input + same flags + same `mkfs.erofs` version =
+   same output (upstream documents this as a reproducible-build guarantee).
+   Cocoon's acceptance tests verify hash stability across repeated builds.
    Cocoon records `mkfs.erofs` version in `meta.json` for diagnostics.
    Minimum required version: erofs-utils >= 1.5.
 
@@ -1139,9 +1155,11 @@ Each phase gate requires passing the following test matrix:
 | Multi-layer OCI with whiteout files | Required | Required |
 | COW write persistence across reboot | Required | Required |
 | Unclean shutdown → COW recovery | Required | Required |
+| COW ext4 mounts on oldest supported guest kernel | Required | Required |
 | Layer dedup (two VMs, same image) | Required | - |
 | GC: delete VM → layer refcount→0 → layer removed | Required | - |
 | Guest sysfs serial matches host-set serial | Required | Required |
+| dracut image boots with `boot=cocoon` (no side effects) | Required | - |
 
 ### Phase 2 Gate (Cloudimg Path)
 
@@ -1157,6 +1175,9 @@ Each phase gate requires passing the following test matrix:
 
 - SELinux enforcing images: cpio repack may lose SELinux labels (best-effort)
 - mkinitcpio (Arch Linux): not supported (FormatUnknown → hard fail)
+- `boot=cocoon` cmdline: injected unconditionally (required by initramfs-tools,
+  harmless on dracut). If a future distro uses `boot=` for a conflicting
+  purpose, that distro requires adaptation (not currently known to exist).
 - Cloudimg formats: GPT+ext4 is the primary supported partition layout.
   GPT+xfs (RHEL/CentOS) is best-effort — requires xfs read support on
   the host for `mount -o ro,loop`. MBR/LVM fail fast with descriptive error.
