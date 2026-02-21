@@ -79,10 +79,13 @@ cloud-hypervisor \
   --cmdline "... boot=cocoon cocoon.layers=cocoon-layer0,cocoon-layer1 cocoon.cow=cocoon-cow"
 ```
 
-**Layer ordering**: `cocoon.layers` follows overlayfs `lowerdir=` semantics
-(see `Documentation/filesystems/overlayfs.rst` in the kernel tree) —
-leftmost has the highest priority. For OCI, the custom (user) layer comes
-first so it overrides the base layer. Cocoon constructs the `--disk` flags
+**Layer ordering**: `cocoon.layers` follows overlayfs `lowerdir=` semantics.
+Per the kernel documentation (`Documentation/filesystems/overlayfs.rst`):
+*"Multiple lower layers can now be given as the mount option
+`lowerdir=lower1:lower2:lower3`, where the rightmost lower layer is at the
+bottom."* In other words, leftmost = highest priority (searched first for
+file lookup). For OCI, the custom (user) layer comes first so it overrides
+the base layer. Cocoon constructs the `--disk` flags
 in the same order, and assigns deterministic serial IDs for stable guest
 device identification.
 
@@ -113,8 +116,13 @@ addressed by SHA-256). Each VM only gets its own COW raw file.
   from invalidating cached layers.
 - `cocoon-buildinfo.json` (injected into initrd) must **not** contain
   the current kernel layer SHA — that would create a circular
-  dependency (hash depends on its own value). It may contain rootfs
-  layer SHAs, mkfs flags, kernel version, and config check results.
+  dependency (hash depends on its own value). It also should **not**
+  contain `rootfs_layer_shas` — embedding rootfs-specific data in the
+  initrd would defeat kernel layer dedup across images sharing the
+  same distro kernel. Rootfs layer SHAs belong in the host-side
+  `meta.json` (not hashed, not inside initrd). The initrd buildinfo
+  contains only kernel-scoped data: mkfs flags, mkfs version, kernel
+  version, and kernel config check results.
 
 ### How EROFS Replaces qcow2 Backing
 
@@ -252,10 +260,17 @@ Source Image (cloudimg.img or OCI layers)
   ├─ Patch initramfs:
   │   ├─ Unpack (cpio segments — see Pitfall 1 for multi-segment handling)
   │   ├─ Detect initramfs format (initramfs-tools vs dracut; unknown → fail)
+  │   ├─ Tool availability gate: verify the unpacked initramfs contains
+  │   │     the required external commands (insmod, mount, cat, mkdir,
+  │   │     rm, ln, mknod, sleep, uname). Check busybox applet list or
+  │   │     standalone binaries in /bin, /sbin, /usr/bin, /usr/sbin.
+  │   │     Missing any → PermanentError("initramfs too minimal: missing <tool>")
   │   ├─ Inject /cocoon-modules/*.ko + load.order
   │   ├─ Inject /cocoon-buildinfo.json (read-only, immutable build-time data):
-  │   │     { mkfs_erofs_flags, mkfs_erofs_version, rootfs_layer_shas,
+  │   │     { mkfs_erofs_flags, mkfs_erofs_version,
   │   │       kernel_version, kernel_config_checks }
+  │   │   Note: rootfs_layer_shas are stored in host-side meta.json
+  │   │   (not inside initrd) to preserve kernel layer dedup.
   │   │   Runtime boot results (overlay_opts_effective, etc.) are written
   │   │   separately to /run/cocoon/boot.json at boot time.
   │   │   cocoon_fatal() prints buildinfo + /proc state on fatal errors.
@@ -481,9 +496,9 @@ mountroot() {
         # [Ii] etc. handle case variation in error messages.
         case "$_ovl_err" in
             *[Ii]nvalid\ argument*|*[Uu]nknown\ option*|*[Bb]ad\ option*)
-                echo "cocoon: overlay explicit opts unsupported, falling back" >&2
-                mount -t overlay overlay -o "$OVL_OPTS" "${rootmnt}" \
-                    || cocoon_fatal "overlay mount failed (fallback)"
+                echo "cocoon: overlay explicit opts unsupported (err: ${_ovl_err}), falling back" >&2
+                _ovl_fb_err=$(mount -t overlay overlay -o "$OVL_OPTS" "${rootmnt}" 2>&1) \
+                    || cocoon_fatal "overlay mount failed (first: ${_ovl_err}) (fallback: ${_ovl_fb_err})"
                 _ovl_mode="fallback"
                 ;;
             *) cocoon_fatal "overlay mount failed: $_ovl_err" ;;
@@ -523,6 +538,14 @@ mountroot() {
     ln -sf /dev/null "${rootmnt}/etc/systemd/system/systemd-remount-fs.service" \
         || cocoon_fatal "mask systemd-remount-fs.service failed"
 
+    # VM identity isolation: ensure each VM gets a unique machine-id.
+    # If the base image ships a non-empty machine-id, multiple VMs would
+    # share it (breaks journald, dbus, systemd-networkd, licensing agents).
+    # Truncating to empty triggers systemd-machine-id-setup on first boot.
+    if [ -f "${rootmnt}/etc/machine-id" ]; then
+        : > "${rootmnt}/etc/machine-id" 2>/dev/null || true
+    fi
+
     log_success_msg "Cocoon: overlay rootfs ready"
 }
 ```
@@ -531,7 +554,9 @@ mountroot() {
 
 Dracut requires **two** injected hooks. The `rootok=1` flag **must** be set
 during the `cmdline` stage — if dracut reaches the end of cmdline processing
-without `rootok=1`, it halts before ever reaching mount hooks.
+without `rootok=1`, it halts before ever reaching mount hooks. This is
+documented in `dracut.modules(7)` §CMDLINE HOOKS: *"If no cmdline hook
+sets `rootok`, dracut will refuse to boot."*
 
 **Hook 1** — `/lib/dracut/hooks/cmdline/01-cocoon-cmdline.sh`:
 
@@ -698,9 +723,9 @@ _ovl_mode="full"
 _ovl_err=$(mount -t overlay overlay -o "$OVL_FULL" "$NEWROOT" 2>&1) || {
     case "$_ovl_err" in
         *[Ii]nvalid\ argument*|*[Uu]nknown\ option*|*[Bb]ad\ option*)
-            echo "cocoon: overlay explicit opts unsupported, falling back" >&2
-            mount -t overlay overlay -o "$OVL_OPTS" "$NEWROOT" \
-                || cocoon_fatal "cocoon: overlay mount failed (fallback)"
+            echo "cocoon: overlay explicit opts unsupported (err: ${_ovl_err}), falling back" >&2
+            _ovl_fb_err=$(mount -t overlay overlay -o "$OVL_OPTS" "$NEWROOT" 2>&1) \
+                || cocoon_fatal "cocoon: overlay mount failed (first: ${_ovl_err}) (fallback: ${_ovl_fb_err})"
             _ovl_mode="fallback"
             ;;
         *) cocoon_fatal "cocoon: overlay mount failed: $_ovl_err" ;;
@@ -728,6 +753,11 @@ ln -sf /dev/null "$NEWROOT/etc/systemd/system/systemd-fsck-root.service" \
 rm -f "$NEWROOT/etc/systemd/system/systemd-remount-fs.service" 2>/dev/null
 ln -sf /dev/null "$NEWROOT/etc/systemd/system/systemd-remount-fs.service" \
     || cocoon_fatal "cocoon: mask systemd-remount-fs.service failed"
+
+# VM identity isolation (see initramfs-tools hook for rationale).
+if [ -f "$NEWROOT/etc/machine-id" ]; then
+    : > "$NEWROOT/etc/machine-id" 2>/dev/null || true
+fi
 ```
 
 Key differences from initramfs-tools:
@@ -830,6 +860,13 @@ would be lost. The hook scripts would need to explicitly `mount --move`
 the cocoon mount points into the new root before `switch_root`. This is
 tracked as a known dependency on the initramfs framework contract.
 
+**Recommended post-boot self-check**: the implementation should inject a
+systemd oneshot service (in the COW upper) that verifies
+`/run/cocoon/storage/layers/*` are still mountpoints after boot. If not,
+log a fatal diagnostic via `systemd-cat` and optionally trigger
+`systemctl isolate emergency.target`. This converts a silent mount loss
+into an observable failure.
+
 #### Guest Visibility
 
 After boot, mount points are hidden under `/run/cocoon/storage/`:
@@ -888,7 +925,9 @@ IDs are set by Cocoon and are stable regardless of disk ordering.
 
 **CH serial requirements**:
 - Cloud Hypervisor supports `serial` on disk configurations (virtio-blk).
-  Requires CH >= v35. Cocoon verifies CH version at launch; if the version
+  Requires CH >= v35 (serial field added in
+  [cloud-hypervisor/cloud-hypervisor#5765](https://github.com/cloud-hypervisor/cloud-hypervisor/pull/5765),
+  released in v35.0). Cocoon verifies CH version at launch; if the version
   does not support `serial`, Cocoon **fails fast** with a clear error
   asking to upgrade CH. There is no fallback to positional device naming.
 - Serial length: **max 20 bytes** (not characters — but since Cocoon
@@ -898,7 +937,12 @@ IDs are set by Cocoon and are stable regardless of disk ordering.
   convention (`cocoon-layer0` = 14 bytes, `cocoon-cow` = 10 bytes)
   stays well within this. Cocoon validates `len(serial) <= 20` before
   launch and fails fast if exceeded.
-- Character set: `[A-Za-z0-9_-]` only. No spaces or special characters.
+- Character set: `[A-Za-z0-9_-]` only. No spaces, NUL bytes, or special
+  characters. Because the host-side serial is restricted to this charset
+  and is shorter than 20 bytes, the guest-side sysfs value will not
+  contain embedded NUL or space padding — the trailing-whitespace trim
+  in `resolve_disk` is a defensive measure only, not a functional
+  requirement for Cocoon-generated serials.
   Serials exceeding the limit are **rejected** (not truncated) — silent
   truncation would cause guest-visible ID to differ from the expected value.
 - **Interface**: Cocoon configures disks via the CH **REST API** (`PUT
@@ -1204,6 +1248,15 @@ Correct approach:
 5. Unpack the real initramfs segment, inject modules + hook, repack.
 6. **Reassemble**: concatenate all preamble segments (preserved verbatim)
    + recompressed main segment. The kernel bootloader expects this layout.
+
+**Hard rule — preserve compression algorithm**: the main segment MUST be
+recompressed with the **same algorithm** as the original (gzip→gzip,
+zstd→zstd, xz→xz, uncompressed→uncompressed). The kernel only supports
+decompressing algorithms enabled at build time (`CONFIG_RD_GZIP`,
+`CONFIG_RD_ZSTD`, `CONFIG_RD_XZ`, etc.). Since the original initrd boots,
+its algorithm is known-supported; switching to a different algorithm risks
+the kernel failing to decompress the initramfs entirely (before any hook
+code runs). Using gzip as a "universal output" is explicitly **rejected**.
 
 #### Pitfall 2: `modules.builtin` — don't inject what's already in the kernel
 
@@ -1584,6 +1637,12 @@ Each phase gate requires passing the following test matrix:
   on error message string matching, which is inherently fragile; the
   implementation should prefer checking the kernel's exit code where
   feasible and use string matching only as a supplementary signal.
+- Module basename collision: kernel modules are placed flat in
+  `/cocoon-modules/` using their basename. If two modules in the
+  dependency chain share the same basename (from different subdirectories
+  in `/lib/modules/`), materialize fails with a `PermanentError` listing
+  the conflicting paths. This is rare but can occur with out-of-tree or
+  vendor modules.
 - Cloudimg formats: GPT+ext4 is the primary supported partition layout.
   GPT+xfs (RHEL/CentOS) is best-effort — requires xfs read support on
   the host for `mount -o ro,loop`. MBR/LVM fail fast with descriptive error.
@@ -1593,10 +1652,14 @@ Each phase gate requires passing the following test matrix:
 Cocoon validates tool availability on demand (not globally at startup):
 - `mkfs.erofs` >= 1.7: checked at first materialize (`mkfs.erofs -V`).
   Version 1.7+ is required for `--tar=` mode (deterministic builds).
+  Reference: `--tar` support added in
+  [erofs-utils v1.7](https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git/tag/?h=v1.7).
+  Version comparison must be **semantic** (not string-based).
 - `mkfs.ext4` + `e2fsck` (e2fsprogs): checked at first `cocoon create`
 - `qemu-img` (any version): checked only for cloudimg materialize
   (`qemu-img --version`). OCI-only users do not need `qemu-img`.
-- CH >= v35 (for serial support): version check at VM launch
+- CH >= v35 (for serial support): version check at VM launch.
+  Reference: [cloud-hypervisor/cloud-hypervisor#5765](https://github.com/cloud-hypervisor/cloud-hypervisor/pull/5765)
 
 Missing tools → `types.PermanentError` with install instructions.
 
