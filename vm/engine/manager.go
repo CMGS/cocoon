@@ -689,14 +689,24 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 		return err
 	}
 
-	// Graceful shutdown via CH API: sends ACPI shutdown + waits for process exit.
-	if err := m.hyper.Shutdown(ctx, vmID, timeout); err != nil {
+	// Choose shutdown strategy based on boot mode:
+	//  - UEFI boot: ACPI power-button → guest systemd handles graceful shutdown.
+	//  - Direct boot: skip ACPI (guest kernel likely lacks ACPI support),
+	//    go straight to vm.shutdown API at the VMM level.
+	var shutdownErr error
+	vmCfg, cfgErr := m.LoadConfig(vmID)
+	if cfgErr == nil && vmCfg.BootStrategy == types.BootStrategyDirect {
+		shutdownErr = m.shutdownDirectBoot(ctx, vmID, timeout)
+	} else {
+		shutdownErr = m.hyper.Shutdown(ctx, vmID, timeout)
+	}
+	if shutdownErr != nil {
 		// Shutdown failed (timeout or error); transition to ERROR.
 		// LastError and ErrorCount are auto-tracked by TransitionState.
-		if transErr := m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("graceful stop failed: %v", err)); transErr != nil {
+		if transErr := m.TransitionState(vmID, types.VMStateError, fmt.Sprintf("graceful stop failed: %v", shutdownErr)); transErr != nil {
 			log.Printf("warning: failed to transition %s to ERROR after stop failure: %v", vmID, transErr)
 		}
-		return fmt.Errorf("shutdown VM %s: %w", vmID, err)
+		return fmt.Errorf("shutdown VM %s: %w", vmID, shutdownErr)
 	}
 
 	// Transition STOPPING -> STOPPED with stopped_at and cleared PID.
@@ -716,6 +726,32 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 	}
 
 	return nil
+}
+
+// shutdownDirectBoot stops a direct-boot VM by going straight to the
+// vm.shutdown API (VMM-level shutdown), skipping the ACPI power-button
+// that the guest kernel likely cannot handle without CONFIG_ACPI=y.
+func (m *manager) shutdownDirectBoot(ctx context.Context, vmID string, timeout time.Duration) error {
+	socketPath := m.cfg.VMSocketPath(vmID)
+	if err := m.hyper.ShutdownVM(ctx, socketPath); err != nil {
+		log.Printf("vm.shutdown API failed for direct-boot VM %s: %v; falling back to SIGKILL", vmID, err)
+		return m.hyper.ForceKill(vmID)
+	}
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !m.hyper.IsAlive(vmID) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("shutdown canceled for %s: %w", vmID, ctx.Err())
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+
+	log.Printf("CH process for direct-boot VM %s did not exit after vm.shutdown; falling back to SIGKILL", vmID)
+	return m.hyper.ForceKill(vmID)
 }
 
 func (m *manager) waitForStoppingVM(ctx context.Context, vmID string, timeout time.Duration) error {
