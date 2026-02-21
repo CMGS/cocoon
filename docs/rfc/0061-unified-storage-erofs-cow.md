@@ -212,10 +212,15 @@ Source Image (cloudimg.img or OCI layers)
   │       using their basename (e.g., erofs.ko, lz4_compress.ko).
   │       load.order lists basenames. Materialize fails if two modules
   │       in the dependency chain have the same basename (collision).
-  │       **Ordering constraint**: topological sort guarantees virtio
-  │       drivers load before erofs/overlay/ext4 (since virtio_blk
-  │       depends on virtio_pci → virtio_ring → virtio). This ensures
-  │       `/sys/block/vd*` is populated before resolve_disk runs.
+  │       **Ordering constraint**: load.order is generated
+  │       deterministically and must ensure virtio transport loads
+  │       before device drivers. Cocoon enforces a stable prefix:
+  │       `virtio, virtio_ring, virtio_pci, virtio_blk` followed
+  │       by filesystem modules (`erofs, overlay, ext4`), even if
+  │       pure `modules.dep` topological sorting would allow a
+  │       different order (symbol deps between virtio subsystem
+  │       modules vary across kernel builds). `resolve_disk` still
+  │       polls with timeout to handle device enumeration latency.
   │
   ├─ mkfs.erofs rootfs.erofs (from mount point, unmodified)
   │
@@ -225,6 +230,11 @@ Source Image (cloudimg.img or OCI layers)
   │   ├─ Unpack (cpio segments — see Pitfall 1 for multi-segment handling)
   │   ├─ Detect initramfs format (initramfs-tools vs dracut; unknown → fail)
   │   ├─ Inject /cocoon-modules/*.ko + load.order
+  │   ├─ Inject /cocoon-buildinfo.json (read-only, for diagnostics):
+  │   │     { mkfs_erofs_flags, mkfs_erofs_version, layer_shas,
+  │   │       kernel_version, kernel_config_checks }
+  │   │   Hook scripts print this on fatal errors alongside
+  │   │   /proc/modules and `uname -r` for debugging.
   │   ├─ Inject hook script(s) at distro-specific path:
   │   │   ├─ initramfs-tools: /scripts/cocoon (custom boot script)
   │   │   └─ dracut: /lib/dracut/hooks/cmdline/01-cocoon-cmdline.sh
@@ -323,6 +333,16 @@ resolve_disk() {
 mountroot() {
     log_begin_msg "Cocoon: mounting overlay rootfs"
 
+    # Diagnostic helper: dump buildinfo + kernel state before fatal exit.
+    cocoon_fatal() {
+        echo "COCOON FATAL: $1" >&2
+        echo "--- buildinfo ---" >&2
+        [ -f /cocoon-buildinfo.json ] && cat /cocoon-buildinfo.json >&2
+        echo "--- kernel: $(uname -r) ---" >&2
+        cat /proc/modules >&2 2>/dev/null
+        panic "$1"
+    }
+
     # Load injected modules in dependency order.
     # insmod errors: "File exists" = already loaded (built-in or earlier hook),
     # harmless. Any other failure (bad format, missing symbol) is fatal —
@@ -365,7 +385,7 @@ mountroot() {
         dev=$(resolve_disk "$serial") || panic "device ${serial} not found"
         mnt="${COCOON}/layers/${serial}"
         mkdir -p "$mnt"
-        mount -t erofs -o ro "$dev" "$mnt" || panic "mount ${serial} failed"
+        mount -t erofs -o ro "$dev" "$mnt" || cocoon_fatal "mount ${serial} failed"
         [ -n "$LOWER" ] && LOWER="${LOWER}:"
         LOWER="${LOWER}${mnt}"
     done
@@ -373,14 +393,14 @@ mountroot() {
     # Mount COW (pre-formatted by cocoon create on host)
     cow_dev=$(resolve_disk "$COW") || panic "COW device ${COW} not found"
     mkdir -p "${COCOON}/cow"
-    mount -t ext4 "$cow_dev" "${COCOON}/cow" || panic "mount COW failed"
+    mount -t ext4 "$cow_dev" "${COCOON}/cow" || cocoon_fatal "mount COW failed"
     mkdir -p "${COCOON}/cow/upper"
     rm -rf "${COCOON}/cow/work" && mkdir -p "${COCOON}/cow/work"
 
     # Assemble overlay
     mount -t overlay overlay \
       -o "lowerdir=${LOWER},upperdir=${COCOON}/cow/upper,workdir=${COCOON}/cow/work" \
-      "${rootmnt}" || panic "overlay failed"
+      "${rootmnt}" || cocoon_fatal "overlay mount failed"
 
     mkdir -p "${rootmnt}/dev" "${rootmnt}/proc" "${rootmnt}/sys" "${rootmnt}/run"
 
@@ -469,6 +489,16 @@ resolve_disk() {
     return 1
 }
 
+# Diagnostic helper: dump buildinfo + kernel state before fatal exit.
+cocoon_fatal() {
+    echo "COCOON FATAL: $1" >&2
+    echo "--- buildinfo ---" >&2
+    [ -f /cocoon-buildinfo.json ] && cat /cocoon-buildinfo.json >&2
+    echo "--- kernel: $(uname -r) ---" >&2
+    cat /proc/modules >&2 2>/dev/null
+    die "$1"
+}
+
 # Load injected modules in dependency order (see initramfs-tools hook for rationale).
 if [ -d /cocoon-modules ] && [ -f /cocoon-modules/load.order ]; then
     while read -r mod; do
@@ -505,7 +535,7 @@ for serial in $(echo "$LAYERS" | tr ',' ' '); do
     dev=$(resolve_disk "$serial") || die "cocoon: device ${serial} not found"
     mnt="${COCOON}/layers/${serial}"
     mkdir -p "$mnt"
-    mount -t erofs -o ro "$dev" "$mnt" || die "cocoon: mount ${serial} failed"
+    mount -t erofs -o ro "$dev" "$mnt" || cocoon_fatal "cocoon: mount ${serial} failed"
     [ -n "$LOWER" ] && LOWER="${LOWER}:"
     LOWER="${LOWER}${mnt}"
 done
@@ -513,14 +543,14 @@ done
 # Mount COW (pre-formatted by cocoon create on host)
 cow_dev=$(resolve_disk "$COW") || die "cocoon: COW device ${COW} not found"
 mkdir -p "${COCOON}/cow"
-mount -t ext4 "$cow_dev" "${COCOON}/cow" || die "cocoon: mount COW failed"
+mount -t ext4 "$cow_dev" "${COCOON}/cow" || cocoon_fatal "cocoon: mount COW failed"
 mkdir -p "${COCOON}/cow/upper"
 rm -rf "${COCOON}/cow/work" && mkdir -p "${COCOON}/cow/work"
 
 # Assemble overlay
 mount -t overlay overlay \
   -o "lowerdir=${LOWER},upperdir=${COCOON}/cow/upper,workdir=${COCOON}/cow/work" \
-  "$NEWROOT" || die "cocoon: overlay mount failed"
+  "$NEWROOT" || cocoon_fatal "cocoon: overlay mount failed"
 
 mkdir -p "$NEWROOT/dev" "$NEWROOT/proc" "$NEWROOT/sys" "$NEWROOT/run"
 
@@ -784,9 +814,16 @@ When keeping layers separate (multi-EROFS lowerdir):
 - Convert `.wh..wh..opq` → set `trusted.overlay.opaque=y` xattr on dir
 - This allows overlayfs to process the deletions natively
 
-**Note**: creating character devices requires `CAP_MKNOD` (cocoon runs
-as root, so this is available). The `mkfs.erofs` tool preserves device
-nodes and xattrs.
+**Host requirements for whiteout conversion**:
+- Creating character devices requires `CAP_MKNOD` (cocoon runs as root).
+- Writing `trusted.overlay.opaque=y` xattr requires `CAP_SYS_ADMIN`
+  (cocoon runs as root). Additionally, the build workspace filesystem
+  **must support `trusted.*` xattrs** (ext4/xfs/btrfs — yes; tmpfs — no;
+  overlayfs on overlayfs — no). If running inside a restricted container
+  without `CAP_SYS_ADMIN`, xattr writes will fail silently and opaque
+  dir semantics will break. Materialize should verify xattr write
+  capability at the start of multi-layer conversion.
+- The `mkfs.erofs` tool preserves device nodes and xattrs.
 
 **Kernel dependency**: cross-layer deletion in multi-EROFS lowerdir relies
 on the Linux kernel's overlayfs implementation of whiteout (`c 0 0`) and
@@ -1141,12 +1178,13 @@ motivation is removing virtiofsd.
    **Kernel config verification (materialize-time hard gate)**:
    Materialize **must** parse the guest kernel config and verify
    required options before producing EROFS layers. Config sources
-   (checked in order):
+   (checked in order, from the mounted rootfs):
    1. `/boot/config-<ver>` (most distros ship this)
    2. `/usr/lib/modules/<ver>/config` (some distros)
-   3. `/proc/config.gz` inside the mounted rootfs (if present)
-   4. If no config found → **fail materialize** with PermanentError
+   3. If no config found → **fail materialize** with PermanentError
       (do not guess — an unverifiable kernel is not supportable)
+   Note: `/proc/config.gz` is a runtime procfs node, not a file on
+   disk — it is not available when the rootfs is mounted offline.
 
    Required kernel config options:
    - `CONFIG_EROFS_FS=y|m` — EROFS filesystem support.
@@ -1289,6 +1327,7 @@ Each phase gate requires passing the following test matrix:
 
 Cocoon validates tool availability on demand (not globally at startup):
 - `mkfs.erofs` >= 1.5: checked at first materialize (`mkfs.erofs -V`)
+- `mkfs.ext4` + `e2fsck` (e2fsprogs): checked at first `cocoon create`
 - `qemu-img` (any version): checked only for cloudimg materialize
   (`qemu-img --version`). OCI-only users do not need `qemu-img`.
 - CH >= v35 (for serial support): version check at VM launch
