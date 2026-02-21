@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 // buildNewcCPIO constructs a minimal cpio newc archive from a list of
@@ -257,12 +259,118 @@ func TestCheckInitramfsVirtiofs_UncompressedCPIONewcCRC(t *testing.T) {
 	}
 }
 
-func TestCheckInitramfsVirtiofs_ZstdReturnsError(t *testing.T) {
+func TestCheckInitramfsVirtiofs_ZstdFound(t *testing.T) {
 	t.Parallel()
 
-	// Simulate a zstd-compressed initramfs (magic bytes 0x28B52FFD + dummy data).
-	zstdMagic := []byte{0x28, 0xB5, 0x2F, 0xFD}
-	initrdData := append(zstdMagic, make([]byte, 100)...)
+	// Build a cpio archive with a virtiofs.ko entry, then zstd-compress it.
+	cpioData := buildNewcCPIO([]cpioTestEntry{
+		{Name: "lib/modules/6.8.0-40-generic/kernel/fs/fuse/virtiofs.ko", Data: []byte("ELF-fake")},
+		{Name: "bin/busybox", Data: []byte("busybox-binary")},
+	})
+
+	var zstdBuf bytes.Buffer
+	enc, err := zstd.NewWriter(&zstdBuf)
+	if err != nil {
+		t.Fatalf("zstd writer: %v", err)
+	}
+	if _, err := enc.Write(cpioData); err != nil {
+		t.Fatalf("zstd write: %v", err)
+	}
+	if err := enc.Close(); err != nil {
+		t.Fatalf("zstd close: %v", err)
+	}
+
+	layerTar := buildTestKernelTar(t, "initrd.img", zstdBuf.Bytes())
+	tmpDir := t.TempDir()
+	layerPath := filepath.Join(tmpDir, "kernel-layer.tar")
+	if err := os.WriteFile(layerPath, layerTar, 0o644); err != nil {
+		t.Fatalf("write kernel layer tar: %v", err)
+	}
+
+	found, err := CheckInitramfsVirtiofs(layerPath)
+	if err != nil {
+		t.Fatalf("CheckInitramfsVirtiofs: %v", err)
+	}
+	if !found {
+		t.Fatal("expected virtiofs module to be found in zstd-compressed initramfs")
+	}
+}
+
+func TestCheckInitramfsVirtiofs_ZstdNotFound(t *testing.T) {
+	t.Parallel()
+
+	// Build a cpio archive without virtiofs, then zstd-compress it.
+	cpioData := buildNewcCPIO([]cpioTestEntry{
+		{Name: "lib/modules/6.8.0-40-generic/kernel/fs/ext4/ext4.ko", Data: []byte("ELF-fake")},
+	})
+
+	var zstdBuf bytes.Buffer
+	enc, err := zstd.NewWriter(&zstdBuf)
+	if err != nil {
+		t.Fatalf("zstd writer: %v", err)
+	}
+	if _, err := enc.Write(cpioData); err != nil {
+		t.Fatalf("zstd write: %v", err)
+	}
+	if err := enc.Close(); err != nil {
+		t.Fatalf("zstd close: %v", err)
+	}
+
+	layerTar := buildTestKernelTar(t, "initrd.img", zstdBuf.Bytes())
+	tmpDir := t.TempDir()
+	layerPath := filepath.Join(tmpDir, "kernel-layer.tar")
+	if err := os.WriteFile(layerPath, layerTar, 0o644); err != nil {
+		t.Fatalf("write kernel layer tar: %v", err)
+	}
+
+	found, err := CheckInitramfsVirtiofs(layerPath)
+	if err != nil {
+		t.Fatalf("CheckInitramfsVirtiofs: %v", err)
+	}
+	if found {
+		t.Fatal("expected virtiofs module NOT to be found in zstd-compressed initramfs")
+	}
+}
+
+func TestCheckInitramfsVirtiofsFromInitrdPath_ZstdFound(t *testing.T) {
+	t.Parallel()
+
+	cpioData := buildNewcCPIO([]cpioTestEntry{
+		{Name: "lib/modules/6.8.0-40-generic/kernel/fs/fuse/virtiofs.ko", Data: []byte("ELF-fake")},
+	})
+
+	var zstdBuf bytes.Buffer
+	enc, err := zstd.NewWriter(&zstdBuf)
+	if err != nil {
+		t.Fatalf("zstd writer: %v", err)
+	}
+	if _, err := enc.Write(cpioData); err != nil {
+		t.Fatalf("zstd write: %v", err)
+	}
+	if err := enc.Close(); err != nil {
+		t.Fatalf("zstd close: %v", err)
+	}
+
+	initrdPath := filepath.Join(t.TempDir(), "initrd.img")
+	if err := os.WriteFile(initrdPath, zstdBuf.Bytes(), 0o644); err != nil {
+		t.Fatalf("write initrd: %v", err)
+	}
+
+	found, err := CheckInitramfsVirtiofsFromInitrdPath(initrdPath)
+	if err != nil {
+		t.Fatalf("CheckInitramfsVirtiofsFromInitrdPath: %v", err)
+	}
+	if !found {
+		t.Fatal("expected virtiofs module to be found in zstd initramfs")
+	}
+}
+
+func TestCheckInitramfsVirtiofs_XzReturnsError(t *testing.T) {
+	t.Parallel()
+
+	// XZ magic: 0xFD 0x37 0x7A 0x58 0x5A 0x00
+	xzMagic := []byte{0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00}
+	initrdData := append(xzMagic, make([]byte, 100)...)
 
 	layerTar := buildTestKernelTar(t, "initrd.img", initrdData)
 	tmpDir := t.TempDir()
@@ -273,10 +381,33 @@ func TestCheckInitramfsVirtiofs_ZstdReturnsError(t *testing.T) {
 
 	found, err := CheckInitramfsVirtiofs(layerPath)
 	if err == nil {
-		t.Fatalf("expected error for zstd initramfs, got found=%v", found)
+		t.Fatalf("expected error for xz initramfs, got found=%v", found)
 	}
-	if !strings.Contains(err.Error(), "zstd") {
-		t.Fatalf("expected zstd-related error, got: %v", err)
+	if !strings.Contains(err.Error(), "xz") {
+		t.Fatalf("expected xz-related error, got: %v", err)
+	}
+}
+
+func TestCheckInitramfsVirtiofs_Lz4ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	// LZ4 magic: 0x04 0x22 0x4D 0x18
+	lz4Magic := []byte{0x04, 0x22, 0x4D, 0x18}
+	initrdData := append(lz4Magic, make([]byte, 100)...)
+
+	layerTar := buildTestKernelTar(t, "initrd.img", initrdData)
+	tmpDir := t.TempDir()
+	layerPath := filepath.Join(tmpDir, "kernel-layer.tar")
+	if err := os.WriteFile(layerPath, layerTar, 0o644); err != nil {
+		t.Fatalf("write kernel layer tar: %v", err)
+	}
+
+	found, err := CheckInitramfsVirtiofs(layerPath)
+	if err == nil {
+		t.Fatalf("expected error for lz4 initramfs, got found=%v", found)
+	}
+	if !strings.Contains(err.Error(), "lz4") {
+		t.Fatalf("expected lz4-related error, got: %v", err)
 	}
 }
 
