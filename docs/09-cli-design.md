@@ -645,11 +645,6 @@ func runCommand() *cli.Command {
     flags := vmCreateFlags()
     flags = append(flags,
         &cli.BoolFlag{
-            Name:    "detach",
-            Aliases: []string{"d"},
-            Usage:   "run VM in background",
-        },
-        &cli.BoolFlag{
             Name:  "rm",
             Usage: "automatically delete the VM when it stops",
         },
@@ -674,7 +669,6 @@ func runCommand() *cli.Command {
 2. **Print VM ID**: Output the VM ID immediately after Create, **before** boot detection. This allows scripts to capture the ID for cleanup even if Start fails (see `cmd/cocoon/run.go` rationale comment).
 3. **Start VM** (`vmMgr.Start`): Launch CH process, configure via REST, boot VM, poll serial log for boot completion (timeout: config default), transition to RUNNING.
 4. **Background behavior**: VM runs as a background CH process. Serial log is written to disk; use `cocoon logs --follow` to stream.
-   > **Current note**: Runs are background-only today. The `--detach/-d` flag is accepted but is currently a no-op.
 5. **Auto-remove** (if `--rm`): The `AutoRemove` flag is recorded in metadata after Start succeeds. When the VM is stopped via `cocoon stop`, the delete flow is triggered automatically. Note: if the VM crashes or is killed externally, auto-remove does not fire. Use `cocoon doctor --fix` for state reconciliation; automatic deletion of crashed `auto_remove` VMs is a future enhancement.
 
 **Example Usage**:
@@ -2067,7 +2061,7 @@ cocoon run ubuntu-22.04-cloudimg \
   --memory 8G \
   --cpus 4
 
-# Run with auto-cleanup (Phase 1: -d is a no-op; Phase 2: controls attach/detach mode)
+# Run with auto-cleanup
 cocoon run --rm ubuntu-22.04-cloudimg --name temp-vm
 ```
 
@@ -2147,7 +2141,6 @@ for i in {1..100}; do
     --cpus 2 \
     --memory 2G \
     --rm \
-    -d \
     /bin/sh -c "echo Hello from VM $i"
 done
 

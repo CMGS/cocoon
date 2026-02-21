@@ -12,11 +12,6 @@ func runCommand() *cli.Command {
 	flags := vmCreateFlags()
 	flags = append(flags,
 		&cli.BoolFlag{
-			Name:    "detach",
-			Aliases: []string{"d"},
-			Usage:   "run VM in background",
-		},
-		&cli.BoolFlag{
 			Name:  "rm",
 			Usage: "automatically delete the VM when it stops",
 		},
@@ -61,9 +56,7 @@ func runAction(c *cli.Context) error {
 		app.cfg.BootTimeoutSeconds = c.Int("boot-timeout")
 	}
 
-	// Start the VM. In Phase 1, both detach and non-detach modes start
-	// the VM as a background CH process. Phase 2 will add attach mode
-	// (follow serial log) for non-detach runs.
+	// Start the VM as a background CH process.
 	if err := app.vmMgr.Start(c.Context, vmCfg.VMID); err != nil {
 		return fmt.Errorf("start VM: %w", err)
 	}
