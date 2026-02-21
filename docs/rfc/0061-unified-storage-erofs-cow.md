@@ -251,9 +251,10 @@ Source Image (cloudimg.img or OCI layers)
   │   ├─ Detect initramfs format (initramfs-tools vs dracut; unknown → fail)
   │   ├─ Inject /cocoon-modules/*.ko + load.order
   │   ├─ Inject /cocoon-buildinfo.json (read-only, for diagnostics):
-  │   │     { mkfs_erofs_flags, mkfs_erofs_version, layer_shas,
+  │   │     { mkfs_erofs_flags, mkfs_erofs_version, rootfs_layer_shas,
   │   │       kernel_version, kernel_config_checks }
-  │   │   Hook scripts print this on fatal errors alongside
+  │   │   Hook scripts write overlay_opts_effective ("full"|"fallback")
+  │   │   at boot time, and print buildinfo on fatal errors alongside
   │   │   /proc/modules and `uname -r` for debugging.
   │   ├─ Inject hook script(s) at distro-specific path:
   │   │   ├─ initramfs-tools: /scripts/cocoon (custom boot script)
@@ -334,13 +335,13 @@ resolve_disk() {
         for sysdev in /sys/block/vd*; do
             [ -d "$sysdev" ] || continue
             local s=""
-            # Kernel exposes serial at different paths depending on version:
-            #   /sys/block/vdX/serial           (some kernels)
-            #   /sys/block/vdX/device/serial    (more common for virtio-blk)
+            # Kernel exposes serial at different paths depending on version.
+            # virtio-blk ID is 20 bytes (VIRTIO_BLK_ID_BYTES); implementations
+            # may pad with spaces or NUL. Strip NUL and trailing whitespace.
             if [ -f "$sysdev/serial" ]; then
-                s=$(cat "$sysdev/serial")
+                s=$(cat "$sysdev/serial" | tr -d '\000' | sed 's/[[:space:]]*$//')
             elif [ -f "$sysdev/device/serial" ]; then
-                s=$(cat "$sysdev/device/serial")
+                s=$(cat "$sysdev/device/serial" | tr -d '\000' | sed 's/[[:space:]]*$//')
             fi
             if [ "$s" = "$serial" ]; then
                 local devname="/dev/$(basename "$sysdev")"
@@ -370,6 +371,12 @@ mountroot() {
         [ -f /cocoon-buildinfo.json ] && cat /cocoon-buildinfo.json >&2
         echo "--- kernel: $(uname -r) ---" >&2
         cat /proc/modules >&2 2>/dev/null
+        echo "--- capabilities ---" >&2
+        grep CapEff /proc/self/status >&2 2>/dev/null
+        echo "--- /dev mount ---" >&2
+        mount | grep '/dev ' >&2 2>/dev/null
+        echo "--- block devices ---" >&2
+        ls -la /dev/vd* >&2 2>/dev/null || echo "(no /dev/vd* found)" >&2
         panic "$1"
     }
 
@@ -412,7 +419,7 @@ mountroot() {
     # Mount read-only layers (resolve serial → /dev/vdX)
     LOWER=""
     for serial in $(echo "$LAYERS" | tr ',' ' '); do
-        dev=$(resolve_disk "$serial") || panic "device ${serial} not found"
+        dev=$(resolve_disk "$serial") || cocoon_fatal "device ${serial} not found"
         mnt="${COCOON}/layers/${serial}"
         mkdir -p "$mnt"
         mount -t erofs -o ro "$dev" "$mnt" || cocoon_fatal "mount ${serial} failed"
@@ -421,7 +428,7 @@ mountroot() {
     done
 
     # Mount COW (pre-formatted by cocoon create on host)
-    cow_dev=$(resolve_disk "$COW") || panic "COW device ${COW} not found"
+    cow_dev=$(resolve_disk "$COW") || cocoon_fatal "COW device ${COW} not found"
     mkdir -p "${COCOON}/cow"
     mount -t ext4 "$cow_dev" "${COCOON}/cow" || cocoon_fatal "mount COW failed"
     mkdir -p "${COCOON}/cow/upper"
@@ -436,11 +443,16 @@ mountroot() {
     # supported by this kernel), fall back to minimal options and log.
     OVL_OPTS="lowerdir=${LOWER},upperdir=${COCOON}/cow/upper,workdir=${COCOON}/cow/work"
     OVL_FULL="${OVL_OPTS},index=off,metacopy=off,redirect_dir=off"
-    if ! mount -t overlay overlay -o "$OVL_FULL" "${rootmnt}" 2>/dev/null; then
-        echo "cocoon: overlay with explicit opts failed, falling back to defaults" >&2
-        mount -t overlay overlay -o "$OVL_OPTS" "${rootmnt}" \
-            || cocoon_fatal "overlay mount failed"
-    fi
+    _ovl_err=$(mount -t overlay overlay -o "$OVL_FULL" "${rootmnt}" 2>&1) || {
+        case "$_ovl_err" in
+            *"Invalid argument"*)
+                echo "cocoon: overlay explicit opts unsupported, falling back" >&2
+                mount -t overlay overlay -o "$OVL_OPTS" "${rootmnt}" \
+                    || cocoon_fatal "overlay mount failed (fallback)"
+                ;;
+            *) cocoon_fatal "overlay mount failed: $_ovl_err" ;;
+        esac
+    }
 
     mkdir -p "${rootmnt}/dev" "${rootmnt}/proc" "${rootmnt}/sys" "${rootmnt}/run"
 
@@ -513,10 +525,11 @@ resolve_disk() {
         for sysdev in /sys/block/vd*; do
             [ -d "$sysdev" ] || continue
             local s=""
+            # Strip NUL padding and trailing whitespace (virtio-blk 20-byte ID).
             if [ -f "$sysdev/serial" ]; then
-                s=$(cat "$sysdev/serial")
+                s=$(cat "$sysdev/serial" | tr -d '\000' | sed 's/[[:space:]]*$//')
             elif [ -f "$sysdev/device/serial" ]; then
-                s=$(cat "$sysdev/device/serial")
+                s=$(cat "$sysdev/device/serial" | tr -d '\000' | sed 's/[[:space:]]*$//')
             fi
             if [ "$s" = "$serial" ]; then
                 local devname="/dev/$(basename "$sysdev")"
@@ -541,6 +554,12 @@ cocoon_fatal() {
     [ -f /cocoon-buildinfo.json ] && cat /cocoon-buildinfo.json >&2
     echo "--- kernel: $(uname -r) ---" >&2
     cat /proc/modules >&2 2>/dev/null
+    echo "--- capabilities ---" >&2
+    grep CapEff /proc/self/status >&2 2>/dev/null
+    echo "--- /dev mount ---" >&2
+    mount | grep '/dev ' >&2 2>/dev/null
+    echo "--- block devices ---" >&2
+    ls -la /dev/vd* >&2 2>/dev/null || echo "(no /dev/vd* found)" >&2
     die "$1"
 }
 
@@ -577,7 +596,7 @@ mkdir -p "$COCOON"
 # Mount read-only layers (resolve serial → /dev/vdX)
 LOWER=""
 for serial in $(echo "$LAYERS" | tr ',' ' '); do
-    dev=$(resolve_disk "$serial") || die "cocoon: device ${serial} not found"
+    dev=$(resolve_disk "$serial") || cocoon_fatal "cocoon: device ${serial} not found"
     mnt="${COCOON}/layers/${serial}"
     mkdir -p "$mnt"
     mount -t erofs -o ro "$dev" "$mnt" || cocoon_fatal "cocoon: mount ${serial} failed"
@@ -586,20 +605,25 @@ for serial in $(echo "$LAYERS" | tr ',' ' '); do
 done
 
 # Mount COW (pre-formatted by cocoon create on host)
-cow_dev=$(resolve_disk "$COW") || die "cocoon: COW device ${COW} not found"
+cow_dev=$(resolve_disk "$COW") || cocoon_fatal "cocoon: COW device ${COW} not found"
 mkdir -p "${COCOON}/cow"
 mount -t ext4 "$cow_dev" "${COCOON}/cow" || cocoon_fatal "cocoon: mount COW failed"
 mkdir -p "${COCOON}/cow/upper"
 rm -rf "${COCOON}/cow/work" && mkdir -p "${COCOON}/cow/work"
 
-# Assemble overlay (same two-stage strategy as initramfs-tools hook).
+# Assemble overlay (same EINVAL-only fallback as initramfs-tools hook).
 OVL_OPTS="lowerdir=${LOWER},upperdir=${COCOON}/cow/upper,workdir=${COCOON}/cow/work"
 OVL_FULL="${OVL_OPTS},index=off,metacopy=off,redirect_dir=off"
-if ! mount -t overlay overlay -o "$OVL_FULL" "$NEWROOT" 2>/dev/null; then
-    echo "cocoon: overlay with explicit opts failed, falling back to defaults" >&2
-    mount -t overlay overlay -o "$OVL_OPTS" "$NEWROOT" \
-        || cocoon_fatal "cocoon: overlay mount failed"
-fi
+_ovl_err=$(mount -t overlay overlay -o "$OVL_FULL" "$NEWROOT" 2>&1) || {
+    case "$_ovl_err" in
+        *"Invalid argument"*)
+            echo "cocoon: overlay explicit opts unsupported, falling back" >&2
+            mount -t overlay overlay -o "$OVL_OPTS" "$NEWROOT" \
+                || cocoon_fatal "cocoon: overlay mount failed (fallback)"
+            ;;
+        *) cocoon_fatal "cocoon: overlay mount failed: $_ovl_err" ;;
+    esac
+}
 
 mkdir -p "$NEWROOT/dev" "$NEWROOT/proc" "$NEWROOT/sys" "$NEWROOT/run"
 
@@ -1268,9 +1292,21 @@ motivation is removing virtiofsd.
    the underlying filesystem's `readdir` order, which can vary across
    machines, kernel versions, or filesystem types. To eliminate this
    source of non-determinism, Cocoon **requires** `mkfs.erofs --tar=`
-   mode: generate a deterministic tar stream (sorted entries, fixed
-   timestamps/uid/gid) in Go, pipe it to `mkfs.erofs --tar=f -`.
-   This completely decouples EROFS output from host filesystem behavior.
+   mode: generate a deterministic tar stream in Go, pipe it to
+   `mkfs.erofs --tar=f -`. The tar stream must:
+   - Sort entries lexicographically (deterministic traversal order)
+   - Use fixed mtime (e.g. `mtime=0`) for all entries
+   - **Preserve original uid/gid/mode** (do NOT use fixed uid/gid —
+     that would break image ownership semantics)
+   - Encode xattrs via PAX/SCHILY headers (`SCHILY.xattr.*`),
+     including `security.capability` (binary) and
+     `trusted.overlay.opaque` — consistent with containerd/buildkit
+     tar format. Implementation must reuse a mature tar writer
+     (e.g. containerd's `archive` package) for xattr encoding.
+   - Encode device nodes (char/block, including `c 0 0` whiteouts)
+     and hardlinks as standard tar entries
+   This completely decouples EROFS output from host filesystem behavior
+   while preserving full fidelity of the original rootfs content.
 
    Cocoon's acceptance tests verify hash stability across repeated builds.
    Cocoon records `mkfs.erofs` version in `meta.json` for diagnostics.
