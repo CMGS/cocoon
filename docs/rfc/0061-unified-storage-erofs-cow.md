@@ -216,6 +216,8 @@ Source Image (cloudimg.img or OCI layers)
   │   │   ├─ initramfs-tools: /scripts/cocoon (custom boot script)
   │   │   └─ dracut: /lib/dracut/hooks/cmdline/01-cocoon-cmdline.sh
   │   │            + /lib/dracut/hooks/mount/01-cocoon-mount.sh
+  │   ├─ Verify: injected hooks have mode 0755, modules have mode 0644
+  │   │   (post-injection check — fail materialize if permissions are wrong)
   │   └─ Repack → initrd.img
   │
   └─ Store: cache/layers/{sha_kernel}/ and cache/layers/{sha_rootfs}/
@@ -309,10 +311,19 @@ mountroot() {
     log_begin_msg "Cocoon: mounting overlay rootfs"
 
     # Load injected modules in dependency order.
+    # insmod errors: "File exists" = already loaded (built-in or earlier hook),
+    # harmless. Any other failure (bad format, missing symbol) is fatal —
+    # a missing fs module means the overlay mount will fail later with a
+    # cryptic error, so we fail early with a clear message.
     if [ -d /cocoon-modules ] && [ -f /cocoon-modules/load.order ]; then
         while read -r mod; do
             [ -e "/cocoon-modules/${mod}" ] || continue
-            insmod "/cocoon-modules/${mod}" 2>/dev/null
+            _err=$(insmod "/cocoon-modules/${mod}" 2>&1) || {
+                case "$_err" in
+                    *"File exists"*) ;;  # already loaded — harmless
+                    *) panic "insmod ${mod} failed: ${_err}" ;;
+                esac
+            }
         done < /cocoon-modules/load.order
     fi
 
@@ -445,11 +456,16 @@ resolve_disk() {
     return 1
 }
 
-# Load injected modules in dependency order.
+# Load injected modules in dependency order (see initramfs-tools hook for rationale).
 if [ -d /cocoon-modules ] && [ -f /cocoon-modules/load.order ]; then
     while read -r mod; do
         [ -e "/cocoon-modules/${mod}" ] || continue
-        insmod "/cocoon-modules/${mod}" 2>/dev/null
+        _err=$(insmod "/cocoon-modules/${mod}" 2>&1) || {
+            case "$_err" in
+                *"File exists"*) ;;  # already loaded — harmless
+                *) die "cocoon: insmod ${mod} failed: ${_err}" ;;
+            esac
+        }
     done < /cocoon-modules/load.order
 fi
 
@@ -632,11 +648,13 @@ IDs are set by Cocoon and are stable regardless of disk ordering.
   Requires CH >= v35. Cocoon verifies CH version at launch; if the version
   does not support `serial`, Cocoon **fails fast** with a clear error
   asking to upgrade CH. There is no fallback to positional device naming.
-- Serial length: **max 20 bytes** — this is a virtio-blk protocol
-  constraint (the `VIRTIO_BLK_ID_BYTES` field in `GET_ID` is fixed at
-  20 bytes per the virtio spec). Cocoon's naming convention
-  (`cocoon-layer0`, `cocoon-cow`) stays within this. Cocoon validates
-  serial length before launch and fails fast if exceeded.
+- Serial length: **max 20 bytes** (not characters — but since Cocoon
+  restricts serials to ASCII, bytes = characters). This is a virtio-blk
+  protocol constraint (the `VIRTIO_BLK_ID_BYTES` field in `GET_ID` is
+  fixed at 20 bytes per the virtio spec §5.2.6.1). Cocoon's naming
+  convention (`cocoon-layer0` = 14 bytes, `cocoon-cow` = 10 bytes)
+  stays well within this. Cocoon validates `len(serial) <= 20` before
+  launch and fails fast if exceeded.
 - Character set: `[A-Za-z0-9_-]` only. No spaces or special characters.
   Serials exceeding the limit are **rejected** (not truncated) — silent
   truncation would cause guest-visible ID to differ from the expected value.
@@ -662,15 +680,18 @@ cloudimg.img (download — may be qcow2 or raw)
         1. Filter out partitions by GPT type GUID:
            - ESP: C12A7328-F81F-11D2-BA4B-00A0C93EC93B
            - BIOS boot: 21686148-6449-6E6F-744E-656564454649
-        2. Candidate set = partitions matching any of:
+        2. Candidate set (GUID comparison is case-insensitive):
            - Linux filesystem: 0FC63DAF-8483-4772-8E79-3D69D8477DE4
            - Linux root (x86-64): 4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709
            - Linux root (ARM-64): B921B045-1DF0-41C3-AF44-4C6F280D3FAE
            (systemd discoverable partitions spec — many distro cloudimgs
            use arch-specific root GUIDs instead of the generic one)
-        3. Among candidates, pick the largest
-        3. mount -o ro,loop,offset=<N> (requires root)
-        4. Verify /etc/os-release exists in mounted rootfs (else fail fast)
+        3. Sort candidates by size descending, try each:
+           a. mount -o ro,loop,offset=<N> (requires root)
+           b. Check /etc/os-release exists → accept this partition
+           c. If missing, unmount and try next candidate
+        4. No valid rootfs found → PermanentError listing detected
+           partitions (type GUID + size) for diagnosis
         Non-GPT, LVM, LUKS → PermanentError with descriptive message
   → Extract: vmlinuz, initrd.img, kernel modules (erofs/overlay dep chain)
   → mkfs.erofs rootfs.erofs (from mount point, no guest modification)
@@ -1077,13 +1098,19 @@ motivation is removing virtiofsd.
    Cocoon records `mkfs.erofs` version in `meta.json` for diagnostics.
    Minimum required version: erofs-utils >= 1.5.
 
+   **Oldest supported guest kernel**: **5.10** (Debian 11, RHEL 8.x).
+   This is the floor for the ext4 feature compatibility gate and EROFS
+   requirements. Kernels older than 5.10 are not tested or supported.
+
    **Kernel requirements**: the guest kernel must have:
    - `CONFIG_EROFS_FS_PCLUSTER=y` — required for 64KB pcluster (`-C65536`).
-     Available since Linux 5.13. If supporting older kernels, fall back to
-     `-C4096` (page-size aligned).
+     Available since Linux 5.13. If supporting older kernels (5.10-5.12),
+     fall back to `-C4096` (page-size aligned).
    - `CONFIG_EROFS_FS_XATTR=y` — required for reading `trusted.overlay.opaque`
      xattrs from EROFS. Without it, opaque directory semantics in multi-layer
      OCI images break silently (cross-layer deletions are not applied).
+     This is validated by the Phase 1 acceptance gate: the xattr whiteout
+     test must pass on the oldest supported kernel (5.10).
    Modern distro kernels (5.15+, Ubuntu 22.04+, RHEL 9+) enable both.
 
 9. **~~OCI whiteout semantics~~**: resolved. Whiteout handling is defined
@@ -1110,6 +1137,11 @@ motivation is removing virtiofsd.
     exact version suffix (e.g. `vmlinuz-5.15.0-100-generic` pairs with
     `initrd.img-5.15.0-100-generic`). Unpaired kernels (no matching
     initrd) are skipped. If no valid pair is found, materialize fails.
+    **Symlink fallback**: some images provide `/boot/vmlinuz` and
+    `/boot/initrd.img` as symlinks to the current kernel. If no
+    versioned `vmlinuz-*` files are found, Cocoon follows these
+    symlinks and uses the resolved targets. This handles minimal
+    images that only ship the current kernel without versioned names.
 
 ## Implementation Phases
 
@@ -1176,6 +1208,9 @@ Each phase gate requires passing the following test matrix:
 | GC: delete VM → layer refcount→0 → layer removed | Required | - |
 | Guest sysfs serial matches host-set serial | Required | Required |
 | dracut image boots with `boot=cocoon` (no side effects) | Required | - |
+| Cross-layer whiteout: user layer deletes base file → file invisible | Required | - |
+| Serial 20-byte edge case: 20-char serial resolves correctly | Required | - |
+| EROFS xattr: `trusted.overlay.opaque` readable on oldest kernel (5.10) | Required | - |
 
 ### Phase 2 Gate (Cloudimg Path)
 
