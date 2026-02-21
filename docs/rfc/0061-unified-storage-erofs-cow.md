@@ -232,10 +232,14 @@ case $1 in prereqs) prereqs; exit 0;; esac
 mountroot() {
     log_begin_msg "Cocoon: mounting overlay rootfs"
 
-    # Load injected modules (insmod, no modprobe dependency)
-    for mod in /cocoon-modules/*.ko; do
-        insmod "$mod" 2>/dev/null   # already-builtin → harmless EEXIST
-    done
+    # Load injected modules (insmod, no modprobe dependency).
+    # Guard: if all modules are built-in, /cocoon-modules/ won't exist.
+    if [ -d /cocoon-modules ]; then
+        for mod in /cocoon-modules/*.ko; do
+            [ -e "$mod" ] || continue
+            insmod "$mod" 2>/dev/null   # already-builtin → harmless EEXIST
+        done
+    fi
 
     # Parse topology from kernel cmdline (cocoon controls this)
     LAYERS=$(cat /proc/cmdline | tr ' ' '\n' | \
@@ -302,10 +306,14 @@ Injected at `/lib/dracut/hooks/mount/99-cocoon-mount.sh`:
 # Signal to dracut that we will handle rootfs mounting.
 rootok=1
 
-# Load injected modules (insmod, no modprobe dependency)
-for mod in /cocoon-modules/*.ko; do
-    insmod "$mod" 2>/dev/null   # already-builtin → harmless EEXIST
-done
+# Load injected modules (insmod, no modprobe dependency).
+# Guard: if all modules are built-in, /cocoon-modules/ won't exist.
+if [ -d /cocoon-modules ]; then
+    for mod in /cocoon-modules/*.ko; do
+        [ -e "$mod" ] || continue
+        insmod "$mod" 2>/dev/null   # already-builtin → harmless EEXIST
+    done
+fi
 
 # Parse topology from kernel cmdline (cocoon controls this)
 LAYERS=$(cat /proc/cmdline | tr ' ' '\n' | \
@@ -443,8 +451,8 @@ which has issues:
 
 ```
 cloudimg.img (download)
-  → losetup / kpartx (resolve GPT partitions)
-  → mount rootfs partition (read-only)
+  → Parse GPT in Go → compute ext4 rootfs partition offset
+  → mount -o ro,loop,offset=<N> (requires root)
   → Extract: vmlinuz, initrd.img, kernel modules (erofs/overlay dep chain)
   → mkfs.erofs rootfs.erofs (from mount point, no guest modification)
   → Unmount
@@ -453,10 +461,10 @@ cloudimg.img (download)
   → Store in cache/layers/
 ```
 
-No dependency on libguestfs or virt-customize. Tools needed:
-- `losetup` + `kpartx` (or Go GPT parser for partition offsets)
+No dependency on libguestfs, virt-customize, losetup, or kpartx. Tools needed:
+- `mount` (cocoon runs as root — loop + offset mount is always available)
 - `mkfs.erofs` (erofs-utils package)
-- Go stdlib for cpio/gzip unpack-repack
+- Go stdlib for GPT parsing and cpio/gzip unpack-repack
 
 ### OCI Image Materialize Pipeline
 
@@ -673,8 +681,10 @@ motivation is removing virtiofsd.
    specified above. `PatchInitramfs` auto-detects the format by probing the
    unpacked initramfs layout and injects the appropriate hook script.
 
-3. **cloudimg partition discovery**: `losetup` + `kpartx` requires root.
-   Alternatively, parse GPT in Go and use offset-based mount. Need to decide.
+3. **~~cloudimg partition discovery~~**: resolved. Parse GPT in Go to
+   compute ext4 partition offset, then `mount -o ro,loop,offset=<N>`.
+   Cocoon runs as root (no rootless mode), so `mount` is available.
+   No dependency on `losetup` or `kpartx`.
 
 4. **Multi-arch support**: amd64 and arm64 cloudimgs have different kernel
    configs. Module availability (erofs=m vs erofs=y) may differ.
