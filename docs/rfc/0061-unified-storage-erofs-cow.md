@@ -271,6 +271,20 @@ mountroot() {
       "${rootmnt}" || panic "overlay failed"
 
     mkdir -p "${rootmnt}/dev" "${rootmnt}/proc" "${rootmnt}/sys" "${rootmnt}/run"
+
+    # --- Systemd compatibility patching (written to COW upper, EROFS untouched) ---
+    # Without these, systemd will hang or fail on boot. See "Systemd
+    # Compatibility" section below for the full rationale.
+
+    # 1. Clear fstab — original references a physical UUID that doesn't exist.
+    #    Systemd would wait 90s for it, then emergency-shell.
+    : > "${rootmnt}/etc/fstab"
+
+    # 2. Mask fsck + remount — no fsck.overlay binary exists; remount with
+    #    fstab-derived options fails on overlay.
+    ln -sf /dev/null "${rootmnt}/etc/systemd/system/systemd-fsck-root.service"
+    ln -sf /dev/null "${rootmnt}/etc/systemd/system/systemd-remount-fs.service"
+
     log_success_msg "Cocoon: overlay rootfs ready"
 }
 ```
@@ -328,6 +342,11 @@ mount -t overlay overlay \
   "$NEWROOT" || die "cocoon: overlay mount failed"
 
 mkdir -p "$NEWROOT/dev" "$NEWROOT/proc" "$NEWROOT/sys" "$NEWROOT/run"
+
+# --- Systemd compatibility patching (written to COW upper, EROFS untouched) ---
+: > "$NEWROOT/etc/fstab"
+ln -sf /dev/null "$NEWROOT/etc/systemd/system/systemd-fsck-root.service"
+ln -sf /dev/null "$NEWROOT/etc/systemd/system/systemd-remount-fs.service"
 ```
 
 Key differences from initramfs-tools:
@@ -336,6 +355,57 @@ Key differences from initramfs-tools:
 - Uses `die` instead of `panic` for fatal errors
 - No `mountroot()` function wrapper — dracut hooks execute as plain scripts
 - No `prereqs` / PREREQ / `. /scripts/functions` preamble
+
+#### Systemd Compatibility Patching
+
+After assembling the overlay but before `switch_root`, the hook performs
+three **mandatory** patches. Without these, systemd (PID 1) will hang or
+crash on boot. All writes land in the COW upper layer — the EROFS base
+remains byte-for-byte identical to the source image.
+
+**Problem 1: `/etc/fstab` references a non-existent physical disk**
+
+The original cloudimg fstab contains entries like:
+
+```
+UUID=xxxx-xxxx  /  ext4  defaults  0  1
+```
+
+Systemd reads fstab and tries to locate that UUID. Since we never passed
+that physical disk to the VM (the root is an overlay), systemd triggers
+`systemd-fsck-root.service` which waits up to 90 seconds for the disk,
+then drops to emergency shell.
+
+Fix: `> /etc/fstab` — clear the file so systemd has no expectations.
+
+**Problem 2: `systemd-fsck-root.service` — no `fsck.overlay`**
+
+Even if systemd detects the root is overlay, it tries to run `fsck.overlay`
+before mounting. This binary does not exist in any Linux distribution
+(overlayfs is a union filesystem, not a block filesystem — traditional
+block-level fsck is meaningless). Missing binary → dependency failure →
+boot blocked.
+
+Fix: `ln -sf /dev/null /etc/systemd/system/systemd-fsck-root.service`
+
+**Problem 3: `systemd-remount-fs.service` — overlay remount fails**
+
+The standard Linux boot sequence has initramfs mount root as read-only,
+then systemd remounts it read-write after fsck. `systemd-remount-fs`
+reads fstab to get mount options and calls `mount -o remount`. Our overlay
+is already rw, and remounting with ext4-style fstab options on an overlay
+filesystem fails with parameter mismatch.
+
+Fix: `ln -sf /dev/null /etc/systemd/system/systemd-remount-fs.service`
+
+**Why this is safe**:
+- These patches are the **minimum necessary set** — only services that are
+  structurally incompatible with overlay root. No cloud-init disabling, no
+  optional service masking.
+- Writes go to COW upper layer only. The EROFS rootfs is never modified.
+- On VM deletion, the COW disk is deleted. No persistent side effects.
+- `boot-efi.mount` is not masked — with no UEFI firmware there is no ESP
+  partition, so systemd skips it automatically (no fstab entry, no device).
 
 #### Guest Visibility
 
@@ -552,10 +622,11 @@ motivation is removing virtiofsd.
 
 6. **COW disk default size**: inherit from `--disk-size` flag or separate?
 
-7. **~~Distro-specific guest patches~~**: decided not to implement. The overlay
-   root is already rw, so systemd remount-fs and fsck-root are harmless
-   no-ops. Avoiding guest mutation keeps the EROFS base and COW semantics
-   clean — if a service misbehaves, the user can fix it inside the VM.
+7. **~~Distro-specific guest patches~~**: resolved. Minimal mandatory set
+   identified: clear fstab + mask fsck-root + mask remount-fs. These are
+   structurally required (systemd cannot boot overlay root without them).
+   No optional service masking (cloud-init, boot-efi.mount, etc.) — those
+   are left to the user if needed.
 
 ## Implementation Phases
 
