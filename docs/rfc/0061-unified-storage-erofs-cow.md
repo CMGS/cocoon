@@ -169,6 +169,11 @@ However, the original initramfs likely does NOT contain `erofs.ko` or
 `overlay.ko` (since the original rootfs is ext4). These modules must be
 extracted from the image's `/lib/modules/<ver>/` and injected.
 
+**ext4 module**: the COW disk is ext4. In most distros, `ext4` is built-in
+(`CONFIG_EXT4_FS=y`) since it's typically the root filesystem type. If a
+kernel ships `ext4` as a module, the original initramfs already includes
+it (since the original root was ext4). No additional ext4 injection needed.
+
 #### Materialize Pipeline
 
 ```
@@ -197,9 +202,10 @@ Source Image (cloudimg.img or OCI layers)
   │   ├─ Unpack (cpio segments — see Pitfall 1 for multi-segment handling)
   │   ├─ Detect initramfs format (initramfs-tools vs dracut; unknown → fail)
   │   ├─ Inject /cocoon-modules/*.ko + load.order
-  │   ├─ Inject hook script at distro-specific path:
+  │   ├─ Inject hook script(s) at distro-specific path:
   │   │   ├─ initramfs-tools: /scripts/cocoon (custom boot script)
-  │   │   └─ dracut: /lib/dracut/hooks/mount/99-cocoon-mount.sh
+  │   │   └─ dracut: /lib/dracut/hooks/cmdline/01-cocoon-cmdline.sh
+  │   │            + /lib/dracut/hooks/mount/01-cocoon-mount.sh
   │   └─ Repack → initrd.img
   │
   └─ Store: cache/layers/{sha_kernel}/ and cache/layers/{sha_rootfs}/
@@ -233,15 +239,16 @@ initrd that builds successfully but fails to boot — the worst kind of bug.
 | Distro Family | Format | Hook Path | Root Variable |
 |---|---|---|---|
 | Debian / Ubuntu | initramfs-tools | `/scripts/cocoon` (custom boot script) | `${rootmnt}` |
-| RHEL / CentOS / Fedora | dracut | `/lib/dracut/hooks/mount/99-cocoon-mount.sh` | `$NEWROOT` |
+| RHEL / CentOS / Fedora | dracut | `/lib/dracut/hooks/cmdline/01-cocoon-cmdline.sh` + `/lib/dracut/hooks/mount/01-cocoon-mount.sh` | `$NEWROOT` |
 
 #### Guest Boot Hook — initramfs-tools (Debian/Ubuntu)
 
 Injected at `/scripts/cocoon` as a **custom boot script**. Cocoon adds
-`boot=cocoon` to the kernel cmdline, which tells initramfs-tools to source
-`/scripts/cocoon` instead of `/scripts/local`. The framework then calls
-our `mountroot()` function — this is the official initramfs-tools mechanism
-for replacing the default root mount logic.
+`boot=cocoon` to the kernel cmdline. The initramfs-tools `/init` script
+sources `/scripts/${BOOT}` (where `BOOT` defaults to `local`), so with
+`boot=cocoon` it sources `/scripts/cocoon` which defines our `mountroot()`.
+The framework then calls `mountroot()` — this is the official
+initramfs-tools mechanism for replacing the default root mount logic.
 
 **Why not `/scripts/local-bottom/`?** `local-bottom` runs *after* the
 default root mount. If we place our hook there, initramfs-tools would
@@ -256,13 +263,24 @@ path, potentially panic before ever reaching our hook.
 . /scripts/functions
 
 # Resolve a virtio-blk device by serial (stable across disk reordering).
-# Polls /sys/block/vd* until the serial matches, with timeout.
+# Polls /sys/block/vd* checking both possible sysfs serial paths,
+# with configurable timeout (default 10s, override via cocoon.timeout=).
 resolve_disk() {
-    local serial="$1" timeout=10 i=0
+    local serial="$1"
+    local timeout="${COCOON_TIMEOUT:-10}" i=0
     while [ $i -lt $timeout ]; do
         for sysdev in /sys/block/vd*; do
-            [ -e "$sysdev/serial" ] || continue
-            if [ "$(cat "$sysdev/serial")" = "$serial" ]; then
+            [ -d "$sysdev" ] || continue
+            local s=""
+            # Kernel exposes serial at different paths depending on version:
+            #   /sys/block/vdX/serial           (some kernels)
+            #   /sys/block/vdX/device/serial    (more common for virtio-blk)
+            if [ -f "$sysdev/serial" ]; then
+                s=$(cat "$sysdev/serial")
+            elif [ -f "$sysdev/device/serial" ]; then
+                s=$(cat "$sysdev/device/serial")
+            fi
+            if [ "$s" = "$serial" ]; then
                 echo "/dev/$(basename "$sysdev")"
                 return 0
             fi
@@ -286,10 +304,13 @@ mountroot() {
 
     # Parse topology from kernel cmdline (cocoon controls this).
     # Values are stable serial IDs, not device names.
-    LAYERS=$(cat /proc/cmdline | tr ' ' '\n' | \
-             grep '^cocoon\.layers=' | cut -d= -f2)
-    COW=$(cat /proc/cmdline | tr ' ' '\n' | \
-          grep '^cocoon\.cow=' | cut -d= -f2)
+    for x in $(cat /proc/cmdline); do
+        case $x in
+            cocoon.layers=*) LAYERS="${x#cocoon.layers=}" ;;
+            cocoon.cow=*)    COW="${x#cocoon.cow=}" ;;
+            cocoon.timeout=*) COCOON_TIMEOUT="${x#cocoon.timeout=}" ;;
+        esac
+    done
 
     [ -z "$LAYERS" ] && panic "cocoon.layers= not set"
     [ -z "$COW" ]    && panic "cocoon.cow= not set"
@@ -341,25 +362,40 @@ mountroot() {
 
 #### Guest Boot Hook — dracut (RHEL/CentOS/Fedora)
 
-Injected at `/lib/dracut/hooks/mount/99-cocoon-mount.sh`. Dracut hooks
-execute as plain scripts (no function wrapper). The `rootok=1` flag tells
-dracut that a mount handler is present and it should not fall back to
-default root mount logic.
+Dracut requires **two** injected hooks. The `rootok=1` flag **must** be set
+during the `cmdline` stage — if dracut reaches the end of cmdline processing
+without `rootok=1`, it halts before ever reaching mount hooks.
+
+**Hook 1** — `/lib/dracut/hooks/cmdline/01-cocoon-cmdline.sh`:
 
 ```sh
 #!/bin/sh
-# /lib/dracut/hooks/mount/99-cocoon-mount.sh
-# Cocoon overlay rootfs hook for dracut-based initramfs.
-
+# Tell dracut we will handle root mounting. Without this, dracut
+# halts at the cmdline stage before mount hooks ever execute.
 rootok=1
+```
 
-# Resolve a virtio-blk device by serial (stable across disk reordering).
+**Hook 2** — `/lib/dracut/hooks/mount/01-cocoon-mount.sh`:
+
+```sh
+#!/bin/sh
+# /lib/dracut/hooks/mount/01-cocoon-mount.sh
+# Cocoon overlay rootfs mount handler for dracut-based initramfs.
+
+# Resolve a virtio-blk device by serial (same logic as initramfs-tools hook).
 resolve_disk() {
-    local serial="$1" timeout=10 i=0
+    local serial="$1"
+    local timeout="${COCOON_TIMEOUT:-10}" i=0
     while [ $i -lt $timeout ]; do
         for sysdev in /sys/block/vd*; do
-            [ -e "$sysdev/serial" ] || continue
-            if [ "$(cat "$sysdev/serial")" = "$serial" ]; then
+            [ -d "$sysdev" ] || continue
+            local s=""
+            if [ -f "$sysdev/serial" ]; then
+                s=$(cat "$sysdev/serial")
+            elif [ -f "$sysdev/device/serial" ]; then
+                s=$(cat "$sysdev/device/serial")
+            fi
+            if [ "$s" = "$serial" ]; then
                 echo "/dev/$(basename "$sysdev")"
                 return 0
             fi
@@ -379,10 +415,13 @@ if [ -d /cocoon-modules ] && [ -f /cocoon-modules/load.order ]; then
 fi
 
 # Parse topology from kernel cmdline.
-LAYERS=$(cat /proc/cmdline | tr ' ' '\n' | \
-         grep '^cocoon\.layers=' | cut -d= -f2)
-COW=$(cat /proc/cmdline | tr ' ' '\n' | \
-      grep '^cocoon\.cow=' | cut -d= -f2)
+for x in $(cat /proc/cmdline); do
+    case $x in
+        cocoon.layers=*) LAYERS="${x#cocoon.layers=}" ;;
+        cocoon.cow=*)    COW="${x#cocoon.cow=}" ;;
+        cocoon.timeout=*) COCOON_TIMEOUT="${x#cocoon.timeout=}" ;;
+    esac
+done
 
 if [ -z "$LAYERS" ] || [ -z "$COW" ]; then
     die "cocoon: cocoon.layers= or cocoon.cow= not set on cmdline"
@@ -425,7 +464,8 @@ ln -sf /dev/null "$NEWROOT/etc/systemd/system/systemd-remount-fs.service"
 
 Key differences from initramfs-tools:
 - Uses `$NEWROOT` instead of `${rootmnt}`
-- Sets `rootok=1` to tell dracut a mount handler is present
+- Requires **two hooks**: cmdline hook sets `rootok=1` (must happen before
+  mount stage), mount hook does the actual overlay assembly
 - Uses `die` instead of `panic` for fatal errors
 - No `mountroot()` function wrapper — dracut hooks execute as plain scripts
 - No `boot=cocoon` cmdline needed — dracut uses hook directories, not boot scripts
@@ -533,10 +573,23 @@ Two custom cmdline parameters declare the topology:
 In addition, `boot=cocoon` is set to tell initramfs-tools to use the
 cocoon boot script instead of the default local mount logic.
 
+Optional parameters:
+- `cocoon.timeout=N` — device wait timeout in seconds (default: 10).
+  Useful for slow hardware or heavily loaded hosts.
+
 **Why serial IDs instead of `/dev/vdX` names?** Device letter assignment
 (`vda`, `vdb`, ...) depends on `--disk` flag ordering and can shift when
 disks are added, removed, or reordered (e.g. adding a data disk). Serial
 IDs are set by Cocoon and are stable regardless of disk ordering.
+
+**CH serial requirements**:
+- Cloud Hypervisor supports `serial` on disk configurations (virtio-blk).
+  Requires CH >= v35. Cocoon must verify CH version at startup.
+- Serial length: **max 20 characters** (virtio spec limit). Cocoon's
+  naming convention (`cocoon-layer0`, `cocoon-cow`) stays within this.
+- Character set: `[A-Za-z0-9_-]` only. No spaces or special characters.
+- The serial is set via the CH disk config JSON (`"serial": "cocoon-layer0"`),
+  which maps to `--disk` CLI flags with the serial field.
 
 **Why not blkid/filesystem-type probing?**
 - blkid may not exist in all initramfs environments
@@ -575,6 +628,7 @@ Tools needed:
 ```
 OCI image layers (pulled or built)
   → Flatten all rootfs layers to temp directory
+      (apply OCI whiteout semantics during flatten — see below)
   → Extract: vmlinuz, initrd.img, kernel modules
   → mkfs.erofs rootfs.erofs (from flattened rootfs)
   → Patch initramfs (same as cloudimg — auto-detect format)
@@ -584,10 +638,30 @@ OCI image layers (pulled or built)
 
 For OCI images with distinct user layers:
 ```
-  → Base layers → flatten → base.erofs
-  → User layers → flatten → custom.erofs
+  → Base layers → flatten (with whiteout processing) → base.erofs
+  → User layers → flatten (with whiteout processing) → custom.erofs
   → Both passed as separate vdX devices
 ```
+
+#### OCI Whiteout Semantics
+
+OCI layers use `.wh.filename` marker files and `.wh..wh..opq` opaque
+directory markers to represent deletions. These are **OCI-specific** and
+**not understood by Linux overlayfs** (which uses character device `(0,0)`
+for whiteouts and the `trusted.overlay.opaque=y` xattr for opaque dirs).
+
+When flattening layers into a single directory for EROFS:
+- `.wh.filename` → delete `filename` from the accumulated output
+- `.wh..wh..opq` → delete all prior contents of that directory
+
+When keeping layers separate (multi-EROFS lowerdir):
+- Convert `.wh.filename` → character device `(0,0)` named `filename`
+- Convert `.wh..wh..opq` → set `trusted.overlay.opaque=y` xattr on dir
+- This allows overlayfs to process the deletions natively
+
+**Note**: creating character devices requires `CAP_MKNOD` (cocoon runs
+as root, so this is available). The `mkfs.erofs` tool preserves device
+nodes and xattrs.
 
 ### Per-VM COW Disk Management
 
@@ -613,6 +687,11 @@ journal is corrupted, Cocoon runs `e2fsck -y cow.raw` on the host before
 starting the VM. This is a host-side operation (no guest cooperation needed).
 The boot hook in initramfs does NOT run fsck — it mounts directly with
 `mount -t ext4`, relying on the journal or host-side pre-check.
+
+**Concurrency safety**: `e2fsck` runs only during `cocoon start`, after
+verifying the VM is in CREATED or STOPPED state (not running). The VM
+metadata lock (`{vmID}-meta.lock`) serializes start operations, preventing
+concurrent `e2fsck` + CH launch on the same COW file.
 
 ### Reference Counting
 
@@ -842,10 +921,10 @@ motivation is removing virtiofsd.
 4. **Multi-arch support**: amd64 and arm64 cloudimgs have different kernel
    configs. Module availability (erofs=m vs erofs=y) may differ.
 
-5. **Migration path**: existing VMs use qcow2. Options:
-   - Re-materialize on next `cocoon start` (slow first start)
-   - Parallel support during transition (defeats the purpose)
-   - Breaking change with major version bump
+5. **~~Migration path~~**: resolved. No migration from existing qcow2 VMs.
+   This is a clean-break architecture change. Existing VMs must be deleted
+   and recreated. Cocoon will bump the config schema version; VMs with
+   the old schema are rejected at startup with a clear error.
 
 6. **COW disk default size**: inherit from `--disk-size` flag or separate?
 
@@ -855,16 +934,30 @@ motivation is removing virtiofsd.
    No optional service masking (cloud-init, boot-efi.mount, etc.) — those
    are left to the user if needed.
 
-8. **`mkfs.erofs` reproducibility**: different host versions of
-   `mkfs.erofs` may produce different output for the same input. This
-   affects content-addressing. Mitigation: pin `mkfs.erofs` flags
-   explicitly (compression algorithm, block size) and document the
-   minimum required version.
+8. **~~`mkfs.erofs` reproducibility~~**: resolved as acceptance gate.
+   Cocoon pins explicit `mkfs.erofs` flags: `-zlz4hc` (compression),
+   `-C65536` (cluster size), `-T0` (fixed timestamp for reproducibility).
+   Content-addressing hashes the **output EROFS file**, not the input.
+   Same input + same flags + same `mkfs.erofs` version = same output.
+   Cocoon records `mkfs.erofs` version in `meta.json` for diagnostics.
+   Minimum required version: erofs-utils >= 1.5.
 
-9. **OCI whiteout semantics validation**: multi-layer overlayfs must
-   correctly handle whiteout files and opaque directories. This requires
-   end-to-end test coverage with known whiteout patterns before declaring
-   Phase 1 complete.
+9. **~~OCI whiteout semantics~~**: resolved. Whiteout handling is defined
+   in the OCI Image Materialize Pipeline section. Flatten applies OCI
+   whiteout deletion semantics; multi-EROFS lowerdir converts `.wh.*`
+   to native overlayfs whiteout devices. Acceptance test coverage is
+   required before Phase 1 completion.
+
+10. **Shutdown semantics**: with UEFI/ACPI removed, all VMs use direct
+    kernel boot shutdown: `vm.shutdown` API → SIGTERM → SIGKILL. Guest
+    graceful shutdown requires the guest kernel to handle the virtio
+    shutdown signal (standard in modern kernels). Data consistency relies
+    on ext4 journal in the COW disk.
+
+11. **Kernel/initrd selection**: images with multiple kernels (e.g.
+    `/boot/vmlinuz-*`) — Cocoon selects the **latest version** by
+    sorting version strings. This matches distro default behavior.
+    If no kernel is found in `/boot/`, materialize fails.
 
 ## Implementation Phases
 
@@ -883,17 +976,17 @@ overlay with EROFS block device + guest overlay.
 
 Replace qcow2 pipeline with EROFS.
 
-- Materialize: extract kernel + initramfs + mkfs.erofs from cloudimg
+- Materialize: qcow2→raw conversion, extract kernel + initramfs, mkfs.erofs
 - Patch initramfs: inject hook + erofs/overlay modules
 - Create: raw COW disk
-- Remove qcow2 conversion, UEFI firmware, ACPI shutdown
+- Remove UEFI firmware, ACPI shutdown, qcow2 overlay chain
+- Retain `qemu-img` dependency (repurposed: qcow2→raw instead of qcow2→qcow2)
 
 ### Phase 3: Cleanup
 
 - Remove dual-path code (UEFI vs direct boot branching)
 - Simplify GC (single layer model)
 - Update all docs
-- Migration tooling for existing VMs
 
 ## Future Possibilities
 
@@ -912,11 +1005,56 @@ Replace qcow2 pipeline with EROFS.
 5. **Warm start / checkpoint-restore**: overlay structure makes it easy to
    snapshot COW state and restore.
 
+## Acceptance Criteria
+
+Each phase gate requires passing the following test matrix:
+
+### Phase 1 Gate (OCI VM Path)
+
+| Test | amd64 | arm64 |
+|---|---|---|
+| OCI image boot (initramfs-tools) | Required | Required |
+| OCI image boot (dracut) | Required | Required |
+| Multi-layer OCI with whiteout files | Required | Required |
+| COW write persistence across reboot | Required | Required |
+| Unclean shutdown → COW recovery | Required | Required |
+| Layer dedup (two VMs, same image) | Required | - |
+| GC: delete VM → layer refcount→0 → layer removed | Required | - |
+
+### Phase 2 Gate (Cloudimg Path)
+
+| Test | amd64 | arm64 |
+|---|---|---|
+| Ubuntu cloudimg (qcow2) boot | Required | Required |
+| Debian cloudimg boot | Required | - |
+| CentOS/RHEL cloudimg (dracut) boot | Required | - |
+| Multi-kernel image: correct vmlinuz selection | Required | - |
+| systemd starts cleanly (no fsck hang, no remount fail) | Required | Required |
+
+### Known Limitations (not blocking)
+
+- SELinux enforcing images: cpio repack may lose SELinux labels (best-effort)
+- mkinitcpio (Arch Linux): not supported (FormatUnknown → hard fail)
+- Cloudimg formats: only GPT+ext4 root partition supported; MBR/LVM/xfs
+  fail fast with descriptive error
+
+### Tool Preflight
+
+Cocoon validates tool availability at startup (before any materialize):
+- `mkfs.erofs` >= 1.5: `mkfs.erofs -V`
+- `qemu-img` (any version): `qemu-img --version`
+- CH >= v35 (for serial support): version check at launch
+
+Missing tools → `types.PermanentError` with install instructions.
+
 ## References
 
 - [Issue #61: RFC: squashfs block device for OCI VM rootfs](https://github.com/CMGS/cocoon/issues/61)
 - [EROFS filesystem documentation](https://docs.kernel.org/filesystems/erofs.html)
 - [Kata Containers architecture](https://github.com/kata-containers/kata-containers/blob/main/docs/design/architecture/README.md)
 - [Cloud Hypervisor disk configuration](https://github.com/cloud-hypervisor/cloud-hypervisor/blob/main/docs/disks.md)
+- [initramfs-tools `/init` source (Debian)](https://sources.debian.org/src/initramfs-tools/0.140/init/)
 - [initramfs-tools hook documentation](https://manpages.ubuntu.com/manpages/noble/man8/initramfs-tools.8.html)
+- [dracut hook documentation](https://wwoods.fedorapeople.org/doc/dracut-notes.html)
+- [Cloud Hypervisor v35 — serial support](https://www.cloudhypervisor.org/blog/cloud-hypervisor-v35.0-released/)
 - [Linux overlayfs documentation](https://docs.kernel.org/filesystems/overlayfs.html)
