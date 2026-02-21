@@ -75,9 +75,9 @@ func gcAction(c *cli.Context) error {
 		total += len(items)
 	}
 
-	if total == 0 {
+	if total == 0 && errs == nil {
 		fmt.Println("Nothing to collect.")
-	} else {
+	} else if total > 0 {
 		parts := make([]string, 0, len(phases))
 		for i, phase := range phases {
 			parts = append(parts, fmt.Sprintf("%d %s", counts[i], phase.name))

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -194,7 +195,7 @@ func (s *Store) RemoveTag(tag string) (string, []string, error) {
 		// Remove layout directory while still holding txn lock so concurrent
 		// SaveTag/Tag operations cannot re-point a tag to this path mid-delete.
 		if layoutPath != "" && !layoutStillUsed {
-			_ = os.RemoveAll(layoutPath)
+			safeRemoveLayoutDir(s.cfg, layoutPath)
 		}
 		return nil
 	})
@@ -296,7 +297,7 @@ func (s *Store) saveTagTxnLocked(tag, layoutPath, manifestDigest string) error {
 	}
 	// Remove old layout directory if no other tag shares it.
 	if oldLayoutPath != "" && !oldLayoutStillUsed {
-		_ = os.RemoveAll(oldLayoutPath)
+		safeRemoveLayoutDir(s.cfg, oldLayoutPath)
 	}
 	return nil
 }
@@ -326,4 +327,19 @@ func checkRuntimeRefsForRemoval(cfg *config.CocoonConfig, tag, manifestDigest st
 	}
 	refs, _ := GetRuntimeRefs(cfg, runtimeKey)
 	return fmt.Errorf("image %s is still referenced by VMs: %v", tag, refs)
+}
+
+// safeRemoveLayoutDir removes the layout directory only if it is located
+// under the OCI layout root. This prevents accidental deletion of unrelated
+// directories when index data is corrupted.
+func safeRemoveLayoutDir(cfg *config.CocoonConfig, layoutPath string) {
+	if layoutPath == "" {
+		return
+	}
+	layoutRoot := cfg.OCILayoutDir()
+	if strings.HasPrefix(filepath.Clean(layoutPath), filepath.Clean(layoutRoot)+string(filepath.Separator)) {
+		_ = os.RemoveAll(layoutPath)
+	} else {
+		log.Printf("WARNING: refusing to remove layout path outside OCI root: %s", layoutPath)
+	}
 }

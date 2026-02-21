@@ -242,7 +242,7 @@ func (c *client) Shutdown(ctx context.Context, vmID string, timeout time.Duratio
 			if time.Now().After(deadline) {
 				// Guest did not respond to ACPI power-button in time.
 				// Try vm.shutdown API to flush disk backends before killing.
-				return c.shutdownWithFallback(ctx, vmID, socketPath)
+				return c.shutdownWithFallback(ctx, vmID, socketPath, defaultTerminateGracePeriod)
 			}
 		}
 	}
@@ -250,9 +250,10 @@ func (c *client) Shutdown(ctx context.Context, vmID string, timeout time.Duratio
 
 // ShutdownDirect stops a VM without sending an ACPI power-button.
 // Used for direct kernel boot VMs whose guest kernel may lack ACPI support.
-func (c *client) ShutdownDirect(ctx context.Context, vmID string) error {
+// gracePeriod controls how long to wait after SIGTERM before falling back to SIGKILL.
+func (c *client) ShutdownDirect(ctx context.Context, vmID string, gracePeriod time.Duration) error {
 	socketPath := c.cfg.VMSocketPath(vmID)
-	return c.shutdownWithFallback(ctx, vmID, socketPath)
+	return c.shutdownWithFallback(ctx, vmID, socketPath, gracePeriod)
 }
 
 // ForceKill sends SIGKILL to the CH process for the given VM.
@@ -426,19 +427,25 @@ func (c *client) CheckSocketConnectivity(socketPath string) error {
 //
 // Sequence: vm.shutdown (stop vCPUs, flush backends) → SIGTERM (graceful
 // CH process exit) → SIGKILL (last resort).
-func (c *client) shutdownWithFallback(ctx context.Context, vmID, socketPath string) error {
+func (c *client) shutdownWithFallback(ctx context.Context, vmID, socketPath string, gracePeriod time.Duration) error {
 	// vm.shutdown stops the guest but the CH process stays alive.
 	// Best-effort; if the API fails, proceed to signal-based shutdown.
 	if err := c.ShutdownVM(ctx, socketPath); err != nil {
 		log.Printf("vm.shutdown API failed for %s (proceeding to SIGTERM): %v", vmID, err)
 	}
 
-	return c.terminateProcess(vmID)
+	return c.terminateProcess(vmID, gracePeriod)
 }
 
-// terminateProcess sends SIGTERM to the CH process, waits briefly for
-// graceful exit, then falls back to SIGKILL.
-func (c *client) terminateProcess(vmID string) error {
+// defaultTerminateGracePeriod is the SIGTERM→SIGKILL timeout used when the
+// caller does not provide an explicit value (e.g., UEFI ACPI fallback path).
+const defaultTerminateGracePeriod = 5 * time.Second
+
+// terminateProcess sends SIGTERM to the CH process, waits up to gracePeriod
+// for graceful exit, then falls back to SIGKILL.
+// It validates PID identity before signaling to prevent sending signals
+// to an unrelated process if the PID was reused by the OS.
+func (c *client) terminateProcess(vmID string, gracePeriod time.Duration) error {
 	defer c.cleanupRuntimeFiles(vmID)
 
 	pid, err := utils.ReadPIDFile(c.cfg.VMPIDPath(vmID))
@@ -448,7 +455,15 @@ func (c *client) terminateProcess(vmID string) error {
 		}
 		return fmt.Errorf("read PID for %s: %w", vmID, err)
 	}
-	if !utils.IsProcessAlive(pid) {
+
+	// Validate process identity before sending any signals.
+	// Without this check, PID reuse could cause us to SIGTERM/SIGKILL
+	// an unrelated process.
+	expectedProc := filepath.Base(c.cfg.CHBinary)
+	if !utils.ValidateProcess(pid, expectedProc) {
+		if utils.IsProcessAlive(pid) {
+			log.Printf("terminateProcess: PID %d for %s is not %s (PID reused); skipping signal", pid, vmID, expectedProc)
+		}
 		return nil
 	}
 
@@ -466,8 +481,7 @@ func (c *client) terminateProcess(vmID string) error {
 		return utils.ForceKillProcess(pid)
 	}
 
-	// Wait up to 5 seconds for graceful exit.
-	const gracePeriod = 5 * time.Second
+	// Wait up to gracePeriod for graceful exit.
 	deadline := time.Now().Add(gracePeriod)
 	for time.Now().Before(deadline) {
 		if !utils.IsProcessAlive(pid) {
