@@ -138,7 +138,7 @@ func runDependencyChecks(ctx context.Context, app *appContext) []checkResult {
 	))
 
 	// 1b. Check Linux OverlayFS availability for OCI runtime path.
-	results = append(results, checkOverlayFSSupport())
+	results = append(results, checkOverlayFSSupport(ctx))
 
 	// 1c. Check virtiofsd binary + minimum version for OCI runtime path.
 	results = append(results, checkVirtiofsdBinary(app.cfg.VirtiofsdBinary))
@@ -592,7 +592,7 @@ func checkUEFIFirmware(primaryPath string) checkResult {
 	}
 }
 
-func checkOverlayFSSupport() checkResult {
+func checkOverlayFSSupport(ctx context.Context) checkResult {
 	if doctorGOOS != hostOSLinux {
 		return checkResult{
 			Name:   "overlayfs",
@@ -625,7 +625,7 @@ func checkOverlayFSSupport() checkResult {
 	}
 
 	// overlay not in /proc/filesystems — check if the module is loaded via lsmod.
-	if isOverlayModuleLoaded() {
+	if isOverlayModuleLoaded(ctx) {
 		return checkResult{
 			Name:   "overlayfs",
 			Status: "pass",
@@ -641,8 +641,8 @@ func checkOverlayFSSupport() checkResult {
 }
 
 // isOverlayModuleLoaded checks lsmod output for an "overlay" module.
-func isOverlayModuleLoaded() bool {
-	out, err := doctorRunCommand(context.Background(), "lsmod")
+func isOverlayModuleLoaded(ctx context.Context) bool {
+	out, err := doctorRunCommand(ctx, "lsmod")
 	if err != nil {
 		return false
 	}
@@ -671,7 +671,7 @@ func tryFixOverlayFS(ctx context.Context, checks []checkResult) []checkResult {
 	}
 
 	// Re-check after modprobe.
-	updated := checkOverlayFSSupport()
+	updated := checkOverlayFSSupport(ctx)
 	if updated.Status == checkStatusPass {
 		updated.Detail = fmt.Sprintf("%s; auto-fix applied (modprobe overlay)", updated.Detail)
 	}

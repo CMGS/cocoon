@@ -29,7 +29,7 @@ func TestCheckOverlayFSSupport_SkippedOnNonLinux(t *testing.T) {
 	doctorGOOS = "darwin"
 	t.Cleanup(func() { doctorGOOS = origGOOS })
 
-	got := checkOverlayFSSupport()
+	got := checkOverlayFSSupport(t.Context())
 	if got.Status != checkStatusWarn {
 		t.Fatalf("status = %q, want warn (detail=%q)", got.Status, got.Detail)
 	}
@@ -45,7 +45,7 @@ func TestCheckOverlayFSSupport_FoundInProcFilesystems(t *testing.T) {
 		return os.ReadFile(name) //nolint:gosec // test helper
 	}
 
-	got := checkOverlayFSSupport()
+	got := checkOverlayFSSupport(t.Context())
 	if got.Status != checkStatusPass {
 		t.Fatalf("status = %q, want pass (detail=%q)", got.Status, got.Detail)
 	}
@@ -71,7 +71,7 @@ func TestCheckOverlayFSSupport_NotInProcButModuleLoaded(t *testing.T) {
 		return nil, fmt.Errorf("unexpected command: %s", binary)
 	}
 
-	got := checkOverlayFSSupport()
+	got := checkOverlayFSSupport(t.Context())
 	if got.Status != checkStatusPass {
 		t.Fatalf("status = %q, want pass (detail=%q)", got.Status, got.Detail)
 	}
@@ -97,7 +97,7 @@ func TestCheckOverlayFSSupport_NotAvailable(t *testing.T) {
 		return nil, fmt.Errorf("unexpected command: %s", binary)
 	}
 
-	got := checkOverlayFSSupport()
+	got := checkOverlayFSSupport(t.Context())
 	if got.Status != checkStatusFail {
 		t.Fatalf("status = %q, want fail (detail=%q)", got.Status, got.Detail)
 	}
@@ -113,7 +113,7 @@ func TestCheckOverlayFSSupport_ProcFilesystemsReadError(t *testing.T) {
 		return os.ReadFile(name) //nolint:gosec // test helper
 	}
 
-	got := checkOverlayFSSupport()
+	got := checkOverlayFSSupport(t.Context())
 	if got.Status != checkStatusFail {
 		t.Fatalf("status = %q, want fail (detail=%q)", got.Status, got.Detail)
 	}
