@@ -88,13 +88,26 @@ device identification.
 **Layer count limit**: Cocoon caps the number of rootfs layers at **8**.
 Images exceeding this limit are flattened into a single EROFS during
 materialize. This avoids hitting the overlayfs lowerdir argument length
-limit and keeps the cmdline manageable. The flattened EROFS gets its own
+limit, keeps the kernel cmdline within safe bounds (the `cocoon.layers=`
+parameter lives on the kernel cmdline, which has a finite maximum length
+that varies by bootloader/kernel configuration), and reduces the number
+of `--disk` entries passed to CH. The flattened EROFS gets its own
 content-address (SHA-256 of the output file); original per-layer SHAs are
 not stored or referenced. Refcount and GC operate on the flattened layer
 as a single unit — no relationship to the original OCI layers is tracked.
 
 Multiple VMs from the same image share kernel and rootfs layers (content-
 addressed by SHA-256). Each VM only gets its own COW raw file.
+
+**Layer hash definition** (what is hashed for content-addressing):
+- Rootfs layer: `SHA-256(rootfs.erofs file bytes)`
+- Kernel layer: `SHA-256(vmlinuz bytes || initrd.img bytes)` — the
+  two files are concatenated for hashing (vmlinuz first, then patched
+  initrd). This means any change to injected modules/hooks produces
+  a new kernel layer hash.
+- `meta.json` is **not** included in the hash — it is metadata for
+  diagnostics and GC only. This prevents metadata format upgrades
+  from invalidating cached layers.
 
 ### How EROFS Replaces qcow2 Backing
 
@@ -321,7 +334,14 @@ resolve_disk() {
                 s=$(cat "$sysdev/device/serial")
             fi
             if [ "$s" = "$serial" ]; then
-                echo "/dev/$(basename "$sysdev")"
+                local devname="/dev/$(basename "$sysdev")"
+                # Fallback: if devtmpfs/udev hasn't created the node yet,
+                # create it from /sys/block/vdX/dev (major:minor).
+                if [ ! -e "$devname" ] && [ -f "$sysdev/dev" ]; then
+                    local majmin=$(cat "$sysdev/dev")
+                    mknod "$devname" b "${majmin%%:*}" "${majmin##*:}" 2>/dev/null
+                fi
+                echo "$devname"
                 return 0
             fi
         done
@@ -398,9 +418,13 @@ mountroot() {
     mkdir -p "${COCOON}/cow/upper"
     rm -rf "${COCOON}/cow/work" && mkdir -p "${COCOON}/cow/work"
 
-    # Assemble overlay
+    # Assemble overlay.
+    # Explicit options to avoid distro-default variance across kernels:
+    #   index=off      — no index dir (avoids NFS export issues, simpler)
+    #   metacopy=off   — always full copy-up (predictable, no partial-copy bugs)
+    #   redirect_dir=off — no redirect on rename (simpler, avoids xattr deps)
     mount -t overlay overlay \
-      -o "lowerdir=${LOWER},upperdir=${COCOON}/cow/upper,workdir=${COCOON}/cow/work" \
+      -o "lowerdir=${LOWER},upperdir=${COCOON}/cow/upper,workdir=${COCOON}/cow/work,index=off,metacopy=off,redirect_dir=off" \
       "${rootmnt}" || cocoon_fatal "overlay mount failed"
 
     mkdir -p "${rootmnt}/dev" "${rootmnt}/proc" "${rootmnt}/sys" "${rootmnt}/run"
@@ -480,7 +504,12 @@ resolve_disk() {
                 s=$(cat "$sysdev/device/serial")
             fi
             if [ "$s" = "$serial" ]; then
-                echo "/dev/$(basename "$sysdev")"
+                local devname="/dev/$(basename "$sysdev")"
+                if [ ! -e "$devname" ] && [ -f "$sysdev/dev" ]; then
+                    local majmin=$(cat "$sysdev/dev")
+                    mknod "$devname" b "${majmin%%:*}" "${majmin##*:}" 2>/dev/null
+                fi
+                echo "$devname"
                 return 0
             fi
         done
@@ -548,9 +577,9 @@ mount -t ext4 "$cow_dev" "${COCOON}/cow" || cocoon_fatal "cocoon: mount COW fail
 mkdir -p "${COCOON}/cow/upper"
 rm -rf "${COCOON}/cow/work" && mkdir -p "${COCOON}/cow/work"
 
-# Assemble overlay
+# Assemble overlay (same explicit options as initramfs-tools hook).
 mount -t overlay overlay \
-  -o "lowerdir=${LOWER},upperdir=${COCOON}/cow/upper,workdir=${COCOON}/cow/work" \
+  -o "lowerdir=${LOWER},upperdir=${COCOON}/cow/upper,workdir=${COCOON}/cow/work,index=off,metacopy=off,redirect_dir=off" \
   "$NEWROOT" || cocoon_fatal "cocoon: overlay mount failed"
 
 mkdir -p "$NEWROOT/dev" "$NEWROOT/proc" "$NEWROOT/sys" "$NEWROOT/run"
@@ -746,8 +775,10 @@ cloudimg.img (download — may be qcow2 or raw)
            a. mount -o ro,loop,offset=<N> (requires root)
            b. Check /etc/os-release exists → accept this partition
            c. If missing, unmount and try next candidate
-        4. No valid rootfs found → PermanentError listing detected
-           partitions (type GUID + size) for diagnosis
+        4. No valid rootfs found → PermanentError listing all
+           candidate partitions with: index, type GUID, start LBA,
+           size, and per-partition failure reason (mount error /
+           /etc/os-release not found)
         Non-GPT, LVM, LUKS → PermanentError with descriptive message
   → Extract: vmlinuz, initrd.img, kernel modules (erofs/overlay dep chain)
   → mkfs.erofs rootfs.erofs (from mount point, no guest modification)
@@ -779,6 +810,18 @@ Tools needed:
 OCI image layers (pulled or built)
   → Flatten all rootfs layers to temp directory
       (apply OCI whiteout semantics during flatten — see below)
+      **Unpack fidelity constraint**: layer extraction MUST preserve:
+        - xattrs (security.capability, trusted.*, security.selinux)
+        - file capabilities (stored as security.capability xattr)
+        - hardlinks (inode sharing, not copy)
+        - device nodes (char/block)
+        - uid/gid/mode/mtime
+      Go's stdlib archive/tar does NOT preserve xattrs by default.
+      Implementation must use PAX header xattr support (tar.Header.
+      PAXRecords / Xattrs field) or a library that handles this.
+      Failure to preserve capabilities causes subtle runtime errors
+      (e.g. ping loses CAP_NET_RAW, systemd helpers lose required
+      capabilities) that are extremely hard to diagnose.
   → Extract: vmlinuz, initrd.img, kernel modules
   → mkfs.erofs rootfs.erofs (from flattened rootfs)
   → Patch initramfs (same as cloudimg — auto-detect format)
@@ -822,8 +865,15 @@ When keeping layers separate (multi-EROFS lowerdir):
   **must support `trusted.*` xattrs** (ext4/xfs/btrfs — yes; tmpfs — no;
   overlayfs on overlayfs — no). If running inside a restricted container
   without `CAP_SYS_ADMIN`, xattr writes will fail silently and opaque
-  dir semantics will break. Materialize should verify xattr write
-  capability at the start of multi-layer conversion.
+  dir semantics will break.
+- **Materialize-time xattr probe** (required before multi-layer
+  conversion): create a temp directory in the build workspace, set
+  `trusted.overlay.opaque=y` xattr on it (Go: `unix.Setxattr`),
+  read it back and verify the value. If the probe fails, emit
+  PermanentError including: workspace filesystem type (`statfs`),
+  effective capabilities (`/proc/self/status` CapEff), and the
+  specific xattr error. This catches "silent opaque failure" before
+  any EROFS is produced.
 - The `mkfs.erofs` tool preserves device nodes and xattrs.
 
 **Kernel dependency**: cross-layer deletion in multi-EROFS lowerdir relies
@@ -1165,6 +1215,17 @@ motivation is removing virtiofsd.
    reproducibility). Content-addressing hashes the **output EROFS file**,
    not the input. Same input + same flags + same `mkfs.erofs` version =
    same output (upstream documents this as a reproducible-build guarantee).
+
+   **Directory traversal determinism**: `mkfs.erofs <dir>` depends on
+   the underlying filesystem's `readdir` order, which can vary across
+   machines, kernel versions, or filesystem types. Cocoon must ensure
+   deterministic input by either: (a) using `mkfs.erofs --tar=` to
+   build from a sorted tar stream (available in erofs-utils >= 1.7),
+   or (b) preparing the input directory on a filesystem with stable
+   readdir order and verifying output hash stability. The acceptance
+   test is a **hard gate**: repeated builds of the same input must
+   produce identical hashes; any divergence fails the test.
+
    Cocoon's acceptance tests verify hash stability across repeated builds.
    Cocoon records `mkfs.erofs` version in `meta.json` for diagnostics.
    Minimum required version: erofs-utils >= 1.5.
@@ -1186,6 +1247,14 @@ motivation is removing virtiofsd.
       (do not guess — an unverifiable kernel is not supportable)
    Note: `/proc/config.gz` is a runtime procfs node, not a file on
    disk — it is not available when the rootfs is mounted offline.
+
+   **This is a deliberate design trade-off**: Cocoon chooses to only
+   support images with verifiable kernel configuration, rejecting
+   images that cannot be validated. This narrows the supported image
+   set but prevents the worst failure mode: images that build
+   successfully but fail at boot or exhibit silent semantic errors.
+   The error output must include: kernel version, config paths
+   attempted, and which required options were missing or disabled.
 
    Required kernel config options:
    - `CONFIG_EROFS_FS=y|m` — EROFS filesystem support.
@@ -1302,6 +1371,11 @@ Each phase gate requires passing the following test matrix:
 | Opaque dir: user layer marks dir opaque → base dir contents invisible | Required | Required |
 | Kernel config gate: materialize fails if EROFS_FS_PCLUSTER/XATTR missing | Required | Required |
 | EROFS mount smoke: `mount -t erofs` succeeds in initramfs; failure log includes mkfs flags + kernel version + loaded modules | Required | Required |
+| OCI unpack fidelity: `security.capability` xattrs preserved (e.g. `getcap /bin/ping`) | Required | Required |
+| OCI unpack fidelity: hardlinks preserved (inode/link count match source) | Required | - |
+| Composite behavior: base has `ping` with cap + `dirA/basefile`; user layer deletes `basefile`, marks `dirA` opaque → boot, verify ping works + basefile invisible + dirA has only user content | Required | - |
+| systemd compat: machine-id written, journald writes to `/var/log/journal`, cloud-init (if present) does not block boot | Required | Required |
+| Overlay copy-up: modify a file from EROFS lowerdir → verify copy-up to COW upper succeeds, original unchanged | Required | - |
 
 ### Phase 2 Gate (Cloudimg Path)
 
