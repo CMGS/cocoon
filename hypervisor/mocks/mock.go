@@ -20,7 +20,7 @@ import (
 type MockClient struct {
 	LaunchFunc            func(ctx context.Context, vmID string, cfg *types.VMConfig) (int, error)
 	ShutdownFunc          func(ctx context.Context, vmID string, timeout time.Duration) error
-	ShutdownDirectFunc    func(ctx context.Context, vmID string) error
+	ShutdownDirectFunc    func(ctx context.Context, vmID string, gracePeriod time.Duration) error
 	ForceKillFunc         func(vmID string) error
 	IsAliveFunc           func(vmID string) bool
 	CreateVMFunc          func(ctx context.Context, socketPath string, vmCfg *hypervisor.CHVMConfig) error
@@ -51,9 +51,9 @@ func (m *MockClient) Shutdown(ctx context.Context, vmID string, timeout time.Dur
 	return nil
 }
 
-func (m *MockClient) ShutdownDirect(ctx context.Context, vmID string) error {
+func (m *MockClient) ShutdownDirect(ctx context.Context, vmID string, gracePeriod time.Duration) error {
 	if m.ShutdownDirectFunc != nil {
-		return m.ShutdownDirectFunc(ctx, vmID)
+		return m.ShutdownDirectFunc(ctx, vmID, gracePeriod)
 	}
 	return nil
 }

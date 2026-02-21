@@ -43,9 +43,9 @@ type Client interface {
 	// ShutdownDirect stops a VM without ACPI (for direct kernel boot VMs
 	// whose guest kernel may lack ACPI support). Sequence:
 	//   1. vm.shutdown API (stop vCPUs, flush backends).
-	//   2. SIGTERM the CH process.
+	//   2. SIGTERM the CH process, wait up to gracePeriod for exit.
 	//   3. SIGKILL as last resort.
-	ShutdownDirect(ctx context.Context, vmID string) error
+	ShutdownDirect(ctx context.Context, vmID string, gracePeriod time.Duration) error
 
 	// ForceKill sends SIGKILL to the CH process for the given VM.
 	// It is a best-effort operation; if the process has already exited

@@ -228,7 +228,7 @@ Other documents MUST reference these definitions rather than re-defining fields.
 | `kernel_path` | string | `""` | Kernel path for direct boot (Phase 2, omitted when empty) |
 | `initramfs_path` | string | `""` | Initramfs path for direct boot (Phase 2, omitted when empty) |
 | `cmdline` | string | `""` | Kernel command line for direct boot (Phase 2, omitted when empty) |
-| `virtiofs_tag` | string | `""` | virtiofs filesystem tag for OCI VM rootfs (e.g., `"/dev/root"`; Phase 2, omitted when empty) |
+| `virtiofs_tag` | string | `""` | virtiofs filesystem tag for OCI VM rootfs (e.g., `"cocoon-rootfs"`; Phase 2, omitted when empty) |
 | `virtiofs_sock` | string | `""` | Rootfs-serving virtiofsd socket path for OCI VM (Phase 2, omitted when empty) |
 | `tpm_socket_path` | string | `"/run/cocoon/vms/{vm_id}/swtpm.sock"` | swtpm TPM socket path (omitted if TPM not configured) |
 | `cpus` | int | `2` | vCPU count |

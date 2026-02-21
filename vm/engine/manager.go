@@ -376,7 +376,7 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 	var shutdownErr error
 	vmCfg, cfgErr := m.LoadConfig(vmID)
 	if cfgErr == nil && vmCfg.BootStrategy == types.BootStrategyDirect {
-		shutdownErr = m.shutdownDirectBoot(ctx, vmID)
+		shutdownErr = m.shutdownDirectBoot(ctx, vmID, timeout)
 	} else {
 		shutdownErr = m.hyper.Shutdown(ctx, vmID, timeout)
 	}
@@ -852,9 +852,9 @@ func (m *manager) setupOCIRuntimeForStart(
 	if err != nil {
 		return nil, fmt.Errorf("read OCI runtime entry metadata for %s: %w", vmCfg.BaseKey, err)
 	}
-	// Overlay is pre-mounted at create time. If already mounted (normal case
-	// after create, or persistent across stop→start), skip the expensive mount.
-	// Otherwise mount now (e.g., after host reboot where mounts are lost).
+	// Mount overlay if not already mounted. The overlay is mounted at start
+	// time (not create time) to satisfy reconcile rules that require
+	// CREATED/STOPPED VMs to have no mounted overlay.
 	alreadyMounted, mountCheckErr := m.overlayMgr.IsMounted(vmID)
 	if mountCheckErr != nil {
 		return nil, fmt.Errorf("check overlay mount for %s: %w", vmID, mountCheckErr)
@@ -940,8 +940,8 @@ func (m *manager) validateOverlayMount(vmID string) error {
 // shutdownDirectBoot delegates to the hypervisor's ShutdownDirect method,
 // which skips the ACPI power-button and goes straight to vm.shutdown +
 // SIGTERM. Direct-boot VMs typically lack CONFIG_ACPI=y in the guest kernel.
-func (m *manager) shutdownDirectBoot(ctx context.Context, vmID string) error {
-	return m.hyper.ShutdownDirect(ctx, vmID)
+func (m *manager) shutdownDirectBoot(ctx context.Context, vmID string, timeout time.Duration) error {
+	return m.hyper.ShutdownDirect(ctx, vmID, timeout)
 }
 
 func (m *manager) waitForStoppingVM(ctx context.Context, vmID string, timeout time.Duration) error {

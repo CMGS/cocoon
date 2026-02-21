@@ -373,19 +373,12 @@ func (m *manager) prepareOCIVMImage(
 			if err := m.overlayMgr.EnsureWorkspace(vmID); err != nil {
 				return fmt.Errorf("create OCI runtime workspace for %s: %w", vmID, err)
 			}
-			// Pre-mount overlay at create time so the expensive mount is
-			// amortized and not repeated on every start.
-			if mountErr := m.overlayMgr.MountVM(vmID, runtimeSpec.RootfsLowerDirs); mountErr != nil {
-				return fmt.Errorf("pre-mount OCI overlay for %s: %w", vmID, mountErr)
-			}
-			if validateErr := m.validateOverlayMount(vmID); validateErr != nil {
-				_ = m.overlayMgr.UnmountVM(vmID)
-				return fmt.Errorf("post-mount overlay validation for %s: %w", vmID, validateErr)
-			}
+			// Overlay mount is deferred to start time. Reconcile rules require
+			// CREATED/STOPPED VMs to have no mounted overlay, so pre-mounting
+			// at create time would cause false-positive inconsistency reports.
 			return nil
 		},
 		cleanupStorage: func(vmID string) {
-			_ = m.overlayMgr.UnmountVM(vmID)
 			// Workspace is inside vmDir which gets cleaned up by the vmDir defer.
 		},
 	}, nil
