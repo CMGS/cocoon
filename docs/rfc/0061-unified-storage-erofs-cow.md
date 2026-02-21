@@ -512,18 +512,19 @@ mountroot() {
     }
 
     # Write runtime boot results to /run (separate from immutable buildinfo).
-    # Acceptance tests and CI depend on this file — hard-fail if write fails.
-    # Format: key=value env file (one per line, parse by splitting on first '=').
-    # NOT JSON — avoids escaping issues with raw mount error messages that
-    # may contain quotes, backslashes, newlines, or control characters.
+    # Acceptance tests and CI depend on boot.env — hard-fail if write fails.
+    # boot.env contains only stable, single-line key=value fields.
+    # Raw error output goes to separate .log files — mount errors may be
+    # multi-line and would corrupt the env file's line-oriented format.
     mkdir -p /run/cocoon || cocoon_fatal "mkdir /run/cocoon failed"
-    {
-        printf 'overlay_opts_effective=%s\n' "$_ovl_mode"
-        [ -n "${_ovl_err:-}" ] && printf 'overlay_mount_first_error=%s\n' "$_ovl_err"
-        [ -n "${_ovl_fb_err:-}" ] && printf 'overlay_mount_fallback_error=%s\n' "$_ovl_fb_err"
-        true  # ensure block exits 0 even if both vars are empty
-    } > /run/cocoon/boot.env \
+    printf 'overlay_opts_effective=%s\n' "$_ovl_mode" > /run/cocoon/boot.env \
         || cocoon_fatal "write /run/cocoon/boot.env failed"
+    if [ -n "${_ovl_err:-}" ]; then
+        printf '%s\n' "$_ovl_err" > /run/cocoon/overlay_mount_first_error.log 2>/dev/null || true
+    fi
+    if [ -n "${_ovl_fb_err:-}" ]; then
+        printf '%s\n' "$_ovl_fb_err" > /run/cocoon/overlay_mount_fallback_error.log 2>/dev/null || true
+    fi
 
     mkdir -p "${rootmnt}/dev" "${rootmnt}/proc" "${rootmnt}/sys" "${rootmnt}/run"
 
@@ -757,16 +758,17 @@ _ovl_err=$(mount -t overlay overlay -o "$OVL_FULL" "$NEWROOT" 2>&1) || {
     esac
 }
 
-# Write runtime boot results to /run (separate from immutable buildinfo).
-# Format: key=value env file (see initramfs-tools hook for rationale).
+# Write runtime boot results to /run (see initramfs-tools hook for rationale).
+# boot.env = stable key=value; error output → separate .log files.
 mkdir -p /run/cocoon || cocoon_fatal "cocoon: mkdir /run/cocoon failed"
-{
-    printf 'overlay_opts_effective=%s\n' "$_ovl_mode"
-    [ -n "${_ovl_err:-}" ] && printf 'overlay_mount_first_error=%s\n' "$_ovl_err"
-    [ -n "${_ovl_fb_err:-}" ] && printf 'overlay_mount_fallback_error=%s\n' "$_ovl_fb_err"
-    true
-} > /run/cocoon/boot.env \
+printf 'overlay_opts_effective=%s\n' "$_ovl_mode" > /run/cocoon/boot.env \
     || cocoon_fatal "cocoon: write /run/cocoon/boot.env failed"
+if [ -n "${_ovl_err:-}" ]; then
+    printf '%s\n' "$_ovl_err" > /run/cocoon/overlay_mount_first_error.log 2>/dev/null || true
+fi
+if [ -n "${_ovl_fb_err:-}" ]; then
+    printf '%s\n' "$_ovl_fb_err" > /run/cocoon/overlay_mount_fallback_error.log 2>/dev/null || true
+fi
 
 mkdir -p "$NEWROOT/dev" "$NEWROOT/proc" "$NEWROOT/sys" "$NEWROOT/run"
 
