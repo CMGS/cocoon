@@ -298,13 +298,19 @@ func (s *Store) CheckTagOverwriteSafe(tag string) error {
 
 // checkRuntimeRefsForRemoval returns an error if the given manifest digest
 // has an OCI runtime cache entry that is still pinned by at least one VM.
+// manifestDigest may be in "sha256:<hex>" or bare "<hex>" format.
 func checkRuntimeRefsForRemoval(cfg *config.CocoonConfig, tag, manifestDigest string) error {
 	if manifestDigest == "" {
 		return nil
 	}
+	// Normalize: build stores bare hex, pull stores "sha256:" prefix.
 	runtimeKey, parseErr := ParseSHA256Digest(manifestDigest)
 	if parseErr != nil {
-		return nil // non-standard digest format — nothing to check
+		// Try bare hex (build path stores without sha256: prefix).
+		runtimeKey, parseErr = ParseSHA256Digest("sha256:" + manifestDigest)
+		if parseErr != nil {
+			return nil // genuinely non-standard format — nothing to check
+		}
 	}
 	referenced, err := IsRuntimeReferenced(cfg, runtimeKey)
 	if err != nil {

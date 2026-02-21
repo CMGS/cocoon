@@ -344,6 +344,48 @@ func TestStoreRemoveTag_ReferencedByVM(t *testing.T) {
 	}
 }
 
+func TestStoreRemoveTag_ReferencedByVM_BareHex(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(t)
+	store := NewStore(cfg)
+
+	// Build path stores bare hex (no "sha256:" prefix) in the tag index.
+	runtimeKey := testHexDigest(998)
+	bareHexManifest := runtimeKey // no prefix
+
+	layoutDir := store.LayoutDir("bare-hex-tag")
+	if err := os.MkdirAll(layoutDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := store.SaveTag("bare-hex-tag", layoutDir, bareHexManifest); err != nil {
+		t.Fatalf("SaveTag: %v", err)
+	}
+
+	// Pin the runtime key to a VM.
+	if err := AddRuntimeRef(cfg, runtimeKey, "vm-bare"); err != nil {
+		t.Fatalf("AddRuntimeRef: %v", err)
+	}
+
+	// RemoveTag must refuse — bare hex manifest should still match the runtime key.
+	_, _, err := store.RemoveTag("bare-hex-tag")
+	if err == nil {
+		t.Fatal("expected error removing tag with bare hex manifest referenced by VM")
+	}
+	if !strings.Contains(err.Error(), "still referenced") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Cleanup: unpin and remove.
+	if err := RemoveRuntimeRef(cfg, runtimeKey, "vm-bare"); err != nil {
+		t.Fatalf("RemoveRuntimeRef: %v", err)
+	}
+	_, _, err = store.RemoveTag("bare-hex-tag")
+	if err != nil {
+		t.Fatalf("RemoveTag after unpin: %v", err)
+	}
+}
+
 func TestStoreSaveTag_ReferencedByVM(t *testing.T) {
 	t.Parallel()
 
