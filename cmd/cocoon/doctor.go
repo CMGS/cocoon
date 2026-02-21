@@ -58,6 +58,8 @@ var (
 	doctorRemove   = os.Remove
 	doctorSymlink  = os.Symlink
 	doctorMkdirAll = os.MkdirAll
+	doctorReadFile = os.ReadFile
+	doctorGOOS     = runtime.GOOS
 )
 
 var doctorVirtiofsdFallbackPaths = []string{
@@ -591,15 +593,15 @@ func checkUEFIFirmware(primaryPath string) checkResult {
 }
 
 func checkOverlayFSSupport() checkResult {
-	if runtime.GOOS != hostOSLinux {
+	if doctorGOOS != hostOSLinux {
 		return checkResult{
 			Name:   "overlayfs",
 			Status: "warn",
-			Detail: fmt.Sprintf("OverlayFS is Linux-only (not applicable on %s)", runtime.GOOS),
+			Detail: fmt.Sprintf("OverlayFS is Linux-only (not applicable on %s)", doctorGOOS),
 		}
 	}
 
-	data, err := os.ReadFile("/proc/filesystems") //nolint:gosec // fixed kernel pseudo-file on linux
+	data, err := doctorReadFile("/proc/filesystems")
 	if err != nil {
 		return checkResult{
 			Name:   "overlayfs",
@@ -622,11 +624,58 @@ func checkOverlayFSSupport() checkResult {
 		}
 	}
 
+	// overlay not in /proc/filesystems — check if the module is loaded via lsmod.
+	if isOverlayModuleLoaded() {
+		return checkResult{
+			Name:   "overlayfs",
+			Status: "pass",
+			Detail: "overlay kernel module loaded (lsmod)",
+		}
+	}
+
 	return checkResult{
 		Name:   "overlayfs",
 		Status: "fail",
-		Detail: "/proc/filesystems does not list overlay",
+		Detail: "overlay not in /proc/filesystems and module not loaded; run 'cocoon doctor --fix' or 'modprobe overlay'",
 	}
+}
+
+// isOverlayModuleLoaded checks lsmod output for an "overlay" module.
+func isOverlayModuleLoaded() bool {
+	out, err := doctorRunCommand(context.Background(), "lsmod")
+	if err != nil {
+		return false
+	}
+	for line := range strings.SplitSeq(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[0] == "overlay" {
+			return true
+		}
+	}
+	return false
+}
+
+// tryFixOverlayFS attempts to load the overlay kernel module via modprobe
+// when the overlayfs check has failed.
+func tryFixOverlayFS(ctx context.Context, checks []checkResult) []checkResult {
+	if !hasFailedCheck(checks, "overlayfs") {
+		return checks
+	}
+
+	if _, err := doctorRunCommand(ctx, "modprobe", "overlay"); err != nil {
+		return replaceCheckResult(checks, checkResult{
+			Name:   "overlayfs",
+			Status: "fail",
+			Detail: fmt.Sprintf("modprobe overlay failed: %v", err),
+		})
+	}
+
+	// Re-check after modprobe.
+	updated := checkOverlayFSSupport()
+	if updated.Status == checkStatusPass {
+		updated.Detail = fmt.Sprintf("%s; auto-fix applied (modprobe overlay)", updated.Detail)
+	}
+	return replaceCheckResult(checks, updated)
 }
 
 func doctorAction(c *cli.Context) error {
@@ -646,6 +695,7 @@ func doctorAction(c *cli.Context) error {
 	// Phase 1: Dependency checks.
 	checks := runDependencyChecks(c.Context, app)
 	if fix {
+		checks = tryFixOverlayFS(c.Context, checks)
 		checks = tryFixVirtiofsdDependency(c.Context, app.cfg.VirtiofsdBinary, checks)
 	}
 
