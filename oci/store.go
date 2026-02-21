@@ -58,79 +58,6 @@ func (s *Store) SaveTag(tag, layoutPath, manifestDigest string) error {
 	})
 }
 
-func (s *Store) saveTagTxnLocked(tag, layoutPath, manifestDigest string) error {
-	var oldManifestDigest string
-	var oldLayoutPath string
-	oldManifestStillUsed := false
-	oldLayoutStillUsed := false
-	err := s.withLock(func(idx *TagIndex) error {
-		if idx.Tags == nil {
-			idx.Tags = make(map[string]TagEntry)
-		}
-		// Track old manifest and layout for cleanup when overwriting a tag.
-		if old, exists := idx.Tags[tag]; exists && old.ManifestDigest != manifestDigest {
-			oldManifestDigest = old.ManifestDigest
-			oldLayoutPath = old.LayoutPath
-		}
-		// Refuse overwrite when running VMs still reference the old image's
-		// OCI runtime cache entry — mirrors the check in RemoveTag.
-		if oldManifestDigest != "" {
-			if err := checkRuntimeRefsForRemoval(s.cfg, tag, oldManifestDigest); err != nil {
-				return err
-			}
-		}
-		idx.Tags[tag] = TagEntry{
-			Tag:            tag,
-			LayoutPath:     layoutPath,
-			ManifestDigest: manifestDigest,
-			CreatedAt:      time.Now().UTC(),
-		}
-		if err := s.save(idx); err != nil {
-			return err
-		}
-		if oldManifestDigest != "" {
-			for _, entry := range idx.Tags {
-				if entry.ManifestDigest == oldManifestDigest {
-					oldManifestStillUsed = true
-				}
-				if oldLayoutPath != "" && entry.LayoutPath == oldLayoutPath {
-					oldLayoutStillUsed = true
-				}
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-
-	// Cleanup old manifest resources when overwriting a tag.
-	// RemoveBlobRefs is called outside the tag lock but still inside the txn
-	// lock. This is safe because the txn lock serializes all cross-index
-	// operations (SaveTag, RemoveTag), so no concurrent SaveTag or RemoveTag
-	// can run while we modify blob refs. Keeping the tag lock and layer-refs
-	// lock disjoint (never held simultaneously) avoids lock-ordering deadlocks.
-	if oldManifestDigest != "" && !oldManifestStillUsed {
-		zeroRefBlobs, refErr := s.removeBlobRefsFn(s.cfg, oldManifestDigest)
-		if refErr != nil {
-			failures := blobRefCleanupFailures.Add(1)
-			log.Printf("WARNING: failed to clean old manifest %s blob refs (will be reclaimed by GC): %v (cleanup_failures=%d)", oldManifestDigest, refErr, failures)
-		}
-		// Eagerly remove zero-referenced blobs instead of waiting for GC.
-		blobStore := NewBlobStore(s.cfg)
-		for _, digest := range zeroRefBlobs {
-			if blobErr := blobStore.RemoveBlob(digest); blobErr != nil {
-				log.Printf("warning: remove unreferenced blob %s after tag overwrite: %v", digest, blobErr)
-			}
-		}
-	}
-	// Remove old layout directory if no other tag shares it.
-	if oldLayoutPath != "" && !oldLayoutStillUsed {
-		_ = os.RemoveAll(oldLayoutPath)
-	}
-	return nil
-}
-
 // HasTag reports whether the tag exists in the local OCI build tag index.
 // Unlike ResolveTag, this does not verify layout path existence on disk.
 func (s *Store) HasTag(tag string) (bool, error) {
@@ -294,6 +221,79 @@ func (s *Store) CheckTagOverwriteSafe(tag string) error {
 		return nil
 	}
 	return checkRuntimeRefsForRemoval(s.cfg, tag, manifestDigest)
+}
+
+func (s *Store) saveTagTxnLocked(tag, layoutPath, manifestDigest string) error {
+	var oldManifestDigest string
+	var oldLayoutPath string
+	oldManifestStillUsed := false
+	oldLayoutStillUsed := false
+	err := s.withLock(func(idx *TagIndex) error {
+		if idx.Tags == nil {
+			idx.Tags = make(map[string]TagEntry)
+		}
+		// Track old manifest and layout for cleanup when overwriting a tag.
+		if old, exists := idx.Tags[tag]; exists && old.ManifestDigest != manifestDigest {
+			oldManifestDigest = old.ManifestDigest
+			oldLayoutPath = old.LayoutPath
+		}
+		// Refuse overwrite when running VMs still reference the old image's
+		// OCI runtime cache entry — mirrors the check in RemoveTag.
+		if oldManifestDigest != "" {
+			if err := checkRuntimeRefsForRemoval(s.cfg, tag, oldManifestDigest); err != nil {
+				return err
+			}
+		}
+		idx.Tags[tag] = TagEntry{
+			Tag:            tag,
+			LayoutPath:     layoutPath,
+			ManifestDigest: manifestDigest,
+			CreatedAt:      time.Now().UTC(),
+		}
+		if err := s.save(idx); err != nil {
+			return err
+		}
+		if oldManifestDigest != "" {
+			for _, entry := range idx.Tags {
+				if entry.ManifestDigest == oldManifestDigest {
+					oldManifestStillUsed = true
+				}
+				if oldLayoutPath != "" && entry.LayoutPath == oldLayoutPath {
+					oldLayoutStillUsed = true
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	// Cleanup old manifest resources when overwriting a tag.
+	// RemoveBlobRefs is called outside the tag lock but still inside the txn
+	// lock. This is safe because the txn lock serializes all cross-index
+	// operations (SaveTag, RemoveTag), so no concurrent SaveTag or RemoveTag
+	// can run while we modify blob refs. Keeping the tag lock and layer-refs
+	// lock disjoint (never held simultaneously) avoids lock-ordering deadlocks.
+	if oldManifestDigest != "" && !oldManifestStillUsed {
+		zeroRefBlobs, refErr := s.removeBlobRefsFn(s.cfg, oldManifestDigest)
+		if refErr != nil {
+			failures := blobRefCleanupFailures.Add(1)
+			log.Printf("WARNING: failed to clean old manifest %s blob refs (will be reclaimed by GC): %v (cleanup_failures=%d)", oldManifestDigest, refErr, failures)
+		}
+		// Eagerly remove zero-referenced blobs instead of waiting for GC.
+		blobStore := NewBlobStore(s.cfg)
+		for _, digest := range zeroRefBlobs {
+			if blobErr := blobStore.RemoveBlob(digest); blobErr != nil {
+				log.Printf("warning: remove unreferenced blob %s after tag overwrite: %v", digest, blobErr)
+			}
+		}
+	}
+	// Remove old layout directory if no other tag shares it.
+	if oldLayoutPath != "" && !oldLayoutStillUsed {
+		_ = os.RemoveAll(oldLayoutPath)
+	}
+	return nil
 }
 
 // checkRuntimeRefsForRemoval returns an error if the given manifest digest

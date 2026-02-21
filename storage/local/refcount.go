@@ -33,43 +33,6 @@ func NewReferenceCounter(cfg *config.CocoonConfig) storage.ReferenceCounter {
 	return &fileReferenceCounter{cfg: cfg}
 }
 
-// --- helpers ---
-
-// withRefsLock acquires references.lock, runs fn, then releases the lock.
-func (rc *fileReferenceCounter) withRefsLock(fn func() error) error {
-	fl := flock.New(rc.cfg.ReferencesLock())
-	if err := fl.Lock(); err != nil {
-		return fmt.Errorf("acquire references.lock: %w", err)
-	}
-	defer fl.Unlock() //nolint:errcheck
-
-	return fn()
-}
-
-// loadRefs reads and unmarshals references.json.  If the file does not exist
-// an empty map is returned (not an error).
-func (rc *fileReferenceCounter) loadRefs() (types.ReferencesFile, error) {
-	refs := make(types.ReferencesFile)
-	err := utils.ReadJSON(rc.cfg.ReferencesFile(), &refs)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return refs, nil
-		}
-		return nil, fmt.Errorf("load references.json: %w", err)
-	}
-	return refs, nil
-}
-
-// saveRefs atomically persists refs to references.json (temp + fsync + rename).
-func (rc *fileReferenceCounter) saveRefs(refs types.ReferencesFile) error {
-	if err := utils.AtomicWriteJSON(rc.cfg.ReferencesFile(), refs); err != nil {
-		return fmt.Errorf("save references.json: %w", err)
-	}
-	return nil
-}
-
-// --- ReferenceCounter interface ---
-
 // AddReference pins vmID to baseKey.  Collision detection compares digestFull
 // when the key already exists.  Returns types.ErrChecksumCollision on mismatch.
 func (rc *fileReferenceCounter) AddReference(baseKey, vmID, digestFull, sourceRef string) error {
@@ -214,6 +177,39 @@ func (rc *fileReferenceCounter) GetUnreferencedImages() ([]string, error) {
 		unreferenced = []string{}
 	}
 	return unreferenced, err
+}
+
+// withRefsLock acquires references.lock, runs fn, then releases the lock.
+func (rc *fileReferenceCounter) withRefsLock(fn func() error) error {
+	fl := flock.New(rc.cfg.ReferencesLock())
+	if err := fl.Lock(); err != nil {
+		return fmt.Errorf("acquire references.lock: %w", err)
+	}
+	defer fl.Unlock() //nolint:errcheck
+
+	return fn()
+}
+
+// loadRefs reads and unmarshals references.json.  If the file does not exist
+// an empty map is returned (not an error).
+func (rc *fileReferenceCounter) loadRefs() (types.ReferencesFile, error) {
+	refs := make(types.ReferencesFile)
+	err := utils.ReadJSON(rc.cfg.ReferencesFile(), &refs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return refs, nil
+		}
+		return nil, fmt.Errorf("load references.json: %w", err)
+	}
+	return refs, nil
+}
+
+// saveRefs atomically persists refs to references.json (temp + fsync + rename).
+func (rc *fileReferenceCounter) saveRefs(refs types.ReferencesFile) error {
+	if err := utils.AtomicWriteJSON(rc.cfg.ReferencesFile(), refs); err != nil {
+		return fmt.Errorf("save references.json: %w", err)
+	}
+	return nil
 }
 
 // safePrefix returns the first n characters of s, or the entire string if

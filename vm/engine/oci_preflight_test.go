@@ -15,7 +15,7 @@ func TestCheckOCIRuntimePreflight_RequiresLinux(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.DefaultConfig()
-	err := checkOCIRuntimePreflight(context.Background(), cfg, ociRuntimePreflightDeps{
+	err := checkOCIRuntimePreflight(t.Context(), cfg, ociRuntimePreflightDeps{
 		goos: "darwin",
 		readFileFn: func(string) ([]byte, error) {
 			return []byte(""), nil
@@ -39,7 +39,7 @@ func TestCheckOCIRuntimePreflight_RequiresOverlayFS(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.DefaultConfig()
-	err := checkOCIRuntimePreflight(context.Background(), cfg, ociRuntimePreflightDeps{
+	err := checkOCIRuntimePreflight(t.Context(), cfg, ociRuntimePreflightDeps{
 		goos: "linux",
 		readFileFn: func(string) ([]byte, error) {
 			return []byte("nodev\tsquashfs\nnodev\tfuse\n"), nil
@@ -66,7 +66,7 @@ func TestCheckOCIRuntimePreflight_RequiresVirtiofsdBinary(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.DefaultConfig()
-	err := checkOCIRuntimePreflight(context.Background(), cfg, ociRuntimePreflightDeps{
+	err := checkOCIRuntimePreflight(t.Context(), cfg, ociRuntimePreflightDeps{
 		goos: "linux",
 		readFileFn: func(string) ([]byte, error) {
 			return []byte("nodev\toverlay\n"), nil
@@ -93,7 +93,7 @@ func TestCheckOCIRuntimePreflight_RequiresCloudHypervisorVersion(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.DefaultConfig()
-	err := checkOCIRuntimePreflight(context.Background(), cfg, ociRuntimePreflightDeps{
+	err := checkOCIRuntimePreflight(t.Context(), cfg, ociRuntimePreflightDeps{
 		goos: "linux",
 		readFileFn: func(string) ([]byte, error) {
 			return []byte("nodev\toverlay\n"), nil
@@ -120,7 +120,7 @@ func TestCheckOCIRuntimePreflight_Success(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.DefaultConfig()
-	err := checkOCIRuntimePreflight(context.Background(), cfg, ociRuntimePreflightDeps{
+	err := checkOCIRuntimePreflight(t.Context(), cfg, ociRuntimePreflightDeps{
 		goos: "linux",
 		readFileFn: func(string) ([]byte, error) {
 			return []byte("nodev\toverlay\n"), nil

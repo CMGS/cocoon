@@ -34,6 +34,9 @@ type CreateOptions struct {
 // InconsistencyType classifies the kind of reconciliation inconsistency.
 type InconsistencyType string
 
+// InconsistencySeverity indicates how serious an inconsistency is.
+type InconsistencySeverity string
+
 const (
 	InconsistencyStateMismatch         InconsistencyType = "state_mismatch"
 	InconsistencyMetadataCorrupt       InconsistencyType = "metadata_corrupted"
@@ -53,12 +56,7 @@ const (
 	InconsistencyNameIndexStale        InconsistencyType = "name_index_stale"
 	InconsistencyDuplicateVMName       InconsistencyType = "duplicate_vm_name"
 	InconsistencyDeletedVMDir          InconsistencyType = "deleted_vm_directory"
-)
 
-// InconsistencySeverity indicates how serious an inconsistency is.
-type InconsistencySeverity string
-
-const (
 	SeverityCritical InconsistencySeverity = "critical"
 	SeverityWarning  InconsistencySeverity = "warning"
 	SeverityInfo     InconsistencySeverity = "info"

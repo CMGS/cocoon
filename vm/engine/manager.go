@@ -39,9 +39,6 @@ import (
 // a lock MUST NOT attempt to acquire the same lock again. All current
 // call paths are verified to be non-recursive.
 
-// nowRFC3339 returns the current UTC time formatted as RFC3339.
-func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
-
 // Compile-time interface check.
 var _ vm.Manager = (*manager)(nil)
 
@@ -118,26 +115,6 @@ func (m *manager) ResolveVMRef(ref string) (string, error) {
 	return vmID, nil
 }
 
-// validateVMID verifies that a vm_id matches the canonical format vm-{ULID}.
-// ULID is exactly 26 characters from the Crockford Base32 alphabet.
-func validateVMID(id string) error {
-	const ulidLen = 26
-	if !strings.HasPrefix(id, "vm-") {
-		return fmt.Errorf("invalid vm_id: must start with vm-")
-	}
-	ulidPart := id[3:]
-	if len(ulidPart) != ulidLen {
-		return fmt.Errorf("invalid vm_id: ULID part must be %d characters, got %d", ulidLen, len(ulidPart))
-	}
-	// Validate against ULID's Crockford Base32 character set (0-9, A-Z).
-	// oklog/ulid encodes using uppercase; we accept both cases.
-	_, err := ulid.ParseStrict(ulidPart)
-	if err != nil {
-		return fmt.Errorf("invalid vm_id: %w", err)
-	}
-	return nil
-}
-
 // ---------------------------------------------------------------------------
 // Config / Metadata persistence
 // ---------------------------------------------------------------------------
@@ -199,194 +176,6 @@ func (m *manager) TransitionState(vmID string, to types.VMState, reason string) 
 // ---------------------------------------------------------------------------
 // CRUD operations
 // ---------------------------------------------------------------------------
-
-func (m *manager) resolveOCIRuntimeLocalTag(ctx context.Context, resolvedImage *resolvedRuntimeImage) (string, error) {
-	if resolvedImage == nil {
-		return "", fmt.Errorf("resolved OCI image metadata is nil")
-	}
-
-	localTag := strings.TrimSpace(resolvedImage.LocalOCITag)
-	if localTag == "" && resolvedImage.Source == runtimeImageSourceLocalOCITag {
-		localTag = strings.TrimSpace(resolvedImage.PrepareRef)
-	}
-	if localTag != "" {
-		return localTag, nil
-	}
-
-	// Auto-pull from registry if the source is a registry OCI VM ref.
-	if resolvedImage.Source == runtimeImageSourceRegistry && resolvedImage.VMImageType == types.VMImageTypeOCIVM {
-		pullFn := m.ociPullFn
-		if pullFn == nil {
-			pullFn = oci.Pull
-		}
-		pullResult, pullErr := pullFn(ctx, m.cfg, resolvedImage.PrepareRef)
-		if pullErr != nil {
-			return "", fmt.Errorf("pull OCI VM image %q: %w", resolvedImage.PrepareRef, pullErr)
-		}
-		localTag = strings.TrimSpace(pullResult.Ref)
-		if localTag == "" {
-			localTag = oci.EnsureLatestTag(resolvedImage.PrepareRef)
-		}
-		log.Printf("auto-pulled OCI VM image %q (digest: %s)", localTag, pullResult.ManifestDigest)
-		return localTag, nil
-	}
-
-	return "", fmt.Errorf(
-		"OCI VM runtime currently requires a local OCI tag; source %q is not materialized locally yet",
-		resolvedImage.Source,
-	)
-}
-
-func (m *manager) snapshotCachedBaseKeys(ctx context.Context) map[string]struct{} {
-	keys := make(map[string]struct{})
-	for img, err := range m.imgMgr.ListCached(ctx) {
-		if err != nil {
-			log.Printf("warning: list cached images before prepare: %v", err)
-			return nil
-		}
-		if img != nil && img.BaseKey != "" {
-			keys[img.BaseKey] = struct{}{}
-		}
-	}
-	return keys
-}
-
-func (m *manager) resolveRuntimeImageRef(ctx context.Context, ref string) (*resolvedRuntimeImage, error) {
-	return resolveRuntimeImageRefWithProbe(ctx, m.cfg, ref, m.registryProbeFn)
-}
-
-func (m *manager) shouldSkipVerifyForCacheHit(skipVerify bool, cachedBaseKeysBefore map[string]struct{}, baseKey, imageRef string) bool {
-	if skipVerify || cachedBaseKeysBefore == nil {
-		return false
-	}
-	if _, ok := cachedBaseKeysBefore[baseKey]; !ok {
-		return false
-	}
-	verified, verifyStateErr := refcache.IsVerified(m.cfg, baseKey)
-	if verifyStateErr != nil {
-		log.Printf("warning: read verify state for %s: %v", baseKey, verifyStateErr)
-		return false
-	}
-	if verified {
-		log.Printf("image %s (%s): cache hit with verified record, skipping bootability verification", imageRef, baseKey)
-	}
-	return verified
-}
-
-func (m *manager) verifyPreparedBaseImage(ctx context.Context, imageRef, baseImagePath, baseKey string) error {
-	result, verifyErr := m.imgMgr.VerifyBootability(ctx, baseImagePath)
-	if verifyErr != nil {
-		return fmt.Errorf("verify bootability for %s: %w", imageRef, verifyErr)
-	}
-	if !result.Bootable {
-		return fmt.Errorf("%w: %s - %v", types.ErrImageNotBootable, imageRef, result.Errors)
-	}
-	for _, warning := range result.Warnings {
-		log.Printf("image %s: bootability warning: %s", imageRef, warning)
-	}
-	if markErr := refcache.MarkVerified(m.cfg, baseKey); markErr != nil {
-		log.Printf("warning: persist verify state for %s: %v", baseKey, markErr)
-	}
-	return nil
-}
-
-// validateBootFiles checks that the required boot files exist before launching
-// the hypervisor. Returns an actionable error when a required file is missing.
-func validateBootFiles(vmCfg *types.VMConfig) error {
-	switch vmCfg.BootStrategy {
-	case types.BootStrategyUEFI:
-		if vmCfg.FirmwarePath == "" {
-			return fmt.Errorf("UEFI firmware path is not configured")
-		}
-		if _, err := os.Stat(vmCfg.FirmwarePath); err != nil {
-			return fmt.Errorf("UEFI firmware not found at %s: %w", vmCfg.FirmwarePath, err)
-		}
-	case types.BootStrategyDirect:
-		if vmCfg.KernelPath == "" {
-			return fmt.Errorf("kernel path is not configured for direct boot")
-		}
-		if _, err := os.Stat(vmCfg.KernelPath); err != nil {
-			return fmt.Errorf("kernel not found at %s: %w", vmCfg.KernelPath, err)
-		}
-		if vmCfg.InitramfsPath != "" {
-			if _, err := os.Stat(vmCfg.InitramfsPath); err != nil {
-				return fmt.Errorf("initramfs not found at %s: %w", vmCfg.InitramfsPath, err)
-			}
-		}
-	}
-	return nil
-}
-
-// bootResult holds the outcome of a successful boot attempt.
-type bootResult struct {
-	pid          int
-	bootMode     types.BootMode
-	firmwarePath string
-}
-
-// attemptBoot launches a Cloud Hypervisor process, configures the VM, and boots
-// the guest using the specified firmware and boot mode. It operates on a copy of
-// vmCfg so the on-disk config.json is never modified.
-//
-// On success it returns a bootResult with the CH process PID and the actual boot
-// parameters. On any failure after the CH process has been launched, it force-kills
-// the process before returning the error.
-func (m *manager) attemptBoot(ctx context.Context, vmID string, vmCfg *types.VMConfig, firmwarePath string, bootMode types.BootMode) (*bootResult, error) {
-	// Work on a shallow copy so we never mutate the caller's config.
-	cfgCopy := *vmCfg
-	cfgCopy.FirmwarePath = firmwarePath
-
-	// Map boot mode to the strategy the hypervisor client expects.
-	switch bootMode {
-	case types.BootModeUEFI:
-		cfgCopy.BootStrategy = types.BootStrategyUEFI
-	default: // Direct kernel boot
-		cfgCopy.BootStrategy = types.BootStrategyDirect
-	}
-
-	// Truncate the serial log before launching CH so that waitForBoot
-	// only reads output from this boot attempt, not stale content from
-	// a previous run.
-	if cfgCopy.SerialLog != "" {
-		_ = os.Truncate(cfgCopy.SerialLog, 0)
-	}
-
-	// Step 1: Launch Cloud Hypervisor process.
-	pid, err := m.hyper.Launch(ctx, vmID, &cfgCopy)
-	if err != nil {
-		return nil, fmt.Errorf("launch CH for %s (%s): %w", vmID, bootMode, err)
-	}
-
-	// Record PID in metadata immediately after launch (no state change).
-	runtimeHypervisor := (&types.VMMetadataFile{}).HypervisorProcessName(m.cfg.CHBinary)
-	if err := m.updateMetadata(vmID, func(md *types.VMMetadataFile) {
-		md.ProcessPID = pid
-		md.HypervisorBinary = runtimeHypervisor
-		md.StartedAt = nowRFC3339()
-	}); err != nil {
-		_ = m.hyper.ForceKill(vmID)
-		return nil, fmt.Errorf("record PID for %s: %w", vmID, err)
-	}
-
-	// Step 2: Configure the VM via CH REST API.
-	chVMCfg := buildCHVMConfig(&cfgCopy)
-	if err := m.hyper.CreateVM(ctx, cfgCopy.SocketPath, chVMCfg); err != nil {
-		_ = m.hyper.ForceKill(vmID)
-		return nil, fmt.Errorf("create VM config for %s (%s): %w", vmID, bootMode, err)
-	}
-
-	// Step 3: Boot the guest.
-	if err := m.hyper.BootVM(ctx, cfgCopy.SocketPath); err != nil {
-		_ = m.hyper.ForceKill(vmID)
-		return nil, fmt.Errorf("boot VM %s (%s): %w", vmID, bootMode, err)
-	}
-
-	return &bootResult{
-		pid:          pid,
-		bootMode:     bootMode,
-		firmwarePath: firmwarePath,
-	}, nil
-}
 
 // Start launches the Cloud Hypervisor process for a VM.
 // Follows the transition flow: CREATED/STOPPED -> STARTING -> RUNNING.
@@ -546,115 +335,6 @@ func (m *manager) Start(ctx context.Context, vmID string) error {
 	return nil
 }
 
-func (m *manager) setupOCIRuntimeForStart(
-	ctx context.Context,
-	vmID string,
-	vmCfg *types.VMConfig,
-) (*virtiofsdRuntimeInfo, error) {
-	if vmCfg.ImageType != types.VMImageTypeOCIVM {
-		return nil, nil
-	}
-	if strings.TrimSpace(vmCfg.BaseImagePath) == "" {
-		return nil, fmt.Errorf("OCI runtime entry path is empty")
-	}
-	// Re-pin on each start as a self-healing guard:
-	// create-time pin is authoritative, but start-time idempotent pin repairs
-	// missing entries caused by manual edits or crash windows in prior cleanup.
-	if err := oci.AddRuntimeRef(m.cfg, vmCfg.BaseKey, vmID); err != nil {
-		return nil, fmt.Errorf("pin OCI runtime cache %s for %s: %w", vmCfg.BaseKey, vmID, err)
-	}
-
-	// Read entry metadata to derive multi-lowerdir list for OverlayFS mount.
-	entryMetaPath := filepath.Join(vmCfg.BaseImagePath, "meta.json")
-	entryMeta, err := oci.ReadEntryMeta(entryMetaPath)
-	if err != nil {
-		return nil, fmt.Errorf("read OCI runtime entry metadata for %s: %w", vmCfg.BaseKey, err)
-	}
-	// Overlay is pre-mounted at create time. If already mounted (normal case
-	// after create, or persistent across stop→start), skip the expensive mount.
-	// Otherwise mount now (e.g., after host reboot where mounts are lost).
-	alreadyMounted, mountCheckErr := m.overlayMgr.IsMounted(vmID)
-	if mountCheckErr != nil {
-		return nil, fmt.Errorf("check overlay mount for %s: %w", vmID, mountCheckErr)
-	}
-	if !alreadyMounted {
-		// OverlayFS lowerdir: leftmost = highest priority (top layer).
-		// OCI layers in meta are base-to-top, so reverse for lowerdir order.
-		lowerDirs := make([]string, len(entryMeta.RootfsLayerDigests))
-		for i, digest := range entryMeta.RootfsLayerDigests {
-			hex, hexErr := oci.ParseSHA256Digest("sha256:" + digest)
-			if hexErr != nil {
-				return nil, fmt.Errorf("invalid rootfs layer digest in entry meta: %w", hexErr)
-			}
-			lowerDirs[len(lowerDirs)-1-i] = filepath.Join(m.cfg.OCIRuntimeLayerDir(hex), "rootfs")
-		}
-		if mountErr := m.overlayMgr.MountVM(vmID, lowerDirs); mountErr != nil {
-			return nil, fmt.Errorf("mount OCI runtime overlay: %w", mountErr)
-		}
-	}
-
-	// Post-mount validation: verify the overlay is actually mounted and the
-	// merged directory is non-empty before starting virtiofsd. If virtiofsd
-	// starts on an empty/unmounted directory, the guest VM gets an empty rootfs.
-	if validateErr := m.validateOverlayMount(vmID); validateErr != nil {
-		_ = m.overlayMgr.UnmountVM(vmID)
-		return nil, fmt.Errorf("post-mount overlay validation: %w", validateErr)
-	}
-
-	socketPath := vmCfg.VirtioFSSock
-	if strings.TrimSpace(socketPath) == "" {
-		socketPath = m.cfg.VMOCIRootfsVirtioFSSocketPath(vmID)
-	}
-	runtimeInfo, err := m.virtiofsMgr.Start(ctx, vmID, m.cfg.VMOCIMergedDir(vmID), socketPath)
-	if err != nil {
-		_ = m.overlayMgr.UnmountVM(vmID)
-		return nil, err
-	}
-
-	vmCfg.VirtioFSSock = runtimeInfo.SocketPath
-	// Always override VirtioFSTag with the canonical constant so that
-	// stale values from existing OCI runtime entries or VM configs on disk
-	// (e.g., "/dev/root" from before the rename) are corrected at boot time.
-	vmCfg.VirtioFSTag = defaultOCIRuntimeVirtioFSTag
-	vmCfg.Cmdline = normalizeVirtiofsKernelCmdline(vmCfg.Cmdline, vmCfg.VirtioFSTag)
-
-	if mdErr := m.updateMetadata(vmID, func(md *types.VMMetadataFile) {
-		md.VirtiofsdPID = runtimeInfo.PID
-		md.VirtiofsdSocket = runtimeInfo.SocketPath
-		md.VirtiofsdBinary = runtimeInfo.ProcessName
-		md.OCIOverlayMounted = true
-	}); mdErr != nil {
-		_ = m.virtiofsMgr.Stop(vmID, runtimeInfo.PID, runtimeInfo.ProcessName, runtimeInfo.SocketPath)
-		_ = m.overlayMgr.UnmountVM(vmID)
-		return nil, fmt.Errorf("record OCI runtime metadata: %w", mdErr)
-	}
-
-	return runtimeInfo, nil
-}
-
-// validateOverlayMount verifies the overlayfs mount for a VM is healthy:
-// the merged directory must be mounted and contain at least one entry.
-// This prevents virtiofsd from serving an empty rootfs to the guest.
-func (m *manager) validateOverlayMount(vmID string) error {
-	mounted, err := m.overlayMgr.IsMounted(vmID)
-	if err != nil {
-		return fmt.Errorf("check overlay mount status for %s: %w", vmID, err)
-	}
-	if !mounted {
-		return fmt.Errorf("overlay for %s is not mounted after MountVM returned success", vmID)
-	}
-
-	mergedDir := m.cfg.VMOCIMergedDir(vmID)
-	entries, err := os.ReadDir(mergedDir)
-	if err != nil {
-		return fmt.Errorf("read merged directory %s: %w", mergedDir, err)
-	}
-	if len(entries) == 0 {
-		return fmt.Errorf("merged directory %s is empty after mount; rootfs layers may be corrupt", mergedDir)
-	}
-	return nil
-}
-
 // Stop sends a shutdown signal to the VM and waits for graceful stop.
 // Follows the transition flow: RUNNING -> STOPPING -> STOPPED.
 // Idempotent: stopping a STOPPED VM is a no-op.
@@ -726,56 +406,6 @@ func (m *manager) Stop(ctx context.Context, vmID string, timeout time.Duration) 
 	}
 
 	return nil
-}
-
-// shutdownDirectBoot delegates to the hypervisor's ShutdownDirect method,
-// which skips the ACPI power-button and goes straight to vm.shutdown +
-// SIGTERM. Direct-boot VMs typically lack CONFIG_ACPI=y in the guest kernel.
-func (m *manager) shutdownDirectBoot(ctx context.Context, vmID string) error {
-	return m.hyper.ShutdownDirect(ctx, vmID)
-}
-
-func (m *manager) waitForStoppingVM(ctx context.Context, vmID string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		// Re-load metadata each iteration to pick up PID or state
-		// changes made by other processes (e.g., reconciliation).
-		freshMeta, reloadErr := m.LoadMetadata(vmID)
-		if reloadErr != nil {
-			return fmt.Errorf("reload metadata while waiting for stop: %w", reloadErr)
-		}
-		// If another process already transitioned us out of STOPPING, done.
-		if types.VMState(freshMeta.State) == types.VMStateStopped {
-			if cleanupErr := m.cleanupOCIRuntime(vmID, freshMeta); cleanupErr != nil {
-				log.Printf("warning: cleanup OCI runtime resources for %s after external stop transition: %v", vmID, cleanupErr)
-			}
-			return nil
-		}
-
-		// Check both PID file (primary) and metadata PID (fallback).
-		alive := m.hyper.IsAlive(vmID)
-		if !alive && freshMeta.ProcessPID > 0 {
-			alive = utils.ValidateProcess(freshMeta.ProcessPID, freshMeta.HypervisorProcessName(m.cfg.CHBinary))
-		}
-		if !alive {
-			now := nowRFC3339()
-			_ = m.transitionStateWithUpdate(vmID, types.VMStateStopped, "process exited during stop wait", func(md *types.VMMetadataFile) {
-				md.StoppedAt = now
-				md.ProcessPID = 0
-			})
-			if cleanupErr := m.cleanupOCIRuntime(vmID, nil); cleanupErr != nil {
-				log.Printf("warning: cleanup OCI runtime resources for %s after process exit during stop wait: %v", vmID, cleanupErr)
-			}
-			return nil
-		}
-
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("context canceled while waiting for VM %s to stop: %w", vmID, ctx.Err())
-		case <-time.After(250 * time.Millisecond):
-		}
-	}
-	return fmt.Errorf("VM %s still stopping after %v timeout", vmID, timeout)
 }
 
 // Kill force-terminates a VM via SIGKILL and updates metadata atomically.
@@ -976,6 +606,387 @@ func (m *manager) Delete(ctx context.Context, vmID string, force bool) error {
 	return nil
 }
 
+// Inspect returns a merged view of config.json and metadata.json.
+func (m *manager) Inspect(ctx context.Context, vmID string) (*types.VMInspect, error) {
+	vmCfg, err := m.LoadConfig(vmID)
+	if err != nil {
+		return nil, err
+	}
+
+	meta, err := m.LoadMetadata(vmID)
+	if err != nil {
+		return nil, err
+	}
+
+	inspect := types.BuildInspect(vmCfg, meta)
+	actualState := m.determineActualState(meta, vmCfg)
+	if actualState != inspect.State {
+		inspect.State = actualState
+	}
+	if excerpt, readErr := readSerialLogExcerpt(vmCfg.SerialLog, 100); readErr == nil {
+		inspect.Hypervisor.SerialLogExcerpt = excerpt
+	}
+
+	// Populate console PTY path from live CH API (only for running VMs).
+	if types.VMState(meta.State) == types.VMStateRunning && m.hyper.IsAlive(vmID) {
+		if ptyPath, ptyErr := m.hyper.GetConsolePTYPath(ctx, vmCfg.SocketPath); ptyErr == nil && ptyPath != "" {
+			inspect.Hypervisor.ConsolePTY = ptyPath
+		}
+	}
+
+	return inspect, nil
+}
+
+// List returns inspect views for all VMs.
+func (m *manager) List(ctx context.Context) ([]*types.VMInspect, error) {
+	entries, err := os.ReadDir(m.cfg.VMDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read VM directory: %w", err)
+	}
+
+	var results []*types.VMInspect
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		vmID := entry.Name()
+		inspect, err := m.Inspect(ctx, vmID)
+		if err != nil {
+			// Skip VMs with missing/corrupt data.
+			continue
+		}
+		results = append(results, inspect)
+	}
+
+	return results, nil
+}
+
+// UpdateMetadata applies a mutation function to metadata without performing
+// a state transition, atomically under flock. Implements the vm.Manager interface.
+func (m *manager) UpdateMetadata(vmID string, mutate func(*types.VMMetadataFile)) error {
+	return m.updateMetadata(vmID, mutate)
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+func (m *manager) resolveOCIRuntimeLocalTag(ctx context.Context, resolvedImage *resolvedRuntimeImage) (string, error) {
+	if resolvedImage == nil {
+		return "", fmt.Errorf("resolved OCI image metadata is nil")
+	}
+
+	localTag := strings.TrimSpace(resolvedImage.LocalOCITag)
+	if localTag == "" && resolvedImage.Source == runtimeImageSourceLocalOCITag {
+		localTag = strings.TrimSpace(resolvedImage.PrepareRef)
+	}
+	if localTag != "" {
+		return localTag, nil
+	}
+
+	// Auto-pull from registry if the source is a registry OCI VM ref.
+	if resolvedImage.Source == runtimeImageSourceRegistry && resolvedImage.VMImageType == types.VMImageTypeOCIVM {
+		pullFn := m.ociPullFn
+		if pullFn == nil {
+			pullFn = oci.Pull
+		}
+		pullResult, pullErr := pullFn(ctx, m.cfg, resolvedImage.PrepareRef)
+		if pullErr != nil {
+			return "", fmt.Errorf("pull OCI VM image %q: %w", resolvedImage.PrepareRef, pullErr)
+		}
+		localTag = strings.TrimSpace(pullResult.Ref)
+		if localTag == "" {
+			localTag = oci.EnsureLatestTag(resolvedImage.PrepareRef)
+		}
+		log.Printf("auto-pulled OCI VM image %q (digest: %s)", localTag, pullResult.ManifestDigest)
+		return localTag, nil
+	}
+
+	return "", fmt.Errorf(
+		"OCI VM runtime currently requires a local OCI tag; source %q is not materialized locally yet",
+		resolvedImage.Source,
+	)
+}
+
+func (m *manager) snapshotCachedBaseKeys(ctx context.Context) map[string]struct{} {
+	keys := make(map[string]struct{})
+	for img, err := range m.imgMgr.ListCached(ctx) {
+		if err != nil {
+			log.Printf("warning: list cached images before prepare: %v", err)
+			return nil
+		}
+		if img != nil && img.BaseKey != "" {
+			keys[img.BaseKey] = struct{}{}
+		}
+	}
+	return keys
+}
+
+func (m *manager) resolveRuntimeImageRef(ctx context.Context, ref string) (*resolvedRuntimeImage, error) {
+	return resolveRuntimeImageRefWithProbe(ctx, m.cfg, ref, m.registryProbeFn)
+}
+
+func (m *manager) shouldSkipVerifyForCacheHit(skipVerify bool, cachedBaseKeysBefore map[string]struct{}, baseKey, imageRef string) bool {
+	if skipVerify || cachedBaseKeysBefore == nil {
+		return false
+	}
+	if _, ok := cachedBaseKeysBefore[baseKey]; !ok {
+		return false
+	}
+	verified, verifyStateErr := refcache.IsVerified(m.cfg, baseKey)
+	if verifyStateErr != nil {
+		log.Printf("warning: read verify state for %s: %v", baseKey, verifyStateErr)
+		return false
+	}
+	if verified {
+		log.Printf("image %s (%s): cache hit with verified record, skipping bootability verification", imageRef, baseKey)
+	}
+	return verified
+}
+
+func (m *manager) verifyPreparedBaseImage(ctx context.Context, imageRef, baseImagePath, baseKey string) error {
+	result, verifyErr := m.imgMgr.VerifyBootability(ctx, baseImagePath)
+	if verifyErr != nil {
+		return fmt.Errorf("verify bootability for %s: %w", imageRef, verifyErr)
+	}
+	if !result.Bootable {
+		return fmt.Errorf("%w: %s - %v", types.ErrImageNotBootable, imageRef, result.Errors)
+	}
+	for _, warning := range result.Warnings {
+		log.Printf("image %s: bootability warning: %s", imageRef, warning)
+	}
+	if markErr := refcache.MarkVerified(m.cfg, baseKey); markErr != nil {
+		log.Printf("warning: persist verify state for %s: %v", baseKey, markErr)
+	}
+	return nil
+}
+
+// attemptBoot launches a Cloud Hypervisor process, configures the VM, and boots
+// the guest using the specified firmware and boot mode. It operates on a copy of
+// vmCfg so the on-disk config.json is never modified.
+//
+// On success it returns a bootResult with the CH process PID and the actual boot
+// parameters. On any failure after the CH process has been launched, it force-kills
+// the process before returning the error.
+func (m *manager) attemptBoot(ctx context.Context, vmID string, vmCfg *types.VMConfig, firmwarePath string, bootMode types.BootMode) (*bootResult, error) {
+	// Work on a shallow copy so we never mutate the caller's config.
+	cfgCopy := *vmCfg
+	cfgCopy.FirmwarePath = firmwarePath
+
+	// Map boot mode to the strategy the hypervisor client expects.
+	switch bootMode {
+	case types.BootModeUEFI:
+		cfgCopy.BootStrategy = types.BootStrategyUEFI
+	default: // Direct kernel boot
+		cfgCopy.BootStrategy = types.BootStrategyDirect
+	}
+
+	// Truncate the serial log before launching CH so that waitForBoot
+	// only reads output from this boot attempt, not stale content from
+	// a previous run.
+	if cfgCopy.SerialLog != "" {
+		_ = os.Truncate(cfgCopy.SerialLog, 0)
+	}
+
+	// Step 1: Launch Cloud Hypervisor process.
+	pid, err := m.hyper.Launch(ctx, vmID, &cfgCopy)
+	if err != nil {
+		return nil, fmt.Errorf("launch CH for %s (%s): %w", vmID, bootMode, err)
+	}
+
+	// Record PID in metadata immediately after launch (no state change).
+	runtimeHypervisor := (&types.VMMetadataFile{}).HypervisorProcessName(m.cfg.CHBinary)
+	if err := m.updateMetadata(vmID, func(md *types.VMMetadataFile) {
+		md.ProcessPID = pid
+		md.HypervisorBinary = runtimeHypervisor
+		md.StartedAt = nowRFC3339()
+	}); err != nil {
+		_ = m.hyper.ForceKill(vmID)
+		return nil, fmt.Errorf("record PID for %s: %w", vmID, err)
+	}
+
+	// Step 2: Configure the VM via CH REST API.
+	chVMCfg := buildCHVMConfig(&cfgCopy)
+	if err := m.hyper.CreateVM(ctx, cfgCopy.SocketPath, chVMCfg); err != nil {
+		_ = m.hyper.ForceKill(vmID)
+		return nil, fmt.Errorf("create VM config for %s (%s): %w", vmID, bootMode, err)
+	}
+
+	// Step 3: Boot the guest.
+	if err := m.hyper.BootVM(ctx, cfgCopy.SocketPath); err != nil {
+		_ = m.hyper.ForceKill(vmID)
+		return nil, fmt.Errorf("boot VM %s (%s): %w", vmID, bootMode, err)
+	}
+
+	return &bootResult{
+		pid:          pid,
+		bootMode:     bootMode,
+		firmwarePath: firmwarePath,
+	}, nil
+}
+
+func (m *manager) setupOCIRuntimeForStart(
+	ctx context.Context,
+	vmID string,
+	vmCfg *types.VMConfig,
+) (*virtiofsdRuntimeInfo, error) {
+	if vmCfg.ImageType != types.VMImageTypeOCIVM {
+		return nil, nil
+	}
+	if strings.TrimSpace(vmCfg.BaseImagePath) == "" {
+		return nil, fmt.Errorf("OCI runtime entry path is empty")
+	}
+	// Re-pin on each start as a self-healing guard:
+	// create-time pin is authoritative, but start-time idempotent pin repairs
+	// missing entries caused by manual edits or crash windows in prior cleanup.
+	if err := oci.AddRuntimeRef(m.cfg, vmCfg.BaseKey, vmID); err != nil {
+		return nil, fmt.Errorf("pin OCI runtime cache %s for %s: %w", vmCfg.BaseKey, vmID, err)
+	}
+
+	// Read entry metadata to derive multi-lowerdir list for OverlayFS mount.
+	entryMetaPath := filepath.Join(vmCfg.BaseImagePath, "meta.json")
+	entryMeta, err := oci.ReadEntryMeta(entryMetaPath)
+	if err != nil {
+		return nil, fmt.Errorf("read OCI runtime entry metadata for %s: %w", vmCfg.BaseKey, err)
+	}
+	// Overlay is pre-mounted at create time. If already mounted (normal case
+	// after create, or persistent across stop→start), skip the expensive mount.
+	// Otherwise mount now (e.g., after host reboot where mounts are lost).
+	alreadyMounted, mountCheckErr := m.overlayMgr.IsMounted(vmID)
+	if mountCheckErr != nil {
+		return nil, fmt.Errorf("check overlay mount for %s: %w", vmID, mountCheckErr)
+	}
+	if !alreadyMounted {
+		// OverlayFS lowerdir: leftmost = highest priority (top layer).
+		// OCI layers in meta are base-to-top, so reverse for lowerdir order.
+		lowerDirs := make([]string, len(entryMeta.RootfsLayerDigests))
+		for i, digest := range entryMeta.RootfsLayerDigests {
+			hex, hexErr := oci.ParseSHA256Digest("sha256:" + digest)
+			if hexErr != nil {
+				return nil, fmt.Errorf("invalid rootfs layer digest in entry meta: %w", hexErr)
+			}
+			lowerDirs[len(lowerDirs)-1-i] = filepath.Join(m.cfg.OCIRuntimeLayerDir(hex), "rootfs")
+		}
+		if mountErr := m.overlayMgr.MountVM(vmID, lowerDirs); mountErr != nil {
+			return nil, fmt.Errorf("mount OCI runtime overlay: %w", mountErr)
+		}
+	}
+
+	// Post-mount validation: verify the overlay is actually mounted and the
+	// merged directory is non-empty before starting virtiofsd. If virtiofsd
+	// starts on an empty/unmounted directory, the guest VM gets an empty rootfs.
+	if validateErr := m.validateOverlayMount(vmID); validateErr != nil {
+		_ = m.overlayMgr.UnmountVM(vmID)
+		return nil, fmt.Errorf("post-mount overlay validation: %w", validateErr)
+	}
+
+	socketPath := vmCfg.VirtioFSSock
+	if strings.TrimSpace(socketPath) == "" {
+		socketPath = m.cfg.VMOCIRootfsVirtioFSSocketPath(vmID)
+	}
+	runtimeInfo, err := m.virtiofsMgr.Start(ctx, vmID, m.cfg.VMOCIMergedDir(vmID), socketPath)
+	if err != nil {
+		_ = m.overlayMgr.UnmountVM(vmID)
+		return nil, err
+	}
+
+	vmCfg.VirtioFSSock = runtimeInfo.SocketPath
+	// Always override VirtioFSTag with the canonical constant so that
+	// stale values from existing OCI runtime entries or VM configs on disk
+	// (e.g., "/dev/root" from before the rename) are corrected at boot time.
+	vmCfg.VirtioFSTag = defaultOCIRuntimeVirtioFSTag
+	vmCfg.Cmdline = normalizeVirtiofsKernelCmdline(vmCfg.Cmdline, vmCfg.VirtioFSTag)
+
+	if mdErr := m.updateMetadata(vmID, func(md *types.VMMetadataFile) {
+		md.VirtiofsdPID = runtimeInfo.PID
+		md.VirtiofsdSocket = runtimeInfo.SocketPath
+		md.VirtiofsdBinary = runtimeInfo.ProcessName
+		md.OCIOverlayMounted = true
+	}); mdErr != nil {
+		_ = m.virtiofsMgr.Stop(vmID, runtimeInfo.PID, runtimeInfo.ProcessName, runtimeInfo.SocketPath)
+		_ = m.overlayMgr.UnmountVM(vmID)
+		return nil, fmt.Errorf("record OCI runtime metadata: %w", mdErr)
+	}
+
+	return runtimeInfo, nil
+}
+
+// validateOverlayMount verifies the overlayfs mount for a VM is healthy:
+// the merged directory must be mounted and contain at least one entry.
+// This prevents virtiofsd from serving an empty rootfs to the guest.
+func (m *manager) validateOverlayMount(vmID string) error {
+	mounted, err := m.overlayMgr.IsMounted(vmID)
+	if err != nil {
+		return fmt.Errorf("check overlay mount status for %s: %w", vmID, err)
+	}
+	if !mounted {
+		return fmt.Errorf("overlay for %s is not mounted after MountVM returned success", vmID)
+	}
+
+	mergedDir := m.cfg.VMOCIMergedDir(vmID)
+	entries, err := os.ReadDir(mergedDir)
+	if err != nil {
+		return fmt.Errorf("read merged directory %s: %w", mergedDir, err)
+	}
+	if len(entries) == 0 {
+		return fmt.Errorf("merged directory %s is empty after mount; rootfs layers may be corrupt", mergedDir)
+	}
+	return nil
+}
+
+// shutdownDirectBoot delegates to the hypervisor's ShutdownDirect method,
+// which skips the ACPI power-button and goes straight to vm.shutdown +
+// SIGTERM. Direct-boot VMs typically lack CONFIG_ACPI=y in the guest kernel.
+func (m *manager) shutdownDirectBoot(ctx context.Context, vmID string) error {
+	return m.hyper.ShutdownDirect(ctx, vmID)
+}
+
+func (m *manager) waitForStoppingVM(ctx context.Context, vmID string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		// Re-load metadata each iteration to pick up PID or state
+		// changes made by other processes (e.g., reconciliation).
+		freshMeta, reloadErr := m.LoadMetadata(vmID)
+		if reloadErr != nil {
+			return fmt.Errorf("reload metadata while waiting for stop: %w", reloadErr)
+		}
+		// If another process already transitioned us out of STOPPING, done.
+		if types.VMState(freshMeta.State) == types.VMStateStopped {
+			if cleanupErr := m.cleanupOCIRuntime(vmID, freshMeta); cleanupErr != nil {
+				log.Printf("warning: cleanup OCI runtime resources for %s after external stop transition: %v", vmID, cleanupErr)
+			}
+			return nil
+		}
+
+		// Check both PID file (primary) and metadata PID (fallback).
+		alive := m.hyper.IsAlive(vmID)
+		if !alive && freshMeta.ProcessPID > 0 {
+			alive = utils.ValidateProcess(freshMeta.ProcessPID, freshMeta.HypervisorProcessName(m.cfg.CHBinary))
+		}
+		if !alive {
+			now := nowRFC3339()
+			_ = m.transitionStateWithUpdate(vmID, types.VMStateStopped, "process exited during stop wait", func(md *types.VMMetadataFile) {
+				md.StoppedAt = now
+				md.ProcessPID = 0
+			})
+			if cleanupErr := m.cleanupOCIRuntime(vmID, nil); cleanupErr != nil {
+				log.Printf("warning: cleanup OCI runtime resources for %s after process exit during stop wait: %v", vmID, cleanupErr)
+			}
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("context canceled while waiting for VM %s to stop: %w", vmID, ctx.Err())
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	return fmt.Errorf("VM %s still stopping after %v timeout", vmID, timeout)
+}
+
 func (m *manager) ensureDeletePreconditions(ctx context.Context, vmID string, force bool, meta *types.VMMetadataFile) error {
 	state := types.VMState(meta.State)
 
@@ -1098,62 +1109,128 @@ func (m *manager) cleanupOCIRuntime(vmID string, meta *types.VMMetadataFile) err
 	return cleanupErr
 }
 
-// Inspect returns a merged view of config.json and metadata.json.
-func (m *manager) Inspect(ctx context.Context, vmID string) (*types.VMInspect, error) {
-	vmCfg, err := m.LoadConfig(vmID)
-	if err != nil {
-		return nil, err
+// withMetadataLock executes fn while holding the VM metadata lock.
+func (m *manager) withMetadataLock(vmID string, fn func(*types.VMMetadataFile) error) error {
+	lockPath := m.cfg.VMMetadataLock(vmID)
+	fl := flock.New(lockPath)
+	if err := fl.Lock(); err != nil {
+		return fmt.Errorf("acquire metadata lock for %s: %w", vmID, err)
+	}
+	defer fl.Unlock() //nolint:errcheck
+
+	metaPath := m.cfg.VMMetadataPath(vmID)
+	var meta types.VMMetadataFile
+	if err := utils.ReadJSON(metaPath, &meta); err != nil {
+		return fmt.Errorf("read metadata for %s: %w", vmID, err)
 	}
 
-	meta, err := m.LoadMetadata(vmID)
-	if err != nil {
-		return nil, err
+	if err := fn(&meta); err != nil {
+		return err
 	}
 
-	inspect := types.BuildInspect(vmCfg, meta)
-	actualState := m.determineActualState(meta, vmCfg)
-	if actualState != inspect.State {
-		inspect.State = actualState
-	}
-	if excerpt, readErr := readSerialLogExcerpt(vmCfg.SerialLog, 100); readErr == nil {
-		inspect.Hypervisor.SerialLogExcerpt = excerpt
-	}
-
-	// Populate console PTY path from live CH API (only for running VMs).
-	if types.VMState(meta.State) == types.VMStateRunning && m.hyper.IsAlive(vmID) {
-		if ptyPath, ptyErr := m.hyper.GetConsolePTYPath(ctx, vmCfg.SocketPath); ptyErr == nil && ptyPath != "" {
-			inspect.Hypervisor.ConsolePTY = ptyPath
-		}
-	}
-
-	return inspect, nil
+	meta.UpdatedAt = nowRFC3339()
+	return utils.AtomicWriteJSON(metaPath, &meta)
 }
 
-// List returns inspect views for all VMs.
-func (m *manager) List(ctx context.Context) ([]*types.VMInspect, error) {
-	entries, err := os.ReadDir(m.cfg.VMDir())
+// transitionStateWithUpdate validates a state transition and applies an
+// additional mutation function to metadata before persisting.
+func (m *manager) transitionStateWithUpdate(vmID string, to types.VMState, reason string, mutate func(*types.VMMetadataFile)) error {
+	return m.withMetadataLock(vmID, func(meta *types.VMMetadataFile) error {
+		from := types.VMState(meta.State)
+		if err := types.ValidateTransition(from, to); err != nil {
+			return fmt.Errorf("%w: %s -> %s (%s)", types.ErrInvalidTransition, from, to, reason)
+		}
+
+		meta.PreviousState = meta.State
+		meta.State = string(to)
+
+		// Auto-track errors: when entering ERROR, record reason and increment count.
+		if to == types.VMStateError {
+			meta.LastError = reason
+			meta.LastErrorType = string(classifyError(reason))
+			meta.LastErrorAt = nowRFC3339()
+			if meta.ErrorCount < 1000 {
+				meta.ErrorCount++
+			}
+		}
+
+		if mutate != nil {
+			mutate(meta)
+		}
+		return nil
+	})
+}
+
+// updateMetadata applies a mutation function to metadata without performing
+// a state transition.
+func (m *manager) updateMetadata(vmID string, mutate func(*types.VMMetadataFile)) error {
+	return m.withMetadataLock(vmID, func(meta *types.VMMetadataFile) error {
+		if mutate != nil {
+			mutate(meta)
+		}
+		return nil
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Package-level unexported functions/types
+// ---------------------------------------------------------------------------
+
+// nowRFC3339 returns the current UTC time formatted as RFC3339.
+func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
+
+// validateVMID verifies that a vm_id matches the canonical format vm-{ULID}.
+// ULID is exactly 26 characters from the Crockford Base32 alphabet.
+func validateVMID(id string) error {
+	const ulidLen = 26
+	if !strings.HasPrefix(id, "vm-") {
+		return fmt.Errorf("invalid vm_id: must start with vm-")
+	}
+	ulidPart := id[3:]
+	if len(ulidPart) != ulidLen {
+		return fmt.Errorf("invalid vm_id: ULID part must be %d characters, got %d", ulidLen, len(ulidPart))
+	}
+	// Validate against ULID's Crockford Base32 character set (0-9, A-Z).
+	// oklog/ulid encodes using uppercase; we accept both cases.
+	_, err := ulid.ParseStrict(ulidPart)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read VM directory: %w", err)
+		return fmt.Errorf("invalid vm_id: %w", err)
 	}
+	return nil
+}
 
-	var results []*types.VMInspect
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
+// validateBootFiles checks that the required boot files exist before launching
+// the hypervisor. Returns an actionable error when a required file is missing.
+func validateBootFiles(vmCfg *types.VMConfig) error {
+	switch vmCfg.BootStrategy {
+	case types.BootStrategyUEFI:
+		if vmCfg.FirmwarePath == "" {
+			return fmt.Errorf("UEFI firmware path is not configured")
 		}
-		vmID := entry.Name()
-		inspect, err := m.Inspect(ctx, vmID)
-		if err != nil {
-			// Skip VMs with missing/corrupt data.
-			continue
+		if _, err := os.Stat(vmCfg.FirmwarePath); err != nil {
+			return fmt.Errorf("UEFI firmware not found at %s: %w", vmCfg.FirmwarePath, err)
 		}
-		results = append(results, inspect)
+	case types.BootStrategyDirect:
+		if vmCfg.KernelPath == "" {
+			return fmt.Errorf("kernel path is not configured for direct boot")
+		}
+		if _, err := os.Stat(vmCfg.KernelPath); err != nil {
+			return fmt.Errorf("kernel not found at %s: %w", vmCfg.KernelPath, err)
+		}
+		if vmCfg.InitramfsPath != "" {
+			if _, err := os.Stat(vmCfg.InitramfsPath); err != nil {
+				return fmt.Errorf("initramfs not found at %s: %w", vmCfg.InitramfsPath, err)
+			}
+		}
 	}
+	return nil
+}
 
-	return results, nil
+// bootResult holds the outcome of a successful boot attempt.
+type bootResult struct {
+	pid          int
+	bootMode     types.BootMode
+	firmwarePath string
 }
 
 func readSerialLogExcerpt(path string, maxLines int) ([]string, error) {
@@ -1223,79 +1300,6 @@ func readSerialLogExcerpt(path string, maxLines int) ([]string, error) {
 		lines[0] = "..." + lines[0]
 	}
 	return lines, nil
-}
-
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-// withMetadataLock executes fn while holding the VM metadata lock.
-func (m *manager) withMetadataLock(vmID string, fn func(*types.VMMetadataFile) error) error {
-	lockPath := m.cfg.VMMetadataLock(vmID)
-	fl := flock.New(lockPath)
-	if err := fl.Lock(); err != nil {
-		return fmt.Errorf("acquire metadata lock for %s: %w", vmID, err)
-	}
-	defer fl.Unlock() //nolint:errcheck
-
-	metaPath := m.cfg.VMMetadataPath(vmID)
-	var meta types.VMMetadataFile
-	if err := utils.ReadJSON(metaPath, &meta); err != nil {
-		return fmt.Errorf("read metadata for %s: %w", vmID, err)
-	}
-
-	if err := fn(&meta); err != nil {
-		return err
-	}
-
-	meta.UpdatedAt = nowRFC3339()
-	return utils.AtomicWriteJSON(metaPath, &meta)
-}
-
-// transitionStateWithUpdate validates a state transition and applies an
-// additional mutation function to metadata before persisting.
-func (m *manager) transitionStateWithUpdate(vmID string, to types.VMState, reason string, mutate func(*types.VMMetadataFile)) error {
-	return m.withMetadataLock(vmID, func(meta *types.VMMetadataFile) error {
-		from := types.VMState(meta.State)
-		if err := types.ValidateTransition(from, to); err != nil {
-			return fmt.Errorf("%w: %s -> %s (%s)", types.ErrInvalidTransition, from, to, reason)
-		}
-
-		meta.PreviousState = meta.State
-		meta.State = string(to)
-
-		// Auto-track errors: when entering ERROR, record reason and increment count.
-		if to == types.VMStateError {
-			meta.LastError = reason
-			meta.LastErrorType = string(classifyError(reason))
-			meta.LastErrorAt = nowRFC3339()
-			if meta.ErrorCount < 1000 {
-				meta.ErrorCount++
-			}
-		}
-
-		if mutate != nil {
-			mutate(meta)
-		}
-		return nil
-	})
-}
-
-// UpdateMetadata applies a mutation function to metadata without performing
-// a state transition, atomically under flock. Implements the vm.Manager interface.
-func (m *manager) UpdateMetadata(vmID string, mutate func(*types.VMMetadataFile)) error {
-	return m.updateMetadata(vmID, mutate)
-}
-
-// updateMetadata applies a mutation function to metadata without performing
-// a state transition.
-func (m *manager) updateMetadata(vmID string, mutate func(*types.VMMetadataFile)) error {
-	return m.withMetadataLock(vmID, func(meta *types.VMMetadataFile) error {
-		if mutate != nil {
-			mutate(meta)
-		}
-		return nil
-	})
 }
 
 // buildCHVMConfig converts a types.VMConfig to the Cloud Hypervisor REST API

@@ -36,50 +36,6 @@ func NewGarbageCollector(cfg *config.CocoonConfig) storage.GarbageCollector {
 	return &fileGarbageCollector{cfg: cfg}
 }
 
-// --- helpers ---
-
-// withGCLock acquires gc.lock (Level 1) for the duration of fn.
-func (gc *fileGarbageCollector) withGCLock(fn func() error) error {
-	fl := flock.New(gc.cfg.GCLock())
-	if err := fl.Lock(); err != nil {
-		return fmt.Errorf("acquire gc.lock: %w", err)
-	}
-	defer fl.Unlock() //nolint:errcheck
-
-	return fn()
-}
-
-// withRefsLock acquires references.lock (Level 2) for the duration of fn.
-// Must only be called while gc.lock (Level 1) is already held.
-func (gc *fileGarbageCollector) withRefsLock(fn func(refs types.ReferencesFile) (types.ReferencesFile, error)) error {
-	fl := flock.New(gc.cfg.ReferencesLock())
-	if err := fl.Lock(); err != nil {
-		return fmt.Errorf("acquire references.lock: %w", err)
-	}
-	defer fl.Unlock() //nolint:errcheck
-
-	refs := make(types.ReferencesFile)
-	err := utils.ReadJSON(gc.cfg.ReferencesFile(), &refs)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("load references.json: %w", err)
-	}
-
-	updated, err := fn(refs)
-	if err != nil {
-		return err
-	}
-
-	// Persist if the callback returned an updated map.
-	if updated != nil {
-		if err := utils.AtomicWriteJSON(gc.cfg.ReferencesFile(), updated); err != nil {
-			return fmt.Errorf("save references.json: %w", err)
-		}
-	}
-	return nil
-}
-
-// --- GarbageCollector interface ---
-
 // CollectUnreferencedImages permanently deletes base images with zero references.
 //
 // Lock order: gc.lock (L1) -> references.lock (L2) per image.
@@ -367,6 +323,46 @@ func (gc *fileGarbageCollector) FullGC() error {
 		return fmt.Errorf("collect temp files: %w", err)
 	}
 
+	return nil
+}
+
+// withGCLock acquires gc.lock (Level 1) for the duration of fn.
+func (gc *fileGarbageCollector) withGCLock(fn func() error) error {
+	fl := flock.New(gc.cfg.GCLock())
+	if err := fl.Lock(); err != nil {
+		return fmt.Errorf("acquire gc.lock: %w", err)
+	}
+	defer fl.Unlock() //nolint:errcheck
+
+	return fn()
+}
+
+// withRefsLock acquires references.lock (Level 2) for the duration of fn.
+// Must only be called while gc.lock (Level 1) is already held.
+func (gc *fileGarbageCollector) withRefsLock(fn func(refs types.ReferencesFile) (types.ReferencesFile, error)) error {
+	fl := flock.New(gc.cfg.ReferencesLock())
+	if err := fl.Lock(); err != nil {
+		return fmt.Errorf("acquire references.lock: %w", err)
+	}
+	defer fl.Unlock() //nolint:errcheck
+
+	refs := make(types.ReferencesFile)
+	err := utils.ReadJSON(gc.cfg.ReferencesFile(), &refs)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("load references.json: %w", err)
+	}
+
+	updated, err := fn(refs)
+	if err != nil {
+		return err
+	}
+
+	// Persist if the callback returned an updated map.
+	if updated != nil {
+		if err := utils.AtomicWriteJSON(gc.cfg.ReferencesFile(), updated); err != nil {
+			return fmt.Errorf("save references.json: %w", err)
+		}
+	}
 	return nil
 }
 

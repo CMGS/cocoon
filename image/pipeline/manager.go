@@ -179,47 +179,6 @@ func (m *manager) Convert(ctx context.Context, identity *image.ImageIdentity) (s
 	return basePath, nil
 }
 
-// convertOCIImage handles the OCI-specific conversion path within Convert().
-// It creates a temporary qcow2 from the OCI rootfs (at identity.TempPath)
-// and atomically moves it into the cache at basePath.
-func (m *manager) convertOCIImage(ctx context.Context, identity *image.ImageIdentity, basePath, baseKey string) error {
-	log.Printf("image %s: converting OCI rootfs -> qcow2", baseKey)
-
-	// Clean up materialized rootfs dir when done.
-	if identity.TempPath != "" {
-		defer func() { _ = os.RemoveAll(identity.TempPath) }()
-	}
-
-	// Ensure cache directory exists.
-	cacheDir := m.cfg.ImageCacheDir()
-	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
-		return fmt.Errorf("convert %s: create cache dir: %w", baseKey, err)
-	}
-
-	tmpPath := basePath + ".tmp"
-	defer func() { _ = os.Remove(tmpPath) }()
-
-	diskSize := m.cfg.DefaultDiskSize
-	if err := convertOCI(ctx, identity.TempPath, tmpPath, diskSize); err != nil {
-		return types.NewPermanentError(fmt.Errorf("convert OCI %s: %w", baseKey, err))
-	}
-
-	// Atomic rename into cache, then mark read-only so VMs only write to
-	// their COW overlays and the shared base image stays immutable.
-	if err := os.Rename(tmpPath, basePath); err != nil {
-		return fmt.Errorf("convert %s: rename to cache: %w", baseKey, err)
-	}
-	if err := utils.SyncParentDir(filepath.Dir(basePath)); err != nil {
-		return fmt.Errorf("convert %s: sync parent dir: %w", baseKey, err)
-	}
-	if err := os.Chmod(basePath, 0o444); err != nil { //nolint:gosec // G302: intentionally world-readable — base images are shared immutable backing files for COW overlays
-		return fmt.Errorf("convert %s: chmod read-only: %w", baseKey, err)
-	}
-
-	log.Printf("image %s: OCI conversion complete -> %s", baseKey, basePath)
-	return nil
-}
-
 // Prepare is the combined pull+convert+cache pipeline. It first checks whether
 // a cached base image already exists for the given ref. If so, it skips pull
 // and convert entirely. Otherwise it runs Pull + Convert and caches the result.
@@ -227,43 +186,6 @@ func (m *manager) convertOCIImage(ctx context.Context, identity *image.ImageIden
 // For OCI images, the expensive pull+materialize steps are performed inside
 // the per-image conversion lock so that concurrent creates for the same image
 // result in only one pull. See docs/06-concurrency.md Section 1 for details.
-// tryRefcacheHit checks the refcache for a cached base image.
-// Returns identity+path on hit, ok=false on miss, and an error for
-// ambiguous local refs that require user disambiguation.
-func (m *manager) tryRefcacheHit(ref string) (*image.ImageIdentity, string, bool, error) {
-	baseKey, found, resolveErr := refcache.ResolveBaseKey(m.cfg, ref)
-	if resolveErr != nil {
-		if errors.Is(resolveErr, refcache.ErrAmbiguousImageRef) {
-			return nil, "", false, types.NewPermanentError(fmt.Errorf(
-				"image %q is ambiguous in local cache: %w",
-				ref, resolveErr,
-			))
-		} else {
-			log.Printf("image %q: refcache resolve error (%v), treating as cache miss", ref, resolveErr)
-		}
-		return nil, "", false, nil
-	}
-	if !found {
-		return nil, "", false, nil
-	}
-	basePath := m.cfg.BaseImagePath(baseKey)
-	if _, statErr := os.Stat(basePath); statErr != nil {
-		return nil, "", false, nil
-	}
-	log.Printf("image %s: cache hit for %q, skipping pull", baseKey, ref)
-	checksum, arch := parseBaseKey(baseKey)
-	var fullDigest string
-	if _, digest, err := refcache.RefsForBaseKey(m.cfg, baseKey); err == nil {
-		fullDigest = digest
-	}
-	return &image.ImageIdentity{
-		Checksum:   checksum,
-		Arch:       arch,
-		FullDigest: fullDigest,
-		SourceRef:  ref,
-		ImageType:  classifyRef(ref),
-	}, basePath, true, nil
-}
 
 func (m *manager) Prepare(ctx context.Context, ref string) (*image.ImageIdentity, string, error) {
 	// Fast path: check refcache first for any ref format (handles short names, aliases, etc.).
@@ -305,93 +227,6 @@ func (m *manager) Prepare(ctx context.Context, ref string) (*image.ImageIdentity
 		return nil, "", fmt.Errorf("convert %q (key=%s): %w", ref, baseKey, err)
 	}
 
-	return identity, basePath, nil
-}
-
-// prepareOCI implements the OCI-specific Prepare pipeline using go-containerregistry
-// for manifest fetching and image download, and oci.MaterializeRootfs for rootfs
-// flattening.
-//
-// Flow:
-//  1. Identify (go-containerregistry manifest fetch) — cheap, outside lock
-//  2. Fast-path cache check — outside lock
-//  3. Acquire per-image conversion lock (Level 3)
-//  4. Double-check cache — inside lock
-//  5. Pull + materialize rootfs + convert — inside lock
-//  6. Release lock
-func (m *manager) prepareOCI(ctx context.Context, ref string) (*image.ImageIdentity, string, error) {
-	// Phase 1: Identify — manifest fetch only, no lock needed.
-	identity, err := identifyOCIRemote(ctx, ref)
-	if err != nil {
-		return nil, "", fmt.Errorf("identify OCI %q: %w", ref, err)
-	}
-
-	baseKey := identity.BaseKey()
-	basePath := m.cfg.BaseImagePath(baseKey)
-
-	// Phase 2: Fast-path cache check (no lock).
-	if _, statErr := os.Stat(basePath); statErr == nil {
-		log.Printf("image %s: cache hit for %q, skipping pull and conversion", baseKey, ref)
-		return identity, basePath, nil
-	}
-
-	// Phase 3: Acquire per-image conversion lock (Level 3 in lock hierarchy).
-	lockPath := m.cfg.ConversionLockPath(baseKey)
-	fl := flock.New(lockPath)
-	if lockErr := fl.Lock(); lockErr != nil {
-		return nil, "", fmt.Errorf("acquire conversion lock for %s: %w", baseKey, lockErr)
-	}
-	defer func() {
-		if unlockErr := fl.Unlock(); unlockErr != nil {
-			log.Printf("warning: failed to release conversion lock for %s: %v", baseKey, unlockErr)
-		}
-	}()
-
-	// Phase 4: Double-check cache after acquiring lock (another process may
-	// have completed the pull+convert while we waited).
-	if _, statErr := os.Stat(basePath); statErr == nil {
-		log.Printf("image %s: cache hit after lock acquisition for %q, skipping pull and conversion", baseKey, ref)
-		return identity, basePath, nil
-	}
-
-	// Phase 5: Pull + materialize rootfs — inside lock.
-	log.Printf("image %s: pulling OCI image %q", baseKey, ref)
-	rootfsDir, err := pullAndMaterializeOCI(ctx, ref, identity)
-	if err != nil {
-		return nil, "", fmt.Errorf("pull OCI %q: %w", ref, err)
-	}
-	defer func() { _ = os.RemoveAll(rootfsDir) }()
-
-	// Phase 6: Convert materialized rootfs -> qcow2 — inside lock.
-	log.Printf("image %s: converting OCI rootfs -> qcow2", baseKey)
-
-	// Ensure cache directory exists.
-	cacheDir := m.cfg.ImageCacheDir()
-	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
-		return nil, "", fmt.Errorf("convert %s: create cache dir: %w", baseKey, err)
-	}
-
-	tmpPath := basePath + ".tmp"
-	defer func() { _ = os.Remove(tmpPath) }()
-
-	diskSize := m.cfg.DefaultDiskSize
-	if err := convertOCI(ctx, rootfsDir, tmpPath, diskSize); err != nil {
-		return nil, "", types.NewPermanentError(fmt.Errorf("convert OCI %s: %w", baseKey, err))
-	}
-
-	// Atomic rename into cache, then mark read-only so VMs only write to
-	// their COW overlays and the shared base image stays immutable.
-	if err := os.Rename(tmpPath, basePath); err != nil {
-		return nil, "", fmt.Errorf("convert %s: rename to cache: %w", baseKey, err)
-	}
-	if err := utils.SyncParentDir(filepath.Dir(basePath)); err != nil {
-		return nil, "", fmt.Errorf("convert %s: sync parent dir: %w", baseKey, err)
-	}
-	if err := os.Chmod(basePath, 0o444); err != nil { //nolint:gosec // G302: intentionally world-readable — base images are shared immutable backing files for COW overlays
-		return nil, "", fmt.Errorf("convert %s: chmod read-only: %w", baseKey, err)
-	}
-
-	log.Printf("image %s: OCI pull+conversion complete -> %s", baseKey, basePath)
 	return identity, basePath, nil
 }
 
@@ -473,59 +308,6 @@ func (m *manager) VerifyBootability(ctx context.Context, imagePath string) (*ima
 		imagePath, result.Bootable, result.BootModes, len(result.Errors), len(result.Warnings))
 
 	return result, nil
-}
-
-func hasDeepVerificationUnavailableWarning(warnings []string) bool {
-	for _, w := range warnings {
-		lw := strings.ToLower(w)
-		if strings.Contains(lw, "deep boot") &&
-			strings.Contains(lw, "verification") &&
-			(strings.Contains(lw, "guestfish") || strings.Contains(lw, "not available") || strings.Contains(lw, "not installed")) {
-			return true
-		}
-	}
-	return false
-}
-
-// evaluateDeepVerification checks deep verification results and populates
-// errors, warnings, and boot modes accordingly.
-//
-// It distinguishes between "checked and not found" (error) and "check failed
-// to execute" (warning). Only report a definitive "not found" error when the
-// Checked flag is true but Found is false; otherwise add a warning noting the
-// indeterminate result.
-func evaluateDeepVerification(result *image.BootCheckResult) {
-	// Deep verification ran, evaluate results strictly.
-	result.Errors = nil // reset basic-level errors
-	if result.KernelChecked && !result.KernelFound {
-		result.Errors = append(result.Errors, "kernel not found: no /boot/vmlinuz* detected")
-	} else if !result.KernelChecked {
-		result.Warnings = append(result.Warnings, "kernel check failed to execute; result is indeterminate")
-	}
-	if result.InitrdChecked && !result.InitrdFound {
-		result.Errors = append(result.Errors, "initrd/initramfs not found: no /boot/initrd* or /boot/initramfs* detected")
-	} else if !result.InitrdChecked {
-		result.Warnings = append(result.Warnings, "initrd check failed to execute; result is indeterminate")
-	}
-	if result.SystemdChecked && !result.SystemdFound {
-		result.Errors = append(result.Errors, "systemd not found: /sbin/init must be systemd")
-	} else if !result.SystemdChecked {
-		result.Warnings = append(result.Warnings, "systemd check failed to execute; result is indeterminate")
-	}
-	if result.BootloaderChecked && !result.BootloaderFound {
-		result.Errors = append(result.Errors, "UEFI bootloader not found in ESP")
-	} else if !result.BootloaderChecked {
-		result.Warnings = append(result.Warnings, "bootloader check failed to execute; result is indeterminate")
-	}
-	// Determine boot modes from deep findings.
-	result.BootModes = nil
-	if result.KernelFound && result.BootloaderFound {
-		// Phase 1: Only UEFI boot is supported. Direct kernel boot will be added in Phase 2
-		// when OCI VM images with extracted kernel/initramfs are implemented.
-		result.BootModes = append(result.BootModes, string(types.BootModeUEFI))
-	}
-
-	result.Bootable = len(result.Errors) == 0
 }
 
 // ListCached returns an iterator over all cached base images found in the image cache directory.
@@ -650,24 +432,170 @@ func (m *manager) RemoveCached(ctx context.Context, baseKey string) error {
 
 // --- Internal helpers ---
 
-// classifyRef determines the image.ImageType for a given reference string.
-func classifyRef(ref string) image.ImageType {
-	if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
-		return image.ImageTypeURL
+// convertOCIImage handles the OCI-specific conversion path within Convert().
+// It creates a temporary qcow2 from the OCI rootfs (at identity.TempPath)
+// and atomically moves it into the cache at basePath.
+func (m *manager) convertOCIImage(ctx context.Context, identity *image.ImageIdentity, basePath, baseKey string) error {
+	log.Printf("image %s: converting OCI rootfs -> qcow2", baseKey)
+
+	// Clean up materialized rootfs dir when done.
+	if identity.TempPath != "" {
+		defer func() { _ = os.RemoveAll(identity.TempPath) }()
 	}
 
-	// Local file: check if path exists on disk.
-	if strings.HasPrefix(ref, "/") || strings.HasPrefix(ref, "./") || strings.HasPrefix(ref, "../") {
-		return image.ImageTypeLocalFile
+	// Ensure cache directory exists.
+	cacheDir := m.cfg.ImageCacheDir()
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		return fmt.Errorf("convert %s: create cache dir: %w", baseKey, err)
 	}
 
-	// If the reference has no scheme and exists as a file, treat it as local.
-	if _, err := os.Stat(ref); err == nil {
-		return image.ImageTypeLocalFile
+	tmpPath := basePath + ".tmp"
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	diskSize := m.cfg.DefaultDiskSize
+	if err := convertOCI(ctx, identity.TempPath, tmpPath, diskSize); err != nil {
+		return types.NewPermanentError(fmt.Errorf("convert OCI %s: %w", baseKey, err))
 	}
 
-	// Default: treat as OCI registry reference.
-	return image.ImageTypeOCI
+	// Atomic rename into cache, then mark read-only so VMs only write to
+	// their COW overlays and the shared base image stays immutable.
+	if err := os.Rename(tmpPath, basePath); err != nil {
+		return fmt.Errorf("convert %s: rename to cache: %w", baseKey, err)
+	}
+	if err := utils.SyncParentDir(filepath.Dir(basePath)); err != nil {
+		return fmt.Errorf("convert %s: sync parent dir: %w", baseKey, err)
+	}
+	if err := os.Chmod(basePath, 0o444); err != nil { //nolint:gosec // G302: intentionally world-readable — base images are shared immutable backing files for COW overlays
+		return fmt.Errorf("convert %s: chmod read-only: %w", baseKey, err)
+	}
+
+	log.Printf("image %s: OCI conversion complete -> %s", baseKey, basePath)
+	return nil
+}
+
+// tryRefcacheHit checks the refcache for a cached base image.
+// Returns identity+path on hit, ok=false on miss, and an error for
+// ambiguous local refs that require user disambiguation.
+func (m *manager) tryRefcacheHit(ref string) (*image.ImageIdentity, string, bool, error) {
+	baseKey, found, resolveErr := refcache.ResolveBaseKey(m.cfg, ref)
+	if resolveErr != nil {
+		if errors.Is(resolveErr, refcache.ErrAmbiguousImageRef) {
+			return nil, "", false, types.NewPermanentError(fmt.Errorf(
+				"image %q is ambiguous in local cache: %w",
+				ref, resolveErr,
+			))
+		} else {
+			log.Printf("image %q: refcache resolve error (%v), treating as cache miss", ref, resolveErr)
+		}
+		return nil, "", false, nil
+	}
+	if !found {
+		return nil, "", false, nil
+	}
+	basePath := m.cfg.BaseImagePath(baseKey)
+	if _, statErr := os.Stat(basePath); statErr != nil {
+		return nil, "", false, nil
+	}
+	log.Printf("image %s: cache hit for %q, skipping pull", baseKey, ref)
+	checksum, arch := parseBaseKey(baseKey)
+	var fullDigest string
+	if _, digest, err := refcache.RefsForBaseKey(m.cfg, baseKey); err == nil {
+		fullDigest = digest
+	}
+	return &image.ImageIdentity{
+		Checksum:   checksum,
+		Arch:       arch,
+		FullDigest: fullDigest,
+		SourceRef:  ref,
+		ImageType:  classifyRef(ref),
+	}, basePath, true, nil
+}
+
+// prepareOCI implements the OCI-specific Prepare pipeline using go-containerregistry
+// for manifest fetching and image download, and oci.MaterializeRootfs for rootfs
+// flattening.
+//
+// Flow:
+//  1. Identify (go-containerregistry manifest fetch) — cheap, outside lock
+//  2. Fast-path cache check — outside lock
+//  3. Acquire per-image conversion lock (Level 3)
+//  4. Double-check cache — inside lock
+//  5. Pull + materialize rootfs + convert — inside lock
+//  6. Release lock
+func (m *manager) prepareOCI(ctx context.Context, ref string) (*image.ImageIdentity, string, error) {
+	// Phase 1: Identify — manifest fetch only, no lock needed.
+	identity, err := identifyOCIRemote(ctx, ref)
+	if err != nil {
+		return nil, "", fmt.Errorf("identify OCI %q: %w", ref, err)
+	}
+
+	baseKey := identity.BaseKey()
+	basePath := m.cfg.BaseImagePath(baseKey)
+
+	// Phase 2: Fast-path cache check (no lock).
+	if _, statErr := os.Stat(basePath); statErr == nil {
+		log.Printf("image %s: cache hit for %q, skipping pull and conversion", baseKey, ref)
+		return identity, basePath, nil
+	}
+
+	// Phase 3: Acquire per-image conversion lock (Level 3 in lock hierarchy).
+	lockPath := m.cfg.ConversionLockPath(baseKey)
+	fl := flock.New(lockPath)
+	if lockErr := fl.Lock(); lockErr != nil {
+		return nil, "", fmt.Errorf("acquire conversion lock for %s: %w", baseKey, lockErr)
+	}
+	defer func() {
+		if unlockErr := fl.Unlock(); unlockErr != nil {
+			log.Printf("warning: failed to release conversion lock for %s: %v", baseKey, unlockErr)
+		}
+	}()
+
+	// Phase 4: Double-check cache after acquiring lock (another process may
+	// have completed the pull+convert while we waited).
+	if _, statErr := os.Stat(basePath); statErr == nil {
+		log.Printf("image %s: cache hit after lock acquisition for %q, skipping pull and conversion", baseKey, ref)
+		return identity, basePath, nil
+	}
+
+	// Phase 5: Pull + materialize rootfs — inside lock.
+	log.Printf("image %s: pulling OCI image %q", baseKey, ref)
+	rootfsDir, err := pullAndMaterializeOCI(ctx, ref, identity)
+	if err != nil {
+		return nil, "", fmt.Errorf("pull OCI %q: %w", ref, err)
+	}
+	defer func() { _ = os.RemoveAll(rootfsDir) }()
+
+	// Phase 6: Convert materialized rootfs -> qcow2 — inside lock.
+	log.Printf("image %s: converting OCI rootfs -> qcow2", baseKey)
+
+	// Ensure cache directory exists.
+	cacheDir := m.cfg.ImageCacheDir()
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		return nil, "", fmt.Errorf("convert %s: create cache dir: %w", baseKey, err)
+	}
+
+	tmpPath := basePath + ".tmp"
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	diskSize := m.cfg.DefaultDiskSize
+	if err := convertOCI(ctx, rootfsDir, tmpPath, diskSize); err != nil {
+		return nil, "", types.NewPermanentError(fmt.Errorf("convert OCI %s: %w", baseKey, err))
+	}
+
+	// Atomic rename into cache, then mark read-only so VMs only write to
+	// their COW overlays and the shared base image stays immutable.
+	if err := os.Rename(tmpPath, basePath); err != nil {
+		return nil, "", fmt.Errorf("convert %s: rename to cache: %w", baseKey, err)
+	}
+	if err := utils.SyncParentDir(filepath.Dir(basePath)); err != nil {
+		return nil, "", fmt.Errorf("convert %s: sync parent dir: %w", baseKey, err)
+	}
+	if err := os.Chmod(basePath, 0o444); err != nil { //nolint:gosec // G302: intentionally world-readable — base images are shared immutable backing files for COW overlays
+		return nil, "", fmt.Errorf("convert %s: chmod read-only: %w", baseKey, err)
+	}
+
+	log.Printf("image %s: OCI pull+conversion complete -> %s", baseKey, basePath)
+	return identity, basePath, nil
 }
 
 // pullOCI handles pulling an OCI image from a container registry.
@@ -840,6 +768,79 @@ func (m *manager) pullLocal(_ context.Context, ref string) (*image.ImageIdentity
 
 	log.Printf("image pull (local): %s -> base_key=%s", ref, identity.BaseKey())
 	return identity, nil
+}
+
+func hasDeepVerificationUnavailableWarning(warnings []string) bool {
+	for _, w := range warnings {
+		lw := strings.ToLower(w)
+		if strings.Contains(lw, "deep boot") &&
+			strings.Contains(lw, "verification") &&
+			(strings.Contains(lw, "guestfish") || strings.Contains(lw, "not available") || strings.Contains(lw, "not installed")) {
+			return true
+		}
+	}
+	return false
+}
+
+// evaluateDeepVerification checks deep verification results and populates
+// errors, warnings, and boot modes accordingly.
+//
+// It distinguishes between "checked and not found" (error) and "check failed
+// to execute" (warning). Only report a definitive "not found" error when the
+// Checked flag is true but Found is false; otherwise add a warning noting the
+// indeterminate result.
+func evaluateDeepVerification(result *image.BootCheckResult) {
+	// Deep verification ran, evaluate results strictly.
+	result.Errors = nil // reset basic-level errors
+	if result.KernelChecked && !result.KernelFound {
+		result.Errors = append(result.Errors, "kernel not found: no /boot/vmlinuz* detected")
+	} else if !result.KernelChecked {
+		result.Warnings = append(result.Warnings, "kernel check failed to execute; result is indeterminate")
+	}
+	if result.InitrdChecked && !result.InitrdFound {
+		result.Errors = append(result.Errors, "initrd/initramfs not found: no /boot/initrd* or /boot/initramfs* detected")
+	} else if !result.InitrdChecked {
+		result.Warnings = append(result.Warnings, "initrd check failed to execute; result is indeterminate")
+	}
+	if result.SystemdChecked && !result.SystemdFound {
+		result.Errors = append(result.Errors, "systemd not found: /sbin/init must be systemd")
+	} else if !result.SystemdChecked {
+		result.Warnings = append(result.Warnings, "systemd check failed to execute; result is indeterminate")
+	}
+	if result.BootloaderChecked && !result.BootloaderFound {
+		result.Errors = append(result.Errors, "UEFI bootloader not found in ESP")
+	} else if !result.BootloaderChecked {
+		result.Warnings = append(result.Warnings, "bootloader check failed to execute; result is indeterminate")
+	}
+	// Determine boot modes from deep findings.
+	result.BootModes = nil
+	if result.KernelFound && result.BootloaderFound {
+		// Phase 1: Only UEFI boot is supported. Direct kernel boot will be added in Phase 2
+		// when OCI VM images with extracted kernel/initramfs are implemented.
+		result.BootModes = append(result.BootModes, string(types.BootModeUEFI))
+	}
+
+	result.Bootable = len(result.Errors) == 0
+}
+
+// classifyRef determines the image.ImageType for a given reference string.
+func classifyRef(ref string) image.ImageType {
+	if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
+		return image.ImageTypeURL
+	}
+
+	// Local file: check if path exists on disk.
+	if strings.HasPrefix(ref, "/") || strings.HasPrefix(ref, "./") || strings.HasPrefix(ref, "../") {
+		return image.ImageTypeLocalFile
+	}
+
+	// If the reference has no scheme and exists as a file, treat it as local.
+	if _, err := os.Stat(ref); err == nil {
+		return image.ImageTypeLocalFile
+	}
+
+	// Default: treat as OCI registry reference.
+	return image.ImageTypeOCI
 }
 
 // parseBaseKey splits a base_key ("{checksum}_{arch}") into its components.

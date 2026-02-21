@@ -1,7 +1,6 @@
 package oci
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -31,7 +30,7 @@ func TestVerifyBearerCredentialsSuccess(t *testing.T) {
 	t.Cleanup(tokenSrv.Close)
 
 	challenge := `Bearer realm="` + tokenSrv.URL + `",service="registry.example.com",scope="repository:library/ubuntu:pull"`
-	if err := verifyBearerCredentials(context.Background(), challenge, user, pass); err != nil {
+	if err := verifyBearerCredentials(t.Context(), challenge, user, pass); err != nil {
 		t.Fatalf("verifyBearerCredentials returned error: %v", err)
 	}
 }
@@ -45,7 +44,7 @@ func TestVerifyBearerCredentialsInvalidCredentials(t *testing.T) {
 	t.Cleanup(tokenSrv.Close)
 
 	challenge := `Bearer realm="` + tokenSrv.URL + `",service="registry.example.com"`
-	err := verifyBearerCredentials(context.Background(), challenge, "alice", "bad")
+	err := verifyBearerCredentials(t.Context(), challenge, "alice", "bad")
 	if err == nil {
 		t.Fatalf("expected error for invalid credentials, got nil")
 	}
@@ -64,7 +63,7 @@ func TestVerifyBearerCredentialsRejectsAmbiguousAnonymousFlow(t *testing.T) {
 	t.Cleanup(tokenSrv.Close)
 
 	challenge := `Bearer realm="` + tokenSrv.URL + `",service="registry.example.com"`
-	err := verifyBearerCredentials(context.Background(), challenge, "alice", "secret")
+	err := verifyBearerCredentials(t.Context(), challenge, "alice", "secret")
 	if err == nil {
 		t.Fatalf("expected error for ambiguous anonymous flow, got nil")
 	}

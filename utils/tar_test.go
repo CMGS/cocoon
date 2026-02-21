@@ -29,12 +29,12 @@ func TestPackDirectoryToTarAndExtractTarToDir(t *testing.T) {
 	}
 
 	tarPath := filepath.Join(t.TempDir(), "rootfs.tar")
-	if err := PackDirectoryToTar(context.Background(), srcDir, tarPath); err != nil {
+	if err := PackDirectoryToTar(t.Context(), srcDir, tarPath); err != nil {
 		t.Fatalf("PackDirectoryToTar: %v", err)
 	}
 
 	dstDir := t.TempDir()
-	if err := ExtractTarToDir(context.Background(), tarPath, dstDir); err != nil {
+	if err := ExtractTarToDir(t.Context(), tarPath, dstDir); err != nil {
 		t.Fatalf("ExtractTarToDir: %v", err)
 	}
 
@@ -87,7 +87,7 @@ func TestExtractTarToDirRejectsPathTraversal(t *testing.T) {
 		t.Fatalf("close tar file: %v", err)
 	}
 
-	err = ExtractTarToDir(context.Background(), tarPath, t.TempDir())
+	err = ExtractTarToDir(t.Context(), tarPath, t.TempDir())
 	if err == nil {
 		t.Fatalf("expected traversal rejection, got nil")
 	}
@@ -105,7 +105,7 @@ func TestTarHelpersRespectCanceledContext(t *testing.T) {
 	}
 	tarPath := filepath.Join(t.TempDir(), "archive.tar")
 
-	canceledCtx, cancel := context.WithCancel(context.Background())
+	canceledCtx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	if err := PackDirectoryToTar(canceledCtx, srcDir, tarPath); !errors.Is(err, context.Canceled) {
@@ -165,7 +165,7 @@ func TestExtractTarToDir_PreservesSpecialModeBits(t *testing.T) {
 	}
 
 	dstDir := t.TempDir()
-	if err := ExtractTarToDir(context.Background(), tarPath, dstDir); err != nil {
+	if err := ExtractTarToDir(t.Context(), tarPath, dstDir); err != nil {
 		t.Fatalf("extract: %v", err)
 	}
 	info, err := os.Stat(filepath.Join(dstDir, "bin", "tool"))
@@ -222,7 +222,7 @@ func TestExtractTarToDir_SkipsSpecialTarEntries(t *testing.T) {
 	}
 
 	dstDir := t.TempDir()
-	if err := ExtractTarToDir(context.Background(), tarPath, dstDir); err != nil {
+	if err := ExtractTarToDir(t.Context(), tarPath, dstDir); err != nil {
 		t.Fatalf("extract tar with special entries: %v", err)
 	}
 
@@ -332,10 +332,10 @@ func TestExtractOCILayerTarToDir_AppliesWhiteoutFile(t *testing.T) {
 		{name: "new.txt", body: []byte("new"), mode: 0o644, typ: tar.TypeReg},
 	})
 
-	if err := ExtractOCILayerTarToDir(context.Background(), layer1, outDir); err != nil {
+	if err := ExtractOCILayerTarToDir(t.Context(), layer1, outDir); err != nil {
 		t.Fatalf("extract layer1: %v", err)
 	}
-	if err := ExtractOCILayerTarToDir(context.Background(), layer2, outDir); err != nil {
+	if err := ExtractOCILayerTarToDir(t.Context(), layer2, outDir); err != nil {
 		t.Fatalf("extract layer2: %v", err)
 	}
 
@@ -380,10 +380,10 @@ func TestExtractOCILayerTarToDir_AppliesOpaqueWhiteout(t *testing.T) {
 		{name: "etc/c.conf", body: []byte("c"), mode: 0o644, typ: tar.TypeReg},
 	})
 
-	if err := ExtractOCILayerTarToDir(context.Background(), layer1, outDir); err != nil {
+	if err := ExtractOCILayerTarToDir(t.Context(), layer1, outDir); err != nil {
 		t.Fatalf("extract layer1: %v", err)
 	}
-	if err := ExtractOCILayerTarToDir(context.Background(), layer2, outDir); err != nil {
+	if err := ExtractOCILayerTarToDir(t.Context(), layer2, outDir); err != nil {
 		t.Fatalf("extract layer2: %v", err)
 	}
 

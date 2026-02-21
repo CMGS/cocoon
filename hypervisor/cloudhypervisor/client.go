@@ -24,14 +24,14 @@ import (
 	"github.com/CMGS/cocoon/utils"
 )
 
-// Compile-time interface check.
-var _ hypervisor.Client = (*client)(nil)
-
 // Default retry parameters for CH REST API calls.
 const (
 	defaultMaxRetries  = 3
 	defaultBaseBackoff = 100 * time.Millisecond
 )
+
+// Compile-time interface check.
+var _ hypervisor.Client = (*client)(nil)
 
 // client implements the hypervisor.Client interface using HTTP over Unix socket
 // for the CH REST API and os/exec for process management.
@@ -62,15 +62,6 @@ func New(cfg *config.CocoonConfig) hypervisor.Client {
 // ---------------------------------------------------------------------------
 // Process management
 // ---------------------------------------------------------------------------
-
-// buildLaunchArgs constructs the Cloud Hypervisor CLI arguments.
-//
-// The CLI only carries --api-socket. All VM configuration (firmware,
-// cpus, memory, disk, serial, console, tpm) goes through the REST
-// vm.create payload.
-func buildLaunchArgs(socketPath string) []string {
-	return []string{"--api-socket", socketPath}
-}
 
 // Launch starts a Cloud Hypervisor process for the given VM.
 func (c *client) Launch(ctx context.Context, vmID string, cfg *types.VMConfig) (int, error) {
@@ -264,6 +255,172 @@ func (c *client) ShutdownDirect(ctx context.Context, vmID string) error {
 	return c.shutdownWithFallback(ctx, vmID, socketPath)
 }
 
+// ForceKill sends SIGKILL to the CH process for the given VM.
+// It validates the PID identity before killing to prevent sending signals
+// to an unrelated process if the PID was reused by the OS.
+func (c *client) ForceKill(vmID string) error {
+	// Always clean up companion processes (swtpm) and stale runtime files,
+	// regardless of whether the CH kill succeeds. This prevents swtpm leaks
+	// when ForceKill encounters an error (e.g., PID file missing, SIGKILL
+	// timeout). cleanupRuntimeFiles is idempotent and best-effort.
+	defer c.cleanupRuntimeFiles(vmID)
+
+	pidPath := c.cfg.VMPIDPath(vmID)
+	pid, err := utils.ReadPIDFile(pidPath)
+	if err != nil {
+		return fmt.Errorf("read PID for %s: %w", vmID, err)
+	}
+	expectedProc := filepath.Base(c.cfg.CHBinary)
+	if !utils.ValidateProcess(pid, expectedProc) {
+		if utils.IsProcessAlive(pid) {
+			// PID exists but name doesn't match — genuinely reused by another
+			// process. Don't kill, but preserve PID file for diagnostics.
+			return fmt.Errorf("PID %d for %s is not %s (PID reused by another process)", pid, vmID, expectedProc)
+		}
+		// Process is gone. Cleanup handled by deferred cleanupRuntimeFiles.
+		return nil
+	}
+	if err := utils.ForceKillProcess(pid); err != nil {
+		return fmt.Errorf("force kill %s (pid %d): %w", vmID, pid, err)
+	}
+	return nil
+}
+
+// IsAlive returns true if the CH process for the VM is still running.
+// It validates the process name to guard against PID reuse.
+func (c *client) IsAlive(vmID string) bool {
+	pidPath := c.cfg.VMPIDPath(vmID)
+	pid, err := utils.ReadPIDFile(pidPath)
+	if err != nil {
+		return false
+	}
+	return utils.ValidateProcess(pid, filepath.Base(c.cfg.CHBinary))
+}
+
+// ---------------------------------------------------------------------------
+// CH REST API
+// ---------------------------------------------------------------------------
+
+// CreateVM sends PUT /api/v1/vm.create.
+func (c *client) CreateVM(ctx context.Context, socketPath string, vmCfg *hypervisor.CHVMConfig) error {
+	body, err := json.Marshal(vmCfg)
+	if err != nil {
+		return fmt.Errorf("marshal vm config: %w", err)
+	}
+	logVMCreatePayload(socketPath, vmCfg, body)
+	return c.doWithRetry(ctx, func() error {
+		err := c.doPUT(ctx, socketPath, "/api/v1/vm.create", body)
+		if isVMAlreadyCreatedError(err) {
+			log.Printf("CH API reported VM already created for %s; treating vm.create as idempotent success", socketPath)
+			return nil
+		}
+		return err
+	})
+}
+
+// BootVM sends PUT /api/v1/vm.boot.
+func (c *client) BootVM(ctx context.Context, socketPath string) error {
+	return c.doWithRetry(ctx, func() error {
+		err := c.doPUT(ctx, socketPath, "/api/v1/vm.boot", nil)
+		if isVMAlreadyBootedError(err) {
+			log.Printf("CH API reported VM already running for %s; treating vm.boot as idempotent success", socketPath)
+			return nil
+		}
+		return err
+	})
+}
+
+// ShutdownVM sends PUT /api/v1/vm.shutdown.
+func (c *client) ShutdownVM(ctx context.Context, socketPath string) error {
+	return c.doWithRetry(ctx, func() error {
+		return c.doPUT(ctx, socketPath, "/api/v1/vm.shutdown", nil)
+	})
+}
+
+// PowerButton sends PUT /api/v1/vm.power-button.
+func (c *client) PowerButton(ctx context.Context, socketPath string) error {
+	return c.doWithRetry(ctx, func() error {
+		return c.doPUT(ctx, socketPath, "/api/v1/vm.power-button", nil)
+	})
+}
+
+// DeleteVM sends PUT /api/v1/vm.delete.
+func (c *client) DeleteVM(ctx context.Context, socketPath string) error {
+	return c.doWithRetry(ctx, func() error {
+		return c.doPUT(ctx, socketPath, "/api/v1/vm.delete", nil)
+	})
+}
+
+// GetVMInfo sends GET /api/v1/vm.info and decodes the JSON response.
+func (c *client) GetVMInfo(ctx context.Context, socketPath string) (*hypervisor.CHVMInfo, error) {
+	var info *hypervisor.CHVMInfo
+	err := c.doWithRetry(ctx, func() error {
+		var innerErr error
+		info, innerErr = c.doGetVMInfo(ctx, socketPath)
+		return innerErr
+	})
+	return info, err
+}
+
+// GetConsolePTYPath retrieves the virtio-console PTY path for a running VM.
+// Returns an empty string (no error) if the console is not in Pty mode.
+func (c *client) GetConsolePTYPath(ctx context.Context, socketPath string) (string, error) {
+	info, err := c.GetVMInfo(ctx, socketPath)
+	if err != nil {
+		return "", fmt.Errorf("get VM info: %w", err)
+	}
+	if info.Config.Console.Mode != "Pty" {
+		return "", nil
+	}
+	return info.Config.Console.File, nil
+}
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+
+// WaitForSocket blocks until the socket at socketPath exists and is connectable,
+// or the timeout/context expires.
+func (c *client) WaitForSocket(ctx context.Context, socketPath string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("context canceled while waiting for socket %s: %w", socketPath, ctx.Err())
+		case <-ticker.C:
+			if time.Now().After(deadline) {
+				return fmt.Errorf("timeout waiting for socket %s after %s", socketPath, timeout)
+			}
+			// Check if the socket file exists.
+			if _, err := os.Stat(socketPath); err != nil {
+				continue
+			}
+			// Attempt a TCP-style dial to confirm CH is accepting connections.
+			if err := c.CheckSocketConnectivity(socketPath); err == nil {
+				return nil
+			}
+		}
+	}
+}
+
+// CheckSocketConnectivity dials the Unix socket and immediately closes the
+// connection. Returns nil if the socket is reachable.
+func (c *client) CheckSocketConnectivity(socketPath string) error {
+	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
+	if err != nil {
+		return fmt.Errorf("socket %s not accessible: %w", socketPath, err)
+	}
+	_ = conn.Close()
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
 // shutdownWithFallback stops the CH process when the guest did not respond
 // to an ACPI power-button (or was never sent one).
 //
@@ -341,48 +498,6 @@ func (c *client) isVMProcessStopped(vmID string) (bool, error) {
 		return false, err
 	}
 	return !utils.IsProcessAlive(pid), nil
-}
-
-// ForceKill sends SIGKILL to the CH process for the given VM.
-// It validates the PID identity before killing to prevent sending signals
-// to an unrelated process if the PID was reused by the OS.
-func (c *client) ForceKill(vmID string) error {
-	// Always clean up companion processes (swtpm) and stale runtime files,
-	// regardless of whether the CH kill succeeds. This prevents swtpm leaks
-	// when ForceKill encounters an error (e.g., PID file missing, SIGKILL
-	// timeout). cleanupRuntimeFiles is idempotent and best-effort.
-	defer c.cleanupRuntimeFiles(vmID)
-
-	pidPath := c.cfg.VMPIDPath(vmID)
-	pid, err := utils.ReadPIDFile(pidPath)
-	if err != nil {
-		return fmt.Errorf("read PID for %s: %w", vmID, err)
-	}
-	expectedProc := filepath.Base(c.cfg.CHBinary)
-	if !utils.ValidateProcess(pid, expectedProc) {
-		if utils.IsProcessAlive(pid) {
-			// PID exists but name doesn't match — genuinely reused by another
-			// process. Don't kill, but preserve PID file for diagnostics.
-			return fmt.Errorf("PID %d for %s is not %s (PID reused by another process)", pid, vmID, expectedProc)
-		}
-		// Process is gone. Cleanup handled by deferred cleanupRuntimeFiles.
-		return nil
-	}
-	if err := utils.ForceKillProcess(pid); err != nil {
-		return fmt.Errorf("force kill %s (pid %d): %w", vmID, pid, err)
-	}
-	return nil
-}
-
-// IsAlive returns true if the CH process for the VM is still running.
-// It validates the process name to guard against PID reuse.
-func (c *client) IsAlive(vmID string) bool {
-	pidPath := c.cfg.VMPIDPath(vmID)
-	pid, err := utils.ReadPIDFile(pidPath)
-	if err != nil {
-		return false
-	}
-	return utils.ValidateProcess(pid, filepath.Base(c.cfg.CHBinary))
 }
 
 // cleanupRuntimeFiles removes the PID file and API socket for a VM,
@@ -486,21 +601,6 @@ func (c *client) startSwtpm(vmID string, tpmSocketPath string) error {
 	return fmt.Errorf("swtpm socket %s did not appear within 5s: %s", tpmSocketPath, stderr)
 }
 
-// readProcessLog reads a process log file and returns its contents for error messages.
-func readProcessLog(path string) string {
-	data, err := os.ReadFile(path) //nolint:gosec // G304: path derived from trusted config
-	if err != nil || len(data) == 0 {
-		return "(no output)"
-	}
-	return strings.TrimSpace(string(data))
-}
-
-// readSwtpmLog reads the swtpm log file and returns its contents for error messages.
-func readSwtpmLog(path string) string { return readProcessLog(path) }
-
-// readCHLog reads the CH stdout/stderr log file and returns its contents for error messages.
-func readCHLog(path string) string { return readProcessLog(path) }
-
 // stopSwtpm terminates the swtpm companion process for a VM.
 // Best-effort: silently ignores missing PID files or already-exited processes.
 func (c *client) stopSwtpm(vmID string) {
@@ -514,109 +614,6 @@ func (c *client) stopSwtpm(vmID string) {
 	}
 	_ = os.Remove(pidPath)
 	_ = os.Remove(c.cfg.VMTPMSocketPath(vmID))
-}
-
-// ---------------------------------------------------------------------------
-// CH REST API
-// ---------------------------------------------------------------------------
-
-// CreateVM sends PUT /api/v1/vm.create.
-func (c *client) CreateVM(ctx context.Context, socketPath string, vmCfg *hypervisor.CHVMConfig) error {
-	body, err := json.Marshal(vmCfg)
-	if err != nil {
-		return fmt.Errorf("marshal vm config: %w", err)
-	}
-	logVMCreatePayload(socketPath, vmCfg, body)
-	return c.doWithRetry(ctx, func() error {
-		err := c.doPUT(ctx, socketPath, "/api/v1/vm.create", body)
-		if isVMAlreadyCreatedError(err) {
-			log.Printf("CH API reported VM already created for %s; treating vm.create as idempotent success", socketPath)
-			return nil
-		}
-		return err
-	})
-}
-
-func logVMCreatePayload(socketPath string, vmCfg *hypervisor.CHVMConfig, fallbackBody []byte) {
-	prettyBody, err := json.MarshalIndent(vmCfg, "", "  ")
-	if err != nil {
-		prettyBody = fallbackBody
-	}
-	log.Printf("CH RPC vm.create request: socket=%s payload=%s", socketPath, string(prettyBody))
-}
-
-// BootVM sends PUT /api/v1/vm.boot.
-func (c *client) BootVM(ctx context.Context, socketPath string) error {
-	return c.doWithRetry(ctx, func() error {
-		err := c.doPUT(ctx, socketPath, "/api/v1/vm.boot", nil)
-		if isVMAlreadyBootedError(err) {
-			log.Printf("CH API reported VM already running for %s; treating vm.boot as idempotent success", socketPath)
-			return nil
-		}
-		return err
-	})
-}
-
-// isVMAlreadyBootedError checks whether CH returned a "Running to Running"
-// transition error, indicating the VM was already booted (e.g., auto-booted
-// by CH when --firmware was passed with full config on CLI).
-func isVMAlreadyBootedError(err error) bool {
-	if err == nil {
-		return false
-	}
-	var ae *apiError
-	if !errors.As(err, &ae) {
-		return false
-	}
-	if ae.StatusCode != http.StatusInternalServerError {
-		return false
-	}
-	return strings.Contains(strings.ToLower(ae.Message), "running to running")
-}
-
-// ShutdownVM sends PUT /api/v1/vm.shutdown.
-func (c *client) ShutdownVM(ctx context.Context, socketPath string) error {
-	return c.doWithRetry(ctx, func() error {
-		return c.doPUT(ctx, socketPath, "/api/v1/vm.shutdown", nil)
-	})
-}
-
-// PowerButton sends PUT /api/v1/vm.power-button.
-func (c *client) PowerButton(ctx context.Context, socketPath string) error {
-	return c.doWithRetry(ctx, func() error {
-		return c.doPUT(ctx, socketPath, "/api/v1/vm.power-button", nil)
-	})
-}
-
-// DeleteVM sends PUT /api/v1/vm.delete.
-func (c *client) DeleteVM(ctx context.Context, socketPath string) error {
-	return c.doWithRetry(ctx, func() error {
-		return c.doPUT(ctx, socketPath, "/api/v1/vm.delete", nil)
-	})
-}
-
-// GetVMInfo sends GET /api/v1/vm.info and decodes the JSON response.
-func (c *client) GetVMInfo(ctx context.Context, socketPath string) (*hypervisor.CHVMInfo, error) {
-	var info *hypervisor.CHVMInfo
-	err := c.doWithRetry(ctx, func() error {
-		var innerErr error
-		info, innerErr = c.doGetVMInfo(ctx, socketPath)
-		return innerErr
-	})
-	return info, err
-}
-
-// GetConsolePTYPath retrieves the virtio-console PTY path for a running VM.
-// Returns an empty string (no error) if the console is not in Pty mode.
-func (c *client) GetConsolePTYPath(ctx context.Context, socketPath string) (string, error) {
-	info, err := c.GetVMInfo(ctx, socketPath)
-	if err != nil {
-		return "", fmt.Errorf("get VM info: %w", err)
-	}
-	if info.Config.Console.Mode != "Pty" {
-		return "", nil
-	}
-	return info.Config.Console.File, nil
 }
 
 // doGetVMInfo is the single-attempt implementation of GetVMInfo.
@@ -650,6 +647,137 @@ func (c *client) doGetVMInfo(ctx context.Context, socketPath string) (*hyperviso
 	return &info, nil
 }
 
+// doWithRetry executes fn with exponential backoff retry for transient errors.
+// It uses the client's configured maxRetries and baseBackoff.
+func (c *client) doWithRetry(ctx context.Context, fn func() error) error {
+	var lastErr error
+	backoff := c.baseBackoff
+
+	for attempt := 0; attempt <= c.maxRetries; attempt++ {
+		lastErr = fn()
+		if lastErr == nil {
+			return nil
+		}
+
+		// Do not retry non-retryable errors.
+		if !isRetryable(lastErr) {
+			return lastErr
+		}
+
+		// Do not retry if this was the last attempt.
+		if attempt == c.maxRetries {
+			break
+		}
+
+		// Log the retry attempt.
+		log.Printf("CH API transient error (attempt %d/%d): %v; retrying in %s",
+			attempt+1, c.maxRetries+1, lastErr, backoff)
+
+		// Wait with jitter: backoff +/- 25%, floored at baseBackoff/4 to
+		// prevent negative or near-zero sleep durations.
+		jitter := time.Duration(rand.Int64N(int64(backoff/2))) - backoff/4 //nolint:gosec // G404: jitter does not need cryptographic randomness
+		wait := backoff + jitter
+		if minBackoff := c.baseBackoff / 4; wait < minBackoff {
+			wait = minBackoff
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("retry canceled: %w", ctx.Err())
+		case <-time.After(wait):
+		}
+
+		// Exponential backoff: 100ms -> 200ms -> 400ms.
+		backoff *= 2
+	}
+
+	return fmt.Errorf("after %d retries: %w", c.maxRetries, lastErr)
+}
+
+// newHTTPClient returns an *http.Client that dials the given Unix socket.
+func (c *client) newHTTPClient(socketPath string) *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "unix", socketPath)
+			},
+		},
+		Timeout: c.httpTimeout,
+	}
+}
+
+// doPUT is a helper for PUT requests that expect 204 No Content on success.
+func (c *client) doPUT(ctx context.Context, socketPath, path string, body []byte) error {
+	hc := c.newHTTPClient(socketPath)
+
+	url := "http://localhost" + path
+
+	var reqBody io.Reader
+	if body != nil {
+		reqBody = bytes.NewReader(body)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, reqBody)
+	if err != nil {
+		return fmt.Errorf("create request for %s: %w", path, err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("PUT %s: %w", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusNoContent {
+		respBody, _ := io.ReadAll(resp.Body)
+		return &apiError{
+			StatusCode: resp.StatusCode,
+			Message:    fmt.Sprintf("PUT %s returned %d: %s", path, resp.StatusCode, string(respBody)),
+		}
+	}
+
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Package-level unexported functions
+// ---------------------------------------------------------------------------
+
+// buildLaunchArgs constructs the Cloud Hypervisor CLI arguments.
+//
+// The CLI only carries --api-socket. All VM configuration (firmware,
+// cpus, memory, disk, serial, console, tpm) goes through the REST
+// vm.create payload.
+func buildLaunchArgs(socketPath string) []string {
+	return []string{"--api-socket", socketPath}
+}
+
+// readProcessLog reads a process log file and returns its contents for error messages.
+func readProcessLog(path string) string {
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path derived from trusted config
+	if err != nil || len(data) == 0 {
+		return "(no output)"
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// readSwtpmLog reads the swtpm log file and returns its contents for error messages.
+func readSwtpmLog(path string) string { return readProcessLog(path) }
+
+// readCHLog reads the CH stdout/stderr log file and returns its contents for error messages.
+func readCHLog(path string) string { return readProcessLog(path) }
+
+func logVMCreatePayload(socketPath string, vmCfg *hypervisor.CHVMConfig, fallbackBody []byte) {
+	prettyBody, err := json.MarshalIndent(vmCfg, "", "  ")
+	if err != nil {
+		prettyBody = fallbackBody
+	}
+	log.Printf("CH RPC vm.create request: socket=%s payload=%s", socketPath, string(prettyBody))
+}
+
 // ---------------------------------------------------------------------------
 // Retry logic
 // ---------------------------------------------------------------------------
@@ -678,6 +806,23 @@ func isVMAlreadyCreatedError(err error) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(ae.Message), "vm is already created")
+}
+
+// isVMAlreadyBootedError checks whether CH returned a "Running to Running"
+// transition error, indicating the VM was already booted (e.g., auto-booted
+// by CH when --firmware was passed with full config on CLI).
+func isVMAlreadyBootedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ae *apiError
+	if !errors.As(err, &ae) {
+		return false
+	}
+	if ae.StatusCode != http.StatusInternalServerError {
+		return false
+	}
+	return strings.Contains(strings.ToLower(ae.Message), "running to running")
 }
 
 // isRetryable determines whether an error is transient and should be retried.
@@ -731,145 +876,4 @@ func isRetryable(err error) bool {
 	}
 
 	return false
-}
-
-// doWithRetry executes fn with exponential backoff retry for transient errors.
-// It uses the client's configured maxRetries and baseBackoff.
-func (c *client) doWithRetry(ctx context.Context, fn func() error) error {
-	var lastErr error
-	backoff := c.baseBackoff
-
-	for attempt := 0; attempt <= c.maxRetries; attempt++ {
-		lastErr = fn()
-		if lastErr == nil {
-			return nil
-		}
-
-		// Do not retry non-retryable errors.
-		if !isRetryable(lastErr) {
-			return lastErr
-		}
-
-		// Do not retry if this was the last attempt.
-		if attempt == c.maxRetries {
-			break
-		}
-
-		// Log the retry attempt.
-		log.Printf("CH API transient error (attempt %d/%d): %v; retrying in %s",
-			attempt+1, c.maxRetries+1, lastErr, backoff)
-
-		// Wait with jitter: backoff +/- 25%, floored at baseBackoff/4 to
-		// prevent negative or near-zero sleep durations.
-		jitter := time.Duration(rand.Int64N(int64(backoff/2))) - backoff/4 //nolint:gosec // G404: jitter does not need cryptographic randomness
-		wait := backoff + jitter
-		if minBackoff := c.baseBackoff / 4; wait < minBackoff {
-			wait = minBackoff
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("retry canceled: %w", ctx.Err())
-		case <-time.After(wait):
-		}
-
-		// Exponential backoff: 100ms -> 200ms -> 400ms.
-		backoff *= 2
-	}
-
-	return fmt.Errorf("after %d retries: %w", c.maxRetries, lastErr)
-}
-
-// ---------------------------------------------------------------------------
-// Utilities
-// ---------------------------------------------------------------------------
-
-// WaitForSocket blocks until the socket at socketPath exists and is connectable,
-// or the timeout/context expires.
-func (c *client) WaitForSocket(ctx context.Context, socketPath string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("context canceled while waiting for socket %s: %w", socketPath, ctx.Err())
-		case <-ticker.C:
-			if time.Now().After(deadline) {
-				return fmt.Errorf("timeout waiting for socket %s after %s", socketPath, timeout)
-			}
-			// Check if the socket file exists.
-			if _, err := os.Stat(socketPath); err != nil {
-				continue
-			}
-			// Attempt a TCP-style dial to confirm CH is accepting connections.
-			if err := c.CheckSocketConnectivity(socketPath); err == nil {
-				return nil
-			}
-		}
-	}
-}
-
-// CheckSocketConnectivity dials the Unix socket and immediately closes the
-// connection. Returns nil if the socket is reachable.
-func (c *client) CheckSocketConnectivity(socketPath string) error {
-	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
-	if err != nil {
-		return fmt.Errorf("socket %s not accessible: %w", socketPath, err)
-	}
-	_ = conn.Close()
-	return nil
-}
-
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-// newHTTPClient returns an *http.Client that dials the given Unix socket.
-func (c *client) newHTTPClient(socketPath string) *http.Client {
-	return &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, "unix", socketPath)
-			},
-		},
-		Timeout: c.httpTimeout,
-	}
-}
-
-// doPUT is a helper for PUT requests that expect 204 No Content on success.
-func (c *client) doPUT(ctx context.Context, socketPath, path string, body []byte) error {
-	hc := c.newHTTPClient(socketPath)
-
-	url := "http://localhost" + path
-
-	var reqBody io.Reader
-	if body != nil {
-		reqBody = bytes.NewReader(body)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, reqBody)
-	if err != nil {
-		return fmt.Errorf("create request for %s: %w", path, err)
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	resp, err := hc.Do(req)
-	if err != nil {
-		return fmt.Errorf("PUT %s: %w", path, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusNoContent {
-		respBody, _ := io.ReadAll(resp.Body)
-		return &apiError{
-			StatusCode: resp.StatusCode,
-			Message:    fmt.Sprintf("PUT %s returned %d: %s", path, resp.StatusCode, string(respBody)),
-		}
-	}
-
-	return nil
 }
