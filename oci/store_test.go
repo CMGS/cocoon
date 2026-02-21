@@ -433,6 +433,63 @@ func TestStoreSaveTag_CleanupFailureCounter(t *testing.T) {
 	}
 }
 
+func TestStoreSaveTag_OverwriteCleansOldLayoutAndBlobs(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(t)
+	store := NewStore(cfg)
+
+	oldManifest := "sha256:" + testHexDigest(900)
+	newManifest := "sha256:" + testHexDigest(901)
+	oldBlob := testHexDigest(902)
+
+	// Create old layout directory.
+	oldLayoutDir := store.LayoutDir("overwrite-cleanup-old")
+	if err := os.MkdirAll(oldLayoutDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll old layout: %v", err)
+	}
+	// Register blob refs for the old manifest.
+	if err := AddBlobRefs(cfg, oldManifest, []string{oldBlob}, []int64{100}); err != nil {
+		t.Fatalf("AddBlobRefs: %v", err)
+	}
+	// Create the actual blob file in shared store.
+	blobStore := NewBlobStore(cfg)
+	blobPath := blobStore.blobPath(oldBlob)
+	if err := os.MkdirAll(cfg.OCIBlobDir(), 0o755); err != nil {
+		t.Fatalf("MkdirAll blob dir: %v", err)
+	}
+	if err := os.WriteFile(blobPath, []byte("fake-blob"), 0o644); err != nil {
+		t.Fatalf("write blob: %v", err)
+	}
+
+	// Save initial tag.
+	if err := store.SaveTag("overwrite-cleanup", oldLayoutDir, oldManifest); err != nil {
+		t.Fatalf("SaveTag initial: %v", err)
+	}
+
+	// Overwrite with new manifest and new layout.
+	newLayoutDir := store.LayoutDir("overwrite-cleanup-new")
+	if err := os.MkdirAll(newLayoutDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll new layout: %v", err)
+	}
+	if err := store.SaveTag("overwrite-cleanup", newLayoutDir, newManifest); err != nil {
+		t.Fatalf("SaveTag overwrite: %v", err)
+	}
+
+	// Old layout directory should be removed.
+	if _, err := os.Stat(oldLayoutDir); !os.IsNotExist(err) {
+		t.Fatalf("old layout dir should be removed, stat err=%v", err)
+	}
+	// Old blob file should be removed (zero refs after overwrite).
+	if _, err := os.Stat(blobPath); !os.IsNotExist(err) {
+		t.Fatalf("old blob should be removed, stat err=%v", err)
+	}
+	// New layout should still exist.
+	if _, err := os.Stat(newLayoutDir); err != nil {
+		t.Fatalf("new layout dir should exist: %v", err)
+	}
+}
+
 func TestStoreCheckTagOverwriteSafe(t *testing.T) {
 	t.Parallel()
 
