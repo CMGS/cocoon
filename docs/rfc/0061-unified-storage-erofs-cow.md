@@ -170,6 +170,7 @@ Source Image (cloudimg.img or OCI layers)
   ├─ Extract /boot/initrd.img-<ver>                 → original initramfs
   │
   ├─ Extract kernel modules:
+  │   ├─ Check /lib/modules/<ver>/modules.builtin   → skip if built-in
   │   ├─ Parse /lib/modules/<ver>/modules.dep       → dependency graph
   │   ├─ Resolve transitive deps for: erofs, overlay
   │   │   (e.g., erofs → lz4_decompress, lz4hc_compress)
@@ -534,6 +535,69 @@ GC: layer with `refs: []` and grace period expired → delete.
 - `vm/engine/virtiofsd_*.go`
 - `image/pipeline/convert_linux.go` (qcow2 conversion)
 - UEFI firmware lookup and ACPI power-button shutdown path
+
+### Implementation Pitfalls
+
+Three low-level hazards that will bite during Go implementation of the
+materialize pipeline. Documented here so implementors don't rediscover
+them the hard way.
+
+#### Pitfall 1: Concatenated initramfs (microcode preamble)
+
+Ubuntu (and many other distros) ship `initrd.img` as a **concatenated
+file**, not a single compressed archive:
+
+```
+┌──────────────────────────────┬─────────────────────────────────┐
+│ Segment 1: uncompressed cpio │ Segment 2: gzip/zstd-compressed │
+│ (CPU microcode:              │ cpio (the real initramfs)        │
+│  AuthenticAMD.bin or         │                                  │
+│  GenuineIntel.bin)           │                                  │
+└──────────────────────────────┴─────────────────────────────────┘
+```
+
+The Go unpacker **must not** feed the entire file to `gzip.NewReader`.
+Correct approach:
+
+1. Open the file as a raw `io.Reader`.
+2. Read the first cpio archive (uncompressed). Detect EOF by the cpio
+   trailer record (`TRAILER!!!`).
+3. Probe the next bytes for a compression magic number (`1f 8b` for gzip,
+   `28 b5 2f fd` for zstd, `fd 37 7a 58 5a` for xz).
+4. Decompress the second segment, which yields the real cpio archive.
+5. Unpack, inject modules + hook, repack the second segment.
+6. **Reassemble**: concatenate segment 1 (preserved verbatim) + recompressed
+   segment 2. The kernel bootloader expects this exact layout.
+
+#### Pitfall 2: `modules.builtin` — don't inject what's already in the kernel
+
+Some distros compile `erofs` or `overlay` directly into the kernel
+(`CONFIG_EROFS_FS=y` rather than `=m`). When Go resolves module
+dependencies:
+
+1. First check `/lib/modules/<ver>/modules.builtin` — a plain text file
+   listing all built-in module paths (one per line, e.g.
+   `kernel/fs/erofs/erofs.ko`).
+2. If a required module appears in `modules.builtin`, skip extraction.
+   The `insmod` in the hook script will get `EEXIST` which is harmless,
+   but there's no `.ko` file to extract in the first place.
+3. If the module is not in `modules.builtin` AND not in `modules.dep`,
+   the image's kernel genuinely lacks support — fail the materialize with
+   a clear error.
+
+#### Pitfall 3: CPIO repack must preserve permissions and ownership
+
+When using Go's `archive/cpio` (or equivalent) to repack the initramfs:
+
+- Every injected file's `cpio.Header` must have correct `Mode`, `Uid`,
+  and `Gid`. In particular, the hook script (`/scripts/local-bottom/cocoon`
+  or `/lib/dracut/hooks/mount/99-cocoon-mount.sh`) **must be mode `0755`**.
+  If the executable bit is missing, the initramfs framework silently skips
+  it and the overlay never gets mounted.
+- Injected `.ko` module files should be mode `0644`, owned by `root:root`.
+- When repacking existing files from the original initramfs, copy the
+  original `cpio.Header` fields verbatim — do not let Go defaults zero
+  out the permission bits.
 
 ## Drawbacks
 
