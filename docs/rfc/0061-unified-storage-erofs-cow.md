@@ -376,6 +376,11 @@ without `rootok=1`, it halts before ever reaching mount hooks.
 #!/bin/sh
 # Tell dracut we will handle root mounting. Both `rootok` and `root`
 # must be set — dracut halts at cmdline stage if either is empty.
+#
+# We use a synthetic "cocoon:" scheme intentionally — no standard dracut
+# module recognizes it, so nothing tries to mount root before our mount
+# hook. Using a real device path (e.g. /dev/disk/by-id/virtio-*) would
+# risk a race with dracut's standard root-finding modules.
 
 # Extract base layer serial from cocoon.layers (last entry = lowest priority).
 for x in $(cat /proc/cmdline); do
@@ -384,6 +389,7 @@ done
 _base="${_layers##*,}"
 root="cocoon:${_base}"
 rootok=1
+export root rootok
 ```
 
 **Hook 2** — `/lib/dracut/hooks/mount/01-cocoon-mount.sh`:
@@ -602,8 +608,11 @@ IDs are set by Cocoon and are stable regardless of disk ordering.
 - Serial length: **max 20 characters** (virtio spec limit). Cocoon's
   naming convention (`cocoon-layer0`, `cocoon-cow`) stays within this.
 - Character set: `[A-Za-z0-9_-]` only. No spaces or special characters.
-- The serial is set via the CH disk config JSON (`"serial": "cocoon-layer0"`),
-  which maps to `--disk` CLI flags with the serial field.
+- **Interface**: Cocoon configures disks via the CH **REST API** (`PUT
+  /api/v1/vm.create` with `DiskConfig` JSON), not CLI flags. This avoids
+  CLI syntax drift across CH versions (e.g. v36 changed `--disk` syntax).
+  The `serial` field is part of `DiskConfig`. RFC examples show `--disk`
+  for readability, but the implementation uses the API exclusively.
 
 **Why not blkid/filesystem-type probing?**
 - blkid may not exist in all initramfs environments
@@ -616,7 +625,7 @@ IDs are set by Cocoon and are stable regardless of disk ordering.
 cloudimg.img (download — may be qcow2 or raw)
   → Detect format (qcow2 magic "QFI\xfb" at offset 0)
   → If qcow2: qemu-img convert -f qcow2 -O raw → cloudimg.raw
-  → Parse GPT in Go → compute ext4 rootfs partition offset
+  → Parse GPT in Go → compute rootfs partition offset (ext4 or xfs)
   → mount -o ro,loop,offset=<N> (requires root)
   → Extract: vmlinuz, initrd.img, kernel modules (erofs/overlay dep chain)
   → mkfs.erofs rootfs.erofs (from mount point, no guest modification)
@@ -654,10 +663,16 @@ OCI image layers (pulled or built)
 
 For OCI images with distinct user layers:
 ```
-  → Base layers → flatten (with whiteout processing) → base.erofs
-  → User layers → flatten (with whiteout processing) → custom.erofs
+  → Base layers → flatten (consume whiteouts: delete targeted files) → base.erofs
+  → User layers → flatten among themselves (consume intra-user whiteouts),
+      then convert remaining .wh.* to native overlayfs whiteouts
+      (char dev 0,0 / opaque xattr) for cross-layer deletions → custom.erofs
   → Both passed as separate vdX devices
 ```
+
+The distinction matters: when user layers delete files that exist only in
+the base, those deletions must be preserved as native overlayfs tombstones
+in `custom.erofs`, so overlayfs hides them from the base lowerdir.
 
 #### OCI Whiteout Semantics
 
@@ -864,6 +879,20 @@ enforcing images may require additional implementation work (e.g. using
 the newc cpio format with xattr extensions). This is acceptable for the
 initial implementation; document as a known limitation.
 
+#### Pitfall 6: Kernel layer repack determinism
+
+EROFS reproducibility is handled by `-T0 -Uclear`, but the **kernel
+layer** (patched initrd) also needs deterministic output for content-
+addressing to work. The cpio repacker must:
+
+- Traverse directories in sorted order (not filesystem/map iteration order)
+- Use fixed timestamps (e.g. mtime=0) for all injected entries
+- Use deterministic compression (e.g. gzip with fixed level, no timestamp
+  in gzip header — `gzip.Header.ModTime = time.Time{}`)
+
+Without these, the same input produces different SHA-256 hashes across
+runs, defeating kernel layer dedup.
+
 ## Drawbacks
 
 1. **Host dependencies** — `mkfs.erofs` (erofs-utils) and `qemu-img`
@@ -963,9 +992,11 @@ motivation is removing virtiofsd.
 
 8. **~~`mkfs.erofs` reproducibility~~**: resolved as acceptance gate.
    Cocoon pins explicit `mkfs.erofs` flags: `-zlz4hc` (compression),
-   `-C65536` (cluster size), `-T0` (fixed timestamp for reproducibility).
-   Content-addressing hashes the **output EROFS file**, not the input.
-   Same input + same flags + same `mkfs.erofs` version = same output.
+   `-C65536` (cluster size), `-T0` (fixed timestamp), `-Uclear` (zero
+   UUID — without this, a random UUID is generated per build, breaking
+   reproducibility). Content-addressing hashes the **output EROFS file**,
+   not the input. Same input + same flags + same `mkfs.erofs` version =
+   same output.
    Cocoon records `mkfs.erofs` version in `meta.json` for diagnostics.
    Minimum required version: erofs-utils >= 1.5.
 
@@ -995,7 +1026,10 @@ motivation is removing virtiofsd.
     sort (`sort.Strings`), which gives `5.9 > 5.15`. The Go
     implementation should parse version segments and compare
     numerically (similar to `dpkg --compare-versions`).
-    If no kernel is found in `/boot/`, materialize fails.
+    **Paired matching**: vmlinuz and initrd.img are paired by their
+    exact version suffix (e.g. `vmlinuz-5.15.0-100-generic` pairs with
+    `initrd.img-5.15.0-100-generic`). Unpaired kernels (no matching
+    initrd) are skipped. If no valid pair is found, materialize fails.
 
 ## Implementation Phases
 
@@ -1059,6 +1093,7 @@ Each phase gate requires passing the following test matrix:
 | Unclean shutdown → COW recovery | Required | Required |
 | Layer dedup (two VMs, same image) | Required | - |
 | GC: delete VM → layer refcount→0 → layer removed | Required | - |
+| Guest sysfs serial matches host-set serial | Required | Required |
 
 ### Phase 2 Gate (Cloudimg Path)
 
@@ -1080,10 +1115,11 @@ Each phase gate requires passing the following test matrix:
 
 ### Tool Preflight
 
-Cocoon validates tool availability at startup (before any materialize):
-- `mkfs.erofs` >= 1.5: `mkfs.erofs -V`
-- `qemu-img` (any version): `qemu-img --version`
-- CH >= v35 (for serial support): version check at launch
+Cocoon validates tool availability on demand (not globally at startup):
+- `mkfs.erofs` >= 1.5: checked at first materialize (`mkfs.erofs -V`)
+- `qemu-img` (any version): checked only for cloudimg materialize
+  (`qemu-img --version`). OCI-only users do not need `qemu-img`.
+- CH >= v35 (for serial support): version check at VM launch
 
 Missing tools → `types.PermanentError` with install instructions.
 
