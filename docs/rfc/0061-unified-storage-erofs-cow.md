@@ -324,11 +324,14 @@ path, potentially panic before ever reaching our hook.
 . /scripts/functions
 
 # Resolve a virtio-blk device by serial (stable across disk reordering).
-# Initramfs runtime tool requirements:
-# The hook scripts require: cat, mount, mkdir, mknod, sleep, basename, echo.
-# All are provided by busybox or standard initramfs toolsets (initramfs-tools
-# ships busybox; dracut ships a minimal coreutils set). No dependency on
-# tr, sed, grep, awk, or other text-processing tools.
+#
+# Initramfs runtime tool requirements (complete list):
+#   Shell builtins only: case, while, for, local, echo, printf, read, return,
+#     break, unset, [, :, parameter expansion (${var##*/}, ${var%%:*}, etc.)
+#   External commands: cat, insmod, mount, mkdir, rm, ln, mknod, sleep, uname
+# All of the above are provided by busybox (initramfs-tools) or dracut's
+# minimal coreutils set. The hooks do NOT depend on: tr, sed, grep, awk,
+# basename, ls, or any other text-processing tools.
 
 # Polls /sys/block/vd* checking both possible sysfs serial paths,
 # with configurable timeout (default 10s, override via cocoon.timeout=).
@@ -345,22 +348,23 @@ resolve_disk() {
             local s=""
             # Kernel exposes serial at different paths depending on version.
             # virtio-blk ID is 20 bytes (VIRTIO_BLK_ID_BYTES); sysfs may
-            # pad with trailing spaces. Strip trailing whitespace using
-            # pure shell parameter expansion (no tr/sed dependency).
-            # Note: sysfs text attributes do not expose raw NUL bytes to
-            # userspace reads; the kernel's sysfs layer null-terminates
-            # strings, so tr -d '\000' is unnecessary.
+            # pad with trailing spaces. We do not rely on NUL stripping
+            # (sysfs text attributes typically do not expose raw NUL to
+            # userspace); we only trim trailing whitespace.
             if [ -f "$sysdev/serial" ]; then
                 s=$(cat "$sysdev/serial")
             elif [ -f "$sysdev/device/serial" ]; then
                 s=$(cat "$sysdev/device/serial")
             fi
-            # Trim trailing spaces/tabs (pure POSIX shell, no sed/tr).
-            while case "$s" in *[[:space:]]) true ;; *) false ;; esac; do
-                s="${s%[[:space:]]}"
+            # Trim trailing whitespace (pure POSIX shell, no external tools).
+            while :; do
+                case "$s" in
+                    *[[:space:]]) s="${s%[[:space:]]}" ;;
+                    *) break ;;
+                esac
             done
             if [ "$s" = "$serial" ]; then
-                local devname="/dev/$(basename "$sysdev")"
+                local devname="/dev/${sysdev##*/}"
                 # Fallback: if devtmpfs/udev hasn't created the node yet,
                 # create it from /sys/block/vdX/dev (major:minor).
                 if [ ! -e "$devname" ] && [ -f "$sysdev/dev" ]; then
@@ -381,7 +385,6 @@ mountroot() {
     log_begin_msg "Cocoon: mounting overlay rootfs"
 
     # Diagnostic helper: dump buildinfo + kernel state before fatal exit.
-    # Uses only cat/echo (available in all initramfs toolsets).
     cocoon_fatal() {
         echo "COCOON FATAL: $1" >&2
         echo "--- buildinfo ---" >&2
@@ -393,7 +396,10 @@ mountroot() {
         echo "--- sysfs block devices ---" >&2
         for _sb in /sys/block/vd*; do
             [ -d "$_sb" ] || continue
-            echo "$_sb: dev=$(cat "$_sb/dev" 2>/dev/null) serial=$(cat "$_sb/serial" 2>/dev/null)" >&2
+            _sd=""
+            [ -f "$_sb/serial" ] && _sd=$(cat "$_sb/serial" 2>/dev/null)
+            [ -z "$_sd" ] && [ -f "$_sb/device/serial" ] && _sd=$(cat "$_sb/device/serial" 2>/dev/null)
+            echo "$_sb: dev=$(cat "$_sb/dev" 2>/dev/null) serial=${_sd}" >&2
         done
         panic "$1"
     }
@@ -481,7 +487,7 @@ mountroot() {
 
     # Write runtime boot results to /run (separate from immutable buildinfo).
     mkdir -p /run/cocoon
-    echo "{\"overlay_opts_effective\":\"${_ovl_mode}\"}" > /run/cocoon/boot.json
+    printf '{"overlay_opts_effective":"%s"}\n' "$_ovl_mode" > /run/cocoon/boot.json
 
     mkdir -p "${rootmnt}/dev" "${rootmnt}/proc" "${rootmnt}/sys" "${rootmnt}/run"
 
@@ -558,18 +564,19 @@ resolve_disk() {
         for sysdev in /sys/block/vd*; do
             [ -d "$sysdev" ] || continue
             local s=""
-            # sysfs text attributes do not expose NUL to userspace.
-            # Trim trailing whitespace with pure shell (no tr/sed).
             if [ -f "$sysdev/serial" ]; then
                 s=$(cat "$sysdev/serial")
             elif [ -f "$sysdev/device/serial" ]; then
                 s=$(cat "$sysdev/device/serial")
             fi
-            while case "$s" in *[[:space:]]) true ;; *) false ;; esac; do
-                s="${s%[[:space:]]}"
+            while :; do
+                case "$s" in
+                    *[[:space:]]) s="${s%[[:space:]]}" ;;
+                    *) break ;;
+                esac
             done
             if [ "$s" = "$serial" ]; then
-                local devname="/dev/$(basename "$sysdev")"
+                local devname="/dev/${sysdev##*/}"
                 if [ ! -e "$devname" ] && [ -f "$sysdev/dev" ]; then
                     local majmin=$(cat "$sysdev/dev")
                     mknod "$devname" b "${majmin%%:*}" "${majmin##*:}" 2>/dev/null
@@ -585,7 +592,6 @@ resolve_disk() {
 }
 
 # Diagnostic helper: dump buildinfo + kernel state before fatal exit.
-# Uses only cat/echo (available in all initramfs toolsets).
 cocoon_fatal() {
     echo "COCOON FATAL: $1" >&2
     echo "--- buildinfo ---" >&2
@@ -597,7 +603,10 @@ cocoon_fatal() {
     echo "--- sysfs block devices ---" >&2
     for _sb in /sys/block/vd*; do
         [ -d "$_sb" ] || continue
-        echo "$_sb: dev=$(cat "$_sb/dev" 2>/dev/null) serial=$(cat "$_sb/serial" 2>/dev/null)" >&2
+        _sd=""
+        [ -f "$_sb/serial" ] && _sd=$(cat "$_sb/serial" 2>/dev/null)
+        [ -z "$_sd" ] && [ -f "$_sb/device/serial" ] && _sd=$(cat "$_sb/device/serial" 2>/dev/null)
+        echo "$_sb: dev=$(cat "$_sb/dev" 2>/dev/null) serial=${_sd}" >&2
     done
     die "$1"
 }
@@ -670,7 +679,7 @@ _ovl_err=$(mount -t overlay overlay -o "$OVL_FULL" "$NEWROOT" 2>&1) || {
 
 # Write runtime boot results to /run (separate from immutable buildinfo).
 mkdir -p /run/cocoon
-echo "{\"overlay_opts_effective\":\"${_ovl_mode}\"}" > /run/cocoon/boot.json
+printf '{"overlay_opts_effective":"%s"}\n' "$_ovl_mode" > /run/cocoon/boot.json
 
 mkdir -p "$NEWROOT/dev" "$NEWROOT/proc" "$NEWROOT/sys" "$NEWROOT/run"
 
@@ -1524,6 +1533,17 @@ Each phase gate requires passing the following test matrix:
 - `boot=cocoon` cmdline: injected unconditionally (required by initramfs-tools,
   harmless on dracut). If a future distro uses `boot=` for a conflicting
   purpose, that distro requires adaptation (not currently known to exist).
+- Rootfs mtime canonicalization: all file mtimes in EROFS images are set to 0
+  (epoch) for deterministic builds. Workloads relying on original mtimes
+  (e.g. incremental build systems, cache invalidation based on timestamps)
+  may observe differences compared to running the same image via Docker.
+- Overlay option fallback: when explicit overlay mount options
+  (`index=off,metacopy=off,redirect_dir=off`) trigger EINVAL, the hook
+  falls back to kernel defaults. The effective mode is recorded in
+  `/run/cocoon/boot.json` for diagnostics. The EINVAL detection is based
+  on error message string matching, which is inherently fragile; the
+  implementation should prefer checking the kernel's exit code where
+  feasible and use string matching only as a supplementary signal.
 - Cloudimg formats: GPT+ext4 is the primary supported partition layout.
   GPT+xfs (RHEL/CentOS) is best-effort — requires xfs read support on
   the host for `mount -o ro,loop`. MBR/LVM fail fast with descriptive error.
