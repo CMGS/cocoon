@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/CMGS/cocoon/config"
@@ -256,42 +257,63 @@ func (c *client) Shutdown(ctx context.Context, vmID string, timeout time.Duratio
 	}
 }
 
-// shutdownWithFallback tries the CH vm.shutdown + vm.delete API sequence
-// and waits briefly for the process to exit. Falls back to ForceKill if
-// the APIs fail or the process does not exit in time.
+// shutdownWithFallback stops the CH process when the guest did not respond
+// to an ACPI power-button (or was never sent one).
 //
-// CH state machine: vm.shutdown moves the VM to "Shutdown" state (process
-// stays alive); vm.delete releases all resources and makes the process exit.
+// Sequence: vm.shutdown (stop vCPUs, flush backends) → SIGTERM (graceful
+// CH process exit) → SIGKILL (last resort).
 func (c *client) shutdownWithFallback(ctx context.Context, vmID, socketPath string) error {
+	// vm.shutdown stops the guest but the CH process stays alive.
+	// Best-effort; if the API fails, proceed to signal-based shutdown.
 	if err := c.ShutdownVM(ctx, socketPath); err != nil {
-		log.Printf("vm.shutdown API failed for %s: %v; falling back to SIGKILL", vmID, err)
-		return c.ForceKill(vmID)
-	}
-	// vm.shutdown only transitions the VM to "Shutdown" state; the CH
-	// process stays alive. Call vm.delete to release resources and exit.
-	if err := c.DeleteVM(ctx, socketPath); err != nil {
-		log.Printf("vm.delete API failed for %s after shutdown: %v; falling back to SIGKILL", vmID, err)
-		return c.ForceKill(vmID)
+		log.Printf("vm.shutdown API failed for %s (proceeding to SIGTERM): %v", vmID, err)
 	}
 
-	// Give CH a few seconds to exit after vm.delete.
-	const vmmShutdownWait = 5 * time.Second
-	waitDeadline := time.Now().Add(vmmShutdownWait)
-	for time.Now().Before(waitDeadline) {
-		stopped, probeErr := c.isVMProcessStopped(vmID)
-		if probeErr != nil {
-			return fmt.Errorf("probe VM %s after vm.delete: %w", vmID, probeErr)
+	return c.terminateProcess(vmID)
+}
+
+// terminateProcess sends SIGTERM to the CH process, waits briefly for
+// graceful exit, then falls back to SIGKILL.
+func (c *client) terminateProcess(vmID string) error {
+	defer c.cleanupRuntimeFiles(vmID)
+
+	pid, err := utils.ReadPIDFile(c.cfg.VMPIDPath(vmID))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // already gone
 		}
-		if stopped {
-			c.cleanupRuntimeFiles(vmID)
+		return fmt.Errorf("read PID for %s: %w", vmID, err)
+	}
+	if !utils.IsProcessAlive(pid) {
+		return nil
+	}
+
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return fmt.Errorf("find CH process %d: %w", pid, err)
+	}
+
+	// SIGTERM: ask CH to clean up and exit gracefully.
+	if err := process.Signal(syscall.SIGTERM); err != nil {
+		if !utils.IsProcessAlive(pid) {
 			return nil
 		}
-		time.Sleep(200 * time.Millisecond)
+		log.Printf("SIGTERM failed for CH pid %d (%s): %v; falling back to SIGKILL", pid, vmID, err)
+		return utils.ForceKillProcess(pid)
 	}
 
-	// vm.delete succeeded but process lingered; force kill.
-	log.Printf("CH process for %s did not exit after vm.delete; falling back to SIGKILL", vmID)
-	return c.ForceKill(vmID)
+	// Wait up to 5 seconds for graceful exit.
+	const gracePeriod = 5 * time.Second
+	deadline := time.Now().Add(gracePeriod)
+	for time.Now().Before(deadline) {
+		if !utils.IsProcessAlive(pid) {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	log.Printf("CH pid %d (%s) did not exit after SIGTERM; falling back to SIGKILL", pid, vmID)
+	return utils.ForceKillProcess(pid)
 }
 
 // isVMProcessStopped reports whether the CH process for vmID has exited.
