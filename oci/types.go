@@ -14,15 +14,21 @@ const (
 // VMImageConfig is the config blob stored in the OCI manifest.
 // See docs/04.1-oci-vm-images.md Section 2.2.
 type VMImageConfig struct {
-	Arch            string            `json:"arch"`
-	DefaultCPUs     int               `json:"default_cpus"`
-	DefaultMemoryMB int               `json:"default_memory_mb"`
-	KernelCmdline   string            `json:"kernel_cmdline"`
-	KernelPath      string            `json:"kernel_path"`
-	InitrdPath      string            `json:"initrd_path"`
-	VirtiofsTag     string            `json:"virtiofs_tag"`
-	RootfsPartUUID  string            `json:"rootfs_partuuid,omitempty"`
-	Labels          map[string]string `json:"labels,omitempty"`
+	Arch            string `json:"arch"`
+	DefaultCPUs     int    `json:"default_cpus"`
+	DefaultMemoryMB int    `json:"default_memory_mb"`
+	KernelCmdline   string `json:"kernel_cmdline"`
+	KernelPath      string `json:"kernel_path"`
+	InitrdPath      string `json:"initrd_path"`
+	VirtiofsTag     string `json:"virtiofs_tag"`
+	// RootfsPartUUID is the GPT PARTUUID detected from the cloud image's root partition
+	// during build. It is currently unused at runtime: the OCI VM direct boot path mounts
+	// the root filesystem via virtiofs (root=cocoon-rootfs rootfstype=virtiofs), and the
+	// original PARTUUID-based root= parameter is stripped by normalizeVirtiofsKernelCmdline.
+	// The field is preserved as metadata for a potential future block-device boot fallback
+	// (e.g., qcow2 reconstruction from OCI layers) without requiring a rebuild.
+	RootfsPartUUID string            `json:"rootfs_partuuid,omitempty"`
+	Labels         map[string]string `json:"labels,omitempty"`
 }
 
 // KernelInfo holds detected kernel and initrd paths from a cloud image.
