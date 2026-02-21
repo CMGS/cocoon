@@ -25,7 +25,7 @@ both host-side qcow2 backing and host-side overlayfs + virtiofsd.
 | Firmware | CLOUDHV.fd | None |
 | Root delivery | qcow2 base + qcow2 COW overlay | virtiofsd + host overlayfs (N layers) |
 | COW mechanism | qcow2 backing chain (host) | virtiofsd writes to overlay upper (host) |
-| Shutdown | ACPI power-button → guest systemd | vm.shutdown API → SIGTERM → SIGKILL |
+| Shutdown | ACPI power-button → guest systemd → SIGTERM | vm.shutdown API → SIGTERM → SIGKILL |
 | Per-VM processes | CH only | CH + virtiofsd |
 | Boot latency | ~10s | ~30s (virtiofsd + host overlay overhead) |
 
@@ -88,7 +88,10 @@ device identification.
 **Layer count limit**: Cocoon caps the number of rootfs layers at **8**.
 Images exceeding this limit are flattened into a single EROFS during
 materialize. This avoids hitting the overlayfs lowerdir argument length
-limit and keeps the cmdline manageable.
+limit and keeps the cmdline manageable. The flattened EROFS gets its own
+content-address (SHA-256 of the output file); original per-layer SHAs are
+not stored or referenced. Refcount and GC operate on the flattened layer
+as a single unit — no relationship to the original OCI layers is tracked.
 
 Multiple VMs from the same image share kernel and rootfs layers (content-
 addressed by SHA-256). Each VM only gets its own COW raw file.
@@ -382,14 +385,19 @@ without `rootok=1`, it halts before ever reaching mount hooks.
 # hook. Using a real device path (e.g. /dev/disk/by-id/virtio-*) would
 # risk a race with dracut's standard root-finding modules.
 
-# Extract base layer serial from cocoon.layers (last entry = lowest priority).
+# Only activate if cocoon.layers is present on cmdline.
+_layers=""
 for x in $(cat /proc/cmdline); do
     case $x in cocoon.layers=*) _layers="${x#cocoon.layers=}" ;; esac
 done
+[ -z "$_layers" ] && return 0
+
 _base="${_layers##*,}"
 root="cocoon:${_base}"
 rootok=1
-export root rootok
+fstype="overlay"
+rflags="rw"
+export root rootok fstype rflags
 ```
 
 **Hook 2** — `/lib/dracut/hooks/mount/01-cocoon-mount.sh`:
@@ -579,10 +587,12 @@ point.
 
 ### Topology Declaration
 
-Cocoon controls both the CH `--disk` flags and the kernel cmdline. Each
-virtio-blk disk is assigned a **stable serial ID** via CH's `serial=`
-parameter. The boot hook resolves serial → `/dev/vdX` by scanning
-`/sys/block/vd*/serial`, with a timeout-based wait for device readiness.
+Cocoon controls both the CH disk config and the kernel cmdline. Each
+virtio-blk disk is assigned a **stable serial ID** via CH's `serial`
+field. The boot hook resolves serial → `/dev/vdX` by scanning
+`/sys/block/vd*/serial` and `/sys/block/vd*/device/serial` (both paths
+are checked — kernel version determines which is populated), with a
+timeout-based wait for device readiness.
 
 Two custom cmdline parameters declare the topology:
 
@@ -590,8 +600,11 @@ Two custom cmdline parameters declare the topology:
   layer serial IDs (leftmost = highest priority in overlayfs lowerdir)
 - `cocoon.cow=cocoon-cow` — the writable COW device serial ID
 
-In addition, `boot=cocoon` is set to tell initramfs-tools to use the
-cocoon boot script instead of the default local mount logic.
+In addition, `boot=cocoon` is set on the kernel cmdline. This is
+**only used by initramfs-tools** (tells `/init` to source `/scripts/cocoon`
+instead of `/scripts/local`). Dracut ignores unknown cmdline parameters,
+so `boot=cocoon` is harmless on dracut-based images. Cocoon injects it
+unconditionally to avoid needing to know the initramfs format at boot time.
 
 Optional parameters:
 - `cocoon.timeout=N` — device wait timeout in seconds (default: 10).
@@ -625,8 +638,12 @@ IDs are set by Cocoon and are stable regardless of disk ordering.
 cloudimg.img (download — may be qcow2 or raw)
   → Detect format (qcow2 magic "QFI\xfb" at offset 0)
   → If qcow2: qemu-img convert -f qcow2 -O raw → cloudimg.raw
-  → Parse GPT in Go → compute rootfs partition offset (ext4 or xfs)
-  → mount -o ro,loop,offset=<N> (requires root)
+  → Parse GPT in Go → select rootfs partition → compute offset
+      Selection rule:
+        1. Filter out ESP (EFI System) and BIOS boot partitions by GPT type GUID
+        2. Among remaining "Linux filesystem" partitions, pick the largest
+        3. mount -o ro,loop,offset=<N> (requires root)
+        4. Verify /etc/os-release exists in mounted rootfs (else fail fast)
   → Extract: vmlinuz, initrd.img, kernel modules (erofs/overlay dep chain)
   → mkfs.erofs rootfs.erofs (from mount point, no guest modification)
   → Unmount
@@ -644,9 +661,12 @@ Tools needed:
 - `qemu-img` (qemu-utils package — only for qcow2→raw conversion)
 - `mount` (cocoon runs as root — loop + offset mount is always available)
 - `mkfs.erofs` (erofs-utils package)
-- Go for GPT parsing, gzip/zstd decompression; **third-party cpio library**
-  required (Go stdlib has no `archive/cpio` — use e.g. `github.com/cavaliergopher/cpio`
-  or implement newc format reader/writer)
+- Go for GPT parsing; **third-party libraries** required:
+  - cpio: Go stdlib has no `archive/cpio` — use e.g. `github.com/cavaliergopher/cpio`
+    or implement newc format reader/writer
+  - zstd: `github.com/klauspost/compress/zstd` (initramfs segments, `.ko.zst` modules)
+  - xz: `github.com/ulikunitz/xz` (initramfs segments, `.ko.xz` modules)
+  - gzip: Go stdlib `compress/gzip` (sufficient)
 
 ### OCI Image Materialize Pipeline
 
@@ -694,6 +714,12 @@ When keeping layers separate (multi-EROFS lowerdir):
 as root, so this is available). The `mkfs.erofs` tool preserves device
 nodes and xattrs.
 
+**Kernel dependency**: cross-layer deletion in multi-EROFS lowerdir relies
+on the Linux kernel's overlayfs implementation of whiteout (`c 0 0`) and
+opaque (`trusted.overlay.opaque=y`) semantics. This is the standard
+overlayfs contract documented in `Documentation/filesystems/overlayfs.rst`
+and is stable across all supported kernel versions (4.x+).
+
 ### Per-VM COW Disk Management
 
 COW disks are raw ext4 files, created at `cocoon create` time:
@@ -710,7 +736,9 @@ func createCOWDisk(path string, size int64) error {
 }
 ```
 
-Resize: `truncate -s +10G cow.raw` on host, then `resize2fs /dev/vdX` in guest.
+Resize: `truncate -s +10G cow.raw` on host, then `resize2fs` on the COW
+device in guest (identified by serial: the device at
+`/sys/block/vd*/serial == "cocoon-cow"`).
 
 **COW health recovery**: after an unclean VM shutdown (SIGKILL, host crash),
 the ext4 journal should handle recovery automatically on next mount. If the
@@ -771,12 +799,18 @@ the same pattern used by `jsonstore.Store[T]` (see `lock/jsonstore/`).
 
 **Note on ACPI**: removing UEFI firmware does **not** remove ACPI. Cloud
 Hypervisor generates ACPI tables (including power button) for direct-boot
-VMs independently of firmware. The `vm.shutdown` API injects an ACPI power
-button event, and guest systemd performs a clean shutdown sequence (unmount
-filesystems, sync disks). This is the **same graceful shutdown mechanism**
-as UEFI boot — ACPI is retained. What is removed is only the UEFI firmware
-binary (`CLOUDHV.fd`) and the separate `Shutdown` vs `ShutdownDirect` code
-paths — they merge into a single path that uses ACPI power button.
+VMs independently of firmware. The unified shutdown sequence is:
+
+1. `PUT /api/v1/vm.power-button` — injects ACPI power button event; guest
+   systemd performs orderly shutdown (unmount filesystems, sync disks).
+2. Wait for CH process exit (with configurable timeout).
+3. Fallback: `PUT /api/v1/vm.shutdown` — VMM-level forced stop of vCPUs
+   and backends (no guest cooperation).
+4. Last resort: `SIGTERM` → `SIGKILL` the CH process.
+
+This is the **same graceful shutdown mechanism** as the current UEFI boot
+path — ACPI is retained. What is removed is only the UEFI firmware binary
+(`CLOUDHV.fd`) and the separate `Shutdown` vs `ShutdownDirect` code paths.
 
 **Note**: `image/pipeline/convert_linux.go` (qcow2 conversion) is
 **retained** — it changes from qcow2→qcow2 base to qcow2→raw (for
@@ -1013,11 +1047,11 @@ motivation is removing virtiofsd.
    required before Phase 1 completion.
 
 10. **~~Shutdown semantics~~**: resolved. ACPI is **retained** even without
-    UEFI firmware — CH generates ACPI tables for direct-boot VMs. Graceful
-    shutdown uses ACPI power button (`vm.power-button` API) → guest systemd
-    performs orderly shutdown (unmount COW, sync). Fallback: `vm.shutdown`
-    API → SIGTERM → SIGKILL. The two existing code paths (`Shutdown` and
-    `ShutdownDirect`) merge into a single unified path.
+    UEFI firmware — CH generates ACPI tables for direct-boot VMs. Unified
+    sequence: `vm.power-button` (ACPI) → wait → `vm.shutdown` (VMM forced
+    stop) → `SIGTERM` → `SIGKILL`. See "Note on ACPI" in Code Impact.
+    The two existing code paths (`Shutdown` and `ShutdownDirect`) merge
+    into a single path.
 
 11. **Kernel/initrd selection**: images with multiple kernels (e.g.
     `/boot/vmlinuz-*`) — Cocoon selects the **latest version** using
