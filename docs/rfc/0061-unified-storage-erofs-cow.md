@@ -1098,19 +1098,21 @@ motivation is removing virtiofsd.
    Cocoon records `mkfs.erofs` version in `meta.json` for diagnostics.
    Minimum required version: erofs-utils >= 1.5.
 
-   **Oldest supported guest kernel**: **5.10** (Debian 11, RHEL 8.x).
-   This is the floor for the ext4 feature compatibility gate and EROFS
-   requirements. Kernels older than 5.10 are not tested or supported.
+   **Oldest supported guest kernel**: **5.13**. This is the floor for
+   the ext4 feature compatibility gate, EROFS PCLUSTER, and XATTR
+   requirements. Kernels older than 5.13 are not tested or supported.
+   This covers all actively maintained distro LTS releases (Ubuntu
+   22.04+ = 5.15, RHEL 9+ = 5.14, Debian 12+ = 6.1). Debian 11
+   (kernel 5.10) reached EOL in 2024 and is excluded.
 
    **Kernel requirements**: the guest kernel must have:
    - `CONFIG_EROFS_FS_PCLUSTER=y` — required for 64KB pcluster (`-C65536`).
-     Available since Linux 5.13. If supporting older kernels (5.10-5.12),
-     fall back to `-C4096` (page-size aligned).
+     Available since Linux 5.13 — exactly the supported floor.
    - `CONFIG_EROFS_FS_XATTR=y` — required for reading `trusted.overlay.opaque`
      xattrs from EROFS. Without it, opaque directory semantics in multi-layer
      OCI images break silently (cross-layer deletions are not applied).
      This is validated by the Phase 1 acceptance gate: the xattr whiteout
-     test must pass on the oldest supported kernel (5.10).
+     test must pass on the oldest supported kernel (5.13).
    Modern distro kernels (5.15+, Ubuntu 22.04+, RHEL 9+) enable both.
 
 9. **~~OCI whiteout semantics~~**: resolved. Whiteout handling is defined
@@ -1210,7 +1212,7 @@ Each phase gate requires passing the following test matrix:
 | dracut image boots with `boot=cocoon` (no side effects) | Required | - |
 | Cross-layer whiteout: user layer deletes base file → file invisible | Required | - |
 | Serial 20-byte edge case: 20-char serial resolves correctly | Required | - |
-| EROFS xattr: `trusted.overlay.opaque` readable on oldest kernel (5.10) | Required | - |
+| EROFS xattr: `trusted.overlay.opaque` readable on oldest kernel (5.13) | Required | - |
 
 ### Phase 2 Gate (Cloudimg Path)
 
