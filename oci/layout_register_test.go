@@ -4,6 +4,8 @@ import (
 	"os"
 	"slices"
 	"testing"
+
+	"github.com/CMGS/cocoon/lock/flock"
 )
 
 func TestCleanupManifestRefsIfUnreferenced(t *testing.T) {
@@ -19,7 +21,7 @@ func TestCleanupManifestRefsIfUnreferenced(t *testing.T) {
 	}
 
 	// No tag references this manifest: cleanup should remove refs.
-	if err := store.withTxnLock(func() error {
+	if err := flock.WithLock(cfg.OCIBuildTxnLock(), func() error {
 		return store.cleanupManifestRefsIfUnreferencedTxnLocked(manifest)
 	}); err != nil {
 		t.Fatalf("cleanupManifestRefsIfUnreferenced (unreferenced): %v", err)
@@ -45,7 +47,7 @@ func TestCleanupManifestRefsIfUnreferenced(t *testing.T) {
 		t.Fatalf("SaveTag: %v", err)
 	}
 
-	if err := store.withTxnLock(func() error {
+	if err := flock.WithLock(cfg.OCIBuildTxnLock(), func() error {
 		return store.cleanupManifestRefsIfUnreferencedTxnLocked(manifest)
 	}); err != nil {
 		t.Fatalf("cleanupManifestRefsIfUnreferenced (referenced): %v", err)

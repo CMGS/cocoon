@@ -2,17 +2,15 @@ package local
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/CMGS/cocoon/config"
-	"github.com/CMGS/cocoon/lock/flock"
+	"github.com/CMGS/cocoon/lock/jsonstore"
 	"github.com/CMGS/cocoon/storage"
 	"github.com/CMGS/cocoon/types"
-	"github.com/CMGS/cocoon/utils"
 )
 
 // Compile-time interface check.
@@ -25,22 +23,30 @@ var _ storage.ReferenceCounter = (*fileReferenceCounter)(nil)
 // duration of its read-modify-write cycle.  The lock is released before
 // returning, keeping hold times to a few milliseconds.
 type fileReferenceCounter struct {
-	cfg *config.CocoonConfig
+	cfg       *config.CocoonConfig
+	refsStore *jsonstore.Store[types.ReferencesFile]
 }
 
 // NewReferenceCounter creates a ReferenceCounter backed by references.json.
 func NewReferenceCounter(cfg *config.CocoonConfig) storage.ReferenceCounter {
-	return &fileReferenceCounter{cfg: cfg}
+	return &fileReferenceCounter{
+		cfg: cfg,
+		refsStore: jsonstore.New(
+			cfg.ReferencesLock(),
+			cfg.ReferencesFile(),
+			func() *types.ReferencesFile {
+				m := make(types.ReferencesFile)
+				return &m
+			},
+		),
+	}
 }
 
 // AddReference pins vmID to baseKey.  Collision detection compares digestFull
 // when the key already exists.  Returns types.ErrChecksumCollision on mismatch.
 func (rc *fileReferenceCounter) AddReference(baseKey, vmID, digestFull, sourceRef string) error {
-	return rc.withRefsLock(func() error {
-		refs, err := rc.loadRefs()
-		if err != nil {
-			return err
-		}
+	return rc.refsStore.Update(func(refsPtr *types.ReferencesFile) error {
+		refs := *refsPtr
 
 		entry := refs[baseKey]
 		if entry != nil {
@@ -64,24 +70,21 @@ func (rc *fileReferenceCounter) AddReference(baseKey, vmID, digestFull, sourceRe
 			refs[baseKey] = entry
 		}
 
-		// Idempotent: skip if vmID is already present (no write needed).
+		// Idempotent: skip if vmID is already present.
 		if slices.Contains(entry.Refs, vmID) {
 			return nil
 		}
 		entry.Refs = append(entry.Refs, vmID)
 
-		return rc.saveRefs(refs)
+		return nil
 	})
 }
 
 // RemoveReference unpins vmID from baseKey.  Deletes the entry when the last
 // reference is removed.
 func (rc *fileReferenceCounter) RemoveReference(baseKey, vmID string) error {
-	return rc.withRefsLock(func() error {
-		refs, err := rc.loadRefs()
-		if err != nil {
-			return err
-		}
+	return rc.refsStore.Update(func(refsPtr *types.ReferencesFile) error {
+		refs := *refsPtr
 
 		entry := refs[baseKey]
 		if entry == nil {
@@ -101,7 +104,7 @@ func (rc *fileReferenceCounter) RemoveReference(baseKey, vmID string) error {
 			entry.Refs = filtered
 		}
 
-		return rc.saveRefs(refs)
+		return nil
 	})
 }
 
@@ -109,11 +112,8 @@ func (rc *fileReferenceCounter) RemoveReference(baseKey, vmID string) error {
 func (rc *fileReferenceCounter) GetReferences(baseKey string) ([]string, error) {
 	var result []string
 
-	err := rc.withRefsLock(func() error {
-		refs, err := rc.loadRefs()
-		if err != nil {
-			return err
-		}
+	err := rc.refsStore.Read(func(refsPtr *types.ReferencesFile) error {
+		refs := *refsPtr
 		entry := refs[baseKey]
 		if entry != nil && len(entry.Refs) > 0 {
 			result = make([]string, len(entry.Refs))
@@ -131,11 +131,8 @@ func (rc *fileReferenceCounter) GetReferences(baseKey string) ([]string, error) 
 func (rc *fileReferenceCounter) IsReferenced(baseKey string) (bool, error) {
 	var referenced bool
 
-	err := rc.withRefsLock(func() error {
-		refs, err := rc.loadRefs()
-		if err != nil {
-			return err
-		}
+	err := rc.refsStore.Read(func(refsPtr *types.ReferencesFile) error {
+		refs := *refsPtr
 		entry := refs[baseKey]
 		referenced = entry != nil && len(entry.Refs) > 0
 		return nil
@@ -149,11 +146,8 @@ func (rc *fileReferenceCounter) IsReferenced(baseKey string) (bool, error) {
 func (rc *fileReferenceCounter) GetUnreferencedImages() ([]string, error) {
 	var unreferenced []string
 
-	err := rc.withRefsLock(func() error {
-		refs, err := rc.loadRefs()
-		if err != nil {
-			return err
-		}
+	err := rc.refsStore.Read(func(refsPtr *types.ReferencesFile) error {
+		refs := *refsPtr
 
 		// Scan image cache directory.
 		pattern := filepath.Join(rc.cfg.ImageCacheDir(), "*.qcow2")
@@ -177,39 +171,6 @@ func (rc *fileReferenceCounter) GetUnreferencedImages() ([]string, error) {
 		unreferenced = []string{}
 	}
 	return unreferenced, err
-}
-
-// withRefsLock acquires references.lock, runs fn, then releases the lock.
-func (rc *fileReferenceCounter) withRefsLock(fn func() error) error {
-	fl := flock.New(rc.cfg.ReferencesLock())
-	if err := fl.Lock(); err != nil {
-		return fmt.Errorf("acquire references.lock: %w", err)
-	}
-	defer fl.Unlock() //nolint:errcheck
-
-	return fn()
-}
-
-// loadRefs reads and unmarshals references.json.  If the file does not exist
-// an empty map is returned (not an error).
-func (rc *fileReferenceCounter) loadRefs() (types.ReferencesFile, error) {
-	refs := make(types.ReferencesFile)
-	err := utils.ReadJSON(rc.cfg.ReferencesFile(), &refs)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return refs, nil
-		}
-		return nil, fmt.Errorf("load references.json: %w", err)
-	}
-	return refs, nil
-}
-
-// saveRefs atomically persists refs to references.json (temp + fsync + rename).
-func (rc *fileReferenceCounter) saveRefs(refs types.ReferencesFile) error {
-	if err := utils.AtomicWriteJSON(rc.cfg.ReferencesFile(), refs); err != nil {
-		return fmt.Errorf("save references.json: %w", err)
-	}
-	return nil
 }
 
 // safePrefix returns the first n characters of s, or the entire string if

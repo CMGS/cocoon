@@ -31,7 +31,7 @@ import (
 func (gc *fileGarbageCollector) CollectOrphanedOCILayouts() ([]string, error) {
 	var collected []string
 
-	err := gc.withGCLock(func() error {
+	err := flock.WithLock(gc.cfg.GCLock(), func() error {
 		layoutsDir := gc.cfg.OCILayoutDir()
 		entries, err := os.ReadDir(layoutsDir)
 		if err != nil {
@@ -111,7 +111,7 @@ func (gc *fileGarbageCollector) CollectOrphanedOCILayouts() ([]string, error) {
 func (gc *fileGarbageCollector) CollectStaleOCITags() ([]string, error) {
 	var collected []string
 
-	err := gc.withGCLock(func() error {
+	err := flock.WithLock(gc.cfg.GCLock(), func() error {
 		// Acquire txn lock to serialize with concurrent builds.
 		txnLock := flock.New(gc.cfg.OCIBuildTxnLock())
 		if err := txnLock.Lock(); err != nil {
@@ -241,7 +241,7 @@ func (gc *fileGarbageCollector) CollectStaleOCITags() ([]string, error) {
 func (gc *fileGarbageCollector) CollectOrphanedOCIManifestRefs() ([]string, error) {
 	var collected []string
 
-	err := gc.withGCLock(func() error {
+	err := flock.WithLock(gc.cfg.GCLock(), func() error {
 		// Acquire txn lock.
 		txnLock := flock.New(gc.cfg.OCIBuildTxnLock())
 		if err := txnLock.Lock(); err != nil {
@@ -344,7 +344,7 @@ func (gc *fileGarbageCollector) CollectOrphanedOCIManifestRefs() ([]string, erro
 func (gc *fileGarbageCollector) CollectUnreferencedOCIBlobs() ([]string, error) {
 	var collected []string
 
-	err := gc.withGCLock(func() error {
+	err := flock.WithLock(gc.cfg.GCLock(), func() error {
 		blobDir := gc.cfg.OCIBlobDir()
 		entries, err := os.ReadDir(blobDir)
 		if err != nil {
@@ -434,7 +434,7 @@ func (gc *fileGarbageCollector) CollectUnreferencedOCIBlobs() ([]string, error) 
 func (gc *fileGarbageCollector) CollectUnreferencedOCIRuntimeCaches() ([]string, error) {
 	var collected []string
 
-	err := gc.withGCLock(func() error {
+	err := flock.WithLock(gc.cfg.GCLock(), func() error {
 		refsLock := flock.New(gc.cfg.OCIRuntimeRefsLock())
 		if err := refsLock.Lock(); err != nil {
 			return fmt.Errorf("acquire OCI runtime refs lock: %w", err)
