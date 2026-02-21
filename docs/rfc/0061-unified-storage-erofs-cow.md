@@ -262,9 +262,16 @@ Source Image (cloudimg.img or OCI layers)
   │   ├─ Detect initramfs format (initramfs-tools vs dracut; unknown → fail)
   │   ├─ Tool availability gate: verify the unpacked initramfs contains
   │   │     the required external commands (insmod, mount, cat, mkdir,
-  │   │     rm, ln, mknod, sleep, uname). Check busybox applet list or
-  │   │     standalone binaries in /bin, /sbin, /usr/bin, /usr/sbin.
-  │   │     Missing any → PermanentError("initramfs too minimal: missing <tool>")
+  │   │     rm, ln, mknod, sleep, uname).
+  │   │     Detection algorithm (PATH = /bin:/sbin:/usr/bin:/usr/sbin):
+  │   │       1. For each tool, check if an executable file (or symlink)
+  │   │          exists at any PATH entry inside the unpacked rootfs.
+  │   │       2. If not found, check if a busybox binary exists; if so,
+  │   │          run `busybox <tool> --help` and accept exit code 0 or 1
+  │   │          as "supported" (do NOT rely on `busybox --list` — some
+  │   │          builds omit it).
+  │   │       3. If neither check passes →
+  │   │          PermanentError("initramfs too minimal: missing <tool>")
   │   ├─ Inject /cocoon-modules/*.ko + load.order
   │   ├─ Inject /cocoon-buildinfo.json (read-only, immutable build-time data):
   │   │     { mkfs_erofs_flags, mkfs_erofs_version,
@@ -506,9 +513,15 @@ mountroot() {
     }
 
     # Write runtime boot results to /run (separate from immutable buildinfo).
-    # Acceptance tests depend on this file — hard-fail if write fails.
+    # Acceptance tests and CI depend on this file — hard-fail if write fails.
+    # Fields: overlay_opts_effective ("full"|"fallback"),
+    #   overlay_mount_first_error (if any), overlay_mount_fallback_error (if any).
     mkdir -p /run/cocoon || cocoon_fatal "mkdir /run/cocoon failed"
-    printf '{"overlay_opts_effective":"%s"}\n' "$_ovl_mode" > /run/cocoon/boot.json \
+    _boot_json="{\"overlay_opts_effective\":\"${_ovl_mode}\""
+    [ -n "${_ovl_err:-}" ] && _boot_json="${_boot_json},\"overlay_mount_first_error\":\"${_ovl_err}\""
+    [ -n "${_ovl_fb_err:-}" ] && _boot_json="${_boot_json},\"overlay_mount_fallback_error\":\"${_ovl_fb_err}\""
+    _boot_json="${_boot_json}}"
+    printf '%s\n' "$_boot_json" > /run/cocoon/boot.json \
         || cocoon_fatal "write /run/cocoon/boot.json failed"
 
     mkdir -p "${rootmnt}/dev" "${rootmnt}/proc" "${rootmnt}/sys" "${rootmnt}/run"
@@ -542,8 +555,17 @@ mountroot() {
     # If the base image ships a non-empty machine-id, multiple VMs would
     # share it (breaks journald, dbus, systemd-networkd, licensing agents).
     # Truncating to empty triggers systemd-machine-id-setup on first boot.
-    if [ -f "${rootmnt}/etc/machine-id" ]; then
-        : > "${rootmnt}/etc/machine-id" 2>/dev/null || true
+    #
+    # rm -f first: /etc/machine-id may be a symlink to
+    # /var/lib/dbus/machine-id — writing through a symlink on overlayfs
+    # has unpredictable copy-up behavior. Force a regular file in upper.
+    rm -f "${rootmnt}/etc/machine-id" 2>/dev/null || true
+    : > "${rootmnt}/etc/machine-id" || cocoon_fatal "create empty /etc/machine-id failed"
+    # Also cover the dbus alias path (some distros symlink the other way).
+    if [ -d "${rootmnt}/var/lib/dbus" ] || [ -L "${rootmnt}/var/lib/dbus/machine-id" ]; then
+        mkdir -p "${rootmnt}/var/lib/dbus" 2>/dev/null || true
+        rm -f "${rootmnt}/var/lib/dbus/machine-id" 2>/dev/null || true
+        : > "${rootmnt}/var/lib/dbus/machine-id" 2>/dev/null || true
     fi
 
     log_success_msg "Cocoon: overlay rootfs ready"
@@ -554,9 +576,11 @@ mountroot() {
 
 Dracut requires **two** injected hooks. The `rootok=1` flag **must** be set
 during the `cmdline` stage — if dracut reaches the end of cmdline processing
-without `rootok=1`, it halts before ever reaching mount hooks. This is
-documented in `dracut.modules(7)` §CMDLINE HOOKS: *"If no cmdline hook
-sets `rootok`, dracut will refuse to boot."*
+without `rootok=1`, it aborts before ever reaching mount hooks. This is
+enforced in dracut's `init` script (see
+[dracut-init.sh, `rootok` check](https://github.com/dracut-ng/dracut-ng/blob/main/modules.d/99base/init.sh)):
+if no cmdline hook sets `rootok=1`, dracut prints a diagnostic and drops
+to an emergency shell.
 
 **Hook 1** — `/lib/dracut/hooks/cmdline/01-cocoon-cmdline.sh`:
 
@@ -734,7 +758,11 @@ _ovl_err=$(mount -t overlay overlay -o "$OVL_FULL" "$NEWROOT" 2>&1) || {
 
 # Write runtime boot results to /run (separate from immutable buildinfo).
 mkdir -p /run/cocoon || cocoon_fatal "cocoon: mkdir /run/cocoon failed"
-printf '{"overlay_opts_effective":"%s"}\n' "$_ovl_mode" > /run/cocoon/boot.json \
+_boot_json="{\"overlay_opts_effective\":\"${_ovl_mode}\""
+[ -n "${_ovl_err:-}" ] && _boot_json="${_boot_json},\"overlay_mount_first_error\":\"${_ovl_err}\""
+[ -n "${_ovl_fb_err:-}" ] && _boot_json="${_boot_json},\"overlay_mount_fallback_error\":\"${_ovl_fb_err}\""
+_boot_json="${_boot_json}}"
+printf '%s\n' "$_boot_json" > /run/cocoon/boot.json \
     || cocoon_fatal "cocoon: write /run/cocoon/boot.json failed"
 
 mkdir -p "$NEWROOT/dev" "$NEWROOT/proc" "$NEWROOT/sys" "$NEWROOT/run"
@@ -755,8 +783,13 @@ ln -sf /dev/null "$NEWROOT/etc/systemd/system/systemd-remount-fs.service" \
     || cocoon_fatal "cocoon: mask systemd-remount-fs.service failed"
 
 # VM identity isolation (see initramfs-tools hook for rationale).
-if [ -f "$NEWROOT/etc/machine-id" ]; then
-    : > "$NEWROOT/etc/machine-id" 2>/dev/null || true
+# rm -f first: /etc/machine-id may be a symlink — force regular file in upper.
+rm -f "$NEWROOT/etc/machine-id" 2>/dev/null || true
+: > "$NEWROOT/etc/machine-id" || cocoon_fatal "cocoon: create empty /etc/machine-id failed"
+if [ -d "$NEWROOT/var/lib/dbus" ] || [ -L "$NEWROOT/var/lib/dbus/machine-id" ]; then
+    mkdir -p "$NEWROOT/var/lib/dbus" 2>/dev/null || true
+    rm -f "$NEWROOT/var/lib/dbus/machine-id" 2>/dev/null || true
+    : > "$NEWROOT/var/lib/dbus/machine-id" 2>/dev/null || true
 fi
 ```
 
@@ -860,12 +893,19 @@ would be lost. The hook scripts would need to explicitly `mount --move`
 the cocoon mount points into the new root before `switch_root`. This is
 tracked as a known dependency on the initramfs framework contract.
 
-**Recommended post-boot self-check**: the implementation should inject a
-systemd oneshot service (in the COW upper) that verifies
-`/run/cocoon/storage/layers/*` are still mountpoints after boot. If not,
-log a fatal diagnostic via `systemd-cat` and optionally trigger
-`systemctl isolate emergency.target`. This converts a silent mount loss
-into an observable failure.
+**Post-boot self-check (Phase 1 gate)**: the implementation **must** inject
+a systemd oneshot service (in the COW upper) that verifies
+`/run/cocoon/storage/layers/*` are still mountpoints after boot. If any
+expected mountpoint is missing, the service logs a fatal diagnostic via
+`systemd-cat` and triggers `systemctl isolate emergency.target`. This
+converts a silent mount loss into an observable, actionable failure.
+
+The check is gated by the kernel cmdline parameter `cocoon.selfcheck=`
+(default `1`). Setting `cocoon.selfcheck=0` disables it. CI and debug
+profiles should always leave it enabled. Without this check, a non-standard
+initramfs framework that silently drops `/run` contents would produce a VM
+that appears to boot but has missing layer mounts — an extremely hard-to-
+diagnose failure mode.
 
 #### Guest Visibility
 
@@ -1326,8 +1366,16 @@ addressing to work. The cpio repacker must:
 
 - Traverse directories in sorted order (not filesystem/map iteration order)
 - Use fixed timestamps (e.g. mtime=0) for all injected entries
-- Use deterministic compression (e.g. gzip with fixed level, no timestamp
-  in gzip header — `gzip.Header.ModTime = time.Time{}`)
+- Use deterministic compression: repack with the **same algorithm** as the
+  original segment (see Pitfall 1 hard rule), and use **fixed compression
+  parameters** to ensure bit-identical output across runs:
+  - **gzip**: `mtime=0` in gzip header (`gzip.Header.ModTime = time.Time{}`),
+    fixed compression level (e.g. `gzip.BestCompression`), single-threaded
+  - **zstd**: fixed compression level (e.g. `zstd.SpeedDefault`),
+    single-threaded (`zstd.WithEncoderConcurrency(1)`) — multi-threaded
+    zstd can produce non-deterministic output
+  - **xz**: fixed preset (e.g. `-6`), single-threaded (`--threads=1`) —
+    multi-threaded xz uses non-deterministic block splitting
 
 Without these, the same input produces different SHA-256 hashes across
 runs, defeating kernel layer dedup.
@@ -1605,7 +1653,7 @@ Each phase gate requires passing the following test matrix:
 | OCI unpack fidelity: `security.capability` xattrs preserved (e.g. `getcap /bin/ping`) | Required | Required |
 | OCI unpack fidelity: hardlinks preserved (inode/link count match source) | Required | - |
 | Composite behavior: base has `ping` with cap + `dirA/basefile`; user layer deletes `basefile`, marks `dirA` opaque → boot, verify ping works + basefile invisible + dirA has only user content | Required | - |
-| systemd compat: machine-id written, journald writes to `/var/log/journal`, cloud-init (if present) does not block boot | Required | Required |
+| systemd compat: machine-id unique per VM (empty at overlay mount, regenerated on first boot; two VMs from same image must have different IDs), journald writes to `/var/log/journal`, cloud-init (if present) does not block boot | Required | Required |
 | Overlay copy-up: modify a file from EROFS lowerdir → verify copy-up to COW upper succeeds, original unchanged | Required | - |
 | Overlay rename: rename a directory from EROFS lowerdir → verify rename succeeds in COW. Check `/run/cocoon/boot.json`: if `overlay_opts_effective=full`, assert `redirect_dir=off` behavior; if `fallback`, only assert rename is non-fatal | Required | - |
 
