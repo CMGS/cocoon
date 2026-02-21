@@ -2,14 +2,12 @@ package oci
 
 import (
 	"fmt"
-	"os"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/CMGS/cocoon/config"
-	"github.com/CMGS/cocoon/lock/flock"
-	"github.com/CMGS/cocoon/utils"
+	"github.com/CMGS/cocoon/lock/jsonstore"
 )
 
 // RuntimeRefEntry tracks which VMs pin an OCI runtime cache entry.
@@ -35,7 +33,7 @@ func AddRuntimeRef(cfg *config.CocoonConfig, runtimeKey, vmID string) error {
 		return fmt.Errorf("runtime ref vmID is empty")
 	}
 
-	return withRuntimeRefsLock(cfg, func(idx *RuntimeRefsIndex) error {
+	return runtimeRefsStore(cfg).Update(func(idx *RuntimeRefsIndex) error {
 		entry, ok := idx.Runtimes[runtimeKey]
 		if !ok {
 			entry = RuntimeRefEntry{
@@ -48,7 +46,7 @@ func AddRuntimeRef(cfg *config.CocoonConfig, runtimeKey, vmID string) error {
 		}
 		entry.Refs = append(entry.Refs, vmID)
 		idx.Runtimes[runtimeKey] = entry
-		return saveRuntimeRefs(cfg, idx)
+		return nil
 	})
 }
 
@@ -64,7 +62,7 @@ func RemoveRuntimeRef(cfg *config.CocoonConfig, runtimeKey, vmID string) error {
 		return fmt.Errorf("runtime ref vmID is empty")
 	}
 
-	return withRuntimeRefsLock(cfg, func(idx *RuntimeRefsIndex) error {
+	return runtimeRefsStore(cfg).Update(func(idx *RuntimeRefsIndex) error {
 		entry, ok := idx.Runtimes[runtimeKey]
 		if !ok {
 			return nil
@@ -84,7 +82,7 @@ func RemoveRuntimeRef(cfg *config.CocoonConfig, runtimeKey, vmID string) error {
 			idx.Runtimes[runtimeKey] = entry
 		}
 
-		return saveRuntimeRefs(cfg, idx)
+		return nil
 	})
 }
 
@@ -96,7 +94,7 @@ func GetRuntimeRefs(cfg *config.CocoonConfig, runtimeKey string) ([]string, erro
 	}
 
 	var refs []string
-	err := withRuntimeRefsLock(cfg, func(idx *RuntimeRefsIndex) error {
+	err := runtimeRefsStore(cfg).Read(func(idx *RuntimeRefsIndex) error {
 		entry, ok := idx.Runtimes[runtimeKey]
 		if !ok || len(entry.Refs) == 0 {
 			refs = []string{}
@@ -121,7 +119,7 @@ func IsRuntimeReferenced(cfg *config.CocoonConfig, runtimeKey string) (bool, err
 // LoadRuntimeRefsSnapshot returns a detached copy of oci-runtime-refs.json.
 func LoadRuntimeRefsSnapshot(cfg *config.CocoonConfig) (RuntimeRefsIndex, error) {
 	var snapshot RuntimeRefsIndex
-	err := withRuntimeRefsLock(cfg, func(idx *RuntimeRefsIndex) error {
+	err := runtimeRefsStore(cfg).Read(func(idx *RuntimeRefsIndex) error {
 		snapshot = RuntimeRefsIndex{Runtimes: make(map[string]RuntimeRefEntry, len(idx.Runtimes))}
 		for key, entry := range idx.Runtimes {
 			copied := RuntimeRefEntry{
@@ -136,40 +134,14 @@ func LoadRuntimeRefsSnapshot(cfg *config.CocoonConfig) (RuntimeRefsIndex, error)
 	return snapshot, err
 }
 
-func withRuntimeRefsLock(cfg *config.CocoonConfig, fn func(*RuntimeRefsIndex) error) error {
-	if err := os.MkdirAll(cfg.DBDir(), 0o700); err != nil {
-		return fmt.Errorf("create db dir: %w", err)
-	}
-	fl := flock.New(cfg.OCIRuntimeRefsLock())
-	if err := fl.Lock(); err != nil {
-		return fmt.Errorf("acquire oci runtime refs lock: %w", err)
-	}
-	defer fl.Unlock() //nolint:errcheck
-
-	idx, err := loadRuntimeRefs(cfg)
-	if err != nil {
-		return err
-	}
-	return fn(idx)
-}
-
-func loadRuntimeRefs(cfg *config.CocoonConfig) (*RuntimeRefsIndex, error) {
-	idx := &RuntimeRefsIndex{Runtimes: make(map[string]RuntimeRefEntry)}
-	path := cfg.OCIRuntimeRefsFile()
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return idx, nil
-	}
-	if err := utils.ReadJSON(path, idx); err != nil {
-		return nil, fmt.Errorf("read OCI runtime refs index: %w", err)
-	}
-	if idx.Runtimes == nil {
-		idx.Runtimes = make(map[string]RuntimeRefEntry)
-	}
-	return idx, nil
-}
-
-func saveRuntimeRefs(cfg *config.CocoonConfig, idx *RuntimeRefsIndex) error {
-	return utils.AtomicWriteJSON(cfg.OCIRuntimeRefsFile(), idx)
+func runtimeRefsStore(cfg *config.CocoonConfig) *jsonstore.Store[RuntimeRefsIndex] {
+	return jsonstore.New(
+		cfg.OCIRuntimeRefsLock(),
+		cfg.OCIRuntimeRefsFile(),
+		func() *RuntimeRefsIndex {
+			return &RuntimeRefsIndex{Runtimes: make(map[string]RuntimeRefEntry)}
+		},
+	).WithEnsureDir(cfg.DBDir())
 }
 
 func validateRuntimeKey(runtimeKey string) error {

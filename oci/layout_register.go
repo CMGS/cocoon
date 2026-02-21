@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/CMGS/cocoon/config"
+	"github.com/CMGS/cocoon/lock/flock"
 )
 
 // assemblyInfo holds the results of assembling an OCI layout for blob ref tracking.
@@ -25,7 +26,7 @@ func (s *Store) cleanupManifestRefsIfUnreferencedTxnLocked(manifestDigest string
 		return nil
 	}
 	manifestStillUsed := false
-	if err := s.withLock(func(idx *TagIndex) error {
+	if err := s.tagStore.Read(func(idx *TagIndex) error {
 		for _, entry := range idx.Tags {
 			if entry.ManifestDigest == manifestDigest {
 				manifestStillUsed = true
@@ -69,7 +70,10 @@ func finalizeLayoutDir(store *Store, tag, manifestDigest, layoutWorkDir string) 
 // tag under the OCI build transaction lock. Used by both Build and Pull.
 func registerBlobRefsAndSaveTag(store *Store, cfg *config.CocoonConfig, tag, layoutWorkDir string, info *assemblyInfo) (string, error) {
 	layoutDir := ""
-	err := store.withTxnLock(func() error {
+	if err := os.MkdirAll(cfg.DBDir(), 0o700); err != nil {
+		return "", fmt.Errorf("create db dir: %w", err)
+	}
+	err := flock.WithLock(cfg.OCIBuildTxnLock(), func() error {
 		finalizedLayoutDir, finalizeErr := finalizeLayoutDir(store, tag, info.manifestDigest, layoutWorkDir)
 		if finalizeErr != nil {
 			return finalizeErr

@@ -13,14 +13,14 @@ import (
 
 	"github.com/CMGS/cocoon/config"
 	"github.com/CMGS/cocoon/lock/flock"
-	"github.com/CMGS/cocoon/utils"
+	"github.com/CMGS/cocoon/lock/jsonstore"
 )
 
 // Store manages local OCI VM image builds and their tag index.
-// Follows the flock + JSON pattern from image/refcache/index.go.
 type Store struct {
 	cfg              *config.CocoonConfig
 	removeBlobRefsFn func(cfg *config.CocoonConfig, manifestDigest string) ([]string, error)
+	tagStore         *jsonstore.Store[TagIndex]
 }
 
 var blobRefCleanupFailures atomic.Uint64
@@ -30,6 +30,11 @@ func NewStore(cfg *config.CocoonConfig) *Store {
 	return &Store{
 		cfg:              cfg,
 		removeBlobRefsFn: RemoveBlobRefs,
+		tagStore: jsonstore.New(
+			cfg.OCIBuildTagLock(),
+			cfg.OCIBuildTagIndex(),
+			func() *TagIndex { return &TagIndex{Tags: make(map[string]TagEntry)} },
+		).WithEnsureDir(cfg.DBDir()),
 	}
 }
 
@@ -53,7 +58,10 @@ func (s *Store) LayoutDir(layoutKey string) string {
 // manifest's blob references are cleaned up via RemoveBlobRefs to prevent
 // reference leaks.
 func (s *Store) SaveTag(tag, layoutPath, manifestDigest string) error {
-	return s.withTxnLock(func() error {
+	if err := os.MkdirAll(s.cfg.DBDir(), 0o700); err != nil {
+		return fmt.Errorf("create db dir: %w", err)
+	}
+	return flock.WithLock(s.cfg.OCIBuildTxnLock(), func() error {
 		return s.saveTagTxnLocked(tag, layoutPath, manifestDigest)
 	})
 }
@@ -62,7 +70,7 @@ func (s *Store) SaveTag(tag, layoutPath, manifestDigest string) error {
 // Unlike ResolveTag, this does not verify layout path existence on disk.
 func (s *Store) HasTag(tag string) (bool, error) {
 	exists := false
-	err := s.withLock(func(idx *TagIndex) error {
+	err := s.tagStore.Read(func(idx *TagIndex) error {
 		_, exists = idx.Tags[tag]
 		return nil
 	})
@@ -75,7 +83,7 @@ func (s *Store) HasTag(tag string) (bool, error) {
 // GetTag returns the tag entry from the local OCI build tag index.
 func (s *Store) GetTag(tag string) (TagEntry, error) {
 	var entry TagEntry
-	err := s.withLock(func(idx *TagIndex) error {
+	err := s.tagStore.Read(func(idx *TagIndex) error {
 		found, ok := idx.Tags[tag]
 		if !ok {
 			return fmt.Errorf("tag %q not found in local builds", tag)
@@ -92,7 +100,7 @@ func (s *Store) GetTag(tag string) (TagEntry, error) {
 // ResolveTag looks up a tag in the index and returns the layout path.
 func (s *Store) ResolveTag(tag string) (string, error) {
 	var layoutPath string
-	err := s.withLock(func(idx *TagIndex) error {
+	err := s.tagStore.Read(func(idx *TagIndex) error {
 		entry, ok := idx.Tags[tag]
 		if !ok {
 			return fmt.Errorf("tag %q not found in local builds", tag)
@@ -113,7 +121,7 @@ func (s *Store) ResolveTag(tag string) (string, error) {
 // ListTags returns all local build tags, sorted by creation time (newest first).
 func (s *Store) ListTags() ([]TagEntry, error) {
 	var result []TagEntry
-	err := s.withLock(func(idx *TagIndex) error {
+	err := s.tagStore.Read(func(idx *TagIndex) error {
 		result = slices.Collect(maps.Values(idx.Tags))
 		return nil
 	})
@@ -137,9 +145,12 @@ func (s *Store) RemoveTag(tag string) (string, []string, error) {
 	var layoutPath string
 	var layoutStillUsed bool
 	var zeroRefBlobs []string
-	err := s.withTxnLock(func() error {
+	if err := os.MkdirAll(s.cfg.DBDir(), 0o700); err != nil {
+		return "", nil, fmt.Errorf("create db dir: %w", err)
+	}
+	err := flock.WithLock(s.cfg.OCIBuildTxnLock(), func() error {
 		manifestStillUsed := false
-		lockErr := s.withLock(func(idx *TagIndex) error {
+		lockErr := s.tagStore.Update(func(idx *TagIndex) error {
 			entry, ok := idx.Tags[tag]
 			if !ok {
 				return fmt.Errorf("tag %q not found", tag)
@@ -154,9 +165,6 @@ func (s *Store) RemoveTag(tag string) (string, []string, error) {
 			}
 
 			delete(idx.Tags, tag)
-			if err := s.save(idx); err != nil {
-				return err
-			}
 			for _, other := range idx.Tags {
 				if manifestDigest != "" {
 					if other.ManifestDigest == manifestDigest {
@@ -206,7 +214,7 @@ func (s *Store) RemoveTag(tag string) (string, []string, error) {
 // SaveTag is kept as a safety net for race conditions.
 func (s *Store) CheckTagOverwriteSafe(tag string) error {
 	var manifestDigest string
-	err := s.withLock(func(idx *TagIndex) error {
+	err := s.tagStore.Read(func(idx *TagIndex) error {
 		entry, ok := idx.Tags[tag]
 		if !ok {
 			return nil // new tag, no conflict
@@ -228,7 +236,7 @@ func (s *Store) saveTagTxnLocked(tag, layoutPath, manifestDigest string) error {
 	var oldLayoutPath string
 	oldManifestStillUsed := false
 	oldLayoutStillUsed := false
-	err := s.withLock(func(idx *TagIndex) error {
+	err := s.tagStore.Update(func(idx *TagIndex) error {
 		if idx.Tags == nil {
 			idx.Tags = make(map[string]TagEntry)
 		}
@@ -249,9 +257,6 @@ func (s *Store) saveTagTxnLocked(tag, layoutPath, manifestDigest string) error {
 			LayoutPath:     layoutPath,
 			ManifestDigest: manifestDigest,
 			CreatedAt:      time.Now().UTC(),
-		}
-		if err := s.save(idx); err != nil {
-			return err
 		}
 		if oldManifestDigest != "" {
 			for _, entry := range idx.Tags {
@@ -321,52 +326,4 @@ func checkRuntimeRefsForRemoval(cfg *config.CocoonConfig, tag, manifestDigest st
 	}
 	refs, _ := GetRuntimeRefs(cfg, runtimeKey)
 	return fmt.Errorf("image %s is still referenced by VMs: %v", tag, refs)
-}
-
-func (s *Store) load() (*TagIndex, error) {
-	idx := &TagIndex{Tags: make(map[string]TagEntry)}
-	path := s.cfg.OCIBuildTagIndex()
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return idx, nil
-	}
-	if err := utils.ReadJSON(path, idx); err != nil {
-		return nil, fmt.Errorf("read OCI build tag index: %w", err)
-	}
-	if idx.Tags == nil {
-		idx.Tags = make(map[string]TagEntry)
-	}
-	return idx, nil
-}
-
-func (s *Store) save(idx *TagIndex) error {
-	return utils.AtomicWriteJSON(s.cfg.OCIBuildTagIndex(), idx)
-}
-
-func (s *Store) withLock(fn func(*TagIndex) error) error {
-	if err := os.MkdirAll(s.cfg.DBDir(), 0o700); err != nil {
-		return fmt.Errorf("create db dir: %w", err)
-	}
-	fl := flock.New(s.cfg.OCIBuildTagLock())
-	if err := fl.Lock(); err != nil {
-		return fmt.Errorf("acquire OCI build tag lock: %w", err)
-	}
-	defer fl.Unlock() //nolint:errcheck
-
-	idx, err := s.load()
-	if err != nil {
-		return err
-	}
-	return fn(idx)
-}
-
-func (s *Store) withTxnLock(fn func() error) error {
-	if err := os.MkdirAll(s.cfg.DBDir(), 0o700); err != nil {
-		return fmt.Errorf("create db dir: %w", err)
-	}
-	fl := flock.New(s.cfg.OCIBuildTxnLock())
-	if err := fl.Lock(); err != nil {
-		return fmt.Errorf("acquire OCI build txn lock: %w", err)
-	}
-	defer fl.Unlock() //nolint:errcheck
-	return fn()
 }

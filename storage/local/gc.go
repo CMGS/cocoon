@@ -42,7 +42,7 @@ func NewGarbageCollector(cfg *config.CocoonConfig) storage.GarbageCollector {
 func (gc *fileGarbageCollector) CollectUnreferencedImages() ([]string, error) {
 	var collected []string
 
-	err := gc.withGCLock(func() error {
+	err := flock.WithLock(gc.cfg.GCLock(), func() error {
 		// Scan cached images outside references.lock to minimize hold time.
 		pattern := filepath.Join(gc.cfg.ImageCacheDir(), "*.qcow2")
 		matches, err := filepath.Glob(pattern)
@@ -102,7 +102,7 @@ func (gc *fileGarbageCollector) CollectUnreferencedImages() ([]string, error) {
 func (gc *fileGarbageCollector) CollectOrphanedOverlays() ([]string, error) {
 	var collected []string
 
-	err := gc.withGCLock(func() error {
+	err := flock.WithLock(gc.cfg.GCLock(), func() error {
 		entries, err := os.ReadDir(gc.cfg.VMDir())
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -161,7 +161,7 @@ func (gc *fileGarbageCollector) CollectOrphanedOverlays() ([]string, error) {
 func (gc *fileGarbageCollector) CollectTempFiles(maxAge time.Duration) ([]string, error) {
 	var collected []string
 
-	err := gc.withGCLock(func() error {
+	err := flock.WithLock(gc.cfg.GCLock(), func() error {
 		entries, err := os.ReadDir(gc.cfg.TempDir())
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -207,7 +207,7 @@ func (gc *fileGarbageCollector) CollectTempFiles(maxAge time.Duration) ([]string
 func (gc *fileGarbageCollector) CollectStaleConversionLocks(maxAge time.Duration) ([]string, error) {
 	var collected []string
 
-	err := gc.withGCLock(func() error {
+	err := flock.WithLock(gc.cfg.GCLock(), func() error {
 		entries, err := os.ReadDir(gc.cfg.ConversionLockDir())
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -324,17 +324,6 @@ func (gc *fileGarbageCollector) FullGC() error {
 	}
 
 	return nil
-}
-
-// withGCLock acquires gc.lock (Level 1) for the duration of fn.
-func (gc *fileGarbageCollector) withGCLock(fn func() error) error {
-	fl := flock.New(gc.cfg.GCLock())
-	if err := fl.Lock(); err != nil {
-		return fmt.Errorf("acquire gc.lock: %w", err)
-	}
-	defer fl.Unlock() //nolint:errcheck
-
-	return fn()
 }
 
 // withRefsLock acquires references.lock (Level 2) for the duration of fn.

@@ -13,6 +13,7 @@ import (
 
 	"github.com/CMGS/cocoon/config"
 	"github.com/CMGS/cocoon/lock/flock"
+	"github.com/CMGS/cocoon/lock/jsonstore"
 	"github.com/CMGS/cocoon/utils"
 )
 
@@ -45,37 +46,15 @@ func indexLockPath(cfg *config.CocoonConfig) string {
 	return filepath.Join(cfg.ManifestCacheDir(), "index.lock")
 }
 
-func load(cfg *config.CocoonConfig) (indexFile, error) {
-	idx := make(indexFile)
-	path := indexPath(cfg)
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return idx, nil
-	}
-	if err := utils.ReadJSON(path, &idx); err != nil {
-		return nil, fmt.Errorf("read manifest index: %w", err)
-	}
-	return idx, nil
-}
-
-func save(cfg *config.CocoonConfig, idx indexFile) error {
-	return utils.AtomicWriteJSON(indexPath(cfg), idx)
-}
-
-func withLock(cfg *config.CocoonConfig, fn func(indexFile) error) error {
-	if err := os.MkdirAll(cfg.ManifestCacheDir(), 0o755); err != nil { //nolint:gosec // G301: cocoon cache dirs are shared runtime state
-		return fmt.Errorf("create manifest cache dir: %w", err)
-	}
-	fl := flock.New(indexLockPath(cfg))
-	if err := fl.Lock(); err != nil {
-		return fmt.Errorf("acquire manifest index lock: %w", err)
-	}
-	defer fl.Unlock() //nolint:errcheck
-
-	idx, err := load(cfg)
-	if err != nil {
-		return err
-	}
-	return fn(idx)
+func indexStore(cfg *config.CocoonConfig) *jsonstore.Store[indexFile] {
+	return jsonstore.New(
+		indexLockPath(cfg),
+		indexPath(cfg),
+		func() *indexFile {
+			m := make(indexFile)
+			return &m
+		},
+	).WithEnsureDir(cfg.ManifestCacheDir())
 }
 
 type verifiedFile map[string]string
@@ -96,12 +75,23 @@ func saveVerified(cfg *config.CocoonConfig, vf verifiedFile) error {
 	return utils.AtomicWriteJSON(verifiedPath(cfg), vf)
 }
 
+// ensureCacheDir creates ManifestCacheDir if it does not exist.
+func ensureCacheDir(cfg *config.CocoonConfig) error {
+	if err := os.MkdirAll(cfg.ManifestCacheDir(), 0o755); err != nil { //nolint:gosec // G301: cocoon cache dirs are shared runtime state
+		return fmt.Errorf("create manifest cache dir: %w", err)
+	}
+	return nil
+}
+
 // MarkVerified records that a base image has passed bootability verification.
 func MarkVerified(cfg *config.CocoonConfig, baseKey string) error {
 	if strings.TrimSpace(baseKey) == "" {
 		return nil
 	}
-	return withLock(cfg, func(_ indexFile) error {
+	if err := ensureCacheDir(cfg); err != nil {
+		return err
+	}
+	return flock.WithLock(indexLockPath(cfg), func() error {
 		vf, err := loadVerified(cfg)
 		if err != nil {
 			return err
@@ -120,7 +110,10 @@ func IsVerified(cfg *config.CocoonConfig, baseKey string) (bool, error) {
 		return false, nil
 	}
 	var verified bool
-	err := withLock(cfg, func(_ indexFile) error {
+	if err := ensureCacheDir(cfg); err != nil {
+		return false, err
+	}
+	err := flock.WithLock(indexLockPath(cfg), func() error {
 		vf, err := loadVerified(cfg)
 		if err != nil {
 			return err
@@ -139,7 +132,10 @@ func DeleteVerified(cfg *config.CocoonConfig, baseKey string) error {
 	if strings.TrimSpace(baseKey) == "" {
 		return nil
 	}
-	return withLock(cfg, func(_ indexFile) error {
+	if err := ensureCacheDir(cfg); err != nil {
+		return err
+	}
+	return flock.WithLock(indexLockPath(cfg), func() error {
 		vf, err := loadVerified(cfg)
 		if err != nil {
 			return err
@@ -162,7 +158,8 @@ func Upsert(cfg *config.CocoonConfig, ref, baseKey, digestFull string) error {
 	if strings.TrimSpace(ref) == "" || strings.TrimSpace(baseKey) == "" {
 		return fmt.Errorf("ref and baseKey are required")
 	}
-	return withLock(cfg, func(idx indexFile) error {
+	return indexStore(cfg).Update(func(idxPtr *indexFile) error {
+		idx := *idxPtr
 		now := time.Now().UTC().Format(time.RFC3339)
 		exactRef := strings.TrimSpace(ref)
 		for _, candidate := range candidates(ref) {
@@ -195,9 +192,6 @@ func Upsert(cfg *config.CocoonConfig, ref, baseKey, digestFull string) error {
 			entry.LastSeenAt = now
 			idx[candidate] = entry
 		}
-		if err := save(cfg, idx); err != nil {
-			return fmt.Errorf("save manifest index: %w", err)
-		}
 		return nil
 	})
 }
@@ -212,7 +206,8 @@ func ResolveBaseKey(cfg *config.CocoonConfig, ref string) (string, bool, error) 
 	if ref == "" {
 		return "", false, nil
 	}
-	err := withLock(cfg, func(idx indexFile) error {
+	err := indexStore(cfg).Read(func(idxPtr *indexFile) error {
+		idx := *idxPtr
 		// Direct exact match has highest priority.
 		if entry, ok := idx[ref]; ok {
 			keys := entry.resolvedBaseKeys()
@@ -288,7 +283,8 @@ func hasExplicitTagOrDigestRef(ref string) bool {
 func RefsForBaseKey(cfg *config.CocoonConfig, baseKey string) ([]string, string, error) {
 	refSet := make(map[string]struct{})
 	digestFull := ""
-	err := withLock(cfg, func(idx indexFile) error {
+	err := indexStore(cfg).Read(func(idxPtr *indexFile) error {
+		idx := *idxPtr
 		for ref, entry := range idx {
 			if !containsString(entry.resolvedBaseKeys(), baseKey) {
 				continue
@@ -312,28 +308,20 @@ func DeleteByBaseKey(cfg *config.CocoonConfig, baseKey string) error {
 	if strings.TrimSpace(baseKey) == "" {
 		return nil
 	}
-	return withLock(cfg, func(idx indexFile) error {
-		changed := false
+	return indexStore(cfg).Update(func(idxPtr *indexFile) error {
+		idx := *idxPtr
 		for ref, entry := range idx {
 			keys := slices.DeleteFunc(entry.resolvedBaseKeys(), func(s string) bool { return s == baseKey })
 			switch len(keys) {
 			case 0:
 				delete(idx, ref)
-				changed = true
 			default:
 				setResolvedBaseKeys(&entry, keys)
 				if len(keys) > 1 {
 					entry.DigestFull = ""
 				}
 				idx[ref] = entry
-				changed = true
 			}
-		}
-		if !changed {
-			return nil
-		}
-		if err := save(cfg, idx); err != nil {
-			return fmt.Errorf("save manifest index: %w", err)
 		}
 		return nil
 	})
@@ -346,8 +334,8 @@ func PurgeBaseKey(cfg *config.CocoonConfig, baseKey string) error {
 	if strings.TrimSpace(baseKey) == "" {
 		return nil
 	}
-	return withLock(cfg, func(idx indexFile) error {
-		changed := false
+	return indexStore(cfg).Update(func(idxPtr *indexFile) error {
+		idx := *idxPtr
 		for ref, entry := range idx {
 			keys := entry.resolvedBaseKeys()
 			if !containsString(keys, baseKey) {
@@ -363,12 +351,8 @@ func PurgeBaseKey(cfg *config.CocoonConfig, baseKey string) error {
 				}
 				idx[ref] = entry
 			}
-			changed = true
 		}
-		if !changed {
-			return nil
-		}
-		return save(cfg, idx)
+		return nil
 	})
 }
 
