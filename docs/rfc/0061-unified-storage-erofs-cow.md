@@ -101,13 +101,19 @@ addressed by SHA-256). Each VM only gets its own COW raw file.
 
 **Layer hash definition** (what is hashed for content-addressing):
 - Rootfs layer: `SHA-256(rootfs.erofs file bytes)`
-- Kernel layer: `SHA-256(vmlinuz bytes || initrd.img bytes)` — the
-  two files are concatenated for hashing (vmlinuz first, then patched
-  initrd). This means any change to injected modules/hooks produces
-  a new kernel layer hash.
+- Kernel layer: `SHA-256(SHA-256(vmlinuz) || SHA-256(initrd.img))` —
+  each file is hashed independently, then the two hashes are
+  concatenated and hashed again. This avoids ambiguity from raw
+  byte concatenation (where different split points could collide)
+  and allows streaming computation. Any change to injected
+  modules/hooks produces a new kernel layer hash.
 - `meta.json` is **not** included in the hash — it is metadata for
   diagnostics and GC only. This prevents metadata format upgrades
   from invalidating cached layers.
+- `cocoon-buildinfo.json` (injected into initrd) must **not** contain
+  the current kernel layer SHA — that would create a circular
+  dependency (hash depends on its own value). It may contain rootfs
+  layer SHAs, mkfs flags, kernel version, and config check results.
 
 ### How EROFS Replaces qcow2 Backing
 
@@ -317,6 +323,9 @@ path, potentially panic before ever reaching our hook.
 # Resolve a virtio-blk device by serial (stable across disk reordering).
 # Polls /sys/block/vd* checking both possible sysfs serial paths,
 # with configurable timeout (default 10s, override via cocoon.timeout=).
+# Note: mknod fallback requires CAP_MKNOD (standard in initramfs root
+# context). If a hardened initrd restricts this, devtmpfs/udev must
+# provide /dev nodes — mknod failure is silently ignored (2>/dev/null).
 resolve_disk() {
     local serial="$1"
     local timeout="${COCOON_TIMEOUT:-10}" i=0
@@ -419,13 +428,19 @@ mountroot() {
     rm -rf "${COCOON}/cow/work" && mkdir -p "${COCOON}/cow/work"
 
     # Assemble overlay.
-    # Explicit options to avoid distro-default variance across kernels:
+    # Explicit options for predictable behavior across kernels:
     #   index=off      — no index dir (avoids NFS export issues, simpler)
-    #   metacopy=off   — always full copy-up (predictable, no partial-copy bugs)
-    #   redirect_dir=off — no redirect on rename (simpler, avoids xattr deps)
-    mount -t overlay overlay \
-      -o "lowerdir=${LOWER},upperdir=${COCOON}/cow/upper,workdir=${COCOON}/cow/work,index=off,metacopy=off,redirect_dir=off" \
-      "${rootmnt}" || cocoon_fatal "overlay mount failed"
+    #   metacopy=off   — always full copy-up (no partial-copy bugs)
+    #   redirect_dir=off — no redirect on rename (avoids xattr deps)
+    # Two-stage: try with explicit options first; if EINVAL (option not
+    # supported by this kernel), fall back to minimal options and log.
+    OVL_OPTS="lowerdir=${LOWER},upperdir=${COCOON}/cow/upper,workdir=${COCOON}/cow/work"
+    OVL_FULL="${OVL_OPTS},index=off,metacopy=off,redirect_dir=off"
+    if ! mount -t overlay overlay -o "$OVL_FULL" "${rootmnt}" 2>/dev/null; then
+        echo "cocoon: overlay with explicit opts failed, falling back to defaults" >&2
+        mount -t overlay overlay -o "$OVL_OPTS" "${rootmnt}" \
+            || cocoon_fatal "overlay mount failed"
+    fi
 
     mkdir -p "${rootmnt}/dev" "${rootmnt}/proc" "${rootmnt}/sys" "${rootmnt}/run"
 
@@ -577,10 +592,14 @@ mount -t ext4 "$cow_dev" "${COCOON}/cow" || cocoon_fatal "cocoon: mount COW fail
 mkdir -p "${COCOON}/cow/upper"
 rm -rf "${COCOON}/cow/work" && mkdir -p "${COCOON}/cow/work"
 
-# Assemble overlay (same explicit options as initramfs-tools hook).
-mount -t overlay overlay \
-  -o "lowerdir=${LOWER},upperdir=${COCOON}/cow/upper,workdir=${COCOON}/cow/work,index=off,metacopy=off,redirect_dir=off" \
-  "$NEWROOT" || cocoon_fatal "cocoon: overlay mount failed"
+# Assemble overlay (same two-stage strategy as initramfs-tools hook).
+OVL_OPTS="lowerdir=${LOWER},upperdir=${COCOON}/cow/upper,workdir=${COCOON}/cow/work"
+OVL_FULL="${OVL_OPTS},index=off,metacopy=off,redirect_dir=off"
+if ! mount -t overlay overlay -o "$OVL_FULL" "$NEWROOT" 2>/dev/null; then
+    echo "cocoon: overlay with explicit opts failed, falling back to defaults" >&2
+    mount -t overlay overlay -o "$OVL_OPTS" "$NEWROOT" \
+        || cocoon_fatal "cocoon: overlay mount failed"
+fi
 
 mkdir -p "$NEWROOT/dev" "$NEWROOT/proc" "$NEWROOT/sys" "$NEWROOT/run"
 
@@ -598,6 +617,25 @@ Key differences from initramfs-tools:
 - Uses `die` instead of `panic` for fatal errors
 - No `mountroot()` function wrapper — dracut hooks execute as plain scripts
 - No `boot=cocoon` cmdline needed — dracut uses hook directories, not boot scripts
+
+#### Overlay Mount Options
+
+Both hooks attempt `mount -t overlay` with explicit options
+`index=off,metacopy=off,redirect_dir=off`. This is a **predictability-
+over-performance** trade-off:
+
+- `index=off` disables the overlay index directory. Slightly reduces
+  NFS export correctness and `nlink` accuracy, but avoids index
+  incompatibilities across kernel versions.
+- `metacopy=off` forces full copy-up (entire file, not just metadata).
+  Prevents partial-copy bugs at the cost of more I/O on first write.
+- `redirect_dir=off` disables directory rename redirection. Simplifies
+  semantics and avoids `trusted.overlay.redirect` xattr dependency.
+
+If the kernel rejects these options (`EINVAL`), the hooks fall back to
+default overlay options and log a warning. This ensures bootability on
+kernels that don't support all options, while preserving diagnostics
+about which options were actually in effect.
 
 #### Systemd Compatibility Patching
 
@@ -781,6 +819,10 @@ cloudimg.img (download — may be qcow2 or raw)
            /etc/os-release not found)
         Non-GPT, LVM, LUKS → PermanentError with descriptive message
   → Extract: vmlinuz, initrd.img, kernel modules (erofs/overlay dep chain)
+      Note: assumes /boot is inside the rootfs partition (not a separate
+      partition). If /boot is empty or missing after mounting the rootfs,
+      materialize fails with PermanentError listing the mounted partition
+      contents. Separate /boot partition support is out of scope.
   → mkfs.erofs rootfs.erofs (from mount point, no guest modification)
   → Unmount
   → Patch initramfs: unpack → detect format → inject modules + hook → repack
@@ -816,12 +858,18 @@ OCI image layers (pulled or built)
         - hardlinks (inode sharing, not copy)
         - device nodes (char/block)
         - uid/gid/mode/mtime
-      Go's stdlib archive/tar does NOT preserve xattrs by default.
-      Implementation must use PAX header xattr support (tar.Header.
-      PAXRecords / Xattrs field) or a library that handles this.
-      Failure to preserve capabilities causes subtle runtime errors
-      (e.g. ping loses CAP_NET_RAW, systemd helpers lose required
-      capabilities) that are extremely hard to diagnose.
+      Go's stdlib archive/tar does NOT handle this correctly:
+      it exposes PAXRecords but does not setxattr, and SCHILY.xattr.*
+      capability encoding is binary (not trivial to reimplement).
+      Implementation MUST reuse a mature OCI layer applier (e.g.
+      containerd's archive/apply, or buildkit's snapshot apply)
+      rather than hand-rolling tar extraction. Rolling your own
+      xattr/capability handling is a high-risk path that produces
+      the worst failure mode: images that boot but have subtly
+      wrong permissions, broken capabilities, or missing security
+      labels. Materialize must verify xattr preservation after
+      extraction (spot-check security.capability on known binaries)
+      and fail if xattrs were silently dropped.
   → Extract: vmlinuz, initrd.img, kernel modules
   → mkfs.erofs rootfs.erofs (from flattened rootfs)
   → Patch initramfs (same as cloudimg — auto-detect format)
@@ -1218,17 +1266,15 @@ motivation is removing virtiofsd.
 
    **Directory traversal determinism**: `mkfs.erofs <dir>` depends on
    the underlying filesystem's `readdir` order, which can vary across
-   machines, kernel versions, or filesystem types. Cocoon must ensure
-   deterministic input by either: (a) using `mkfs.erofs --tar=` to
-   build from a sorted tar stream (available in erofs-utils >= 1.7),
-   or (b) preparing the input directory on a filesystem with stable
-   readdir order and verifying output hash stability. The acceptance
-   test is a **hard gate**: repeated builds of the same input must
-   produce identical hashes; any divergence fails the test.
+   machines, kernel versions, or filesystem types. To eliminate this
+   source of non-determinism, Cocoon **requires** `mkfs.erofs --tar=`
+   mode: generate a deterministic tar stream (sorted entries, fixed
+   timestamps/uid/gid) in Go, pipe it to `mkfs.erofs --tar=f -`.
+   This completely decouples EROFS output from host filesystem behavior.
 
    Cocoon's acceptance tests verify hash stability across repeated builds.
    Cocoon records `mkfs.erofs` version in `meta.json` for diagnostics.
-   Minimum required version: erofs-utils >= 1.5.
+   Minimum required version: **erofs-utils >= 1.7** (`--tar=` support).
 
    **Oldest supported guest kernel**: **5.13**. This is the floor for
    the ext4 feature compatibility gate, EROFS PCLUSTER, and XATTR
@@ -1376,6 +1422,7 @@ Each phase gate requires passing the following test matrix:
 | Composite behavior: base has `ping` with cap + `dirA/basefile`; user layer deletes `basefile`, marks `dirA` opaque → boot, verify ping works + basefile invisible + dirA has only user content | Required | - |
 | systemd compat: machine-id written, journald writes to `/var/log/journal`, cloud-init (if present) does not block boot | Required | Required |
 | Overlay copy-up: modify a file from EROFS lowerdir → verify copy-up to COW upper succeeds, original unchanged | Required | - |
+| Overlay rename: rename a directory from EROFS lowerdir → verify rename succeeds in COW (tests redirect_dir=off behavior) | Required | - |
 
 ### Phase 2 Gate (Cloudimg Path)
 
@@ -1401,7 +1448,8 @@ Each phase gate requires passing the following test matrix:
 ### Tool Preflight
 
 Cocoon validates tool availability on demand (not globally at startup):
-- `mkfs.erofs` >= 1.5: checked at first materialize (`mkfs.erofs -V`)
+- `mkfs.erofs` >= 1.7: checked at first materialize (`mkfs.erofs -V`).
+  Version 1.7+ is required for `--tar=` mode (deterministic builds).
 - `mkfs.ext4` + `e2fsck` (e2fsprogs): checked at first `cocoon create`
 - `qemu-img` (any version): checked only for cloudimg materialize
   (`qemu-img --version`). OCI-only users do not need `qemu-img`.
