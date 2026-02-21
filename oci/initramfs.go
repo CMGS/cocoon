@@ -11,6 +11,8 @@ import (
 	"path"
 	"slices"
 	"strings"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 // initrdEntryNames lists the tar entry names used for the initramfs inside
@@ -24,8 +26,8 @@ var initrdEntryNames = []string{
 }
 
 // CheckInitramfsVirtiofs opens the kernel layer tar at layerBlobPath, locates
-// the initramfs entry, decompresses it (gzip or uncompressed cpio), and scans
-// the cpio archive for a virtiofs module filename.
+// the initramfs entry, decompresses it (gzip, zstd, or uncompressed cpio), and
+// scans the cpio archive for a virtiofs module filename.
 //
 // It returns (found, error). When the initramfs cannot be located or read,
 // it returns (false, err) so the caller can decide whether to treat the
@@ -97,10 +99,10 @@ func scanCPIOForVirtiofs(data []byte) (bool, error) {
 }
 
 // decompressInitramfs detects the compression format by magic bytes and
-// returns the decompressed payload. Supported: gzip, zstd (magic 0x28B52FFD),
-// and uncompressed cpio newc/newc-crc ("070701"/"070702").
+// returns the decompressed payload. Supported: gzip, zstd, and uncompressed
+// cpio newc/newc-crc ("070701"/"070702"). Recognized but unsupported: xz, lz4.
 func decompressInitramfs(data []byte) ([]byte, error) {
-	if len(data) < 4 {
+	if len(data) < 6 {
 		return nil, fmt.Errorf("initramfs data too small (%d bytes)", len(data))
 	}
 
@@ -111,10 +113,17 @@ func decompressInitramfs(data []byte) ([]byte, error) {
 
 	// Zstd: magic 0x28 0xB5 0x2F 0xFD
 	if data[0] == 0x28 && data[1] == 0xB5 && data[2] == 0x2F && data[3] == 0xFD {
-		// Zstd decompression requires cgo or a large pure-Go dependency.
-		// Rather than adding a dependency, return an informative error so
-		// the caller can report it as a warning.
-		return nil, fmt.Errorf("zstd-compressed initramfs detected; virtiofs check not supported for zstd")
+		return decompressZstd(data)
+	}
+
+	// XZ: magic 0xFD 0x37 0x7A 0x58 0x5A 0x00 ("\xfd7zXZ\x00")
+	if data[0] == 0xFD && data[1] == 0x37 && data[2] == 0x7A && data[3] == 0x58 && data[4] == 0x5A && data[5] == 0x00 {
+		return nil, fmt.Errorf("xz-compressed initramfs detected; virtiofs check not yet supported for xz")
+	}
+
+	// LZ4: magic 0x04 0x22 0x4D 0x18
+	if data[0] == 0x04 && data[1] == 0x22 && data[2] == 0x4D && data[3] == 0x18 {
+		return nil, fmt.Errorf("lz4-compressed initramfs detected; virtiofs check not yet supported for lz4")
 	}
 
 	// Uncompressed cpio newc/newc-crc.
@@ -122,7 +131,7 @@ func decompressInitramfs(data []byte) ([]byte, error) {
 		return data, nil
 	}
 
-	return nil, fmt.Errorf("unrecognized initramfs format (magic: %s)", hex.EncodeToString(data[:4]))
+	return nil, fmt.Errorf("unrecognized initramfs format (magic: %s)", hex.EncodeToString(data[:6]))
 }
 
 func hasCPIONewcMagic(data []byte) bool {
@@ -131,6 +140,20 @@ func hasCPIONewcMagic(data []byte) bool {
 	}
 	magic := string(data[:6])
 	return magic == "070701" || magic == "070702"
+}
+
+// decompressZstd decompresses zstd data using the klauspost/compress pure-Go decoder.
+func decompressZstd(data []byte) ([]byte, error) {
+	dec, err := zstd.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("zstd reader: %w", err)
+	}
+	defer dec.Close()
+	out, err := io.ReadAll(dec)
+	if err != nil {
+		return nil, fmt.Errorf("zstd decompress: %w", err)
+	}
+	return out, nil
 }
 
 // decompressGzip decompresses gzip data.
