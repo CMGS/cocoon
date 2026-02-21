@@ -63,9 +63,9 @@ For cloudimg:
 cloud-hypervisor \
   --kernel   cache/layers/{sha_k}/vmlinuz \
   --initramfs cache/layers/{sha_k}/initrd.img \
-  --disk path=cache/layers/{sha_r}/rootfs.erofs,readonly=on \   # vda
-  --disk path=vms/{vmID}/cow.raw \                               # vdb
-  --cmdline "... cocoon.layers=vda cocoon.cow=vdb"
+  --disk path=cache/layers/{sha_r}/rootfs.erofs,readonly=on,serial=cocoon-layer0 \
+  --disk path=vms/{vmID}/cow.raw,serial=cocoon-cow \
+  --cmdline "... boot=cocoon cocoon.layers=cocoon-layer0 cocoon.cow=cocoon-cow"
 ```
 
 For OCI VM image (with user custom layer):
@@ -73,11 +73,22 @@ For OCI VM image (with user custom layer):
 cloud-hypervisor \
   --kernel   cache/layers/{sha_k}/vmlinuz \
   --initramfs cache/layers/{sha_k}/initrd.img \
-  --disk path=cache/layers/{sha_base}/rootfs.erofs,readonly=on \  # vda
-  --disk path=cache/layers/{sha_user}/custom.erofs,readonly=on \  # vdb
-  --disk path=vms/{vmID}/cow.raw \                                 # vdc
-  --cmdline "... cocoon.layers=vda,vdb cocoon.cow=vdc"
+  --disk path=cache/layers/{sha_user}/custom.erofs,readonly=on,serial=cocoon-layer0 \
+  --disk path=cache/layers/{sha_base}/rootfs.erofs,readonly=on,serial=cocoon-layer1 \
+  --disk path=vms/{vmID}/cow.raw,serial=cocoon-cow \
+  --cmdline "... boot=cocoon cocoon.layers=cocoon-layer0,cocoon-layer1 cocoon.cow=cocoon-cow"
 ```
+
+**Layer ordering**: `cocoon.layers` follows overlayfs lowerdir semantics —
+leftmost has the highest priority. For OCI, the custom (user) layer comes
+first so it overrides the base layer. Cocoon constructs the `--disk` flags
+in the same order, and assigns deterministic serial IDs for stable guest
+device identification.
+
+**Layer count limit**: Cocoon caps the number of rootfs layers at **8**.
+Images exceeding this limit are flattened into a single EROFS during
+materialize. This avoids hitting the overlayfs lowerdir argument length
+limit and keeps the cmdline manageable.
 
 Multiple VMs from the same image share kernel and rootfs layers (content-
 addressed by SHA-256). Each VM only gets its own COW raw file.
@@ -174,18 +185,20 @@ Source Image (cloudimg.img or OCI layers)
   │   ├─ Parse /lib/modules/<ver>/modules.dep       → dependency graph
   │   ├─ Resolve transitive deps for: erofs, overlay
   │   │   (e.g., erofs → lz4_decompress, lz4hc_compress)
-  │   └─ Extract all .ko files in dependency chain
+  │   ├─ Extract all .ko/.ko.xz/.ko.zst files in dependency chain
+  │   │   (decompress .ko.xz/.ko.zst → .ko during extraction)
+  │   └─ Generate load.order (topological sort of dependency chain)
   │
   ├─ mkfs.erofs rootfs.erofs (from mount point, unmodified)
   │
   └─ Unmount
   │
   ├─ Patch initramfs:
-  │   ├─ Unpack (cpio + gzip/zstd, handle microcode preamble)
-  │   ├─ Detect initramfs format (initramfs-tools vs dracut)
-  │   ├─ Inject /cocoon-modules/*.ko (erofs, overlay, deps)
+  │   ├─ Unpack (cpio segments — see Pitfall 1 for multi-segment handling)
+  │   ├─ Detect initramfs format (initramfs-tools vs dracut; unknown → fail)
+  │   ├─ Inject /cocoon-modules/*.ko + load.order
   │   ├─ Inject hook script at distro-specific path:
-  │   │   ├─ initramfs-tools: /scripts/local-bottom/cocoon
+  │   │   ├─ initramfs-tools: /scripts/cocoon (custom boot script)
   │   │   └─ dracut: /lib/dracut/hooks/mount/99-cocoon-mount.sh
   │   └─ Repack → initrd.img
   │
@@ -209,39 +222,70 @@ func detectInitramfsFormat(unpackDir string) InitramfsFormat {
        exists(filepath.Join(unpackDir, "usr", "lib", "dracut")) {
         return FormatDracut
     }
-    return FormatUnknown // fallback — try initramfs-tools convention
+    return FormatUnknown // hard fail — do not guess
 }
 ```
 
+If `FormatUnknown` is returned, the materialize pipeline **must fail** with
+a clear error. Silently falling back to initramfs-tools would produce an
+initrd that builds successfully but fails to boot — the worst kind of bug.
+
 | Distro Family | Format | Hook Path | Root Variable |
 |---|---|---|---|
-| Debian / Ubuntu | initramfs-tools | `/scripts/local-bottom/cocoon` | `${rootmnt}` |
+| Debian / Ubuntu | initramfs-tools | `/scripts/cocoon` (custom boot script) | `${rootmnt}` |
 | RHEL / CentOS / Fedora | dracut | `/lib/dracut/hooks/mount/99-cocoon-mount.sh` | `$NEWROOT` |
 
 #### Guest Boot Hook — initramfs-tools (Debian/Ubuntu)
 
-Injected at `/scripts/local-bottom/cocoon`:
+Injected at `/scripts/cocoon` as a **custom boot script**. Cocoon adds
+`boot=cocoon` to the kernel cmdline, which tells initramfs-tools to source
+`/scripts/cocoon` instead of `/scripts/local`. The framework then calls
+our `mountroot()` function — this is the official initramfs-tools mechanism
+for replacing the default root mount logic.
+
+**Why not `/scripts/local-bottom/`?** `local-bottom` runs *after* the
+default root mount. If we place our hook there, initramfs-tools would
+first try (and fail) to mount root via the default `local_mount_root()`
+path, potentially panic before ever reaching our hook.
 
 ```sh
-#!/bin/sh
-PREREQ=""
-prereqs() { echo "$PREREQ"; }
-case $1 in prereqs) prereqs; exit 0;; esac
+# /scripts/cocoon — custom boot script for initramfs-tools
+# Sourced by /init when boot=cocoon is set on kernel cmdline.
+# The framework calls mountroot() after sourcing this file.
+
 . /scripts/functions
+
+# Resolve a virtio-blk device by serial (stable across disk reordering).
+# Polls /sys/block/vd* until the serial matches, with timeout.
+resolve_disk() {
+    local serial="$1" timeout=10 i=0
+    while [ $i -lt $timeout ]; do
+        for sysdev in /sys/block/vd*; do
+            [ -e "$sysdev/serial" ] || continue
+            if [ "$(cat "$sysdev/serial")" = "$serial" ]; then
+                echo "/dev/$(basename "$sysdev")"
+                return 0
+            fi
+        done
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
 
 mountroot() {
     log_begin_msg "Cocoon: mounting overlay rootfs"
 
-    # Load injected modules (insmod, no modprobe dependency).
-    # Guard: if all modules are built-in, /cocoon-modules/ won't exist.
-    if [ -d /cocoon-modules ]; then
-        for mod in /cocoon-modules/*.ko; do
-            [ -e "$mod" ] || continue
-            insmod "$mod" 2>/dev/null   # already-builtin → harmless EEXIST
-        done
+    # Load injected modules in dependency order.
+    if [ -d /cocoon-modules ] && [ -f /cocoon-modules/load.order ]; then
+        while read -r mod; do
+            [ -e "/cocoon-modules/${mod}" ] || continue
+            insmod "/cocoon-modules/${mod}" 2>/dev/null
+        done < /cocoon-modules/load.order
     fi
 
-    # Parse topology from kernel cmdline (cocoon controls this)
+    # Parse topology from kernel cmdline (cocoon controls this).
+    # Values are stable serial IDs, not device names.
     LAYERS=$(cat /proc/cmdline | tr ' ' '\n' | \
              grep '^cocoon\.layers=' | cut -d= -f2)
     COW=$(cat /proc/cmdline | tr ' ' '\n' | \
@@ -250,23 +294,27 @@ mountroot() {
     [ -z "$LAYERS" ] && panic "cocoon.layers= not set"
     [ -z "$COW" ]    && panic "cocoon.cow= not set"
 
-    # Mount under /run — survives switch_root via mount --move
+    # Mount under /run — initramfs-tools automatically does
+    # "mount --move /run ${rootmnt}/run" during switch_root,
+    # so our mounts survive the transition.
     COCOON="/run/cocoon/storage"
     mkdir -p "$COCOON"
 
-    # Mount read-only layers
+    # Mount read-only layers (resolve serial → /dev/vdX)
     LOWER=""
-    for dev in $(echo "$LAYERS" | tr ',' ' '); do
-        mnt="${COCOON}/layers/${dev}"
+    for serial in $(echo "$LAYERS" | tr ',' ' '); do
+        dev=$(resolve_disk "$serial") || panic "device ${serial} not found"
+        mnt="${COCOON}/layers/${serial}"
         mkdir -p "$mnt"
-        mount -t erofs -o ro "/dev/${dev}" "$mnt" || panic "mount ${dev} failed"
+        mount -t erofs -o ro "$dev" "$mnt" || panic "mount ${serial} failed"
         [ -n "$LOWER" ] && LOWER="${LOWER}:"
         LOWER="${LOWER}${mnt}"
     done
 
     # Mount COW (pre-formatted by cocoon create on host)
+    cow_dev=$(resolve_disk "$COW") || panic "COW device ${COW} not found"
     mkdir -p "${COCOON}/cow"
-    mount -t ext4 "/dev/${COW}" "${COCOON}/cow" || panic "mount COW failed"
+    mount -t ext4 "$cow_dev" "${COCOON}/cow" || panic "mount COW failed"
     mkdir -p "${COCOON}/cow/upper"
     rm -rf "${COCOON}/cow/work" && mkdir -p "${COCOON}/cow/work"
 
@@ -280,13 +328,10 @@ mountroot() {
     # --- Systemd compatibility patching (written to COW upper, EROFS untouched) ---
     # Without these, systemd will hang or fail on boot. See "Systemd
     # Compatibility" section below for the full rationale.
-
-    # 1. Clear fstab — original references a physical UUID that doesn't exist.
-    #    Systemd would wait 90s for it, then emergency-shell.
+    #
+    # Note: this clears ALL fstab entries, not just root. Data disk mounts
+    # must be handled separately by cocoon (e.g. injected systemd mount units).
     : > "${rootmnt}/etc/fstab"
-
-    # 2. Mask fsck + remount — no fsck.overlay binary exists; remount with
-    #    fstab-derived options fails on overlay.
     ln -sf /dev/null "${rootmnt}/etc/systemd/system/systemd-fsck-root.service"
     ln -sf /dev/null "${rootmnt}/etc/systemd/system/systemd-remount-fs.service"
 
@@ -296,26 +341,44 @@ mountroot() {
 
 #### Guest Boot Hook — dracut (RHEL/CentOS/Fedora)
 
-Injected at `/lib/dracut/hooks/mount/99-cocoon-mount.sh`:
+Injected at `/lib/dracut/hooks/mount/99-cocoon-mount.sh`. Dracut hooks
+execute as plain scripts (no function wrapper). The `rootok=1` flag tells
+dracut that a mount handler is present and it should not fall back to
+default root mount logic.
 
 ```sh
 #!/bin/sh
+# /lib/dracut/hooks/mount/99-cocoon-mount.sh
 # Cocoon overlay rootfs hook for dracut-based initramfs.
-# dracut requires rootok=1 to signal that a mount handler exists.
 
-# Signal to dracut that we will handle rootfs mounting.
 rootok=1
 
-# Load injected modules (insmod, no modprobe dependency).
-# Guard: if all modules are built-in, /cocoon-modules/ won't exist.
-if [ -d /cocoon-modules ]; then
-    for mod in /cocoon-modules/*.ko; do
-        [ -e "$mod" ] || continue
-        insmod "$mod" 2>/dev/null   # already-builtin → harmless EEXIST
+# Resolve a virtio-blk device by serial (stable across disk reordering).
+resolve_disk() {
+    local serial="$1" timeout=10 i=0
+    while [ $i -lt $timeout ]; do
+        for sysdev in /sys/block/vd*; do
+            [ -e "$sysdev/serial" ] || continue
+            if [ "$(cat "$sysdev/serial")" = "$serial" ]; then
+                echo "/dev/$(basename "$sysdev")"
+                return 0
+            fi
+        done
+        sleep 1
+        i=$((i + 1))
     done
+    return 1
+}
+
+# Load injected modules in dependency order.
+if [ -d /cocoon-modules ] && [ -f /cocoon-modules/load.order ]; then
+    while read -r mod; do
+        [ -e "/cocoon-modules/${mod}" ] || continue
+        insmod "/cocoon-modules/${mod}" 2>/dev/null
+    done < /cocoon-modules/load.order
 fi
 
-# Parse topology from kernel cmdline (cocoon controls this)
+# Parse topology from kernel cmdline.
 LAYERS=$(cat /proc/cmdline | tr ' ' '\n' | \
          grep '^cocoon\.layers=' | cut -d= -f2)
 COW=$(cat /proc/cmdline | tr ' ' '\n' | \
@@ -325,34 +388,36 @@ if [ -z "$LAYERS" ] || [ -z "$COW" ]; then
     die "cocoon: cocoon.layers= or cocoon.cow= not set on cmdline"
 fi
 
-# Mount under /run — survives switch_root via mount --move
+# Mount under /run — dracut automatically moves /run during switch_root.
 COCOON="/run/cocoon/storage"
 mkdir -p "$COCOON"
 
-# Mount read-only layers
+# Mount read-only layers (resolve serial → /dev/vdX)
 LOWER=""
-for dev in $(echo "$LAYERS" | tr ',' ' '); do
-    mnt="${COCOON}/layers/${dev}"
+for serial in $(echo "$LAYERS" | tr ',' ' '); do
+    dev=$(resolve_disk "$serial") || die "cocoon: device ${serial} not found"
+    mnt="${COCOON}/layers/${serial}"
     mkdir -p "$mnt"
-    mount -t erofs -o ro "/dev/${dev}" "$mnt" || die "cocoon: mount ${dev} failed"
+    mount -t erofs -o ro "$dev" "$mnt" || die "cocoon: mount ${serial} failed"
     [ -n "$LOWER" ] && LOWER="${LOWER}:"
     LOWER="${LOWER}${mnt}"
 done
 
 # Mount COW (pre-formatted by cocoon create on host)
+cow_dev=$(resolve_disk "$COW") || die "cocoon: COW device ${COW} not found"
 mkdir -p "${COCOON}/cow"
-mount -t ext4 "/dev/${COW}" "${COCOON}/cow" || die "cocoon: mount COW failed"
+mount -t ext4 "$cow_dev" "${COCOON}/cow" || die "cocoon: mount COW failed"
 mkdir -p "${COCOON}/cow/upper"
 rm -rf "${COCOON}/cow/work" && mkdir -p "${COCOON}/cow/work"
 
-# Assemble overlay — dracut uses $NEWROOT as the sysroot target
+# Assemble overlay
 mount -t overlay overlay \
   -o "lowerdir=${LOWER},upperdir=${COCOON}/cow/upper,workdir=${COCOON}/cow/work" \
   "$NEWROOT" || die "cocoon: overlay mount failed"
 
 mkdir -p "$NEWROOT/dev" "$NEWROOT/proc" "$NEWROOT/sys" "$NEWROOT/run"
 
-# --- Systemd compatibility patching (written to COW upper, EROFS untouched) ---
+# --- Systemd compatibility patching ---
 : > "$NEWROOT/etc/fstab"
 ln -sf /dev/null "$NEWROOT/etc/systemd/system/systemd-fsck-root.service"
 ln -sf /dev/null "$NEWROOT/etc/systemd/system/systemd-remount-fs.service"
@@ -363,7 +428,7 @@ Key differences from initramfs-tools:
 - Sets `rootok=1` to tell dracut a mount handler is present
 - Uses `die` instead of `panic` for fatal errors
 - No `mountroot()` function wrapper — dracut hooks execute as plain scripts
-- No `prereqs` / PREREQ / `. /scripts/functions` preamble
+- No `boot=cocoon` cmdline needed — dracut uses hook directories, not boot scripts
 
 #### Systemd Compatibility Patching
 
@@ -416,6 +481,26 @@ Fix: `ln -sf /dev/null /etc/systemd/system/systemd-remount-fs.service`
 - `boot-efi.mount` is not masked — with no UEFI firmware there is no ESP
   partition, so systemd skips it automatically (no fstab entry, no device).
 
+**Known limitation**: clearing fstab removes ALL mount entries, not just
+the root entry. This means any non-root mounts declared in the original
+image's fstab (swap, data partitions, NFS) will be silently disabled. If
+Cocoon adds data disk support in the future, those mounts must be injected
+via separate mechanisms (e.g. systemd mount units generated by Cocoon at
+create time, not via fstab).
+
+#### `/run` Survival Across `switch_root`
+
+Both hooks mount layer devices under `/run/cocoon/storage/`. These mounts
+survive `switch_root` because both initramfs-tools and dracut perform
+`mount --move /run ${rootmnt}/run` (or equivalent) as part of their
+standard `switch_root` sequence. This is a documented behavior of both
+frameworks — not an assumption.
+
+If a future exotic initramfs framework does not move `/run`, the mounts
+would be lost. The hook scripts would need to explicitly `mount --move`
+the cocoon mount points into the new root before `switch_root`. This is
+tracked as a known dependency on the initramfs framework contract.
+
 #### Guest Visibility
 
 After boot, mount points are hidden under `/run/cocoon/storage/`:
@@ -434,15 +519,26 @@ point.
 
 ### Topology Declaration
 
-Cocoon controls the CH kernel cmdline. The boot hook reads topology from
-two custom parameters:
+Cocoon controls both the CH `--disk` flags and the kernel cmdline. Each
+virtio-blk disk is assigned a **stable serial ID** via CH's `serial=`
+parameter. The boot hook resolves serial → `/dev/vdX` by scanning
+`/sys/block/vd*/serial`, with a timeout-based wait for device readiness.
 
-- `cocoon.layers=vda,vdb` — ordered list of read-only EROFS devices
-  (leftmost = highest priority in overlayfs lowerdir)
-- `cocoon.cow=vdc` — the writable COW device
+Two custom cmdline parameters declare the topology:
 
-This is explicit and deterministic, unlike filesystem-type probing (blkid)
-which has issues:
+- `cocoon.layers=cocoon-layer0,cocoon-layer1` — ordered list of EROFS
+  layer serial IDs (leftmost = highest priority in overlayfs lowerdir)
+- `cocoon.cow=cocoon-cow` — the writable COW device serial ID
+
+In addition, `boot=cocoon` is set to tell initramfs-tools to use the
+cocoon boot script instead of the default local mount logic.
+
+**Why serial IDs instead of `/dev/vdX` names?** Device letter assignment
+(`vda`, `vdb`, ...) depends on `--disk` flag ordering and can shift when
+disks are added, removed, or reordered (e.g. adding a data disk). Serial
+IDs are set by Cocoon and are stable regardless of disk ordering.
+
+**Why not blkid/filesystem-type probing?**
 - blkid may not exist in all initramfs environments
 - Heuristic detection of COW disk is fragile (unformatted disks, data volumes)
 - Device enumeration timing is non-deterministic in edge cases
@@ -450,7 +546,9 @@ which has issues:
 ### Cloudimg Materialize Pipeline
 
 ```
-cloudimg.img (download)
+cloudimg.img (download — may be qcow2 or raw)
+  → Detect format (qcow2 magic "QFI\xfb" at offset 0)
+  → If qcow2: qemu-img convert -f qcow2 -O raw → cloudimg.raw
   → Parse GPT in Go → compute ext4 rootfs partition offset
   → mount -o ro,loop,offset=<N> (requires root)
   → Extract: vmlinuz, initrd.img, kernel modules (erofs/overlay dep chain)
@@ -459,9 +557,15 @@ cloudimg.img (download)
   → Patch initramfs: unpack → detect format → inject modules + hook → repack
   → SHA-256 hash kernel layer and rootfs layer
   → Store in cache/layers/
+  → Delete intermediate raw file
 ```
 
-No dependency on libguestfs, virt-customize, losetup, or kpartx. Tools needed:
+**Note**: Ubuntu cloudimgs (e.g. `*-cloudimg-amd64.img`) are typically
+**qcow2**, not raw. The `qemu-img convert` step is required for these.
+Raw images (e.g. some minimal cloud images) skip the conversion.
+
+Tools needed:
+- `qemu-img` (qemu-utils package — only for qcow2→raw conversion)
 - `mount` (cocoon runs as root — loop + offset mount is always available)
 - `mkfs.erofs` (erofs-utils package)
 - Go stdlib for GPT parsing and cpio/gzip unpack-repack
@@ -503,6 +607,13 @@ func createCOWDisk(path string, size int64) error {
 
 Resize: `truncate -s +10G cow.raw` on host, then `resize2fs /dev/vdX` in guest.
 
+**COW health recovery**: after an unclean VM shutdown (SIGKILL, host crash),
+the ext4 journal should handle recovery automatically on next mount. If the
+journal is corrupted, Cocoon runs `e2fsck -y cow.raw` on the host before
+starting the VM. This is a host-side operation (no guest cooperation needed).
+The boot hook in initramfs does NOT run fsck — it mounts directly with
+`mount -t ext4`, relying on the journal or host-side pre-check.
+
 ### Reference Counting
 
 Layers are content-addressed by SHA-256. Reference counting works identically
@@ -526,6 +637,11 @@ to the current base-image model:
 
 GC: layer with `refs: []` and grace period expired → delete.
 
+`layers.json` uses the same persistence pattern as existing Cocoon state
+files: flock-protected, atomic write (write to temp → fsync → rename),
+crash-safe. The `layers.lock` file protects concurrent access. This is
+the same pattern used by `jsonstore.Store[T]` (see `lock/jsonstore/`).
+
 ### Code Impact
 
 | Module | Change |
@@ -541,19 +657,22 @@ GC: layer with `refs: []` and grace period expired → delete.
 **Removed entirely**:
 - `vm/engine/overlay_runtime_linux.go` / `overlay_runtime_other.go`
 - `vm/engine/virtiofsd_*.go`
-- `image/pipeline/convert_linux.go` (qcow2 conversion)
 - UEFI firmware lookup and ACPI power-button shutdown path
+
+**Note**: `image/pipeline/convert_linux.go` (qcow2 conversion) is
+**retained** — it changes from qcow2→qcow2 base to qcow2→raw (for
+cloudimg input), using the same `qemu-img convert` tool.
 
 ### Implementation Pitfalls
 
-Three low-level hazards that will bite during Go implementation of the
+Low-level hazards that will bite during Go implementation of the
 materialize pipeline. Documented here so implementors don't rediscover
 them the hard way.
 
-#### Pitfall 1: Concatenated initramfs (microcode preamble)
+#### Pitfall 1: Concatenated initramfs (multi-segment)
 
-Ubuntu (and many other distros) ship `initrd.img` as a **concatenated
-file**, not a single compressed archive:
+Many distros ship `initrd.img` as a **concatenated file** with multiple
+cpio segments, not a single compressed archive. The most common layout:
 
 ```
 ┌──────────────────────────────┬─────────────────────────────────┐
@@ -564,18 +683,25 @@ file**, not a single compressed archive:
 └──────────────────────────────┴─────────────────────────────────┘
 ```
 
-The Go unpacker **must not** feed the entire file to `gzip.NewReader`.
+However, some images may have **more than two segments** (e.g. firmware
+blobs in a third uncompressed cpio). The Go unpacker must handle the
+general case.
+
 Correct approach:
 
 1. Open the file as a raw `io.Reader`.
-2. Read the first cpio archive (uncompressed). Detect EOF by the cpio
-   trailer record (`TRAILER!!!`).
-3. Probe the next bytes for a compression magic number (`1f 8b` for gzip,
-   `28 b5 2f fd` for zstd, `fd 37 7a 58 5a` for xz).
-4. Decompress the second segment, which yields the real cpio archive.
-5. Unpack, inject modules + hook, repack the second segment.
-6. **Reassemble**: concatenate segment 1 (preserved verbatim) + recompressed
-   segment 2. The kernel bootloader expects this exact layout.
+2. **Loop**: detect the next segment type by probing magic bytes:
+   - `070701` or `070702` (newc cpio) → uncompressed cpio segment
+   - `1f 8b` → gzip-compressed cpio
+   - `28 b5 2f fd` → zstd-compressed cpio
+   - `fd 37 7a 58 5a` → xz-compressed cpio
+3. Read/decompress each segment. Detect segment end by cpio trailer
+   record (`TRAILER!!!`) followed by padding.
+4. The **last compressed segment** is the real initramfs. Earlier
+   uncompressed segments (microcode, firmware) are preambles.
+5. Unpack the real initramfs segment, inject modules + hook, repack.
+6. **Reassemble**: concatenate all preamble segments (preserved verbatim)
+   + recompressed main segment. The kernel bootloader expects this layout.
 
 #### Pitfall 2: `modules.builtin` — don't inject what's already in the kernel
 
@@ -593,12 +719,26 @@ dependencies:
    the image's kernel genuinely lacks support — fail the materialize with
    a clear error.
 
-#### Pitfall 3: CPIO repack must preserve permissions and ownership
+#### Pitfall 3: Compressed kernel modules (`.ko.xz`, `.ko.zst`)
+
+Many distros ship kernel modules in compressed form (`.ko.xz` for
+Debian/Ubuntu, `.ko.zst` for Fedora/RHEL). The `modules.dep` file
+references paths without the compression extension, but the actual files
+on disk have it.
+
+During materialize, the Go code must:
+1. When scanning `modules.dep`, look for the `.ko` path but find the
+   file as `.ko.xz`, `.ko.zst`, or `.ko.gz` on disk.
+2. **Decompress** to plain `.ko` before injecting into the initramfs.
+   `insmod` in the boot hook does not handle compressed modules.
+3. The `load.order` file should list plain `.ko` filenames.
+
+#### Pitfall 4: CPIO repack must preserve permissions and ownership
 
 When using Go's `archive/cpio` (or equivalent) to repack the initramfs:
 
 - Every injected file's `cpio.Header` must have correct `Mode`, `Uid`,
-  and `Gid`. In particular, the hook script (`/scripts/local-bottom/cocoon`
+  and `Gid`. In particular, the hook script (`/scripts/cocoon`
   or `/lib/dracut/hooks/mount/99-cocoon-mount.sh`) **must be mode `0755`**.
   If the executable bit is missing, the initramfs framework silently skips
   it and the overlay never gets mounted.
@@ -607,10 +747,22 @@ When using Go's `archive/cpio` (or equivalent) to repack the initramfs:
   original `cpio.Header` fields verbatim — do not let Go defaults zero
   out the permission bits.
 
+#### Pitfall 5: xattrs and SELinux labels in CPIO
+
+Some initramfs files (especially on RHEL/SELinux-enforcing systems) carry
+extended attributes and SELinux security labels. Go's standard `archive`
+packages do not handle xattrs. Repacking will silently drop them.
+
+**Current stance**: xattr preservation is best-effort. RHEL/SELinux
+enforcing images may require additional implementation work (e.g. using
+the newc cpio format with xattr extensions). This is acceptable for the
+initial implementation; document as a known limitation.
+
 ## Drawbacks
 
-1. **Host dependency on erofs-utils** — `mkfs.erofs` must be installed.
-   Not available in all distro default repos (but widely packaged).
+1. **Host dependencies** — `mkfs.erofs` (erofs-utils) and `qemu-img`
+   (qemu-utils, for cloudimg qcow2→raw conversion) must be installed.
+   Both are widely packaged but not in all distro default installs.
 
 2. **initramfs patching is distro-format-dependent** — initramfs-tools
    (Debian/Ubuntu) and dracut (RHEL/CentOS/Fedora) have different hook
@@ -681,10 +833,11 @@ motivation is removing virtiofsd.
    specified above. `PatchInitramfs` auto-detects the format by probing the
    unpacked initramfs layout and injects the appropriate hook script.
 
-3. **~~cloudimg partition discovery~~**: resolved. Parse GPT in Go to
-   compute ext4 partition offset, then `mount -o ro,loop,offset=<N>`.
-   Cocoon runs as root (no rootless mode), so `mount` is available.
-   No dependency on `losetup` or `kpartx`.
+3. **~~cloudimg partition discovery~~**: resolved. Detect qcow2 format by
+   magic bytes, convert to raw via `qemu-img` if needed, parse GPT in Go
+   for partition offset, then `mount -o ro,loop,offset=<N>`. Cocoon runs
+   as root, so `mount` is available. Non-GPT images fail fast with a
+   clear error.
 
 4. **Multi-arch support**: amd64 and arm64 cloudimgs have different kernel
    configs. Module availability (erofs=m vs erofs=y) may differ.
@@ -701,6 +854,17 @@ motivation is removing virtiofsd.
    structurally required (systemd cannot boot overlay root without them).
    No optional service masking (cloud-init, boot-efi.mount, etc.) — those
    are left to the user if needed.
+
+8. **`mkfs.erofs` reproducibility**: different host versions of
+   `mkfs.erofs` may produce different output for the same input. This
+   affects content-addressing. Mitigation: pin `mkfs.erofs` flags
+   explicitly (compression algorithm, block size) and document the
+   minimum required version.
+
+9. **OCI whiteout semantics validation**: multi-layer overlayfs must
+   correctly handle whiteout files and opaque directories. This requires
+   end-to-end test coverage with known whiteout patterns before declaring
+   Phase 1 complete.
 
 ## Implementation Phases
 
