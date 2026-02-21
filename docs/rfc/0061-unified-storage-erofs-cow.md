@@ -264,13 +264,12 @@ Source Image (cloudimg.img or OCI layers)
   │   │     the required external commands (insmod, mount, cat, mkdir,
   │   │     rm, ln, mknod, sleep, uname).
   │   │     Detection algorithm (PATH = /bin:/sbin:/usr/bin:/usr/sbin):
-  │   │       1. For each tool, check if an executable file (or symlink)
-  │   │          exists at any PATH entry inside the unpacked rootfs.
-  │   │       2. If not found, check if a busybox binary exists; if so,
-  │   │          run `busybox <tool> --help` and accept exit code 0 or 1
-  │   │          as "supported" (do NOT rely on `busybox --list` — some
-  │   │          builds omit it).
-  │   │       3. If neither check passes →
+  │   │       For each tool, search PATH dirs inside the unpacked tree.
+  │   │       Accept if the entry is a regular file with executable bit,
+  │   │       or a symlink (e.g. `mount -> busybox` — do not attempt to
+  │   │       resolve or execute the target, because the unpacked tree
+  │   │       may be cross-architecture and not runnable on the host).
+  │   │       If no entry found for any tool →
   │   │          PermanentError("initramfs too minimal: missing <tool>")
   │   ├─ Inject /cocoon-modules/*.ko + load.order
   │   ├─ Inject /cocoon-buildinfo.json (read-only, immutable build-time data):
@@ -279,7 +278,7 @@ Source Image (cloudimg.img or OCI layers)
   │   │   Note: rootfs_layer_shas are stored in host-side meta.json
   │   │   (not inside initrd) to preserve kernel layer dedup.
   │   │   Runtime boot results (overlay_opts_effective, etc.) are written
-  │   │   separately to /run/cocoon/boot.json at boot time.
+  │   │   separately to /run/cocoon/boot.env at boot time (key=value format).
   │   │   cocoon_fatal() prints buildinfo + /proc state on fatal errors.
   │   ├─ Inject hook script(s) at distro-specific path:
   │   │   ├─ initramfs-tools: /scripts/cocoon (custom boot script)
@@ -514,15 +513,17 @@ mountroot() {
 
     # Write runtime boot results to /run (separate from immutable buildinfo).
     # Acceptance tests and CI depend on this file — hard-fail if write fails.
-    # Fields: overlay_opts_effective ("full"|"fallback"),
-    #   overlay_mount_first_error (if any), overlay_mount_fallback_error (if any).
+    # Format: key=value env file (one per line, parse by splitting on first '=').
+    # NOT JSON — avoids escaping issues with raw mount error messages that
+    # may contain quotes, backslashes, newlines, or control characters.
     mkdir -p /run/cocoon || cocoon_fatal "mkdir /run/cocoon failed"
-    _boot_json="{\"overlay_opts_effective\":\"${_ovl_mode}\""
-    [ -n "${_ovl_err:-}" ] && _boot_json="${_boot_json},\"overlay_mount_first_error\":\"${_ovl_err}\""
-    [ -n "${_ovl_fb_err:-}" ] && _boot_json="${_boot_json},\"overlay_mount_fallback_error\":\"${_ovl_fb_err}\""
-    _boot_json="${_boot_json}}"
-    printf '%s\n' "$_boot_json" > /run/cocoon/boot.json \
-        || cocoon_fatal "write /run/cocoon/boot.json failed"
+    {
+        printf 'overlay_opts_effective=%s\n' "$_ovl_mode"
+        [ -n "${_ovl_err:-}" ] && printf 'overlay_mount_first_error=%s\n' "$_ovl_err"
+        [ -n "${_ovl_fb_err:-}" ] && printf 'overlay_mount_fallback_error=%s\n' "$_ovl_fb_err"
+        true  # ensure block exits 0 even if both vars are empty
+    } > /run/cocoon/boot.env \
+        || cocoon_fatal "write /run/cocoon/boot.env failed"
 
     mkdir -p "${rootmnt}/dev" "${rootmnt}/proc" "${rootmnt}/sys" "${rootmnt}/run"
 
@@ -757,13 +758,15 @@ _ovl_err=$(mount -t overlay overlay -o "$OVL_FULL" "$NEWROOT" 2>&1) || {
 }
 
 # Write runtime boot results to /run (separate from immutable buildinfo).
+# Format: key=value env file (see initramfs-tools hook for rationale).
 mkdir -p /run/cocoon || cocoon_fatal "cocoon: mkdir /run/cocoon failed"
-_boot_json="{\"overlay_opts_effective\":\"${_ovl_mode}\""
-[ -n "${_ovl_err:-}" ] && _boot_json="${_boot_json},\"overlay_mount_first_error\":\"${_ovl_err}\""
-[ -n "${_ovl_fb_err:-}" ] && _boot_json="${_boot_json},\"overlay_mount_fallback_error\":\"${_ovl_fb_err}\""
-_boot_json="${_boot_json}}"
-printf '%s\n' "$_boot_json" > /run/cocoon/boot.json \
-    || cocoon_fatal "cocoon: write /run/cocoon/boot.json failed"
+{
+    printf 'overlay_opts_effective=%s\n' "$_ovl_mode"
+    [ -n "${_ovl_err:-}" ] && printf 'overlay_mount_first_error=%s\n' "$_ovl_err"
+    [ -n "${_ovl_fb_err:-}" ] && printf 'overlay_mount_fallback_error=%s\n' "$_ovl_fb_err"
+    true
+} > /run/cocoon/boot.env \
+    || cocoon_fatal "cocoon: write /run/cocoon/boot.env failed"
 
 mkdir -p "$NEWROOT/dev" "$NEWROOT/proc" "$NEWROOT/sys" "$NEWROOT/run"
 
@@ -1655,7 +1658,7 @@ Each phase gate requires passing the following test matrix:
 | Composite behavior: base has `ping` with cap + `dirA/basefile`; user layer deletes `basefile`, marks `dirA` opaque → boot, verify ping works + basefile invisible + dirA has only user content | Required | - |
 | systemd compat: machine-id unique per VM (empty at overlay mount, regenerated on first boot; two VMs from same image must have different IDs), journald writes to `/var/log/journal`, cloud-init (if present) does not block boot | Required | Required |
 | Overlay copy-up: modify a file from EROFS lowerdir → verify copy-up to COW upper succeeds, original unchanged | Required | - |
-| Overlay rename: rename a directory from EROFS lowerdir → verify rename succeeds in COW. Check `/run/cocoon/boot.json`: if `overlay_opts_effective=full`, assert `redirect_dir=off` behavior; if `fallback`, only assert rename is non-fatal | Required | - |
+| Overlay rename: rename a directory from EROFS lowerdir → verify rename succeeds in COW. Check `/run/cocoon/boot.env`: if `overlay_opts_effective=full`, assert `redirect_dir=off` behavior; if `fallback`, only assert rename is non-fatal | Required | - |
 
 ### Phase 2 Gate (Cloudimg Path)
 
@@ -1681,7 +1684,7 @@ Each phase gate requires passing the following test matrix:
 - Overlay option fallback: when explicit overlay mount options
   (`index=off,metacopy=off,redirect_dir=off`) trigger EINVAL, the hook
   falls back to kernel defaults. The effective mode is recorded in
-  `/run/cocoon/boot.json` for diagnostics. The EINVAL detection is based
+  `/run/cocoon/boot.env` for diagnostics. The EINVAL detection is based
   on error message string matching, which is inherently fragile; the
   implementation should prefer checking the kernel's exit code where
   feasible and use string matching only as a supplementary signal.
