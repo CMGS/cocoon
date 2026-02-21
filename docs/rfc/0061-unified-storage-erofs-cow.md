@@ -25,7 +25,7 @@ both host-side qcow2 backing and host-side overlayfs + virtiofsd.
 | Firmware | CLOUDHV.fd | None |
 | Root delivery | qcow2 base + qcow2 COW overlay | virtiofsd + host overlayfs (N layers) |
 | COW mechanism | qcow2 backing chain (host) | virtiofsd writes to overlay upper (host) |
-| Shutdown | ACPI power-button → guest systemd | vm.shutdown API → SIGTERM |
+| Shutdown | ACPI power-button → guest systemd | vm.shutdown API → SIGTERM → SIGKILL |
 | Per-VM processes | CH only | CH + virtiofsd |
 | Boot latency | ~10s | ~30s (virtiofsd + host overlay overhead) |
 
@@ -162,17 +162,20 @@ original initramfs.
 Rationale:
 1. Original initramfs contains all modules matching the extracted vmlinuz
 2. Original udev rules handle virtio device discovery
-3. No need for depmod analysis or module extraction
+3. No need for full `depmod` rebuild — we parse `modules.dep` selectively
 4. Distro-specific quirks (device naming, module loading) are pre-handled
 
 However, the original initramfs likely does NOT contain `erofs.ko` or
-`overlay.ko` (since the original rootfs is ext4). These modules must be
-extracted from the image's `/lib/modules/<ver>/` and injected.
+`overlay.ko` (since the original rootfs is ext4/xfs). These modules must
+be extracted from the image's `/lib/modules/<ver>/` and injected.
 
-**ext4 module**: the COW disk is ext4. In most distros, `ext4` is built-in
-(`CONFIG_EXT4_FS=y`) since it's typically the root filesystem type. If a
-kernel ships `ext4` as a module, the original initramfs already includes
-it (since the original root was ext4). No additional ext4 injection needed.
+**ext4 module**: the COW disk is ext4. On most Debian/Ubuntu images, `ext4`
+is built-in (`CONFIG_EXT4_FS=y`) or already present in the initramfs (since
+the original root is ext4). However, on **RHEL/CentOS images where root is
+xfs**, the initramfs may only include the xfs module chain — `ext4`, `jbd2`,
+and `mbcache` might be absent. Therefore, `ext4` (and its dependencies) must
+be included in the dependency resolution chain alongside `erofs` and
+`overlay`. If `ext4` is built-in (`modules.builtin`), injection is skipped.
 
 #### Materialize Pipeline
 
@@ -188,7 +191,7 @@ Source Image (cloudimg.img or OCI layers)
   ├─ Extract kernel modules:
   │   ├─ Check /lib/modules/<ver>/modules.builtin   → skip if built-in
   │   ├─ Parse /lib/modules/<ver>/modules.dep       → dependency graph
-  │   ├─ Resolve transitive deps for: erofs, overlay
+  │   ├─ Resolve transitive deps for: erofs, overlay, ext4
   │   │   (e.g., erofs → lz4_decompress, lz4hc_compress)
   │   ├─ Extract all .ko/.ko.xz/.ko.zst files in dependency chain
   │   │   (decompress .ko.xz/.ko.zst → .ko during extraction)
@@ -353,6 +356,7 @@ mountroot() {
     # Note: this clears ALL fstab entries, not just root. Data disk mounts
     # must be handled separately by cocoon (e.g. injected systemd mount units).
     : > "${rootmnt}/etc/fstab"
+    mkdir -p "${rootmnt}/etc/systemd/system"
     ln -sf /dev/null "${rootmnt}/etc/systemd/system/systemd-fsck-root.service"
     ln -sf /dev/null "${rootmnt}/etc/systemd/system/systemd-remount-fs.service"
 
@@ -370,8 +374,15 @@ without `rootok=1`, it halts before ever reaching mount hooks.
 
 ```sh
 #!/bin/sh
-# Tell dracut we will handle root mounting. Without this, dracut
-# halts at the cmdline stage before mount hooks ever execute.
+# Tell dracut we will handle root mounting. Both `rootok` and `root`
+# must be set — dracut halts at cmdline stage if either is empty.
+
+# Extract base layer serial from cocoon.layers (last entry = lowest priority).
+for x in $(cat /proc/cmdline); do
+    case $x in cocoon.layers=*) _layers="${x#cocoon.layers=}" ;; esac
+done
+_base="${_layers##*,}"
+root="cocoon:${_base}"
 rootok=1
 ```
 
@@ -381,6 +392,8 @@ rootok=1
 #!/bin/sh
 # /lib/dracut/hooks/mount/01-cocoon-mount.sh
 # Cocoon overlay rootfs mount handler for dracut-based initramfs.
+
+. /lib/dracut-lib.sh   # provides die(), getarg(), etc.
 
 # Resolve a virtio-blk device by serial (same logic as initramfs-tools hook).
 resolve_disk() {
@@ -458,6 +471,7 @@ mkdir -p "$NEWROOT/dev" "$NEWROOT/proc" "$NEWROOT/sys" "$NEWROOT/run"
 
 # --- Systemd compatibility patching ---
 : > "$NEWROOT/etc/fstab"
+mkdir -p "$NEWROOT/etc/systemd/system"
 ln -sf /dev/null "$NEWROOT/etc/systemd/system/systemd-fsck-root.service"
 ln -sf /dev/null "$NEWROOT/etc/systemd/system/systemd-remount-fs.service"
 ```
@@ -621,7 +635,9 @@ Tools needed:
 - `qemu-img` (qemu-utils package — only for qcow2→raw conversion)
 - `mount` (cocoon runs as root — loop + offset mount is always available)
 - `mkfs.erofs` (erofs-utils package)
-- Go stdlib for GPT parsing and cpio/gzip unpack-repack
+- Go for GPT parsing, gzip/zstd decompression; **third-party cpio library**
+  required (Go stdlib has no `archive/cpio` — use e.g. `github.com/cavaliergopher/cpio`
+  or implement newc format reader/writer)
 
 ### OCI Image Materialize Pipeline
 
@@ -730,13 +746,22 @@ the same pattern used by `jsonstore.Store[T]` (see `lock/jsonstore/`).
 | `vm/engine/manager.go` | **Simplify** — single direct boot path, no UEFI, no virtiofsd |
 | `vm/engine/create.go` | **Simplify** — create COW raw, pin layers, no overlay mount |
 | `oci/` | **Adapt** — layer extraction produces erofs instead of unpacked dirs |
-| `hypervisor/` | **Simplify** — remove UEFI/ACPI shutdown, remove virtiofsd management |
+| `hypervisor/` | **Simplify** — remove UEFI firmware paths, unify to single shutdown path, remove virtiofsd management |
 | `config/` | **Update** — new path helpers for layer store |
 
 **Removed entirely**:
 - `vm/engine/overlay_runtime_linux.go` / `overlay_runtime_other.go`
 - `vm/engine/virtiofsd_*.go`
-- UEFI firmware lookup and ACPI power-button shutdown path
+- UEFI firmware lookup and dual shutdown path branching
+
+**Note on ACPI**: removing UEFI firmware does **not** remove ACPI. Cloud
+Hypervisor generates ACPI tables (including power button) for direct-boot
+VMs independently of firmware. The `vm.shutdown` API injects an ACPI power
+button event, and guest systemd performs a clean shutdown sequence (unmount
+filesystems, sync disks). This is the **same graceful shutdown mechanism**
+as UEFI boot — ACPI is retained. What is removed is only the UEFI firmware
+binary (`CLOUDHV.fd`) and the separate `Shutdown` vs `ShutdownDirect` code
+paths — they merge into a single path that uses ACPI power button.
 
 **Note**: `image/pipeline/convert_linux.go` (qcow2 conversion) is
 **retained** — it changes from qcow2→qcow2 base to qcow2→raw (for
@@ -814,11 +839,13 @@ During materialize, the Go code must:
 
 #### Pitfall 4: CPIO repack must preserve permissions and ownership
 
-When using Go's `archive/cpio` (or equivalent) to repack the initramfs:
+Go stdlib has no `archive/cpio` package. Use a third-party library (e.g.
+`github.com/cavaliergopher/cpio`) or implement newc cpio format directly.
+When repacking the initramfs:
 
 - Every injected file's `cpio.Header` must have correct `Mode`, `Uid`,
   and `Gid`. In particular, the hook script (`/scripts/cocoon`
-  or `/lib/dracut/hooks/mount/99-cocoon-mount.sh`) **must be mode `0755`**.
+  or `/lib/dracut/hooks/mount/01-cocoon-mount.sh`) **must be mode `0755`**.
   If the executable bit is missing, the initramfs framework silently skips
   it and the overlay never gets mounted.
 - Injected `.ko` module files should be mode `0644`, owned by `root:root`.
@@ -942,21 +969,32 @@ motivation is removing virtiofsd.
    Cocoon records `mkfs.erofs` version in `meta.json` for diagnostics.
    Minimum required version: erofs-utils >= 1.5.
 
+   **Kernel requirement for `-C65536`**: the 64KB pcluster size requires
+   `CONFIG_EROFS_FS_PCLUSTER=y` in the guest kernel (available since
+   Linux 5.13). Without it, EROFS mount fails. Modern distro kernels
+   (5.15+, Ubuntu 22.04+, RHEL 9+) enable this. If supporting older
+   kernels becomes necessary, fall back to `-C4096` (page-size aligned).
+
 9. **~~OCI whiteout semantics~~**: resolved. Whiteout handling is defined
    in the OCI Image Materialize Pipeline section. Flatten applies OCI
    whiteout deletion semantics; multi-EROFS lowerdir converts `.wh.*`
    to native overlayfs whiteout devices. Acceptance test coverage is
    required before Phase 1 completion.
 
-10. **Shutdown semantics**: with UEFI/ACPI removed, all VMs use direct
-    kernel boot shutdown: `vm.shutdown` API → SIGTERM → SIGKILL. Guest
-    graceful shutdown requires the guest kernel to handle the virtio
-    shutdown signal (standard in modern kernels). Data consistency relies
-    on ext4 journal in the COW disk.
+10. **~~Shutdown semantics~~**: resolved. ACPI is **retained** even without
+    UEFI firmware — CH generates ACPI tables for direct-boot VMs. Graceful
+    shutdown uses ACPI power button (`vm.power-button` API) → guest systemd
+    performs orderly shutdown (unmount COW, sync). Fallback: `vm.shutdown`
+    API → SIGTERM → SIGKILL. The two existing code paths (`Shutdown` and
+    `ShutdownDirect`) merge into a single unified path.
 
 11. **Kernel/initrd selection**: images with multiple kernels (e.g.
-    `/boot/vmlinuz-*`) — Cocoon selects the **latest version** by
-    sorting version strings. This matches distro default behavior.
+    `/boot/vmlinuz-*`) — Cocoon selects the **latest version** using
+    **version-aware natural sorting** (numeric segments compared as
+    integers, not lexically — e.g. `5.15 > 5.9`). Do NOT use lexical
+    sort (`sort.Strings`), which gives `5.9 > 5.15`. The Go
+    implementation should parse version segments and compare
+    numerically (similar to `dpkg --compare-versions`).
     If no kernel is found in `/boot/`, materialize fails.
 
 ## Implementation Phases
@@ -979,7 +1017,8 @@ Replace qcow2 pipeline with EROFS.
 - Materialize: qcow2→raw conversion, extract kernel + initramfs, mkfs.erofs
 - Patch initramfs: inject hook + erofs/overlay modules
 - Create: raw COW disk
-- Remove UEFI firmware, ACPI shutdown, qcow2 overlay chain
+- Remove UEFI firmware (`CLOUDHV.fd`), qcow2 overlay chain
+- Unify shutdown path (ACPI power button works for both boot modes)
 - Retain `qemu-img` dependency (repurposed: qcow2→raw instead of qcow2→qcow2)
 
 ### Phase 3: Cleanup
@@ -1027,7 +1066,7 @@ Each phase gate requires passing the following test matrix:
 |---|---|---|
 | Ubuntu cloudimg (qcow2) boot | Required | Required |
 | Debian cloudimg boot | Required | - |
-| CentOS/RHEL cloudimg (dracut) boot | Required | - |
+| CentOS/RHEL cloudimg (dracut, GPT+xfs) boot | Best-effort | - |
 | Multi-kernel image: correct vmlinuz selection | Required | - |
 | systemd starts cleanly (no fsck hang, no remount fail) | Required | Required |
 
@@ -1035,8 +1074,9 @@ Each phase gate requires passing the following test matrix:
 
 - SELinux enforcing images: cpio repack may lose SELinux labels (best-effort)
 - mkinitcpio (Arch Linux): not supported (FormatUnknown → hard fail)
-- Cloudimg formats: only GPT+ext4 root partition supported; MBR/LVM/xfs
-  fail fast with descriptive error
+- Cloudimg formats: GPT+ext4 is the primary supported partition layout.
+  GPT+xfs (RHEL/CentOS) is best-effort — requires xfs read support on
+  the host for `mount -o ro,loop`. MBR/LVM fail fast with descriptive error.
 
 ### Tool Preflight
 
