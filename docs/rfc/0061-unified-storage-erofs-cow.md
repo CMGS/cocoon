@@ -181,17 +181,45 @@ Source Image (cloudimg.img or OCI layers)
   │
   ├─ Patch initramfs:
   │   ├─ Unpack (cpio + gzip/zstd, handle microcode preamble)
+  │   ├─ Detect initramfs format (initramfs-tools vs dracut)
   │   ├─ Inject /cocoon-modules/*.ko (erofs, overlay, deps)
-  │   ├─ Inject /scripts/local-bottom/cocoon (overlay hook)
+  │   ├─ Inject hook script at distro-specific path:
+  │   │   ├─ initramfs-tools: /scripts/local-bottom/cocoon
+  │   │   └─ dracut: /lib/dracut/hooks/mount/99-cocoon-mount.sh
   │   └─ Repack → initrd.img
   │
   └─ Store: cache/layers/{sha_kernel}/ and cache/layers/{sha_rootfs}/
 ```
 
-#### Guest Boot Hook Script
+#### Distro Detection (initramfs format)
 
-Injected into the original initramfs as an initramfs-tools `local-bottom`
-hook (for dracut-based distros: `usr/lib/dracut/hooks/mount/`):
+The unpacked initramfs is probed to determine the hook system. The Go
+`PatchInitramfs` function detects the format by filesystem layout:
+
+```go
+func detectInitramfsFormat(unpackDir string) InitramfsFormat {
+    // initramfs-tools: has /scripts/local or /scripts/functions
+    if exists(filepath.Join(unpackDir, "scripts", "local")) ||
+       exists(filepath.Join(unpackDir, "scripts", "functions")) {
+        return FormatInitramfsTools
+    }
+    // dracut: has /lib/dracut/ or /usr/lib/dracut/
+    if exists(filepath.Join(unpackDir, "lib", "dracut")) ||
+       exists(filepath.Join(unpackDir, "usr", "lib", "dracut")) {
+        return FormatDracut
+    }
+    return FormatUnknown // fallback — try initramfs-tools convention
+}
+```
+
+| Distro Family | Format | Hook Path | Root Variable |
+|---|---|---|---|
+| Debian / Ubuntu | initramfs-tools | `/scripts/local-bottom/cocoon` | `${rootmnt}` |
+| RHEL / CentOS / Fedora | dracut | `/lib/dracut/hooks/mount/99-cocoon-mount.sh` | `$NEWROOT` |
+
+#### Guest Boot Hook — initramfs-tools (Debian/Ubuntu)
+
+Injected at `/scripts/local-bottom/cocoon`:
 
 ```sh
 #!/bin/sh
@@ -247,28 +275,67 @@ mountroot() {
 }
 ```
 
-#### Dynamic Guest Patching
+#### Guest Boot Hook — dracut (RHEL/CentOS/Fedora)
 
-The overlay hook runs before switch_root. Since `${rootmnt}` is a writable
-overlay, we can inject runtime patches without modifying the EROFS base:
+Injected at `/lib/dracut/hooks/mount/99-cocoon-mount.sh`:
 
 ```sh
-# Truncate fstab — prevents systemd from probing non-existent partitions
-: > "${rootmnt}/etc/fstab"
+#!/bin/sh
+# Cocoon overlay rootfs hook for dracut-based initramfs.
+# dracut requires rootok=1 to signal that a mount handler exists.
 
-# Mask systemd services that conflict with overlay root
-for svc in systemd-fsck-root.service systemd-remount-fs.service boot-efi.mount; do
-    ln -sf /dev/null "${rootmnt}/etc/systemd/system/${svc}"
+# Signal to dracut that we will handle rootfs mounting.
+rootok=1
+
+# Load injected modules (insmod, no modprobe dependency)
+for mod in /cocoon-modules/*.ko; do
+    insmod "$mod" 2>/dev/null   # already-builtin → harmless EEXIST
 done
 
-# Disable cloud-init if needed (prevents metadata service timeout)
-mkdir -p "${rootmnt}/etc/cloud"
-touch "${rootmnt}/etc/cloud/cloud-init.disabled"
+# Parse topology from kernel cmdline (cocoon controls this)
+LAYERS=$(cat /proc/cmdline | tr ' ' '\n' | \
+         grep '^cocoon\.layers=' | cut -d= -f2)
+COW=$(cat /proc/cmdline | tr ' ' '\n' | \
+      grep '^cocoon\.cow=' | cut -d= -f2)
+
+if [ -z "$LAYERS" ] || [ -z "$COW" ]; then
+    die "cocoon: cocoon.layers= or cocoon.cow= not set on cmdline"
+fi
+
+# Mount under /run — survives switch_root via mount --move
+COCOON="/run/cocoon/storage"
+mkdir -p "$COCOON"
+
+# Mount read-only layers
+LOWER=""
+for dev in $(echo "$LAYERS" | tr ',' ' '); do
+    mnt="${COCOON}/layers/${dev}"
+    mkdir -p "$mnt"
+    mount -t erofs -o ro "/dev/${dev}" "$mnt" || die "cocoon: mount ${dev} failed"
+    [ -n "$LOWER" ] && LOWER="${LOWER}:"
+    LOWER="${LOWER}${mnt}"
+done
+
+# Mount COW (pre-formatted by cocoon create on host)
+mkdir -p "${COCOON}/cow"
+mount -t ext4 "/dev/${COW}" "${COCOON}/cow" || die "cocoon: mount COW failed"
+mkdir -p "${COCOON}/cow/upper"
+rm -rf "${COCOON}/cow/work" && mkdir -p "${COCOON}/cow/work"
+
+# Assemble overlay — dracut uses $NEWROOT as the sysroot target
+mount -t overlay overlay \
+  -o "lowerdir=${LOWER},upperdir=${COCOON}/cow/upper,workdir=${COCOON}/cow/work" \
+  "$NEWROOT" || die "cocoon: overlay mount failed"
+
+mkdir -p "$NEWROOT/dev" "$NEWROOT/proc" "$NEWROOT/sys" "$NEWROOT/run"
 ```
 
-These patches are written to the COW upper layer. The EROFS base remains
-byte-for-byte identical to the source image. Patch rules should be
-configurable (declaration-based) to handle different distros.
+Key differences from initramfs-tools:
+- Uses `$NEWROOT` instead of `${rootmnt}`
+- Sets `rootok=1` to tell dracut a mount handler is present
+- Uses `die` instead of `panic` for fatal errors
+- No `mountroot()` function wrapper — dracut hooks execute as plain scripts
+- No `prereqs` / PREREQ / `. /scripts/functions` preamble
 
 #### Guest Visibility
 
@@ -310,7 +377,7 @@ cloudimg.img (download)
   → Extract: vmlinuz, initrd.img, kernel modules (erofs/overlay dep chain)
   → mkfs.erofs rootfs.erofs (from mount point, no guest modification)
   → Unmount
-  → Patch initramfs: unpack → inject modules + hook → repack
+  → Patch initramfs: unpack → detect format → inject modules + hook → repack
   → SHA-256 hash kernel layer and rootfs layer
   → Store in cache/layers/
 ```
@@ -327,7 +394,7 @@ OCI image layers (pulled or built)
   → Flatten all rootfs layers to temp directory
   → Extract: vmlinuz, initrd.img, kernel modules
   → mkfs.erofs rootfs.erofs (from flattened rootfs)
-  → Patch initramfs (same as cloudimg)
+  → Patch initramfs (same as cloudimg — auto-detect format)
   → SHA-256 hash layers
   → Store in cache/layers/
 ```
@@ -404,8 +471,10 @@ GC: layer with `refs: []` and grace period expired → delete.
    Not available in all distro default repos (but widely packaged).
 
 2. **initramfs patching is distro-format-dependent** — initramfs-tools
-   (Debian/Ubuntu) and dracut (RHEL/CentOS) have different hook formats.
-   The cpio unpack/repack is universal, but the hook injection point differs.
+   (Debian/Ubuntu) and dracut (RHEL/CentOS/Fedora) have different hook
+   formats. Both are supported via auto-detection (see "Distro Detection"),
+   but exotic initramfs systems (e.g., mkinitcpio on Arch) are not yet
+   covered. The cpio unpack/repack is universal.
 
 3. **Guest-visible mount points** — `/proc/mounts` and `lsblk` expose the
    overlay structure. Acceptable for VM sandboxes but less opaque than qcow2.
@@ -466,8 +535,9 @@ motivation is removing virtiofsd.
 1. **EROFS compression**: lz4hc (fast decompress) vs zstd (better ratio)?
    Recommend lz4hc for boot latency.
 
-2. **initramfs-tools vs dracut hook format**: need concrete implementations
-   for both. Phase 1 can target Ubuntu only (initramfs-tools).
+2. **~~initramfs-tools vs dracut hook format~~**: resolved — both formats are
+   specified above. `PatchInitramfs` auto-detects the format by probing the
+   unpacked initramfs layout and injects the appropriate hook script.
 
 3. **cloudimg partition discovery**: `losetup` + `kpartx` requires root.
    Alternatively, parse GPT in Go and use offset-based mount. Need to decide.
@@ -482,8 +552,10 @@ motivation is removing virtiofsd.
 
 6. **COW disk default size**: inherit from `--disk-size` flag or separate?
 
-7. **Distro-specific guest patches**: should be declaration-based config.
-   What's the config format and where are defaults stored?
+7. **~~Distro-specific guest patches~~**: decided not to implement. The overlay
+   root is already rw, so systemd remount-fs and fsck-root are harmless
+   no-ops. Avoiding guest mutation keeps the EROFS base and COW semantics
+   clean — if a service misbehaves, the user can fix it inside the VM.
 
 ## Implementation Phases
 
